@@ -1,0 +1,24 @@
+# Exchange configuration — copy to config/exchanges.yaml and adjust.
+# config/exchanges.yaml is gitignored. NEVER commit real keys.
+#
+# Per CLAUDE.md §4: keys are read from environment variables, NOT hardcoded here.
+# This file references env vars by name only.
+
+binance:
+  apiKey: ${BINANCE_API_KEY}
+  secret: ${BINANCE_SECRET}
+  permissions:
+    - trade      # ENABLED
+    - read       # ENABLED
+    - withdraw   # STRICTLY DISABLED — never enable
+  rateLimit: true
+  testnet: ${BINANCE_TESTNET}   # set to "true" for backtesting sessions
+
+kucoin:
+  apiKey: ${KUCOIN_API_KEY}
+  secret: ${KUCOIN_SECRET}
+  passphrase: ${KUCOIN_PASSPHRASE}
+  permissions:
+    - trade
+    - read
+  withdraw: false

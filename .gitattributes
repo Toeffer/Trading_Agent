@@ -1,0 +1,24 @@
+# Force LF line endings on the server regardless of dev OS.
+# Shell scripts WILL fail with CRLF on Linux. Don't tempt fate.
+
+# Default for text files: normalize to LF in the repo, native on checkout
+* text=auto eol=lf
+
+# Files that must be LF on disk everywhere (Linux runtime)
+*.sh         text eol=lf
+*.py         text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.json       text eol=lf
+*.md         text eol=lf
+Dockerfile   text eol=lf
+Makefile     text eol=lf
+.env.example text eol=lf
+.gitignore   text eol=lf
+
+# Binary
+*.png   binary
+*.jpg   binary
+*.gpg   binary
+*.tar   binary
+*.gz    binary

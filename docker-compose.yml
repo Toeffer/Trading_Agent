@@ -1,0 +1,69 @@
+# Trading Agent — service definitions
+#
+# Bring up: make up    (or: docker compose up -d)
+# Logs:     make logs  (or: docker compose logs -f agent)
+# Stop:     make down
+#
+# Per CLAUDE.md §11 rule 4: bridge networking only, no host network access.
+
+services:
+  agent:
+    build: .
+    image: trading-agent:latest
+    container_name: trading-agent
+    restart: unless-stopped
+
+    # No host networking. Only outbound HTTPS needed (exchanges, LLM, Telegram).
+    # No inbound ports published — operator interaction is via Telegram, not a port.
+    networks:
+      - agent-net
+
+    env_file:
+      - .env
+
+    environment:
+      - TZ=UTC
+      - PYTHONUNBUFFERED=1
+
+    volumes:
+      # Configs — read-only mount; the file is in repo, the .env supplies secrets.
+      - ./config:/app/config:ro
+      # Persistent state: trade logs, OpenClaw runtime, learned parameters.
+      # Survives container rebuild.
+      - agent-data:/data
+      # Backup target (encrypted backups land here, backup.sh moves them off-host).
+      - ./backups:/backups
+
+    # Read-only root filesystem hardening — only /data and /tmp are writable.
+    read_only: true
+    tmpfs:
+      - /tmp
+
+    # Drop all Linux capabilities — agent only needs network egress.
+    cap_drop:
+      - ALL
+
+    security_opt:
+      - no-new-privileges:true
+
+    # Resource limits — generous for a VPS, tight enough to detect leaks.
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+        reservations:
+          memory: 256M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  agent-net:
+    driver: bridge
+
+volumes:
+  agent-data:

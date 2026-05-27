@@ -1,0 +1,29 @@
+# Trading Agent — Python dependencies
+#
+# Pinned to specific majors; minor updates allowed.
+# Update with: pip install -U -r requirements.txt && pip freeze > requirements.lock.txt
+
+# ─── Exchange / market data ───────────────────────────────────────────────────
+ccxt~=4.4              # Multi-exchange order routing (CLAUDE.md §3)
+requests~=2.32
+
+# ─── Config / env ─────────────────────────────────────────────────────────────
+pyyaml~=6.0
+python-dotenv~=1.0
+
+# ─── LLM clients (OpenAI-compatible API surface) ──────────────────────────────
+# DeepSeek V4 uses OpenAI-compatible endpoints (CLAUDE.md §7)
+openai~=1.55
+
+# ─── Telegram ─────────────────────────────────────────────────────────────────
+python-telegram-bot~=21.7
+
+# ─── Tests ────────────────────────────────────────────────────────────────────
+pytest~=8.3
+pytest-cov~=6.0
+
+# ─── OpenClaw / Hermes / SAE ──────────────────────────────────────────────────
+# TODO(operator): pin these once install source is confirmed
+# openclaw==<version>
+# hermes==<version>
+# sae-middleware==<version>

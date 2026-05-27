@@ -1,0 +1,49 @@
+{
+  "_comment": "Copy to config/openclaw.json and fill in. config/openclaw.json is gitignored.",
+  "_source": "CLAUDE.md §7 — DeepSeek V4 Flash/Pro via OpenRouter",
+
+  "operator": {
+    "telegram_chat_id": "${TELEGRAM_CHAT_ID}",
+    "telegram_bot_token": "${TELEGRAM_BOT_TOKEN}",
+    "confirmation_mode": "required"
+  },
+
+  "agents": {
+    "flash": {
+      "model": "deepseek/deepseek-v4-flash",
+      "max_tokens": 1000,
+      "temperature": 0.1,
+      "provider": "openrouter"
+    },
+    "pro": {
+      "model": "deepseek/deepseek-v4-pro",
+      "max_tokens": 2000,
+      "temperature": 0.1,
+      "provider": "openrouter"
+    },
+    "defaults": {
+      "model": "deepseek/deepseek-v4-flash",
+      "fallback": "deepseek/deepseek-v4-flash"
+    }
+  },
+
+  "session": {
+    "auto_reset_hours": 24,
+    "context_window_budget_tokens": 8000
+  },
+
+  "llm_health": {
+    "_comment": "Per CLAUDE.md §7 LLM-unavailable fallback (recommended in v4, not in v5 — keeping operationally)",
+    "fail_threshold_minutes": 5,
+    "recovery_threshold_minutes": 10,
+    "alert_interval_minutes": 15
+  },
+
+  "monitoring": {
+    "_comment": "Per CLAUDE.md §8",
+    "health_check_interval_seconds": 300,
+    "daily_report_time_utc": "07:55",
+    "pnl_digest_time_utc": "08:00",
+    "weekly_pnl_day": "Monday"
+  }
+}

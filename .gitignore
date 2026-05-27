@@ -1,0 +1,47 @@
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+config/exchanges.yaml
+config/openclaw.json
+config/*.local.yaml
+
+# Runtime data
+data/
+logs/
+backups/
+*.log
+*.jsonl
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+.venv/
+venv/
+env/
+
+# Docker
+.docker/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OpenClaw runtime state (not yet known — placeholder)
+.openclaw/
+
+# Local notes
+NOTES.md
+TODO.local.md

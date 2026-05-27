@@ -1,0 +1,63 @@
+# SAE Middleware Configuration — execution safety enforcement
+#
+# This file is the authoritative source for SAE hard rules. The CLAUDE.md §6
+# block must stay in sync with this file. To change a rule:
+#   1. Edit this file
+#   2. Update CLAUDE.md §6 to match
+#   3. Restart the SAE service manually
+#   4. Re-run scripts/sae-hash.sh to record the new hash
+#
+# This file IS committed to git (no secrets in it). The hash check at session
+# start (CLAUDE.md §11 rule 10) detects unauthorized tampering.
+
+exposure_budget:
+  max_total_open_risk_pct: 6.0      # Never risk more than 6% of portfolio at once
+  max_single_position_pct: 2.0      # No single trade risks more than 2%
+  max_daily_loss_pct: 4.0           # Kill switch: halt all trading if daily loss > 4%
+  max_weekly_loss_pct: 8.0          # Kill switch: halt all trading if weekly loss > 8%
+  max_speculative_short_pct: 5.0    # Hard cap: Strategy D never exceeds 5% of portfolio
+  max_funding_harvest_pct: 20.0     # Strategy C (delta-neutral) capped at 20%
+
+order_controls:
+  max_orders_per_minute: 3
+  max_orders_per_hour: 20
+  min_cooldown_between_same_asset_s: 900   # 15 min between trades on same asset
+  slippage_max_pct: 0.5                    # Reject order if slippage exceeds 0.5%
+  max_leverage: 2                          # Hard cap: 2x — applies to ALL strategies
+  max_short_hold_hours: 48                 # Force-close speculative shorts after 48H
+
+short_safety:
+  require_operator_confirm: true           # Every short requires explicit "Yes"
+  block_short_if_funding_positive: true    # Never short when longs are paying shorts
+  squeeze_oi_threshold_pct: 3.0            # Alert + pause if OI rises 3% against short
+  squeeze_funding_flip_threshold: 0.01     # Alert if funding moves above this while short
+
+venue_allowlist:
+  - binance
+  - kucoin
+  - binance_testnet
+
+withdraw_block: true    # Permanent. Never change.
+
+# ─── Position sizing (per CLAUDE.md §5.7) ─────────────────────────────────────
+# These mirror the risk% table in §5.7. The agent reads from here so any change
+# is logged and hash-detected.
+position_sizing:
+  strategy_a_grid_per_order_pct: 1.0       # 1% of grid allocation per grid order
+  strategy_b_trend_follow_pct: 2.0         # 2% of portfolio per trend trade
+  strategy_c_funding_harvest_pct: 10.0     # Fixed structural — 10% spot + 10% perp
+  strategy_d_speculative_short_pct: 1.0    # Tighter than B; SAE cap remains 5% total
+  scale_in_max_size_pct: 50.0              # Add-on max 50% of original
+  averaging_down_allowed: false            # PERMANENTLY FORBIDDEN
+
+# ─── Asset universe restrictions (per CLAUDE.md §15) ──────────────────────────
+asset_filters:
+  block_meme_coins: true
+  min_age_days: 90                         # No tokens launched < 90 days ago
+  min_24h_volume_usd: 1000000              # No pairs below $1M 24H volume
+  allowed_spot_pairs:
+    - BTC/USDT
+    - ETH/USDT
+    - SOL/USDT
+  allowed_perp_pairs:
+    - BTC/USDT

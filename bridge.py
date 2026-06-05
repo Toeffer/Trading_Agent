@@ -2110,3 +2110,142 @@ def audit_release_latest() -> Dict[str, Any]:
     if tag is None:
         return {"status": "no_tags", "detail": "No release tags found. Create one with GET /audit/release"}
     return tag
+
+
+@app.get("/status")
+def status_dashboard() -> Dict[str, Any]:
+    """Release inventory / status dashboard (Phase 3O).
+
+    Aggregates health, readiness, audit, provenance, and monitoring
+    state into a single read-only summary.
+
+    No trading. No order paths. Read-only advisory.
+    """
+    from bundle_audit import latest_audit_bundle, latest_release_tag, _latest_git_tag
+    from pathlib import Path
+    BRIDGE_DIR = Path.home() / "agents" / "ibkr-bridge"
+
+    # 1. Health / startup safety
+    h = health()
+    startup_safety = h.get("startup_safety", {})
+
+    # 2. Readiness
+    r = readiness()
+    r_summary = r.get("summary", {})
+    blocks = r.get("blocks", [])
+
+    # 3. Git identity
+    git_commit = None
+    git_tag = None
+    try:
+        import subprocess
+        gc = subprocess.run(["git", "rev-parse", "HEAD"],
+                            capture_output=True, text=True, cwd=BRIDGE_DIR, timeout=5)
+        if gc.returncode == 0:
+            git_commit = gc.stdout.strip()
+            git_tag = _latest_git_tag()
+    except Exception:
+        pass
+
+    # 4. Latest audit bundle
+    bundle = latest_audit_bundle()
+    bundle_info = None
+    if bundle is not None:
+        reg = bundle.get("regression", {})
+        bundle_info = {
+            "bundle_id": bundle.get("bundle_id"),
+            "created_at_utc": bundle.get("created_at_utc"),
+            "files": len(bundle.get("files", {})),
+            "endpoints": len(bundle.get("endpoints", {})),
+            "regression": f"{reg.get('passed', '?')}/{reg.get('total', '?')}" if reg else "not recorded",
+        }
+
+    # 5. Latest release tag
+    tag = latest_release_tag()
+    tag_info = None
+    if tag is not None:
+        prov = tag.get("provenance", {})
+        tag_info = {
+            "tag_id": tag.get("tag_id"),
+            "phase_label": tag.get("phase_label"),
+            "created_at_utc": tag.get("created_at_utc"),
+            "audit_bundle_id": tag.get("audit_bundle_id"),
+            "dirty": prov.get("dirty"),
+            "locked_baseline": tag.get("locked_baseline", {}).get("confirmed"),
+        }
+
+    # 6. Monitoring state (file-based fallback)
+    drift_info = None
+    try:
+        expected = position_drift_check()
+        expected_positions = expected.get("expected_positions", {})
+        drift_info = {
+            "expected_positions": len(expected_positions),
+            "symbols": expected.get("symbols", []),
+        }
+    except Exception:
+        pass
+
+    oo_info = None
+    try:
+        oo = open_orders_check()
+        oo_info = {
+            "open_count": oo.get("open_count"),
+        }
+    except Exception:
+        pass
+
+    # 7. Nominal position check
+    positions_info = None
+    if ib and ib.isConnected():
+        try:
+            from ib_insync import Stock
+            portfolio = ib.portfolio()
+            flat = all(p.position == 0 for p in portfolio)
+            positions_info = {
+                "positions_flat": flat,
+                "position_count": len(portfolio),
+            }
+        except Exception:
+            pass
+    else:
+        positions_info = {"positions_flat": None, "note": "IBKR not connected — position check unavailable"}
+
+    return {
+        "ok": True,
+        "dashboard": {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "version": h.get("service", "ibkr-openclaw-bridge"),
+        },
+        "health": {
+            "mode": h.get("mode"),
+            "connected": h.get("connected"),
+            "allow_orders": h.get("allow_orders"),
+            "startup_safety": {
+                "pass": startup_safety.get("pass"),
+                "passed_count": startup_safety.get("passed_count"),
+                "check_count": startup_safety.get("check_count"),
+            },
+        },
+        "readiness": {
+            "verdict": r.get("verdict"),
+            "system_locked": r_summary.get("kill_switches", {}).get("system_locked"),
+            "allow_orders": r_summary.get("kill_switches", {}).get("IBKR_ALLOW_ORDERS"),
+            "rules_enforced": r_summary.get("kill_switches", {}).get("rules.enforced"),
+            "rth_window": r_summary.get("rth", {}).get("in_rth"),
+            "ibkr_connected": r_summary.get("ibkr_connected"),
+            "block_count": len(blocks),
+            "warn_count": sum(1 for b in blocks if b.get("status") == "WARN"),
+        },
+        "git": {
+            "commit": git_commit,
+            "tag": git_tag,
+        },
+        "audit_bundle": bundle_info,
+        "release_tag": tag_info,
+        "monitoring": {
+            "drift": drift_info,
+            "open_orders": oo_info,
+            "positions": positions_info,
+        },
+    }

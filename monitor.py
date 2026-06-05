@@ -1926,6 +1926,82 @@ def _run_self_test(silent: bool = False) -> dict:
     else:
         results.append(("N7: audit/release checkpoint after reconnect", False, f"HTTP {code_nck}"))
 
+    # =========================================================
+    # Section O: Release Inventory / Status Dashboard (Phase 3O)
+    # =========================================================
+
+    # O1: /status returns HTTP 200 with dashboard+health+readiness
+    code_o, status = _get("/status")
+    if code_o == 200 and isinstance(status, dict):
+        has_dash = "dashboard" in status
+        has_health = "health" in status
+        has_readiness = "readiness" in status
+        has_git = "git" in status
+        has_monitoring = "monitoring" in status
+        o1_ok = all([has_dash, has_health, has_readiness, has_git, has_monitoring])
+        results.append(("O1: /status has all sections", o1_ok,
+                        f"dash={has_dash} health={has_health} readiness={has_readiness} git={has_git} monitoring={has_monitoring}"))
+    else:
+        results.append(("O1: /status has all sections", False, f"HTTP {code_o}"))
+
+    # O2: /status health.startup_safety shows pass=True, 10/10
+    if code_o == 200 and isinstance(status, dict):
+        ss = status.get("health", {}).get("startup_safety", {})
+        o2_ok = ss.get("pass") is True and ss.get("check_count") == 10
+        results.append(("O2: /status startup_safety 10/10", o2_ok,
+                        f"pass={ss.get('pass')} {ss.get('passed_count')}/{ss.get('check_count')}"))
+    else:
+        results.append(("O2: /status startup_safety 10/10", False, f"HTTP {code_o}"))
+
+    # O3: /status readiness shows system_locked=True, verdict=NO-GO
+    if code_o == 200 and isinstance(status, dict):
+        rdy = status.get("readiness", {})
+        o3_ok = rdy.get("verdict") == "NO-GO" and rdy.get("system_locked") is True
+        results.append(("O3: /status locked baseline (NO-GO)", o3_ok,
+                        f"verdict={rdy.get('verdict')} locked={rdy.get('system_locked')} allow={rdy.get('allow_orders')}"))
+    else:
+        results.append(("O3: /status locked baseline (NO-GO)", False, f"HTTP {code_o}"))
+
+    # O4: /status has git commit hash
+    if code_o == 200 and isinstance(status, dict):
+        git_info = status.get("git", {})
+        commit = git_info.get("commit")
+        o4_ok = bool(commit)
+        results.append(("O4: /status has git commit hash", o4_ok,
+                        f"commit={commit[:16] if commit else '?'}... tag={git_info.get('tag')}"))
+    else:
+        results.append(("O4: /status has git commit hash", False, f"HTTP {code_o}"))
+
+    # O5: /status has audit_bundle info (bundle_id present)
+    if code_o == 200 and isinstance(status, dict):
+        ab = status.get("audit_bundle")
+        o5_ok = ab is not None and bool(ab.get("bundle_id"))
+        results.append(("O5: /status has audit_bundle info", o5_ok,
+                        f"bundle={ab.get('bundle_id') if o5_ok else 'missing'} reg={ab.get('regression','?')}" if o5_ok else "bundle info missing"))
+    else:
+        results.append(("O5: /status has audit_bundle info", False, f"HTTP {code_o}"))
+
+    # O6: /status has release_tag info (tag_id present)
+    if code_o == 200 and isinstance(status, dict):
+        rt = status.get("release_tag")
+        o6_ok = rt is not None and bool(rt.get("tag_id"))
+        results.append(("O6: /status has release_tag info", o6_ok,
+                        f"tag={rt.get('tag_id') if o6_ok else 'missing'} phase={rt.get('phase_label','?')}" if o6_ok else "release tag missing"))
+    else:
+        results.append(("O6: /status has release_tag info", False, f"HTTP {code_o}"))
+
+    # O7: /status has monitoring section (open_orders, drift, positions)
+    if code_o == 200 and isinstance(status, dict):
+        mon = status.get("monitoring", {})
+        has_oo = "open_orders" in mon
+        has_drift = "drift" in mon
+        has_pos = "positions" in mon
+        o7_ok = has_oo and has_drift and has_pos
+        results.append(("O7: /status has monitoring sub-sections", o7_ok,
+                        f"open_orders={has_oo} drift={has_drift} positions={has_pos}"))
+    else:
+        results.append(("O7: /status has monitoring sub-sections", False, f"HTTP {code_o}"))
+
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)

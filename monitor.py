@@ -1843,6 +1843,89 @@ def _run_self_test(silent: bool = False) -> dict:
     else:
         results.append(("L3: release tag provenance survives restore", False, f"HTTP {code_ll}"))
 
+    # =========================================================
+    # Section N: IBKR Reconnect / Readiness Validation (Phase 3N)
+    # =========================================================
+    # IBKR Gateway may be disconnected — tests gracefully handle that.
+
+    # N1: /connect endpoint reachable
+    code_nc, connect_resp = _post("/connect", {})
+    # POST /connect returns either 200 (success) or 503 (gateway down)
+    n1_ok = code_nc in (200, 503)
+    if code_nc == 200:
+        n1_detail = f"connected={connect_resp.get('connected','?')}"
+    elif code_nc == 503:
+        n1_detail = f"gateway down (expected — {connect_resp.get('detail','no detail')[:60]})"
+    else:
+        n1_detail = f"HTTP {code_nc}"
+    results.append(("N1: /connect endpoint reachable", n1_ok, n1_detail))
+
+    # N2: /health connected reflects reality
+    code_nh, health = _get("/health")
+    if code_nh == 200 and isinstance(health, dict):
+        connected = health.get("connected", None)
+        allow = health.get("allow_orders", None)
+        # connected should be False when gateway is down
+        n2_ok = connected is False and allow is False
+        results.append(("N2: /health connected=false allow_orders=false", n2_ok,
+                        f"connected={connected} allow={allow}"))
+    else:
+        results.append(("N2: /health connected=false allow_orders=false", False, f"HTTP {code_nh}"))
+
+    # N3: /readiness shows ibkr_connection WARN (not BLOCK) when disconnected
+    code_nr, readiness = _get("/readiness")
+    if code_nr == 200 and isinstance(readiness, dict):
+        ibkr_blocks = [b for b in readiness.get("blocks", [])
+                       if b.get("check") == "ibkr_connection"]
+        if ibkr_blocks:
+            ibkr_block = ibkr_blocks[0]
+            n3_ok = ibkr_block.get("status") == "WARN"
+            n3_detail = f"status={ibkr_block['status']} — {ibkr_block.get('detail','')[:60]}"
+        else:
+            n3_ok = True  # no ibkr_connection block = connected
+            n3_detail = "no ibkr_connection block (connected)"
+        results.append(("N3: /readiness ibkr_connection=WARN if disconnected", n3_ok, n3_detail))
+    else:
+        results.append(("N3: /readiness ibkr_connection=WARN if disconnected", False, f"HTTP {code_nr}"))
+
+    # N4: /order still returns 403 regardless of connection
+    code_no, _ = _post("/order", {})
+    n4_ok = code_no == 403
+    results.append(("N4: /order 403 persists after reconnect attempt", n4_ok,
+                    f"HTTP {code_no}" if not n4_ok else "HTTP 403"))
+
+    # N5: /monitor/open-orders still reachable (file-based fallback)
+    code_noo, oo = _get("/monitor/open-orders")
+    if code_noo == 200 and isinstance(oo, dict):
+        oc = oo.get("open_count", -1)
+        n5_ok = oc >= 0
+        results.append(("N5: /monitor/open-orders reachable (file fallback)", n5_ok,
+                        f"HTTP {code_noo}, open_count={oc}"))
+    else:
+        results.append(("N5: /monitor/open-orders reachable (file fallback)", False, f"HTTP {code_noo}"))
+
+    # N6: /monitor/positions/drift still reportable (file-based)
+    code_nd, drift = _get("/monitor/positions/drift")
+    if code_nd == 200 and isinstance(drift, dict):
+        dd = drift.get("drift_detected", None)
+        n6_ok = dd is not None
+        results.append(("N6: /monitor/positions/drift reportable", n6_ok,
+                        f"drift_detected={dd}" if n6_ok else f"missing drift field"))
+    else:
+        results.append(("N6: /monitor/positions/drift reportable", False, f"HTTP {code_nd}"))
+
+    # N7: Create audit/release checkpoint after reconnect exercise
+    code_nck, ck = _get("/audit/release?phase=phase3n_reconnect_check")
+    if code_nck == 200 and isinstance(ck, dict):
+        tag_id = ck.get("tag_id", "")
+        n7_ok = bool(tag_id) and tag_id.startswith("release_")
+        prov = ck.get("provenance", {})
+        locked = ck.get("locked_baseline", {}).get("confirmed")
+        results.append(("N7: audit/release checkpoint after reconnect", n7_ok,
+                        f"tag={tag_id} locked={locked} dirty={prov.get('dirty')}"))
+    else:
+        results.append(("N7: audit/release checkpoint after reconnect", False, f"HTTP {code_nck}"))
+
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)

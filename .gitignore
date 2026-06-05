@@ -23,3 +23,5 @@ ibkr_mcp_server.py
 *.bak
 *.bak.*
 bridge.py.broken.*
+# local backups
+*.backup

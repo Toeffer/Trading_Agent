@@ -2002,6 +2002,86 @@ def _run_self_test(silent: bool = False) -> dict:
     else:
         results.append(("O7: /status has monitoring sub-sections", False, f"HTTP {code_o}"))
 
+    # =========================================================
+    # Section P: Status Dashboard Hardening Tests (Phase 3P)
+    # =========================================================
+
+    # Reuse the /status response from O1 (already fetched as code_o, status)
+    # If O1 was skipped (HTTP error), re-fetch
+    if code_o != 200:
+        code_o, status = _get("/status")
+
+    # P1: /status always returns HTTP 200
+    p1_ok = code_o == 200
+    results.append(("P1: /status returns HTTP 200 always", p1_ok,
+                    f"HTTP {code_o}" if not p1_ok else "HTTP 200"))
+
+    # P2: /status has overall status field
+    if code_o == 200 and isinstance(status, dict):
+        p2_ok = "status" in status and status["status"] in ("ok", "ok_with_warnings", "degraded")
+        results.append(("P2: /status has overall status field", p2_ok,
+                        f"status={status.get('status')}"))
+    else:
+        results.append(("P2: /status has overall status field", False, f"HTTP {code_o}"))
+
+    # P3: Each section has a status field (ok/warn/error)
+    if code_o == 200 and isinstance(status, dict):
+        sections = ["health", "readiness", "git", "audit_bundle", "release_tag"]
+        mon = status.get("monitoring", {})
+        for m_sub in ["drift", "open_orders", "positions"]:
+            if m_sub in mon:
+                sections.append(f"monitoring.{m_sub}")
+        all_have_status = True
+        missing_status = []
+        for s_name in sections:
+            parts = s_name.split(".")
+            s = status
+            for part in parts:
+                s = s.get(part, {}) if isinstance(s, dict) else {}
+            if not isinstance(s, dict) or "status" not in s:
+                all_have_status = False
+                missing_status.append(s_name)
+        p3_ok = all_have_status
+        results.append(("P3: all sections have status field", p3_ok,
+                        f"missing={missing_status}" if missing_status else f"{len(sections)}/8 present"))
+    else:
+        results.append(("P3: all sections have status field", False, f"HTTP {code_o}"))
+
+    # P4: Locked baseline still visible (system_locked in readiness)
+    if code_o == 200 and isinstance(status, dict):
+        rdy = status.get("readiness", {})
+        locked = rdy.get("system_locked")
+        p4_ok = locked is True or locked is False  # not None
+        results.append(("P4: locked baseline visible in readiness", p4_ok,
+                        f"system_locked={locked}"))
+    else:
+        results.append(("P4: locked baseline visible in readiness", False, f"HTTP {code_o}"))
+
+    # P5: Health startup_safety fields present
+    if code_o == 200 and isinstance(status, dict):
+        ss = status.get("health", {}).get("startup_safety", {})
+        p5_ok = isinstance(ss, dict) and "pass" in ss and "check_count" in ss
+        results.append(("P5: health.startup_safety fields present", p5_ok,
+                        f"pass={ss.get('pass')} {ss.get('passed_count')}/{ss.get('check_count')}"))
+    else:
+        results.append(("P5: health.startup_safety fields present", False, f"HTTP {code_o}"))
+
+    # P6: Monitoring sections all present (drift, open_orders, positions)
+    if code_o == 200 and isinstance(status, dict):
+        mon = status.get("monitoring", {})
+        p6_ok = all(k in mon for k in ("drift", "open_orders", "positions"))
+        results.append(("P6: monitoring sub-sections present", p6_ok,
+                        f"drift={mon.get('drift',{}).get('status')} oo={mon.get('open_orders',{}).get('status')} pos={mon.get('positions',{}).get('status')}"))
+    else:
+        results.append(("P6: monitoring sub-sections present", False, f"HTTP {code_o}"))
+
+    # P7: ok=True
+    if code_o == 200 and isinstance(status, dict):
+        p7_ok = status.get("ok") is True
+        results.append(("P7: /status ok=True", p7_ok, f"ok={status.get('ok')}"))
+    else:
+        results.append(("P7: /status ok=True", False, f"HTTP {code_o}"))
+
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)

@@ -191,6 +191,35 @@ def create_audit_bundle(skip_endpoints: bool = False, skip_regression: bool = Fa
         fpath = BRIDGE_DIR / fname
         code_hashes[fname] = _hash_file(fpath)
 
+    # 5a. Simulation evidence (Phase 3V): capture dry_run_order events
+    simulation_evidence = None
+    try:
+        events_path = AUDIT_FILES.get("guard-events.jsonl")
+        if events_path and events_path.exists():
+            dry_events = []
+            for line in events_path.read_text().splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                    if ev.get("event_type") == "dry_run_order":
+                        # Remove sensitive/privacy fields
+                        safe_ev = {k: v for k, v in ev.items()
+                                   if k not in ("ibkr_metadata",)}
+                        dry_events.append(safe_ev)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            if dry_events:
+                simulation_evidence = {
+                    "event_type": "dry_run_order",
+                    "count": len(dry_events),
+                    "events": dry_events,
+                    "advisory": "simulation-only — never affects live reconciliation",
+                }
+    except Exception:
+        pass
+
     # 5. Build bundle
     bundle_id = f"bundle_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
     bundle: dict[str, Any] = {
@@ -201,6 +230,7 @@ def create_audit_bundle(skip_endpoints: bool = False, skip_regression: bool = Fa
         "immutable": True,
         "files": file_snapshots,
         "code_hashes": code_hashes,
+        "simulation_evidence": simulation_evidence,
     }
 
     if not skip_endpoints:

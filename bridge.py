@@ -1721,6 +1721,18 @@ def monitor_positions_drift() -> Dict[str, Any]:
     """
     expected = position_drift_check()
     expected_positions = expected.get("expected_positions", {})
+    # Include dry-run preview separately (Phase 3V — never pollutes live drift)
+    dry_run_expected = position_drift_check(include_dry_run=True)
+    dry_run_positions = dry_run_expected.get("expected_positions", {})
+    # Extract purely dry-run positions by subtracting live positions
+    dry_run_only = {}
+    all_syms_dr = set(dry_run_positions.keys()) | set(expected_positions.keys())
+    for sym in all_syms_dr:
+        live_qty = expected_positions.get(sym, 0)
+        dr_qty = dry_run_positions.get(sym, 0)
+        diff = dr_qty - live_qty
+        if diff != 0:
+            dry_run_only[sym] = diff
     symbols = expected.get("symbols", [])
 
     actual_positions = []
@@ -1786,6 +1798,7 @@ def monitor_positions_drift() -> Dict[str, Any]:
 
     return {
         "drift_detected": drift_detected,
+        "dry_run_preview": dry_run_only if dry_run_only else None,
         "expected_positions": [
             {"symbol": s, "expected_qty": expected_positions.get(s, 0)}
             for s in symbols

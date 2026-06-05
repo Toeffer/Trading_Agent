@@ -2376,29 +2376,63 @@ def audit_verify() -> Dict[str, Any]:
 
 @app.get("/audit/release")
 def audit_release(phase: str = "phase3j_verified") -> Dict[str, Any]:
-    """Create a release tag / provenance document (Phase 3J).
+    """Create a release tag / provenance document (Phase 3J + 3Y).
 
     Steps:
     1. Creates a fresh audit bundle (skip regression to avoid circular self-call)
     2. Writes the bundle to disk
-    3. Creates a release tag referencing the bundle
-    4. Writes the tag to disk
+    3. Runs full dry-run simulation report (Phase 3Y)
+    4. Creates a release tag referencing the bundle + dry-run evidence
+    5. Writes the tag to disk
 
     Query params:
         phase: Label for this release (default: "phase3j_verified")
 
     Returns:
-        The release tag dict.
+        The release tag dict with dry_run_simulation section.
     """
     from bundle_audit import (create_audit_bundle, write_audit_bundle,
                                create_release_tag, write_release_tag)
-    # Create fresh bundle first so the tag can reference it
+    from dry_run_scenarios import generate_full_report
+
+    # Step 1: Fresh audit bundle
     bundle = create_audit_bundle(skip_regression=True)
     try:
         write_audit_bundle(bundle)
     except Exception:
         pass
-    tag = create_release_tag(phase_label=phase)
+
+    # Step 2: Compute dry-run simulation report
+    dry_run_report = None
+    try:
+        def _dry_run_caller(body: dict) -> dict:
+            dr_req = DryRunRequest(**body)
+            return order_dry_run(dr_req)
+
+        def _reconcile_caller(order_id: int, final_status: str, step_body: dict = None) -> dict:
+            sym = (step_body or {}).get("symbol", "AAPL")
+            act = (step_body or {}).get("action", "SELL")
+            rec = ReconciliationRecord(
+                order_id=order_id,
+                final_status=final_status,
+                symbol=sym,
+                action=act,
+            )
+            return monitor_reconcile_order(rec)
+
+        def _drift_provider() -> dict:
+            return position_drift_check(include_dry_run=True)
+
+        dry_run_report = generate_full_report(
+            dry_run_caller=_dry_run_caller,
+            reconcile_caller=_reconcile_caller,
+            drift_provider=_drift_provider,
+        )
+    except Exception:
+        dry_run_report = {"error": "dry-run report generation failed", "total_scenarios": 0, "passed_count": 0}
+
+    # Step 3: Create release tag with dry-run evidence
+    tag = create_release_tag(phase_label=phase, dry_run_report=dry_run_report)
     try:
         write_release_tag(tag)
     except Exception:

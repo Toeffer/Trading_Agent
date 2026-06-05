@@ -595,7 +595,7 @@ def _latest_git_tag() -> str | None:
         return None
 
 
-def create_release_tag(phase_label: str = "phase3i_verified") -> dict:
+def create_release_tag(phase_label: str = "phase3i_verified", dry_run_report: dict | None = None) -> dict:
     """Create a release tag / provenance document.
 
     Args:
@@ -627,6 +627,16 @@ def create_release_tag(phase_label: str = "phase3i_verified") -> dict:
         "immutable": True,
         "provenance": provenance,
     }
+
+    # Include dry-run simulation report if provided (Phase 3Y)
+    if dry_run_report is not None:
+        tag["dry_run_simulation"] = {
+            "scenario_count": dry_run_report.get("total_scenarios", 0),
+            "passed_count": dry_run_report.get("passed_count", 0),
+            "all_passed": dry_run_report.get("all_passed", False),
+            "advisory": "simulation-only — never affects live reconciliation",
+            "report_reference": dry_run_report,
+        }
 
     if bundle is not None:
         tag["audit_bundle_id"] = bundle.get("bundle_id", "?")

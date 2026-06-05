@@ -2051,7 +2051,8 @@ def audit_verify() -> Dict[str, Any]:
     """Create a fresh audit bundle and verify it for consistency (Phase 3I).
 
     Steps:
-    1. Create a fresh bundle (skip regression to avoid circular self-call)
+    1. Create a fresh bundle (skip endpoints to avoid circular HTTP self-call,
+       skip regression to avoid circular test call)
     2. Write it to disk
     3. Verify the bundle's internal consistency
 
@@ -2059,8 +2060,8 @@ def audit_verify() -> Dict[str, Any]:
         Dict with pass/fail, per-check results, and bundle_id.
     """
     from bundle_audit import create_audit_bundle, write_audit_bundle, verify_audit_bundle
-    # Create fresh bundle (skip regression to avoid circular self-call)
-    bundle = create_audit_bundle(skip_regression=True)
+    # Create fresh bundle, skip endpoints to avoid circular HTTP self-call
+    bundle = create_audit_bundle(skip_endpoints=True, skip_regression=True)
     try:
         write_audit_bundle(bundle)
     except Exception:

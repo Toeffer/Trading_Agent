@@ -1778,8 +1778,8 @@ def _run_self_test(silent: bool = False) -> dict:
     if code_k == 200 and isinstance(tag_k, dict):
         git_info = tag_k.get("provenance", {}).get("git", {})
         recorded_tag = git_info.get("tag")
-        # The describe should find phase3k_git_init (newest reachable)
-        k2_ok = bool(recorded_tag) and ("phase3k" in recorded_tag or "phase3j" in recorded_tag)
+        # Accept any tag name — test should pass even as new tags are added
+        k2_ok = bool(recorded_tag)
         results.append(("K2: provenance has git tag", k2_ok,
                         f"tag={recorded_tag}" if recorded_tag else "no tag"))
     else:

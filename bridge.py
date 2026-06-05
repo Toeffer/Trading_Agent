@@ -1379,6 +1379,94 @@ def dry_run_execute_scenario(req: ScenarioRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# --- Scenario Report Endpoints (Phase 3X) ---
+
+from dry_run_scenarios import run_scenario_report, generate_full_report
+
+
+@app.get("/order/dry-run/report")
+def dry_run_report(scenario: str = "buy_full_fill") -> Dict[str, Any]:
+    """Run a named dry-run scenario and produce a pass/fail simulation audit report.
+
+    No trading. No IBKR calls.
+    Compares expected_drift vs actual_drift, lists event IDs,
+    and confirms live baseline unchanged.
+
+    Args:
+        scenario: Scenario name (default: buy_full_fill).
+
+    Returns:
+        Dict with full report including drift comparison, event IDs, baseline check.
+    """
+    def _dry_run_caller(body: dict) -> dict:
+        dr_req = DryRunRequest(**body)
+        return order_dry_run(dr_req)
+
+    def _reconcile_caller(order_id: int, final_status: str, step_body: dict = None) -> dict:
+        sym = (step_body or {}).get("symbol", "AAPL")
+        act = (step_body or {}).get("action", "SELL")
+        rec = ReconciliationRecord(
+            order_id=order_id,
+            final_status=final_status,
+            symbol=sym,
+            action=act,
+        )
+        return monitor_reconcile_order(rec)
+
+    def _drift_provider() -> dict:
+        return position_drift_check(include_dry_run=True)
+
+    try:
+        result = run_scenario_report(
+            scenario,
+            dry_run_caller=_dry_run_caller,
+            reconcile_caller=_reconcile_caller,
+            drift_provider=_drift_provider,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/order/dry-run/report/all")
+def dry_run_report_all() -> Dict[str, Any]:
+    """Run all scenarios and produce a full simulation audit report.
+
+    No trading. No IBKR calls.
+    Returns aggregated pass/fail across all scenarios.
+    """
+    def _dry_run_caller(body: dict) -> dict:
+        dr_req = DryRunRequest(**body)
+        return order_dry_run(dr_req)
+
+    def _reconcile_caller(order_id: int, final_status: str, step_body: dict = None) -> dict:
+        sym = (step_body or {}).get("symbol", "AAPL")
+        act = (step_body or {}).get("action", "SELL")
+        rec = ReconciliationRecord(
+            order_id=order_id,
+            final_status=final_status,
+            symbol=sym,
+            action=act,
+        )
+        return monitor_reconcile_order(rec)
+
+    def _drift_provider() -> dict:
+        return position_drift_check(include_dry_run=True)
+
+    try:
+        result = generate_full_report(
+            dry_run_caller=_dry_run_caller,
+            reconcile_caller=_reconcile_caller,
+            drift_provider=_drift_provider,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 @app.post("/market/quote")
 def market_quote(req: QuoteRequest):
     """

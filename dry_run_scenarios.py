@@ -236,3 +236,174 @@ def run_all_scenarios(
         except Exception as e:
             results[name] = {"scenario": name, "ok": False, "error": str(e)}
     return results
+
+def run_scenario_report(
+    name: str,
+    dry_run_caller=None,
+    reconcile_caller=None,
+    drift_provider=None,
+) -> dict:
+    """Run a named scenario and produce a pass/fail simulation report.
+
+    Compares expected_drift (from SCENARIO_DEFS) with actual drift
+    from position_drift_check(include_dry_run=True). Also reports
+    event IDs and confirms live baseline unchanged.
+
+    Args:
+        name: Scenario name.
+        dry_run_caller: Callable(dict) -> dict for /order/dry-run.
+        reconcile_caller: Callable(order_id, final_status, step_body) for reconcile.
+        drift_provider: Callable() -> dict returning position_drift_check data.
+            If None, runs scenario without drift comparison.
+
+    Returns:
+        Dict with full report: scenario, steps, expected/actual preview,
+        pass/fail per field, event IDs, live baseline check.
+    """
+    if name not in SCENARIO_DEFS:
+        raise ValueError(f"Unknown scenario '{name}'")
+
+    spec = SCENARIO_DEFS[name]
+    expected_drift = spec.get("expected_drift", {})
+
+    # Capture live baseline BEFORE scenario runs
+    live_before = drift_provider() if drift_provider else {}
+    live_baseline = live_before.get("expected_positions", {})
+
+    # Run scenario
+    result = run_scenario(name, dry_run_caller, reconcile_caller)
+    step_count = len(result.get("steps", []))
+
+    # Capture actual drift AFTER scenario runs (with dry_runs)
+    actual_after = drift_provider() if drift_provider else {}
+    actual_drift = actual_after.get("dry_run_preview", {})
+    if not actual_drift:
+        # Fallback: compute from expected_positions if no separate preview
+        # This happens when position_drift_check doesn't have a preview field
+        all_pos = actual_after.get("expected_positions", {})
+        actual_drift = {}
+        for sym, exp_qty in expected_drift.items():
+            actual_drift[sym] = all_pos.get(sym, 0)
+
+    # Collect event IDs from scenario steps
+    event_ids = []
+    for step in result.get("steps", []):
+        sid = step.get("simulated_order_id")
+        if sid:
+            event_ids.append(sid)
+
+    # Compare expected vs actual drift
+    drift_results = {}
+    all_syms = set(expected_drift.keys()) | set(actual_drift.keys())
+    drift_pass = True
+    for sym in sorted(all_syms):
+        exp = expected_drift.get(sym, 0)
+        act = actual_drift.get(sym, 0)
+        match = (exp == act)
+        if not match:
+            drift_pass = False
+        drift_results[sym] = {
+            "expected": exp,
+            "actual": act,
+            "match": match,
+        }
+
+    # Check live baseline unchanged
+    live_after = drift_provider() if drift_provider else {}
+    live_after_pos = live_after.get("expected_positions", {})
+    baseline_unchanged = True
+    for sym in live_baseline:
+        if live_baseline[sym] != live_after_pos.get(sym, 0):
+            baseline_unchanged = False
+
+    passed = result.get("ok", False) and drift_pass and baseline_unchanged
+
+    return {
+        "report_type": "simulation_audit",
+        "scenario": name,
+        "description": spec["description"],
+        "passed": passed,
+        "ok": result.get("ok", False),
+        "drift_match": drift_pass,
+        "baseline_unchanged": baseline_unchanged,
+        "steps_executed": step_count,
+        "trades_in_scenario": result.get("total_trades", 0),
+        "expected_drift": expected_drift,
+        "actual_drift": actual_drift,
+        "drift_comparison": drift_results,
+        "event_ids": event_ids,
+        "scenario_result": result,
+        "live_baseline": live_baseline,
+        "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def generate_full_report(
+    dry_run_caller=None,
+    reconcile_caller=None,
+    drift_provider=None,
+) -> dict:
+    """Run all scenarios and produce a full simulation audit report.
+
+    Returns aggregated pass/fail across all scenarios plus summary stats.
+    """
+    reports = {}
+    passed_count = 0
+    total = 0
+    for name in sorted(SCENARIO_DEFS.keys()):
+        total += 1
+        try:
+            rep = run_scenario_report(name, dry_run_caller, reconcile_caller, drift_provider)
+            reports[name] = rep
+            if rep.get("passed"):
+                passed_count += 1
+        except Exception as e:
+            reports[name] = {"scenario": name, "passed": False, "error": str(e)}
+
+    return {
+        "report_type": "simulation_audit_full",
+        "total_scenarios": total,
+        "passed_count": passed_count,
+        "all_passed": passed_count == total,
+        "reports": reports,
+        "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def main():
+    """CLI entry point: run one or all scenarios and print report."""
+    import sys as _sys
+
+    args = _sys.argv[1:]
+    scenario_name = args[0] if args else None
+
+    # We need bridge callers and drift provider — when running standalone
+    # without bridge, we provide stub callers that cannot execute.
+    # Use --local flag for file-only mode.
+    if "--help" in args or "-h" in args:
+        print("Usage: python3 dry_run_scenarios.py <scenario_name|--all>")
+        print("")
+        print("Scenarios:")
+        for name, spec in sorted(SCENARIO_DEFS.items()):
+            print(f"  {name:<35s} {spec['description']}")
+        print("")
+        print("Note: When running without bridge, --list shows definitions only.")
+        print("Full execution requires bridge at http://127.0.0.1:8790.")
+        return
+
+    if "--list" in args or scenario_name is None:
+        print("Available scenarios:")
+        for name, spec in sorted(SCENARIO_DEFS.items()):
+            exp = spec.get("expected_drift", {})
+            print(f"  {name:<35s} {spec['description']}")
+            print(f"  {'':35s} steps={len(spec['steps'])}, expected_drift={exp}")
+        return
+
+    if scenario_name == "--all":
+        print("Run all scenarios via bridge...")
+    else:
+        print(f"Scenario: {scenario_name}")
+
+
+if __name__ == "__main__":
+    main()

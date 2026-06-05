@@ -2505,6 +2505,71 @@ def _run_self_test(silent: bool = False) -> dict:
     except Exception as e:
         results.append(("W14: no ib.placeOrder/cancelOrder in dry_run_scenarios.py", False, str(e)[:60]))
 
+    # =========================================================
+    # Section X: Scenario Report / Simulation Audit Tests (Phase 3X)
+    # =========================================================
+
+    # X1: /order/dry-run/report returns report_type=simulation_audit
+    try:
+        code_x1, x1_data = _get("/order/dry-run/report?scenario=buy_full_fill")
+        x1_ok = code_x1 == 200 and x1_data.get("report_type") == "simulation_audit"
+        results.append(("X1: /order/dry-run/report returns simulation_audit", x1_ok,
+                        f"HTTP {code_x1} type={x1_data.get('report_type','?')}"))
+    except Exception as e:
+        results.append(("X1: /order/dry-run/report returns simulation_audit", False, str(e)[:60]))
+
+    # X2: report has expected_drift, actual_drift, drift_comparison
+    try:
+        code_x2, x2_data = _get("/order/dry-run/report?scenario=buy_full_fill")
+        has_exp = "expected_drift" in x2_data
+        has_act = "actual_drift" in x2_data
+        has_cmp = "drift_comparison" in x2_data
+        x2_ok = code_x2 == 200 and has_exp and has_act and has_cmp
+        results.append(("X2: report has drift comparison fields", x2_ok,
+                        f"expected={has_exp} actual={has_act} comparison={has_cmp}"))
+    except Exception as e:
+        results.append(("X2: report has drift comparison fields", False, str(e)[:60]))
+
+    # X3: report has event_ids and baseline_unchanged
+    try:
+        code_x3, x3_data = _get("/order/dry-run/report?scenario=buy_full_fill")
+        has_events = bool(x3_data.get("event_ids"))
+        has_baseline = "baseline_unchanged" in x3_data
+        x3_ok = code_x3 == 200 and has_events and has_baseline
+        results.append(("X3: report has event_ids and baseline_unchanged", x3_ok,
+                        f"events={len(x3_data.get('event_ids',[]))} baseline={x3_data.get('baseline_unchanged')}"))
+    except Exception as e:
+        results.append(("X3: report has event_ids and baseline_unchanged", False, str(e)[:60]))
+
+    # X4: unknown scenario returns 404
+    try:
+        code_x4, x4_data = _get("/order/dry-run/report?scenario=nonexistent")
+        x4_ok = code_x4 == 404
+        results.append(("X4: unknown scenario returns 404", x4_ok,
+                        f"HTTP {code_x4}"))
+    except Exception as e:
+        results.append(("X4: unknown scenario returns 404", False, str(e)[:60]))
+
+    # X5: /order/dry-run/report/all returns full report
+    try:
+        code_x5, x5_data = _get("/order/dry-run/report/all")
+        x5_ok = code_x5 == 200 and x5_data.get("report_type") == "simulation_audit_full"
+        x5_total = x5_data.get("total_scenarios", 0)
+        x5_passed = x5_data.get("passed_count", 0)
+        results.append(("X5: /order/dry-run/report/all returns full audit", x5_ok,
+                        f"HTTP {code_x5} type={x5_data.get('report_type','?')} scenarios={x5_total} passed={x5_passed}"))
+    except Exception as e:
+        results.append(("X5: /order/dry-run/report/all returns full audit", False, str(e)[:60]))
+
+    # X6: dry_run_scenarios module report functions work standalone
+    try:
+        from dry_run_scenarios import run_scenario_report, generate_full_report
+        x6_ok = callable(run_scenario_report) and callable(generate_full_report)
+        results.append(("X6: report functions importable standalone", x6_ok,
+                        "OK" if x6_ok else "not callable"))
+    except Exception as e:
+        results.append(("X6: report functions importable standalone", False, str(e)[:60]))
+
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)

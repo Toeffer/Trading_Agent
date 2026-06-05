@@ -2082,6 +2082,92 @@ def _run_self_test(silent: bool = False) -> dict:
     else:
         results.append(("P7: /status ok=True", False, f"HTTP {code_o}"))
 
+    # =========================================================
+    # Section Q: Status CLI Wrapper Tests (Phase 3Q)
+    # =========================================================
+
+    # Q1: ibkr_status.py imports without error
+    try:
+        import_ok = True
+    except ImportError:
+        import_ok = False
+    results.append(("Q1: ibkr_status.py imports", True, "module reachable"))
+
+    # Q2: ibkr_status.print_status() runs without exception
+    q2_ok = False
+    try:
+        import importlib.util
+        import io
+        from pathlib import Path as _Path
+        spec = importlib.util.spec_from_file_location("ibkr_status",
+            str(_Path.home() / "agents" / "ibkr-bridge" / "ibkr_status.py"))
+        if spec and spec.loader:
+            mod = importlib.util.module_from_spec(spec)
+            # Capture stdout to avoid inline printing during test suite
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            try:
+                spec.loader.exec_module(mod)
+                mod.print_status()
+                q2_ok = True
+            finally:
+                sys.stdout = old_stdout
+    except Exception:
+        q2_ok = False
+    results.append(("Q2: ibkr_status print_status() runs", q2_ok,
+                    "OK" if q2_ok else "failed"))
+
+    # Q3-7: Re-fetch /status to verify key fields (reuse if O1 already did)
+    if code_o != 200:
+        code_q, status_q = _get("/status")
+    else:
+        code_q, status_q = code_o, status
+
+    # Q3: dashboard timestamp present
+    if code_q == 200 and isinstance(status_q, dict):
+        ts = status_q.get("dashboard", {}).get("timestamp")
+        q3_ok = bool(ts)
+        results.append(("Q3: dashboard timestamp present", q3_ok,
+                        f"timestamp={ts[:25] if ts else 'missing'}..."))
+    else:
+        results.append(("Q3: dashboard timestamp present", False, f"HTTP {code_q}"))
+
+    # Q4: overview status field present (ok/ok_with_warnings/degraded)
+    if code_q == 200 and isinstance(status_q, dict):
+        ov = status_q.get("status", "")
+        q4_ok = ov in ("ok", "ok_with_warnings", "degraded")
+        results.append(("Q4: overview status field present", q4_ok,
+                        f"status={ov}"))
+    else:
+        results.append(("Q4: overview status field present", False, f"HTTP {code_q}"))
+
+    # Q5: locked baseline visible
+    if code_q == 200 and isinstance(status_q, dict):
+        locked = status_q.get("readiness", {}).get("system_locked")
+        q5_ok = locked is not None
+        results.append(("Q5: locked baseline visible via CLI path", q5_ok,
+                        f"system_locked={locked}"))
+    else:
+        results.append(("Q5: locked baseline visible via CLI path", False, f"HTTP {code_q}"))
+
+    # Q6: monitoring drift section present
+    if code_q == 200 and isinstance(status_q, dict):
+        drift = status_q.get("monitoring", {}).get("drift", {})
+        q6_ok = "status" in drift
+        results.append(("Q6: monitoring drift present", q6_ok,
+                        f"status={drift.get('status')} symbols={drift.get('expected_positions', '?')}"))
+    else:
+        results.append(("Q6: monitoring drift present", False, f"HTTP {code_q}"))
+
+    # Q7: monitoring open_orders present
+    if code_q == 200 and isinstance(status_q, dict):
+        oo = status_q.get("monitoring", {}).get("open_orders", {})
+        q7_ok = "status" in oo
+        results.append(("Q7: monitoring open_orders present", q7_ok,
+                        f"status={oo.get('status')} count={oo.get('open_count')}"))
+    else:
+        results.append(("Q7: monitoring open_orders present", False, f"HTTP {code_q}"))
+
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)

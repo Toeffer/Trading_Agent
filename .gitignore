@@ -1,0 +1,16 @@
+# Secrets
+.env
+
+# Virtual environment
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Backup files
+*.bak
+*.bak.*
+
+# Runtime state files (outside repo by design, but safe to ignore)
+# State lives in ~/.openclaw/ — not in this repo

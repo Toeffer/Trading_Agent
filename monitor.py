@@ -1757,6 +1757,54 @@ def _run_self_test(silent: bool = False) -> dict:
     else:
         results.append(("J7: release tag has 4/4 source hashes", False, f"HTTP {code_j}"))
 
+    # =========================================================
+    # Section K: Git Provenance Tests (Phase 3K)
+    # =========================================================
+
+    # Create a fresh tag to test git provenance
+    code_k, tag_k = _get("/audit/release?phase=phase3k_test")
+
+    # K1: /audit/release provenance includes git sub-dict with commit hash
+    if code_k == 200 and isinstance(tag_k, dict):
+        git_info = tag_k.get("provenance", {}).get("git")
+        k1_ok = git_info is not None and isinstance(git_info, dict) and bool(git_info.get("commit"))
+        commit_short = git_info["commit"][:12] if k1_ok else "?"
+        results.append(("K1: provenance has git commit hash", k1_ok,
+                        f"commit={commit_short}..." if k1_ok else "git info missing"))
+    else:
+        results.append(("K1: provenance has git commit hash", False, f"HTTP {code_k}"))
+
+    # K2: Git tag recorded in provenance (phase3k_git_init or phase3j_verified)
+    if code_k == 200 and isinstance(tag_k, dict):
+        git_info = tag_k.get("provenance", {}).get("git", {})
+        recorded_tag = git_info.get("tag")
+        # The describe should find phase3k_git_init (newest reachable)
+        k2_ok = bool(recorded_tag) and ("phase3k" in recorded_tag or "phase3j" in recorded_tag)
+        results.append(("K2: provenance has git tag", k2_ok,
+                        f"tag={recorded_tag}" if recorded_tag else "no tag"))
+    else:
+        results.append(("K2: provenance has git tag", False, f"HTTP {code_k}"))
+
+    # K3: provenance has source_hashes as fallback (SHA256 always present)
+    if code_k == 200 and isinstance(tag_k, dict):
+        sh = tag_k.get("provenance", {}).get("source_hashes", {})
+        expected = ["bridge.py", "guard.py", "monitor.py", "bundle_audit.py"]
+        missing = [f for f in expected if f not in sh or not sh[f]]
+        k3_ok = len(missing) == 0
+        results.append(("K3: source_hashes present (fallback identity)", k3_ok,
+                        f"{len(expected)-len(missing)}/{len(expected)} present" if k3_ok else f"missing: {missing}"))
+    else:
+        results.append(("K3: source_hashes present (fallback identity)", False, f"HTTP {code_k}"))
+
+    # K4: provenance shows clean (no uncommitted source changes from bundle)
+    if code_k == 200 and isinstance(tag_k, dict):
+        dirty = tag_k.get("provenance", {}).get("dirty", True)
+        k4_ok = dirty is False
+        results.append(("K4: source hash provenance clean", k4_ok,
+                        f"dirty={dirty} ({tag_k['provenance'].get('diff_summary','?')})"))
+    else:
+        results.append(("K4: source hash provenance clean", False, f"HTTP {code_k}"))
+
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)

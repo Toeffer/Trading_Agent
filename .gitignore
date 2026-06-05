@@ -14,3 +14,12 @@ __pycache__/
 
 # Runtime state files (outside repo by design, but safe to ignore)
 # State lives in ~/.openclaw/ — not in this repo
+
+# Unrelated bridge files
+ibkr_mcp.py
+ibkr_mcp_server.py
+
+# Backup junk
+*.bak
+*.bak.*
+bridge.py.broken.*

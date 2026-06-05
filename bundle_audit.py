@@ -462,17 +462,59 @@ RELEASE_DIR = OPENCLAW_DIR / "releases"
 def _compute_provenance(bundle: dict | None = None) -> dict:
     """Compute the provenance summary for current source tree.
 
+    Captures:
+    - SHA256 source file hashes (always)
+    - git commit hash + dirty diff summary (if .git exists)
+    - dirty/clean status vs the referenced bundle
+
     Returns:
-        Dict with:
-        - source_hashes: current SHA256 of all 4 source files
-        - dirty: bool, whether source has changed since the bundle's snapshot
-        - diff_summary: human-readable description of changes
+        Dict with provenance metadata.
     """
     current_hashes: dict[str, str | None] = {}
     for fname in SOURCE_FILES:
         fpath = BRIDGE_DIR / fname
         current_hashes[fname] = _hash_file(fpath)
 
+    # Git state
+    git_commit: str | None = None
+    git_dirty: bool = True
+    git_diff: str = "unknown"
+    git_root: Path | None = None
+    if (BRIDGE_DIR / ".git").exists():
+        try:
+            import subprocess
+            r = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True, text=True, cwd=BRIDGE_DIR, timeout=5
+            )
+            if r.returncode == 0:
+                git_commit = r.stdout.strip()
+                git_root = BRIDGE_DIR
+        except Exception:
+            pass
+
+    # Dirty check: compare git tracked files to repo
+    if git_root:
+        try:
+            import subprocess
+            r = subprocess.run(
+                ["git", "status", "--short", "--untracked-files=no"],
+                capture_output=True, text=True, cwd=BRIDGE_DIR, timeout=5
+            )
+            git_dirty_bool = len(r.stdout.strip()) > 0
+            diff_lines = []
+            if git_dirty_bool:
+                d = subprocess.run(
+                    ["git", "diff", "--stat"],
+                    capture_output=True, text=True, cwd=BRIDGE_DIR, timeout=5
+                )
+                diff_lines = [line.strip() for line in d.stdout.strip().split("\n") if line.strip()]
+            git_dirty = git_dirty_bool
+            git_diff = "; ".join(diff_lines) if diff_lines else "clean"
+        except Exception:
+            pass
+
+    # Dirty vs bundle (source hash comparison)
     dirty = False
     diff_parts: list[str] = []
 
@@ -492,11 +534,35 @@ def _compute_provenance(bundle: dict | None = None) -> dict:
                 diff_parts.append(f"{fname}: missing on disk")
 
     diff_summary = "; ".join(diff_parts) if diff_parts else "clean"
-    return {
+
+    result: dict[str, Any] = {
         "source_hashes": current_hashes,
         "dirty": dirty,
         "diff_summary": diff_summary,
     }
+
+    if git_commit:
+        result["git"] = {
+            "commit": git_commit,
+            "tag": _latest_git_tag(),
+            "dirty": git_dirty,
+            "diff_summary": git_diff,
+        }
+
+    return result
+
+
+def _latest_git_tag() -> str | None:
+    """Return the most recent git tag reachable from HEAD, or None."""
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["git", "describe", "--tags", "--abbrev=0"],
+            capture_output=True, text=True, cwd=BRIDGE_DIR, timeout=5
+        )
+        return r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        return None
 
 
 def create_release_tag(phase_label: str = "phase3i_verified") -> dict:

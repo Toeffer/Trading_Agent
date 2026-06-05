@@ -302,6 +302,14 @@ def print_status() -> None:
     else:
         print(f"  [bridge at {BRIDGE_URL}]")
 
+    print()
+    print(f"{BOLD}Model Policy{RESET}")
+    print(f"  Model:      openrouter/deepseek/deepseek-v4-flash")
+    print(f"  Tier:       1 (Strong)")
+    print(f"  Policy:     ~/.openclaw/memory/model-routing-safety-policy.md")
+    print(f"  Rules:      Tier 1 req for bridge/guard/monitor safety edits",
+          f"\n              Tier 2 ok for docs/formatting/read-only")
+
 
 def main() -> None:
     try:

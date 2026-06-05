@@ -1318,6 +1318,67 @@ def order_dry_run(req: DryRunRequest) -> Dict[str, Any]:
 
     return simulated
 
+
+# --- Scenario Library Endpoints (Phase 3W) ---
+
+from dry_run_scenarios import list_scenarios, run_scenario
+
+
+class ScenarioRequest(BaseModel):
+    scenario: str
+
+
+@app.get("/order/dry-run/scenarios")
+def dry_run_list_scenarios() -> Dict[str, Any]:
+    """List available named dry-run scenarios.
+
+    No trading. No IBKR calls. Read-only.
+    Returns descriptions and step counts for all 10 scenarios.
+    """
+    return {"scenarios": list_scenarios(), "count": len(list_scenarios())}
+
+
+@app.post("/order/dry-run/scenario")
+def dry_run_execute_scenario(req: ScenarioRequest) -> Dict[str, Any]:
+    """Execute a named dry-run scenario.
+
+    No trading. No IBKR calls. No guard-state mutations.
+    Emits only dry_run_order events. Preserves locked live baseline.
+
+    Args:
+        scenario: Name from GET /order/dry-run/scenarios.
+
+    Returns:
+        Dict with per-step results, overall ok flag, and error list.
+    """
+    def _dry_run_caller(body: dict) -> dict:
+        dr_req = DryRunRequest(**body)
+        return order_dry_run(dr_req)
+
+    def _reconcile_caller(order_id: int, final_status: str, step_body: dict = None) -> dict:
+        sym = (step_body or {}).get("symbol", "AAPL")
+        act = (step_body or {}).get("action", "SELL")
+        rec = ReconciliationRecord(
+            order_id=order_id,
+            final_status=final_status,
+            symbol=sym,
+            action=act,
+        )
+        return monitor_reconcile_order(rec)
+
+    try:
+        result = run_scenario(
+            req.scenario,
+            dry_run_caller=_dry_run_caller,
+            reconcile_caller=_reconcile_caller,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/market/quote")
 def market_quote(req: QuoteRequest):
     """

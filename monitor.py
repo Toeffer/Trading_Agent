@@ -2368,6 +2368,143 @@ def _run_self_test(silent: bool = False) -> dict:
     except Exception as e:
         results.append(("V7: live baseline unchanged after multiple dry-runs", False, str(e)[:60]))
 
+    # =========================================================
+    # Section W: Dry-Run Scenario Library Tests (Phase 3W)
+    # =========================================================
+
+    # W1: GET /order/dry-run/scenarios returns 10 scenarios
+    try:
+        code_w1, w1_data = _get("/order/dry-run/scenarios")
+        sc_list = w1_data.get("scenarios", {})
+        w1_ok = code_w1 == 200 and len(sc_list) >= 10
+        results.append(("W1: scenarios list has 10+ entries", w1_ok,
+                        f"HTTP {code_w1} count={len(sc_list)}"))
+    except Exception as e:
+        results.append(("W1: scenarios list has 10+ entries", False, str(e)[:60]))
+
+    # W2: buy_full_fill scenario
+    try:
+        code_w2, w2_data = _post("/order/dry-run/scenario", {"scenario": "buy_full_fill"})
+        w2_ok = code_w2 == 200 and w2_data.get("ok") and len(w2_data.get("steps", [])) == 1
+        dr = w2_data.get("steps", [{}])[0]
+        results.append(("W2: buy_full_fill scenario runs", w2_ok,
+                        f"HTTP {code_w2} ok={w2_data.get('ok')} filled={dr.get('filled')} delta={dr.get('position_delta')}"))
+    except Exception as e:
+        results.append(("W2: buy_full_fill scenario runs", False, str(e)[:60]))
+
+    # W3: buy_partial_fill scenario
+    try:
+        code_w3, w3_data = _post("/order/dry-run/scenario", {"scenario": "buy_partial_fill"})
+        w3_ok = code_w3 == 200 and w3_data.get("ok")
+        dr = w3_data.get("steps", [{}])[0]
+        results.append(("W3: buy_partial_fill scenario runs", w3_ok,
+                        f"HTTP {code_w3} filled={dr.get('filled')} remaining={dr.get('remaining')}"))
+    except Exception as e:
+        results.append(("W3: buy_partial_fill scenario runs", False, str(e)[:60]))
+
+    # W4: sell_full_close scenario
+    try:
+        code_w4, w4_data = _post("/order/dry-run/scenario", {"scenario": "sell_full_close"})
+        w4_ok = code_w4 == 200 and w4_data.get("ok") and w4_data.get("total_steps") == 2
+        results.append(("W4: sell_full_close scenario (round trip)", w4_ok,
+                        f"HTTP {code_w4} ok={w4_data.get('ok')} steps={w4_data.get('total_steps')}"))
+    except Exception as e:
+        results.append(("W4: sell_full_close scenario (round trip)", False, str(e)[:60]))
+
+    # W5: sell_partial_close scenario
+    try:
+        code_w5, w5_data = _post("/order/dry-run/scenario", {"scenario": "sell_partial_close"})
+        w5_ok = code_w5 == 200 and w5_data.get("ok")
+        results.append(("W5: sell_partial_close scenario", w5_ok,
+                        f"HTTP {code_w5} ok={w5_data.get('ok')}"))
+    except Exception as e:
+        results.append(("W5: sell_partial_close scenario", False, str(e)[:60]))
+
+    # W6: sell_unfilled scenario
+    try:
+        code_w6, w6_data = _post("/order/dry-run/scenario", {"scenario": "sell_unfilled"})
+        w6_ok = code_w6 == 200 and w6_data.get("ok")
+        results.append(("W6: sell_unfilled scenario", w6_ok,
+                        f"HTTP {code_w6} ok={w6_data.get('ok')}"))
+    except Exception as e:
+        results.append(("W6: sell_unfilled scenario", False, str(e)[:60]))
+
+    # W7: duplicate_open_order scenario
+    try:
+        code_w7, w7_data = _post("/order/dry-run/scenario", {"scenario": "duplicate_open_order"})
+        w7_ok = code_w7 == 200 and w7_data.get("ok") and w7_data.get("total_trades") == 2
+        results.append(("W7: duplicate_open_order scenario", w7_ok,
+                        f"HTTP {code_w7} ok={w7_data.get('ok')} trades={w7_data.get('total_trades')}"))
+    except Exception as e:
+        results.append(("W7: duplicate_open_order scenario", False, str(e)[:60]))
+
+    # W8: manual_terminal_resolution scenario
+    try:
+        code_w8, w8_data = _post("/order/dry-run/scenario", {"scenario": "manual_terminal_resolution"})
+        w8_ok = code_w8 == 200 and w8_data.get("ok")
+        results.append(("W8: manual_terminal_resolution scenario", w8_ok,
+                        f"HTTP {code_w8} ok={w8_data.get('ok')}"))
+    except Exception as e:
+        results.append(("W8: manual_terminal_resolution scenario", False, str(e)[:60]))
+
+    # W9: order_id_reuse scenario
+    try:
+        code_w9, w9_data = _post("/order/dry-run/scenario", {"scenario": "order_id_reuse"})
+        w9_ok = code_w9 == 200 and w9_data.get("ok") and w9_data.get("total_trades") == 2
+        results.append(("W9: order_id_reuse scenario", w9_ok,
+                        f"HTTP {code_w9} ok={w9_data.get('ok')} trades={w9_data.get('total_trades')}"))
+    except Exception as e:
+        results.append(("W9: order_id_reuse scenario", False, str(e)[:60]))
+
+    # W10: daily_trade_limit_reached scenario
+    try:
+        code_w10, w10_data = _post("/order/dry-run/scenario", {"scenario": "daily_trade_limit_reached"})
+        w10_ok = code_w10 == 200 and w10_data.get("ok") and w10_data.get("total_trades") == 3
+        results.append(("W10: daily_trade_limit_reached scenario", w10_ok,
+                        f"HTTP {code_w10} ok={w10_data.get('ok')} trades={w10_data.get('total_trades')}"))
+    except Exception as e:
+        results.append(("W10: daily_trade_limit_reached scenario", False, str(e)[:60]))
+
+    # W11: drift_detected_case scenario (multi-symbol)
+    try:
+        code_w11, w11_data = _post("/order/dry-run/scenario", {"scenario": "drift_detected_case"})
+        w11_ok = code_w11 == 200 and w11_data.get("ok") and w11_data.get("total_steps") == 2
+        results.append(("W11: drift_detected_case scenario (multi-symbol)", w11_ok,
+                        f"HTTP {code_w11} ok={w11_data.get('ok')} steps={w11_data.get('total_steps')}"))
+    except Exception as e:
+        results.append(("W11: drift_detected_case scenario (multi-symbol)", False, str(e)[:60]))
+
+    # W12: unknown scenario returns 404
+    try:
+        import urllib.error
+        import json as _json
+        code_w12, w12_data = _post("/order/dry-run/scenario", {"scenario": "nonexistent_scenario"})
+        w12_ok = code_w12 == 404
+        results.append(("W12: unknown scenario returns 404", w12_ok,
+                        f"HTTP {code_w12} detail={str(w12_data.get('detail',''))[:40]}"))
+    except Exception as e:
+        results.append(("W12: unknown scenario returns 404", False, str(e)[:60]))
+
+    # W13: dry_run_scenarios module standalone test
+    try:
+        from dry_run_scenarios import list_scenarios, run_scenario, run_all_scenarios
+        w13_sc_list = list_scenarios()
+        w13_ok = len(w13_sc_list) >= 10
+        results.append(("W13: dry_run_scenarios module works standalone", w13_ok,
+                        f"{len(w13_sc_list)} scenarios available"))
+    except Exception as e:
+        results.append(("W13: dry_run_scenarios module works standalone", False, str(e)[:60]))
+
+    # W14: verify no ib.placeOrder/cancelOrder( calls in dry_run_scenarios.py
+    try:
+        from pathlib import Path as _P; dp = _P.home() / "agents" / "ibkr-bridge" / "dry_run_scenarios.py"
+        dtext = dp.read_text() if dp.exists() else ""
+        w14_ok = ("ib.placeOrder" not in dtext) and ("ib.cancelOrder" not in dtext)
+        results.append(("W14: no ib.placeOrder/cancelOrder in dry_run_scenarios.py", w14_ok,
+                        "clean" if w14_ok else "found call"))
+    except Exception as e:
+        results.append(("W14: no ib.placeOrder/cancelOrder in dry_run_scenarios.py", False, str(e)[:60]))
+
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)

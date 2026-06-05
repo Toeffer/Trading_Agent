@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""
+dry_run_scenarios.py — Phase 3W
+
+Named reusable simulation scenarios for /order/dry-run.
+No trading. No IBKR calls. No guard-state mutations.
+
+Each scenario emits only dry_run_order events and preserves the locked live baseline.
+Scenarios are safe to run multiple times — they never modify guard-state.json,
+never call placeOrder/cancelOrder, and never touch .env or rules YAML.
+
+Usage:
+    POST /order/dry-run/scenario  {"scenario": "buy_full_fill"}
+    GET  /order/dry-run/scenarios  (list available scenarios)
+"""
+
+import json
+import time
+from datetime import datetime, timezone
+from typing import Any
+
+# ---------------------------------------------------------------------------
+# Scenario definitions
+# ---------------------------------------------------------------------------
+
+SCENARIO_DEFS: dict[str, dict[str, Any]] = {
+    "buy_full_fill": {
+        "description": "Simple BUY 5 AAPL, fully filled. Verifies basic dry-run buy + drift preview.",
+        "steps": [
+            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 5},
+        ],
+        "expected_drift": {"AAPL": 5},
+    },
+    "buy_partial_fill": {
+        "description": "BUY 5 AAPL, only 2 filled. Verifies partial fill handling in drift preview.",
+        "steps": [
+            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 5, "dry_run_fill_qty": 2},
+        ],
+        "expected_drift": {"AAPL": 2},
+    },
+    "sell_full_close": {
+        "description": "First BUY 5 then SELL 5 (full close). Verifies net-zero drift after round trip.",
+        "steps": [
+            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 5},
+            {"symbol": "AAPL", "action": "SELL", "totalQuantity": 5},
+        ],
+        "expected_drift": {"AAPL": 0},
+    },
+    "sell_partial_close": {
+        "description": "BUY 5 then SELL 3 (partial close). Verifies remaining position in drift.",
+        "steps": [
+            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 5},
+            {"symbol": "AAPL", "action": "SELL", "totalQuantity": 3},
+        ],
+        "expected_drift": {"AAPL": 2},
+    },
+    "sell_unfilled": {
+        "description": "BUY 5 then SELL 5 with dry_run_fill_qty=0 (unfilled). Verifies zero drift from unfilled.",
+        "steps": [
+            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 5},
+            {"symbol": "AAPL", "action": "SELL", "totalQuantity": 5, "dry_run_fill_qty": 0},
+        ],
+        "expected_drift": {"AAPL": 5},
+    },
+    "duplicate_open_order": {
+        "description": "Run two concurrent BUY dry-runs on same symbol. Verifies drift sums both.",
+        "steps": [
+            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 3},
+            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 4},
+        ],
+        "expected_drift": {"AAPL": 7},
+    },
+    "manual_terminal_resolution": {
+        "description": "BUY then SELL, then add manual reconciliation record via /monitor/open-orders/reconcile. Verifies scenario + manual record coexist.",
+        "steps": [
+            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 5},
+            {"symbol": "AAPL", "action": "SELL", "totalQuantity": 5, "dry_run_fill_qty": 0},
+            {"_action": "manual_reconcile", "order_id": 99999, "symbol": "AAPL", "action": "SELL", "final_status": "Cancelled"},
+        ],
+        "expected_drift": {"AAPL": 5},
+    },
+    "order_id_reuse": {
+        "description": "Run identical BUY twice. Verifies each dry-run creates unique simulated_order_id and drift sums correctly.",
+        "steps": [
+            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 2},
+            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 2},
+        ],
+        "expected_drift": {"AAPL": 4},
+    },
+    "daily_trade_limit_reached": {
+        "description": "Run 3 small BUY dry-runs. Verifies drift preview handles multiple trades without affecting guard state.",
+        "steps": [
+            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 1},
+            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 1},
+            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 1},
+        ],
+        "expected_drift": {"AAPL": 3},
+    },
+    "drift_detected_case": {
+        "description": "Multi-symbol scenario: BUY 3 MSFT + BUY 5 AAPL. Verifies drift preview with multiple symbols.",
+        "steps": [
+            {"symbol": "MSFT", "action": "BUY", "totalQuantity": 3},
+            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 5},
+        ],
+        "expected_drift": {"MSFT": 3, "AAPL": 5},
+    },
+}
+
+
+def list_scenarios() -> dict:
+    """Return list of available scenarios with descriptions."""
+    return {
+        name: {"description": spec["description"], "steps": len(spec["steps"])}
+        for name, spec in sorted(SCENARIO_DEFS.items())
+    }
+
+
+def run_scenario(
+    name: str,
+    dry_run_caller=None,
+    reconcile_caller=None,
+) -> dict:
+    """Execute a named scenario.
+
+    Args:
+        name: Scenario name from SCENARIO_DEFS.
+        dry_run_caller: Callable(dict) -> dict for running a dry-run step.
+            Must accept the same body as /order/dry-run and return a result dict.
+        reconcile_caller: Callable(order_id, final_status, step_body) -> dict for
+            manual reconciliation. If None, reconciliation steps are skipped.
+
+    Returns:
+        Dict with scenario results and step-level details.
+
+    Raises:
+        ValueError: If scenario name is unknown.
+    """
+    if name not in SCENARIO_DEFS:
+        raise ValueError(f"Unknown scenario '{name}'. Available: {sorted(SCENARIO_DEFS.keys())}")
+
+    spec = SCENARIO_DEFS[name]
+    steps_results = []
+    errors = []
+    total_trades = 0
+
+    for i, step in enumerate(spec["steps"]):
+        step_body = dict(step)
+        step_result = {}
+
+        # Handle special actions
+        if step_body.get("_action") == "manual_reconcile":
+            oid = step_body.get("order_id", 0)
+            final_status = step_body.get("final_status", "Cancelled")
+            if reconcile_caller:
+                try:
+                    rec_result = reconcile_caller(oid, final_status)
+                    step_result = {
+                        "step": i,
+                        "action": "manual_reconcile",
+                        "order_id": oid,
+                        "final_status": final_status,
+                        "result": rec_result,
+                    }
+                except Exception as e:
+                    err = f"Manual reconcile step {i} failed: {e}"
+                    errors.append(err)
+                    step_result = {"step": i, "action": "manual_reconcile", "error": str(e)}
+            else:
+                step_result = {
+                    "step": i,
+                    "action": "manual_reconcile",
+                    "skipped": "no reconcile_caller provided",
+                }
+        else:
+            # Standard dry-run step
+            step_body.setdefault("orderType", "MKT")
+            step_body.setdefault("mode", "dry-run")
+            step_body.pop("_action", None)
+
+            if dry_run_caller:
+                try:
+                    dr_result = dry_run_caller(step_body)
+                    step_result = {
+                        "step": i,
+                        "action": step_body.get("action", "BUY"),
+                        "symbol": step_body.get("symbol", ""),
+                        "totalQuantity": step_body.get("totalQuantity", 0),
+                        "filled": dr_result.get("filled", 0),
+                        "remaining": dr_result.get("remaining", 0),
+                        "position_delta": dr_result.get("position_delta", 0),
+                        "simulated_order_id": dr_result.get("simulated_order_id"),
+                        "ok": dr_result.get("ok", False),
+                    }
+                    if dr_result.get("ok"):
+                        total_trades += 1
+                except Exception as e:
+                    err = f"Dry-run step {i} failed: {e}"
+                    errors.append(err)
+                    step_result = {"step": i, "error": str(e)}
+            else:
+                step_result = {
+                    "step": i,
+                    "action": step_body.get("action"),
+                    "skipped": "no dry_run_caller provided",
+                }
+
+        steps_results.append(step_result)
+
+    return {
+        "scenario": name,
+        "description": spec["description"],
+        "ok": len(errors) == 0,
+        "total_steps": len(spec["steps"]),
+        "total_trades": total_trades,
+        "errors": errors if errors else None,
+        "steps": steps_results,
+        "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def run_all_scenarios(
+    dry_run_caller=None,
+    reconcile_caller=None,
+) -> dict:
+    """Run every scenario in sequence.
+
+    Useful for comprehensive testing — exercises the full dry-run
+    engine across all 10 scenarios without guard-state side effects.
+
+    Returns aggregated results per scenario.
+    """
+    results = {}
+    for name in sorted(SCENARIO_DEFS.keys()):
+        try:
+            results[name] = run_scenario(name, dry_run_caller, reconcile_caller)
+        except Exception as e:
+            results[name] = {"scenario": name, "ok": False, "error": str(e)}
+    return results

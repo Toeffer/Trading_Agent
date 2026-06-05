@@ -1805,6 +1805,44 @@ def _run_self_test(silent: bool = False) -> dict:
     else:
         results.append(("K4: source hash provenance clean", False, f"HTTP {code_k}"))
 
+    # =========================================================
+    # Section L: Backup / Restore Readiness Tests (Phase 3L)
+    # =========================================================
+
+    # L1: /health startup_safety check_count=10 (safety gate intact)
+    code_lh, health = _get("/health")
+    if code_lh == 200 and isinstance(health, dict):
+        ss = health.get("startup_safety", {})
+        l1_ok = ss.get("check_count") == 10 and ss.get("pass") is True
+        results.append(("L1: /health startup_safety 10/10", l1_ok,
+                        f"pass={ss.get('pass')} {ss.get('passed_count')}/{ss.get('check_count')}"))
+    else:
+        results.append(("L1: /health startup_safety 10/10", False, f"HTTP {code_lh}"))
+
+    # L2: /readiness shows system_locked=True (kill switches false)
+    code_lr, readiness = _get("/readiness")
+    if code_lr == 200 and isinstance(readiness, dict):
+        ks = readiness.get("summary", {}).get("kill_switches", {})
+        locked = ks.get("system_locked") is True
+        allow = ks.get("IBKR_ALLOW_ORDERS") is False
+        enforce = ks.get("rules.enforced") is False
+        l2_ok = locked and allow and enforce
+        results.append(("L2: /readiness locked baseline after restore", l2_ok,
+                        f"system_locked={ks.get('system_locked')} allow={ks.get('IBKR_ALLOW_ORDERS')} enforce={ks.get('rules.enforced')}"))
+    else:
+        results.append(("L2: /readiness locked baseline after restore", False, f"HTTP {code_lr}"))
+
+    # L3: /audit/release/latest has valid provenance (survived restore)
+    code_ll, latest = _get("/audit/release/latest")
+    if code_ll == 200 and isinstance(latest, dict):
+        git_info = latest.get("provenance", {}).get("git", {})
+        commit = git_info.get("commit")
+        l3_ok = bool(commit) and latest.get("tag_id", "").startswith("release_")
+        results.append(("L3: release tag provenance survives restore", l3_ok,
+                        f"tag={latest['tag_id']} commit={commit[:16] if commit else '?'}..."))
+    else:
+        results.append(("L3: release tag provenance survives restore", False, f"HTTP {code_ll}"))
+
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)

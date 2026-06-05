@@ -1229,6 +1229,7 @@ ALLOWED_EVENT_TYPES = frozenset({
     "monitor_reconciliation",
     "monitor_open_orders",
     "startup_safety",
+    "dry_run_order",
 })
 
 

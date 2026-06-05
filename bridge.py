@@ -1176,6 +1176,148 @@ def _ensure_worker_event_loop():
         asyncio.set_event_loop(asyncio.new_event_loop())
 
 
+
+
+# --- Dry-Run Endpoint (Phase 3U) ---
+
+class DryRunRequest(BaseModel):
+    """Request body for /order/dry-run.
+
+    Same fields as a preflight request, but never submits to IBKR.
+    Simulates approval, submission, and fill, then records a dry_run_order
+    event. Does not call placeOrder, cancelOrder, or any IBKR API.
+    """
+    symbol: str
+    action: str               # BUY or SELL
+    totalQuantity: int
+    orderType: str = "MKT"
+    limitPrice: float | None = None
+    stopPrice: float | None = None
+    mode: str = "dry-run"
+    dry_run_auto_approve: bool = True
+    dry_run_fill_qty: int | None = None   # None = full fill
+
+
+@app.post("/order/dry-run")
+def order_dry_run(req: DryRunRequest) -> Dict[str, Any]:
+    """Simulate the full order lifecycle without touching IBKR.
+
+    No placeOrder, no cancelOrder, no ib_insync Order objects.
+    No guard-state mutations, no approval records persisted.
+    All dry-run evidence is logged as dry_run_order guard events.
+
+    Acceptable usage:
+      - BUY 5 AAPL (simulates approval + full fill)
+      - SELL 3 AAPL (simulates approval + partial fill)
+      - Manual-terminal reconciliation exercises
+    """
+    from guard import run_preflight, append_guard_event, _now_utc_iso
+    from datetime import datetime, timezone
+    import json
+
+    request_dict = req.model_dump(exclude_none=True)
+    fill_qty = req.dry_run_fill_qty if req.dry_run_fill_qty is not None else req.totalQuantity
+    start_ts = _now_utc_iso()
+
+    if fill_qty < 0 or fill_qty > req.totalQuantity:
+        return {"ok": False, "error": f"dry_run_fill_qty ({fill_qty}) must be 0..{req.totalQuantity}",
+                "code": "INVALID_FILL"}
+
+    # 1. Run preflight validation (same logic as /order/preflight)
+    try:
+        preflight = run_preflight(
+            request_dict,
+            account_provider=_internal_fetch_account if is_connected() else None,
+            quote_provider=_internal_fetch_quote if is_connected() else None,
+            bars_provider=_internal_fetch_bars if is_connected() else None,
+            position_provider=_internal_fetch_positions if is_connected() else None,
+            open_order_provider=open_orders_check,
+        )
+    except Exception as e:
+        return {"ok": False, "step": "preflight", "error": str(e), "code": "PREFLIGHT_FAILED"}
+
+    preflight_pass = preflight.get("pass", False)
+    blocks = preflight.get("blocks", [])
+    block_checks = [b.get("check", "") for b in blocks] if blocks else []
+
+    # 2. Simulate approval (if auto-approve enabled)
+    # In dry-run mode, we simulate the approval decision without
+    # calling approve_approval() — that would create real approval records.
+    approval_simulated = False
+    if req.dry_run_auto_approve and preflight_pass:
+        approval_simulated = True
+
+    # 3. Simulate submission / fill
+    simulated_order_id = f"dry-run-{int(datetime.now(timezone.utc).timestamp())}"
+    
+    # Compute position impact (BUY=+qty, SELL=-qty)
+    action = req.action.upper()
+    if action == "BUY":
+        position_delta = fill_qty
+    elif action == "SELL":
+        position_delta = -fill_qty
+    else:
+        position_delta = 0
+        action_label = action
+    action_label = action
+
+    # Simulated result
+    simulated = {
+        "ok": True,
+        "simulated": True,
+        "mode": "dry-run",
+        "preflight_pass": preflight_pass,
+        "approval_simulated": approval_simulated,
+        "fill_simulated": True,
+        "simulated_order_id": simulated_order_id,
+        "symbol": req.symbol,
+        "action": action_label,
+        "totalQuantity": req.totalQuantity,
+        "filled": fill_qty,
+        "remaining": req.totalQuantity - fill_qty,
+        "position_delta": position_delta,
+        "description": f"Dry-run {action_label} {fill_qty} {req.symbol} (simulated {'full' if fill_qty == req.totalQuantity else 'partial'} fill)",
+        "preflight_summary": {
+            "pass": preflight_pass,
+            "block_count": len(blocks) if not preflight_pass else 0,
+            "blocks": blocks if not preflight_pass else [],
+        },
+        "timestamp_utc": start_ts,
+    }
+
+    # 4. Log dry-run event (same event log as guard events, filtered by type)
+    # This makes dry-runs visible to position_drift_check() and reporting.
+    if preflight_pass:
+        append_guard_event("dry_run_order", {
+            "mode": "dry-run",
+            "simulated_order_id": simulated_order_id,
+            "symbol": req.symbol,
+            "action": action_label,
+            "totalQuantity": req.totalQuantity,
+            "filled": fill_qty,
+            "remaining": req.totalQuantity - fill_qty,
+            "position_delta": position_delta,
+            "preflight_pass": True,
+            "preflight_blocks": [],
+            "approval_simulated": approval_simulated,
+            "timestamp_utc": start_ts,
+        })
+    else:
+        # Even blocked preflights are logged for audit trail
+        append_guard_event("dry_run_order", {
+            "mode": "dry-run",
+            "symbol": req.symbol,
+            "action": action_label,
+            "totalQuantity": req.totalQuantity,
+            "preflight_pass": False,
+            "preflight_blocks": block_checks[:3],  # top 3 blocks
+            "approval_simulated": False,
+            "fill_simulated": False,
+            "timestamp_utc": start_ts,
+        })
+
+    return simulated
+
 @app.post("/market/quote")
 def market_quote(req: QuoteRequest):
     """

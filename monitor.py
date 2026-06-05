@@ -713,7 +713,7 @@ def health_summary() -> dict:
 # Position drift (file-based, no IBKR)
 # ---------------------------------------------------------------------------
 
-def position_drift_check() -> dict:
+def position_drift_check(include_dry_run: bool = True) -> dict:
     """Check position drift using only file-based data.
 
     Computes expected net position from CONFIRMED order_submitted events
@@ -721,10 +721,18 @@ def position_drift_check() -> dict:
     (IBKR never acknowledged) are excluded so they don't contribute
     to drift.
 
+    When include_dry_run=True (default), also includes dry_run_order events
+    from /order/dry-run (Phase 3U). This enables pre-trade simulation
+    and position drift preview without real IBKR orders.
+
     Returns:
         Dict with expected positions per symbol plus unconfirmed_ids.
     """
     events = load_events(event_type="order_submitted")
+    # Include dry-run events when enabled (Phase 3U)
+    if include_dry_run:
+        dry_run_events = load_events(event_type="dry_run_order")
+        events = events + dry_run_events
     unconfirmed_events = load_events(event_type="order_unconfirmed")
 
     # Collect approval_ids that are unconfirmed (IBKR never acknowledged)
@@ -779,6 +787,10 @@ def position_drift_check() -> dict:
             if filled_qty == 0:
                 continue  # Unfilled order — no position impact
             qty = float(filled_qty)  # Use actual filled amount instead of requested totalQuantity
+        elif e.get("event_type") == "dry_run_order":
+            # Dry-run events use event-level "filled" field (not ibkr_metadata)
+            dry_fill = e.get("filled", e.get("totalQuantity", 0)) or 0
+            qty = float(dry_fill)
 
         if action == "BUY":
             positions[sym] = positions.get(sym, 0) + qty
@@ -2168,6 +2180,108 @@ def _run_self_test(silent: bool = False) -> dict:
     else:
         results.append(("Q7: monitoring open_orders present", False, f"HTTP {code_q}"))
 
+
+    # =========================================================
+    # Section U: Dry-Run Harness Tests (Phase 3U)
+    # =========================================================
+
+    # U1: /order/dry-run returns HTTP 200 with simulated=true
+    try:
+        code_u1, u1_data = _post("/order/dry-run", {
+            "symbol": "AAPL",
+            "action": "BUY",
+            "totalQuantity": 5,
+            "orderType": "MKT",
+            "mode": "dry-run",
+        })
+        u1_ok = code_u1 == 200 and u1_data.get("simulated") is True and u1_data.get("ok") is True
+        results.append(("U1: dry-run returns HTTP 200 simulated=true", u1_ok,
+                        f"HTTP {code_u1} simulated={u1_data.get('simulated')} ok={u1_data.get('ok')}"))
+    except Exception as e:
+        results.append(("U1: dry-run returns HTTP 200 simulated=true", False, str(e)[:60]))
+
+    # U2: dry-run BUY fills create position drift entry
+    try:
+        pdc = position_drift_check(include_dry_run=True)
+        u2_ok = pdc.get("expected_positions", {}).get("AAPL", 0) >= 4.0
+        results.append(("U2: dry-run BUY drift reflected in position_drift_check", u2_ok,
+                        f"AAPL={pdc.get('expected_positions',{}).get('AAPL','?')}"))
+    except Exception as e:
+        results.append(("U2: dry-run BUY drift reflected in position_drift_check", False, str(e)[:60]))
+
+    # U3: dry-run event logged to guard-events.jsonl
+    try:
+        dry_events = load_events(event_type="dry_run_order")
+        u3_ok = len(dry_events) >= 1
+        results.append(("U3: dry_run_order event in guard-events.jsonl", u3_ok,
+                        f"{len(dry_events)} event(s), latest: {dry_events[-1].get('simulated_order_id','')[:25] if dry_events else 'none'}"))
+    except Exception as e:
+        results.append(("U3: dry_run_order event in guard-events.jsonl", False, str(e)[:60]))
+
+    # U4: dry-run partial fill (dry_run_fill_qty=2 of 5)
+    try:
+        code_u4, u4_data = _post("/order/dry-run", {
+            "symbol": "AAPL",
+            "action": "BUY",
+            "totalQuantity": 5,
+            "orderType": "MKT",
+            "mode": "dry-run",
+            "dry_run_fill_qty": 2,
+        })
+        u4_ok = u4_data.get("filled") == 2 and u4_data.get("remaining") == 3
+        results.append(("U4: dry-run partial fill (2 of 5)", u4_ok,
+                        f"filled={u4_data.get('filled')} remaining={u4_data.get('remaining')}"))
+    except Exception as e:
+        results.append(("U4: dry-run partial fill (2 of 5)", False, str(e)[:60]))
+
+    # U5: dry-run SELL creates negative drift
+    try:
+        code_u5, u5_data = _post("/order/dry-run", {
+            "symbol": "AAPL",
+            "action": "SELL",
+            "totalQuantity": 3,
+            "orderType": "MKT",
+            "mode": "dry-run",
+        })
+        u5_ok = u5_data.get("position_delta") == -3 and u5_data.get("action") == "SELL"
+        results.append(("U5: dry-run SELL creates negative drift", u5_ok,
+                        f"pos_delta={u5_data.get('position_delta')} action={u5_data.get('action')}"))
+    except Exception as e:
+        results.append(("U5: dry-run SELL creates negative drift", False, str(e)[:60]))
+
+    # U6: dry-run with invalid fill qty returns error
+    try:
+        code_u6, u6_data = _post("/order/dry-run", {
+            "symbol": "AAPL",
+            "action": "BUY",
+            "totalQuantity": 3,
+            "orderType": "MKT",
+            "mode": "dry-run",
+            "dry_run_fill_qty": 99,
+        })
+        u6_ok = u6_data.get("ok") is False and "INVALID_FILL" in str(u6_data)
+        results.append(("U6: dry-run invalid fill qty rejected", u6_ok,
+                        f"ok={u6_data.get('ok')} code={u6_data.get('code','?')}"))
+    except Exception as e:
+        results.append(("U6: dry-run invalid fill qty rejected", False, str(e)[:60]))
+
+        # U7: verify no ib.placeOrder/cancelOrder calls in dry-run code
+    try:
+        from pathlib import Path as _P; bp = _P.home() / "agents" / "ibkr-bridge" / "bridge.py"
+        dt = bp.read_text() if bp.exists() else ""
+        if "def order_dry_run" in dt:
+            sec = dt.split("def order_dry_run")[1]
+            nx = sec.find("\ndef ")
+            if nx >= 0:
+                sec = sec[:nx]
+            u7_ok = ("ib.placeOrder(" not in sec) and ("ib.cancelOrder(" not in sec)
+        else:
+            u7_ok = False
+        results.append(("U7: no ib.placeOrder/cancelOrder in dry-run code", u7_ok,
+                        "clean" if u7_ok else "ib call found"))
+    except Exception as e:
+        results.append(("U7: no ib.placeOrder/cancelOrder in dry-run code", False, str(e)[:60]))
+    # Print results table
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)

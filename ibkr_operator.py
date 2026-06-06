@@ -617,9 +617,9 @@ def _compute_verdict(state: str, blocks: list[dict]) -> str:
 # Checklist result builder
 # ---------------------------------------------------------------------------
 
-def run_checklist(state_override: str | None = None) -> dict:
+def run_checklist(state_override: str | None = None, data: dict | None = None) -> dict:
     """Run the checklist and return the full result dict."""
-    data = _gather_data()
+    data = _gather_data() if data is None else data
     rth = data["rth"]
     h = data["health"]
     rdy = data["readiness"]

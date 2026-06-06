@@ -2873,7 +2873,135 @@ def _run_self_test(silent: bool = False) -> dict:
     except Exception as e:
         results.append(("B10: checklist end-of-day explicit state (read-only advisory)", False, str(e)[:80]))
 
-    # Print results table
+                            # =========================================================
+    # Section C: Operator Checklist Audit/Release Evidence (Phase 4C)
+    # =========================================================
+
+    # All C-tests are structural only: read source files, verify contracts.
+    # No function calls that trigger HTTP or subprocess (avoids single-worker deadlock).
+
+    # C1: ibkr_operator module imports cleanly
+    try:
+        sys.path.insert(0, str(_B_BRIDGE_DIR))
+        import ibkr_operator as _C_OP
+        c1_ok = hasattr(_C_OP, "run_checklist") and hasattr(_C_OP, "main")
+        results.append(("C1: ibkr_operator module imports cleanly", c1_ok,
+                        f"has_run_checklist={hasattr(_C_OP, 'run_checklist')}"))
+    except Exception as e:
+        results.append(("C1: ibkr_operator module imports cleanly", False, str(e)[:80]))
+
+    # C2: ibkr_operator AST self-check passes (no forbidden names)
+    try:
+        import ast
+        with open(str(_B_BRIDGE_DIR / "ibkr_operator.py")) as f2:
+            tree2 = ast.parse(f2.read())
+        forbid2 = {"placeOrder", "cancelOrder", "save_guard_state_atomic",
+                   "initialize_guard_state", "append_guard_event",
+                   "_internal_place_order", "create_approval_record"}
+        found2 = set()
+        for n in ast.walk(tree2):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+                if n.func.id in forbid2: found2.add(n.func.id)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+                if n.func.attr in forbid2: found2.add(n.func.attr)
+        c2_ok = len(found2) == 0
+        results.append(("C2: ibkr_operator AST safety check passes", c2_ok,
+                        "clean" if c2_ok else f"FOUND: {found2}"))
+    except Exception as e:
+        results.append(("C2: ibkr_operator AST safety check passes", False, str(e)[:80]))
+
+    # C3: bundle_audit source has _run_checklist_snapshot function definition
+    try:
+        ba_src = (str(_B_BRIDGE_DIR / "bundle_audit.py"))
+        with open(ba_src) as f3:
+            ba_text = f3.read()
+        c3_ok = "def _run_checklist_snapshot" in ba_text
+        results.append(("C3: bundle_audit.py defines _run_checklist_snapshot", c3_ok,
+                        "found" if c3_ok else "MISSING"))
+    except Exception as e:
+        results.append(("C3: bundle_audit.py defines _run_checklist_snapshot", False, str(e)[:80]))
+
+    # C4: bundle_audit source inserts checklist_snapshot into bundle dict
+    try:
+        ba_src = (str(_B_BRIDGE_DIR / "bundle_audit.py"))
+        with open(ba_src) as f4:
+            ba_text = f4.read()
+        c4_ok = '"checklist_snapshot": checklist_snapshot' in ba_text
+        results.append(("C4: bundle dict includes checklist_snapshot key", c4_ok,
+                        "found" if c4_ok else "MISSING"))
+    except Exception as e:
+        results.append(("C4: bundle dict includes checklist_snapshot key", False, str(e)[:80]))
+
+    # C5: release tag source inserts checklist_snapshot key
+    try:
+        ba_src = (str(_B_BRIDGE_DIR / "bundle_audit.py"))
+        with open(ba_src) as f5:
+            ba_text = f5.read()
+        c5_ok = 'tag["checklist_snapshot"]' in ba_text
+        results.append(("C5: release tag source includes checklist_snapshot assignment", c5_ok,
+                        "found" if c5_ok else "MISSING"))
+    except Exception as e:
+        results.append(("C5: release tag source includes checklist_snapshot assignment", False, str(e)[:80]))
+
+    # C6: ibkr_operator.py in SOURCE_FILES in bundle_audit.py
+    try:
+        ba_src = (str(_B_BRIDGE_DIR / "bundle_audit.py"))
+        with open(ba_src) as f6:
+            ba_text = f6.read()
+        c6_ok = '"ibkr_operator.py"' in ba_text
+        results.append(("C6: ibkr_operator.py referenced in bundle_audit SOURCE_FILES", c6_ok,
+                        "found" if c6_ok else "MISSING"))
+    except Exception as e:
+        results.append(("C6: ibkr_operator.py referenced in bundle_audit SOURCE_FILES", False, str(e)[:80]))
+
+    # C7: ibkr_operator main() function is callable
+    try:
+        sys.path.insert(0, str(_B_BRIDGE_DIR))
+        from ibkr_operator import main
+        import inspect
+        c7_ok = callable(main) and callable(inspect.signature(main).bind)
+        results.append(("C7: ibkr_operator main() is callable", c7_ok,
+                        "callable" if c7_ok else "not callable"))
+    except Exception as e:
+        results.append(("C7: ibkr_operator main() is callable", False, str(e)[:80]))
+
+    # C8: run_checklist(state_override=...) exists and accepts parameter
+    try:
+        from ibkr_operator import run_checklist
+        import inspect
+        sig = inspect.signature(run_checklist)
+        c8_ok = "state_override" in sig.parameters
+        results.append(("C8: run_checklist() has state_override parameter", c8_ok,
+                        f"params={list(sig.parameters.keys())}"))
+    except Exception as e:
+        results.append(("C8: run_checklist() has state_override parameter", False, str(e)[:80]))
+
+    # C9: CLI parser recognizes --json and --explain flags by source inspection
+    try:
+        with open(str(_B_BRIDGE_DIR / "ibkr_operator.py")) as f9:
+            op_text = f9.read()
+        c9_ok = '--json' in op_text and '--explain' in op_text and 'end-of-day' in op_text
+        results.append(("C9: ibkr_operator source has --json, --explain, end-of-day state", c9_ok,
+                        "found" if c9_ok else "MISSING"))
+    except Exception as e:
+        results.append(("C9: ibkr_operator source has --json, --explain, end-of-day state", False, str(e)[:80]))
+
+    # C10: _run_checklist_snapshot wraps in try/except (graceful on subprocess failure)
+    try:
+        with open(str(_B_BRIDGE_DIR / "bundle_audit.py")) as f10:
+            ba_text = f10.read()
+        # Find _run_checklist_snapshot full function body
+        idx = ba_text.find("def _run_checklist_snapshot")
+        ndef = ba_text.find("\ndef ", idx+1)
+        if ndef == -1:
+            ndef = idx + 3000
+        body = ba_text[idx:ndef]
+        c10_ok = "try:" in body and "except Exception" in body
+        results.append(("C10: _run_checklist_snapshot catches failures gracefully", c10_ok,
+                        "found" if c10_ok else "MISSING"))
+    except Exception as e:
+        results.append(("C10: _run_checklist_snapshot catches failures gracefully", False, str(e)[:80]))
+# Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)
     passed = 0
@@ -2885,7 +3013,7 @@ def _run_self_test(silent: bool = False) -> dict:
         print(f"  {name:<57} {status:<8}{detail_str}")
 
     if not silent:
-        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B regression tests")
+        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C regression tests")
 
     return {"pass": passed == len(results), "total": len(results), "passed": passed}
 

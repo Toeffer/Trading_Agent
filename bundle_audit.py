@@ -50,6 +50,7 @@ SOURCE_FILES = [
     "guard.py",
     "monitor.py",
     "bundle_audit.py",
+    "ibkr_operator.py",
 ]
 
 # Endpoints to snapshot (HTTP GET from bridge)
@@ -155,6 +156,76 @@ def _run_regression_silent() -> dict:
         return {"pass": False, "total": 0, "passed": 0, "_error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
+def _run_checklist_snapshot() -> dict | None:
+    """Produce checklist evidence snapshot from local files only.
+
+    Reads guard-state.json, guard-events.jsonl, audit bundles, releases.
+    No HTTP calls, no subprocess — safe for single-worker bridge.
+
+    Returns None gracefully on any error (never blocks audit bundle/release).
+    Full data snapshot available via: ibkr-operator checklist --json
+    """
+    try:
+        # Read guard state for safety status
+        gs_path = OPENCLAW_DIR / "guard-state.json"
+        gs = _read_file_safe(gs_path)
+        gs = gs if isinstance(gs, dict) else {}
+        allow = gs.get("allow_orders", False)
+        enf_rules = gs.get("rules", {})
+        if isinstance(enf_rules, dict):
+            enforced = enf_rules.get("enforced", False)
+        else:
+            enforced = gs.get("enforced", False)
+
+        # Count events
+        events_lines = 0
+        events_path = OPENCLAW_DIR / "guard-events.jsonl"
+        if events_path and events_path.exists():
+            try:
+                events_lines = sum(1 for _ in events_path.open())
+            except Exception:
+                pass
+
+        # Latest release info
+        tags = load_release_tags()
+        latest_tag = tags[0] if tags else None
+
+        # Latest bundle
+        bundles = load_audit_bundles()
+        latest_bundle = bundles[0] if bundles else None
+
+        snapshot = {
+            "command": "ibkr-operator checklist (file-based evidence)",
+            "state": "evidence_snapshot",
+            "verdict": "EVIDENCE",
+            "blocks": [],
+            "warnings": [],
+            "read_only": True,
+            "generated_at_utc": _now_iso(),
+            "summary_safety": {
+                "allow_orders": allow,
+                "enforced": enforced,
+                "system_locked": not (allow or enforced),
+            },
+            "summary_calendar": {},
+            "summary_monitoring": {
+                "event_count": events_lines,
+            },
+            "summary_portfolio": {},
+            "summary_release": {
+                "latest_release": latest_tag.get("phase_label", "?") if latest_tag else None,
+                "latest_bundle": latest_bundle.get("bundle_id", "?") if latest_bundle else None,
+            },
+            "next_safe_action": {
+                "action": "Run ibkr-operator checklist --json standalone for full data",
+                "rationale": "Evidence snapshot captured from local files. Full checklist requires live bridge.",
+            },
+            "required_manual_confirmations": [],
+        }
+        return snapshot
+    except Exception:
+        return None
+
 def create_audit_bundle(skip_endpoints: bool = False, skip_regression: bool = False) -> dict:
     """Create an immutable audit bundle.
 
@@ -220,7 +291,10 @@ def create_audit_bundle(skip_endpoints: bool = False, skip_regression: bool = Fa
     except Exception:
         pass
 
-    # 5. Build bundle
+    # 5b. Operator checklist snapshot (Phase 4C)
+    checklist_snapshot = _run_checklist_snapshot()
+
+    # 6. Build bundle
     bundle_id = f"bundle_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
     bundle: dict[str, Any] = {
         "bundle_id": bundle_id,
@@ -231,6 +305,7 @@ def create_audit_bundle(skip_endpoints: bool = False, skip_regression: bool = Fa
         "files": file_snapshots,
         "code_hashes": code_hashes,
         "simulation_evidence": simulation_evidence,
+        "checklist_snapshot": checklist_snapshot,
     }
 
     if not skip_endpoints:
@@ -637,6 +712,11 @@ def create_release_tag(phase_label: str = "phase3i_verified", dry_run_report: di
             "advisory": "simulation-only — never affects live reconciliation",
             "report_reference": dry_run_report,
         }
+
+    # Include operator checklist snapshot as evidence (Phase 4C)
+    checklist_snapshot = _run_checklist_snapshot()
+    if checklist_snapshot is not None:
+        tag["checklist_snapshot"] = checklist_snapshot
 
     if bundle is not None:
         tag["audit_bundle_id"] = bundle.get("bundle_id", "?")

@@ -132,12 +132,26 @@ def _fetch_endpoint(endpoint: str) -> Any:
         return {"_status": 0, "_error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
-def _hash_file(path: Path) -> str | None:
-    """Return SHA256 hex digest of a file, or None if not found."""
+def _hash_file(path: Path, max_mb: int = 10) -> str | None:
+    """Return SHA256 hex digest of a file, streaming to bound memory.
+
+    Reads in 64KB chunks. Skips if file > max_mb (default 10 MB).
+    Returns None if not found, too large, or unreadable.
+    """
     if not path.exists():
         return None
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        fsize = path.stat().st_size
+        if fsize > max_mb * 1024 * 1024:
+            return None
+        h = hashlib.sha256()
+        with open(path, 'rb') as fh:
+            while True:
+                chunk = fh.read(65536)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
     except OSError:
         return None
 
@@ -186,13 +200,13 @@ def _run_checklist_snapshot() -> dict | None:
             except Exception:
                 pass
 
-        # Latest release info
-        tags = load_release_tags()
-        latest_tag = tags[0] if tags else None
+        # Latest release info (bounded — uses latest_release_tag)
+        from bundle_audit import latest_release_tag as _lrt
+        latest_tag = _lrt()
 
-        # Latest bundle
-        bundles = load_audit_bundles()
-        latest_bundle = bundles[0] if bundles else None
+        # Latest bundle (bounded — uses latest_audit_bundle)
+        from bundle_audit import latest_audit_bundle as _lab
+        latest_bundle = _lab()
 
         snapshot = {
             "command": "ibkr-operator checklist (file-based evidence)",
@@ -267,7 +281,8 @@ def create_audit_bundle(skip_endpoints: bool = False, skip_regression: bool = Fa
     try:
         events_path = AUDIT_FILES.get("guard-events.jsonl")
         if events_path and events_path.exists():
-            dry_events = []
+            # Read last 200 dry_run_order events (bounded memory)
+            all_dry = []
             for line in events_path.read_text().splitlines():
                 line = line.strip()
                 if not line:
@@ -275,12 +290,13 @@ def create_audit_bundle(skip_endpoints: bool = False, skip_regression: bool = Fa
                 try:
                     ev = json.loads(line)
                     if ev.get("event_type") == "dry_run_order":
-                        # Remove sensitive/privacy fields
                         safe_ev = {k: v for k, v in ev.items()
                                    if k not in ("ibkr_metadata",)}
-                        dry_events.append(safe_ev)
+                        all_dry.append(safe_ev)
                 except (json.JSONDecodeError, TypeError):
                     continue
+            # Keep only last 200 records
+            dry_events = all_dry[-200:] if len(all_dry) > 200 else all_dry
             if dry_events:
                 simulation_evidence = {
                     "event_type": "dry_run_order",
@@ -332,18 +348,21 @@ def write_audit_bundle(bundle: dict) -> Path:
     return out_path
 
 
-def load_audit_bundles(sort_by: str = "created_at_utc") -> list[dict]:
-    """Load all audit bundles from AUDIT_DIR, sorted by created_at_utc descending."""
+def load_audit_bundles(sort_by: str = "created_at_utc", max_count: int = 3) -> list[dict]:
+    """Load audit bundles from AUDIT_DIR, newest first, bounded to max_count.
+
+    Loads only the max_count most recent bundles to bound memory.
+    """
     if not AUDIT_DIR.exists():
         return []
+    paths = sorted(AUDIT_DIR.glob("bundle_*.json"), reverse=True)
     bundles = []
-    for p in sorted(AUDIT_DIR.glob("bundle_*.json")):
+    for p in paths[:max_count]:
         try:
             data = json.loads(p.read_text())
             bundles.append(data)
         except (json.JSONDecodeError, OSError):
             pass
-    bundles.sort(key=lambda b: b.get(sort_by, ""), reverse=True)
     return bundles
 
 
@@ -783,18 +802,21 @@ def write_release_tag(tag: dict) -> Path:
     return out_path
 
 
-def load_release_tags() -> list[dict]:
-    """Load all release tags, sorted by created_at_utc descending."""
+def load_release_tags(max_count: int = 3) -> list[dict]:
+    """Load release tags from RELEASE_DIR, newest first, bounded to max_count.
+
+    Loads only the max_count most recent tags to bound memory.
+    """
     if not RELEASE_DIR.exists():
         return []
+    paths = sorted(RELEASE_DIR.glob("release_*.json"), reverse=True)
     tags = []
-    for p in sorted(RELEASE_DIR.glob("release_*.json")):
+    for p in paths[:max_count]:
         try:
             data = json.loads(p.read_text())
             tags.append(data)
         except (json.JSONDecodeError, OSError):
             pass
-    tags.sort(key=lambda t: t.get("created_at_utc", ""), reverse=True)
     return tags
 
 

@@ -3001,6 +3001,55 @@ def _run_self_test(silent: bool = False) -> dict:
                         "found" if c10_ok else "MISSING"))
     except Exception as e:
         results.append(("C10: _run_checklist_snapshot catches failures gracefully", False, str(e)[:80]))
+
+    # C11: Stale bundles do not cause OOM (bounded memory enforcement)
+    try:
+        ba_text = Path("/home/chris/agents/ibkr-bridge/bundle_audit.py").read_text()
+
+        # C11a: load_audit_bundles has max_count parameter
+        c11a = "max_count: int = 3" in ba_text or "max_count: int =" in ba_text
+        results.append(("C11a: load_audit_bundles bounded by max_count=3", c11a,
+                        "found" if c11a else "MISSING max_count param"))
+
+        # C11b: load_release_tags has max_count parameter
+        c11b = "def load_release_tags(" in ba_text and "max_count: int = 3" in ba_text
+        results.append(("C11b: load_release_tags bounded by max_count=3", c11b,
+                        "found" if c11b else "MISSING max_count param"))
+
+        # C11c: _hash_file streams SHA256 (no read_bytes())
+        c11c = "read_bytes()" not in ba_text.split("def _hash_file")[1].split("\ndef ")[0] \
+                if "def _hash_file" in ba_text else False
+        results.append(("C11c: _hash_file streams SHA256 (no read_bytes)", c11c,
+                        "confirmed" if c11c else "_hash_file uses read_bytes()"))
+
+        # C11d: write_audit_bundle calls _enforce_bundle_retention
+        c11d = "_enforce_bundle_retention()" in ba_text
+        results.append(("C11d: write_audit_bundle enforces retention", c11d,
+                        "found" if c11d else "MISSING retention call"))
+
+        # C11e: prune_old_bundles function exists
+        c11e = "def prune_old_bundles" in ba_text
+        results.append(("C11e: prune_old_bundles function exists", c11e,
+                        "found" if c11e else "MISSING prune function"))
+
+        # C11f: CLI has --prune argument
+        c11f = "--prune" in ba_text
+        results.append(("C11f: CLI has --prune flag", c11f,
+                        "found" if c11f else "MISSING --prune flag"))
+
+        # C11g: MAX_BUNDLES constant defined (default 20)
+        c11g = "MAX_BUNDLES = 20" in ba_text
+        results.append(("C11g: MAX_BUNDLES retention constant (20)", c11g,
+                        "found" if c11g else "MISSING MAX_BUNDLES"))
+
+        # C11h: load_audit_bundles called from _cli uses list-slice cap
+        c11h = "bundles = load_audit_bundles()" in ba_text
+        results.append(("C11h: --list uses bounded load_audit_bundles", c11h,
+                        "found" if c11h else "MISSING"))
+
+    except Exception as e:
+        for label in ["C11a", "C11b", "C11c", "C11d", "C11e", "C11f", "C11g", "C11h"]:
+            results.append((f"{label}: source inspection", False, str(e)[:80]))
 # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)

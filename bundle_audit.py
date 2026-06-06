@@ -34,6 +34,10 @@ HOME = Path.home()
 OPENCLAW_DIR = HOME / ".openclaw"
 AUDIT_DIR = OPENCLAW_DIR / "audit-bundles"
 BRIDGE_DIR = HOME / "agents" / "ibkr-bridge"
+
+# Retention defaults
+MAX_BUNDLES = 20          # keep at most 20 audit bundles
+MAX_BUNDLE_AGE_DAYS = 30  # delete bundles older than 30 days (soft cap)
 BRIDGE_URL = os.environ.get("IBKR_BRIDGE_URL", "http://127.0.0.1:8790")
 
 # Files to snapshot (read from disk)
@@ -336,6 +340,7 @@ def write_audit_bundle(bundle: dict) -> Path:
     """Write an audit bundle to disk as a JSON file.
 
     Creates AUDIT_DIR if it doesn't exist.
+    Enforces retention policy (keeps newest MAX_BUNDLES, removes older).
     Returns the path to the written file.
     """
     AUDIT_DIR.mkdir(parents=True, exist_ok=True)
@@ -345,7 +350,101 @@ def write_audit_bundle(bundle: dict) -> Path:
     with open(out_path, "w") as f:
         json.dump(bundle, f, indent=2, default=str)
 
+    # Enforce retention after writing new bundle, then inject result
+    pruned = _enforce_bundle_retention()
+    bundle["_retention_pruned"] = pruned
+
+    # Rewrite to include retention info
+    with open(out_path, "w") as f:
+        json.dump(bundle, f, indent=2, default=str)
+
     return out_path
+
+
+def _enforce_bundle_retention() -> dict:
+    """Enforce audit bundle retention policy.
+
+    Removes bundles exceeding MAX_BUNDLES or older than MAX_BUNDLE_AGE_DAYS.
+    Always keeps at least 1 bundle (the newest).
+    Returns dict with counts of removed files.
+    """
+    if not AUDIT_DIR.exists():
+        return {"by_count": 0, "by_age": 0, "total_removed": 0}
+
+    paths = sorted(AUDIT_DIR.glob("bundle_*.json"), reverse=True)
+    removed_by_age = 0
+    removed_by_count = 0
+
+    # Step 1: remove by age (older than MAX_BUNDLE_AGE_DAYS)
+    now = datetime.now(timezone.utc)
+    keep_paths = []
+    for p in paths:
+        try:
+            mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+            age_days = (now - mtime).total_seconds() / 86400
+            if age_days > MAX_BUNDLE_AGE_DAYS:
+                p.unlink()
+                removed_by_age += 1
+            else:
+                keep_paths.append(p)
+        except OSError:
+            keep_paths.append(p)
+
+    # Step 2: enforce max count on survivors (keep newest MAX_BUNDLES)
+    keep_paths.sort(reverse=True)
+    if len(keep_paths) > MAX_BUNDLES:
+        for p in keep_paths[MAX_BUNDLES:]:
+            try:
+                p.unlink()
+                removed_by_count += 1
+            except OSError:
+                pass
+
+    total = removed_by_age + removed_by_count
+    return {"by_age": removed_by_age, "by_count": removed_by_count, "total_removed": total}
+
+
+def prune_old_bundles(keep: int = 20) -> dict:
+    """Prune old audit bundles, keeping only the newest `keep`.
+
+    Also removes bundles older than MAX_BUNDLE_AGE_DAYS.
+    This is a maintenance operation — safe to call at any time.
+    Returns dict with removal counts.
+    """
+    if not AUDIT_DIR.exists():
+        return {"by_count": 0, "by_age": 0, "total_removed": 0}
+
+    paths = sorted(AUDIT_DIR.glob("bundle_*.json"), reverse=True)
+    removed_by_age = 0
+    removed_by_count = 0
+
+    # Step 1: age-based
+    now = datetime.now(timezone.utc)
+    survivors = []
+    for p in paths:
+        try:
+            mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+            age_days = (now - mtime).total_seconds() / 86400
+            if age_days > MAX_BUNDLE_AGE_DAYS:
+                p.unlink()
+                removed_by_age += 1
+            else:
+                survivors.append(p)
+        except OSError:
+            survivors.append(p)
+
+    # Step 2: count-based
+    survivors.sort(reverse=True)
+    if len(survivors) > keep:
+        for p in survivors[keep:]:
+            try:
+                p.unlink()
+                removed_by_count += 1
+            except OSError:
+                pass
+
+    total = removed_by_age + removed_by_count
+    return {"by_age": removed_by_age, "by_count": removed_by_count, "total_removed": total}
 
 
 def load_audit_bundles(sort_by: str = "created_at_utc", max_count: int = 3) -> list[dict]:
@@ -869,6 +968,14 @@ def _cli() -> None:
         action="store_true",
         help="Show the latest release tag summary.",
     )
+    parser.add_argument(
+        "--prune",
+        type=int,
+        nargs="?",
+        const=MAX_BUNDLES,
+        default=None,
+        help=f"Prune old audit bundles, keeping newest N (default: {MAX_BUNDLES}).",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -924,6 +1031,16 @@ def _cli() -> None:
             print(f"  Regression: {reg.get('passed', '?')}/{reg.get('total', '?')} pass={reg.get('pass', '?')}")
         else:
             print(f"  Regression: {reg.get('status')} ({reg.get('note', '')})")
+        return
+
+    if args.prune is not None:
+        result = prune_old_bundles(keep=args.prune)
+        print(f"Bundle retention enforced: keep={args.prune}, "
+              f"removed_by_age={result['by_age']}, "
+              f"removed_by_count={result['by_count']}, "
+              f"total={result['total_removed']}")
+        survivors = sorted(AUDIT_DIR.glob("bundle_*.json"), reverse=True)
+        print(f"Remaining bundles: {len(survivors)}")
         return
 
     if args.tag_latest:

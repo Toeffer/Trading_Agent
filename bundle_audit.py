@@ -33,12 +33,22 @@ from typing import Any
 HOME = Path.home()
 OPENCLAW_DIR = HOME / ".openclaw"
 AUDIT_DIR = OPENCLAW_DIR / "audit-bundles"
+RELEASE_DIR = OPENCLAW_DIR / "releases"
 BRIDGE_DIR = HOME / "agents" / "ibkr-bridge"
 
 # Retention defaults
 MAX_BUNDLES = 20          # keep at most 20 audit bundles
 MAX_BUNDLE_AGE_DAYS = 30  # delete bundles older than 30 days (soft cap)
+MAX_RELEASES = 20         # keep at most 20 release tags
 BRIDGE_URL = os.environ.get("IBKR_BRIDGE_URL", "http://127.0.0.1:8790")
+
+# Protected file paths (never touch)
+_PROTECTED_PATHS = {
+    "guard-state.json": OPENCLAW_DIR / "guard-state.json",
+    "guard-events.jsonl": OPENCLAW_DIR / "guard-events.jsonl",
+    "submitted-approvals.json": OPENCLAW_DIR / "submitted-approvals.json",
+    "manual-order-reconciliations.jsonl": OPENCLAW_DIR / "manual-order-reconciliations.jsonl",
+}
 
 # Files to snapshot (read from disk)
 AUDIT_FILES = {
@@ -447,6 +457,272 @@ def prune_old_bundles(keep: int = 20) -> dict:
     return {"by_age": removed_by_age, "by_count": removed_by_count, "total_removed": total}
 
 
+# ---------------------------------------------------------------------------
+# Phase 4D — Maintenance / Retention Tools
+# ---------------------------------------------------------------------------
+
+
+_PROTECTED_FILE_NAMES = frozenset({
+    "guard-state.json",
+    "guard-events.jsonl",
+    "submitted-approvals.json",
+    "manual-order-reconciliations.jsonl",
+})
+
+
+class ProtectedPathError(Exception):
+    """Raised when an operation attempts to touch a protected path."""
+
+
+def _check_protected(paths: list[Path]) -> Path | None:
+    """Return the first protected path from a list, or None if all safe.
+
+    Raises ProtectedPathError if any path matches a protected file name.
+    This is a safety gating check called before any deletion.
+    """
+    for p in paths:
+        if p.name in _PROTECTED_FILE_NAMES:
+            raise ProtectedPathError(
+                f"Refusing to touch protected path: {p}"
+            )
+    return None
+
+
+def maintenance_report() -> dict:
+    """Read-only report of audit and release artifact state.
+
+    Returns:
+        Dict with count, size_bytes, oldest/newest for both bundles and tags,
+        plus a list of protected files confirmed present.
+    """
+    result: dict[str, Any] = {
+        "mode": "read-only",
+        "protected_files_safe": True,
+    }
+
+    # Audit bundles
+    if AUDIT_DIR.exists():
+        paths = sorted(AUDIT_DIR.glob("bundle_*.json"), reverse=True)
+        total_size = sum(p.stat().st_size for p in paths if p.is_file())
+        oldest = paths[-1].name if paths else None
+        newest = paths[0].name if paths else None
+        result["audit_bundles"] = {
+            "count": len(paths),
+            "size_bytes": total_size,
+            "size_mb": round(total_size / 1048576, 1),
+            "newest": newest,
+            "oldest": oldest,
+            "retention_limit": MAX_BUNDLES,
+        }
+    else:
+        result["audit_bundles"] = {"count": 0, "size_bytes": 0, "size_mb": 0.0}
+
+    # Release tags
+    if RELEASE_DIR.exists():
+        paths = sorted(RELEASE_DIR.glob("release_*.json"), reverse=True)
+        total_size = sum(p.stat().st_size for p in paths if p.is_file())
+        oldest = paths[-1].name if paths else None
+        newest = paths[0].name if paths else None
+        result["release_tags"] = {
+            "count": len(paths),
+            "size_bytes": total_size,
+            "size_mb": round(total_size / 1048576, 1),
+            "newest": newest,
+            "oldest": oldest,
+            "retention_limit": MAX_RELEASES,
+        }
+    else:
+        result["release_tags"] = {"count": 0, "size_bytes": 0, "size_mb": 0.0}
+
+    # Protected files
+    protected_found = []
+    for name, p in _PROTECTED_PATHS.items():
+        protected_found.append({"name": name, "exists": p.exists()})
+    result["protected_files"] = protected_found
+
+    return result
+
+
+def prune_old_releases(keep: int = 20) -> dict:
+    """Prune old release tags, keeping only the newest `keep`.
+
+    Also removes tags older than MAX_BUNDLE_AGE_DAYS.
+    Always keeps at least 1 tag.
+    Returns dict with removal counts.
+    Never touches protected files.
+    """
+    if not RELEASE_DIR.exists():
+        return {"by_count": 0, "by_age": 0, "total_removed": 0}
+
+    paths = sorted(RELEASE_DIR.glob("release_*.json"), reverse=True)
+
+    # Safety gate: no protected files
+    _check_protected(paths)
+
+    removed_by_age = 0
+    removed_by_count = 0
+
+    # Step 1: age-based
+    now = datetime.now(timezone.utc)
+    survivors = []
+    for p in paths:
+        try:
+            mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+            age_days = (now - mtime).total_seconds() / 86400
+            if age_days > MAX_BUNDLE_AGE_DAYS:
+                p.unlink()
+                removed_by_age += 1
+            else:
+                survivors.append(p)
+        except OSError:
+            survivors.append(p)
+
+    # Step 2: count-based
+    survivors.sort(reverse=True)
+    if len(survivors) > keep:
+        for p in survivors[keep:]:
+            try:
+                p.unlink()
+                removed_by_count += 1
+            except OSError:
+                pass
+
+    total = removed_by_age + removed_by_count
+    return {"by_age": removed_by_age, "by_count": removed_by_count, "total_removed": total}
+
+
+def plan_prune(
+    keep_audit: int | None = None,
+    keep_releases: int | None = None,
+) -> dict:
+    """Dry-run: plan what would be pruned without deleting anything.
+
+    Args:
+        keep_audit: Number of audit bundles to keep. Default MAX_BUNDLES.
+        keep_releases: Number of release tags to keep. Default MAX_RELEASES.
+
+    Returns:
+        Dict with audit_bundles (list of paths that would be deleted,
+        count_by_age, count_by_limit) and release_tags (same structure).
+    """
+    keep_audit = keep_audit if keep_audit is not None else MAX_BUNDLES
+    keep_releases = keep_releases if keep_releases is not None else MAX_RELEASES
+    now = datetime.now(timezone.utc)
+
+    result: dict[str, Any] = {
+        "mode": "dry-run",
+        "would_delete": {"total": 0},
+    }
+
+    # Audit bundles
+    audit_delete: list[str] = []
+    audit_age = 0
+    audit_limit = 0
+    if AUDIT_DIR.exists():
+        paths = sorted(AUDIT_DIR.glob("bundle_*.json"), reverse=True)
+        # Safety gate
+        _check_protected(paths)
+
+        for p in paths:
+            try:
+                mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+                age_days = (now - mtime).total_seconds() / 86400
+                if age_days > MAX_BUNDLE_AGE_DAYS:
+                    audit_delete.append(p.name)
+                    audit_age += 1
+            except OSError:
+                pass
+        # Count-based: after removing aged, see who exceeds limit
+        survivors = [p for p in paths if p.name not in audit_delete]
+        survivors.sort(reverse=True)
+        for p in survivors[keep_audit:]:
+            if p.name not in audit_delete:
+                audit_delete.append(p.name)
+                audit_limit += 1
+
+    result["would_delete"]["total"] += len(audit_delete)
+    result["audit_bundles"] = {
+        "count": len(audit_delete),
+        "by_age": audit_age,
+        "by_limit": audit_limit,
+        "paths": sorted(audit_delete),
+    }
+
+    # Release tags
+    release_delete: list[str] = []
+    release_age = 0
+    release_limit = 0
+    if RELEASE_DIR.exists():
+        paths = sorted(RELEASE_DIR.glob("release_*.json"), reverse=True)
+        _check_protected(paths)
+
+        for p in paths:
+            try:
+                mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+                age_days = (now - mtime).total_seconds() / 86400
+                if age_days > MAX_BUNDLE_AGE_DAYS:
+                    release_delete.append(p.name)
+                    release_age += 1
+            except OSError:
+                pass
+        survivors = [p for p in paths if p.name not in release_delete]
+        survivors.sort(reverse=True)
+        for p in survivors[keep_releases:]:
+            if p.name not in release_delete:
+                release_delete.append(p.name)
+                release_limit += 1
+
+    result["would_delete"]["total"] += len(release_delete)
+    result["release_tags"] = {
+        "count": len(release_delete),
+        "by_age": release_age,
+        "by_limit": release_limit,
+        "paths": sorted(release_delete),
+    }
+
+    return result
+
+
+def execute_prune(
+    keep_audit: int | None = None,
+    keep_releases: int | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Execute or dry-run audit/release pruning.
+
+    This is the single entry point for all prune operations.
+    It checks protected paths, then delegates to
+    prune_old_bundles / prune_old_releases.
+
+    Args:
+        keep_audit: Audit bundles to keep (default MAX_BUNDLES).
+        keep_releases: Release tags to keep (default MAX_RELEASES).
+        dry_run: If True, only plan — no deletion.
+
+    Returns:
+        Dict with results.
+    """
+    if dry_run:
+        return plan_prune(keep_audit=keep_audit, keep_releases=keep_releases)
+
+    keep_audit = keep_audit if keep_audit is not None else MAX_BUNDLES
+    keep_releases = keep_releases if keep_releases is not None else MAX_RELEASES
+
+    # Safety gates
+    _check_protected(list(AUDIT_DIR.glob("*")) if AUDIT_DIR.exists() else [])
+    _check_protected(list(RELEASE_DIR.glob("*")) if RELEASE_DIR.exists() else [])
+
+    audit_result = prune_old_bundles(keep=keep_audit)
+    release_result = prune_old_releases(keep=keep_releases)
+
+    return {
+        "mode": "prune",
+        "audit_bundles": audit_result,
+        "release_tags": release_result,
+        "total_removed": audit_result["total_removed"] + release_result["total_removed"],
+    }
+
+
 def load_audit_bundles(sort_by: str = "created_at_utc", max_count: int = 3) -> list[dict]:
     """Load audit bundles from AUDIT_DIR, newest first, bounded to max_count.
 
@@ -679,7 +955,6 @@ def verify_audit_bundle(bundle: dict | None = None, skip_endpoint_live_check: bo
 # Phase 3J — Release Tagging / Provenance
 # ---------------------------------------------------------------------------
 
-RELEASE_DIR = OPENCLAW_DIR / "releases"
 
 
 def _compute_provenance(bundle: dict | None = None) -> dict:

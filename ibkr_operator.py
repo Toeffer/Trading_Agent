@@ -805,6 +805,83 @@ STATE_ALIASES = {
 }
 
 
+def _print_maintenance(result: dict) -> None:
+    """Pretty-print maintenance report or prune result."""
+    mode = result.get("mode", "read-only")
+    print(f"Mode: {mode}")
+    print()
+
+    if mode in ("dry-run",):
+        # Dry-run plan
+        wd = result.get("would_delete", {})
+        print(f"Would delete: {wd.get('total', 0)} files total")
+
+        ab = result.get("audit_bundles", {})
+        if ab.get("count", 0) > 0:
+            print(f"\n  Audit bundles to delete: {ab['count']}")
+            print(f"    by age:  {ab.get('by_age', 0)}")
+            print(f"    by limit: {ab.get('by_limit', 0)}")
+            for p in ab.get("paths", [])[:5]:
+                print(f"    - {p}")
+            if len(ab.get("paths", [])) > 5:
+                print(f"    ... and {len(ab['paths']) - 5} more")
+
+        rt = result.get("release_tags", {})
+        if rt.get("count", 0) > 0:
+            print(f"\n  Release tags to delete: {rt['count']}")
+            print(f"    by age:  {rt.get('by_age', 0)}")
+            print(f"    by limit: {rt.get('by_limit', 0)}")
+            for p in rt.get("paths", [])[:5]:
+                print(f"    - {p}")
+            if len(rt.get("paths", [])) > 5:
+                print(f"    ... and {len(rt['paths']) - 5} more")
+
+        if wd.get("total", 0) == 0:
+            print("  Nothing to delete.")
+        return
+
+    if mode == "prune":
+        ab = result.get("audit_bundles", {})
+        rt = result.get("release_tags", {})
+        print(f"  Audit bundles: removed {ab.get('total_removed', 0)}"
+              f" (age={ab.get('by_age', 0)}, count={ab.get('by_count', 0)})")
+        print(f"  Release tags:  removed {rt.get('total_removed', 0)}"
+              f" (age={rt.get('by_age', 0)}, count={rt.get('by_count', 0)})")
+        print(f"  Total removed: {result.get('total_removed', 0)}")
+        return
+
+    # Read-only report
+    ab = result.get("audit_bundles", {})
+    print("Audit Bundles")
+    print(f"  Count:      {ab.get('count', 0)}")
+    print(f"  Size:       {ab.get('size_mb', 0)} MB")
+    print(f"  Newest:     {ab.get('newest', '-')}")
+    print(f"  Oldest:     {ab.get('oldest', '-')}")
+    print(f"  Retention:  {ab.get('retention_limit', '?')} max")
+
+    rt = result.get("release_tags", {})
+    print()
+    print("Release Tags")
+    print(f"  Count:      {rt.get('count', 0)}")
+    print(f"  Size:       {rt.get('size_mb', 0)} MB")
+    print(f"  Newest:     {rt.get('newest', '-')}")
+    print(f"  Oldest:     {rt.get('oldest', '-')}")
+    print(f"  Retention:  {rt.get('retention_limit', '?')} max")
+
+    pf = result.get("protected_files", [])
+    if pf:
+        print()
+        print("Protected Files (never deleted)")
+        for f in pf:
+            status = "✓" if f["exists"] else "✗"
+            print(f"  {status} {f['name']}")
+
+    print()
+    print("Run with --dry-run to see what would be pruned.")
+    print("Run with --prune-audit --keep-audit N to prune audit bundles.")
+    print("Run with --prune-releases --keep-releases N to prune release tags.")
+
+
 def main() -> None:
     import argparse
 
@@ -821,7 +898,59 @@ def main() -> None:
     cp.add_argument("--offline", action="store_true",
                     help="End-of-day: file-based only, no bridge (subset of checks)")
 
+    # Phase 4D — maintenance subcommand
+    mp = sub.add_parser("maintenance", help="Audit/release artifact maintenance")
+    mp.add_argument("--json", action="store_true",
+                    help="Output raw JSON only")
+    mp.add_argument("--dry-run", action="store_true",
+                    help="Show what would be deleted without deleting anything")
+    mp.add_argument("--prune-audit", action="store_true",
+                    help="Prune old audit bundles (requires --keep-audit)")
+    mp.add_argument("--prune-releases", action="store_true",
+                    help="Prune old release tags (requires --keep-releases)")
+    mp.add_argument("--keep-audit", type=int, default=None,
+                    help="Number of audit bundles to keep (default: 20)")
+    mp.add_argument("--keep-releases", type=int, default=None,
+                    help="Number of release tags to keep (default: 20)")
+
     args = parser.parse_args()
+
+    if args.command == "maintenance":
+        from bundle_audit import (
+            maintenance_report,
+            execute_prune,
+            plan_prune,
+            ProtectedPathError,
+        )
+
+        has_prune_flag = args.prune_audit or args.prune_releases
+
+        if has_prune_flag:
+            # Prune mode — requires explicit flags
+            if args.dry_run:
+                result = plan_prune(
+                    keep_audit=args.keep_audit,
+                    keep_releases=args.keep_releases,
+                )
+            else:
+                try:
+                    result = execute_prune(
+                        keep_audit=args.keep_audit,
+                        keep_releases=args.keep_releases,
+                        dry_run=False,
+                    )
+                except ProtectedPathError as e:
+                    print(f"SAFETY BLOCKED: {e}", file=sys.stderr)
+                    sys.exit(99)
+        else:
+            # Default: read-only report
+            result = maintenance_report()
+
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_maintenance(result)
+        return
 
     if args.command != "checklist":
         parser.print_help()

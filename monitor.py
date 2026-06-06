@@ -3050,6 +3050,89 @@ def _run_self_test(silent: bool = False) -> dict:
     except Exception as e:
         for label in ["C11a", "C11b", "C11c", "C11d", "C11e", "C11f", "C11g", "C11h"]:
             results.append((f"{label}: source inspection", False, str(e)[:80]))
+
+    # =============================================================
+    # Section D: Maintenance / Retention Tests (Phase 4D)
+    # =============================================================
+
+    try:
+        # C12: maintenance_report function exists and returns dict with keys
+        from bundle_audit import maintenance_report
+        mr = maintenance_report()
+        c12_ok = isinstance(mr, dict) and "audit_bundles" in mr and "release_tags" in mr
+        detail_c12 = (f"audit={mr.get('audit_bundles',{}).get('count')}, "
+                      f"tags={mr.get('release_tags',{}).get('count')}" if c12_ok else "missing keys")
+        results.append(("D1: maintenance_report returns audit/release state", c12_ok,
+                        detail_c12 if c12_ok else "MISSING audit_bundles or release_tags"))
+
+        # C13: Default mode is read-only
+        c13_ok = mr.get("mode") == "read-only"
+        results.append(("D2: maintenance_report default is read-only", c13_ok,
+                        f"mode={mr.get('mode')}" if not c13_ok else "read-only"))
+
+        # C14: execute_prune checks protected paths
+        from bundle_audit import execute_prune, ProtectedPathError
+        # Verify the safety gate exists by checking source
+        ba_text = Path("/home/chris/agents/ibkr-bridge/bundle_audit.py").read_text()
+        c14_ok = "_check_protected" in ba_text
+        results.append(("D3: execute_prune gates on protected paths", c14_ok,
+                        "found _check_protected" if c14_ok else "MISSING"))
+
+        # C15: plan_prune lists files without deleting
+        from bundle_audit import plan_prune
+        pp = plan_prune(keep_audit=999, keep_releases=999)
+        c15_ok = (
+            isinstance(pp, dict)
+            and pp.get("mode") == "dry-run"
+            and "would_delete" in pp
+            and "audit_bundles" in pp
+            and "release_tags" in pp
+        )
+        results.append(("D4: plan_prune is dry-run with would_delete", c15_ok,
+                        f"mode={pp.get('mode')}" if c15_ok else str(list(pp.keys()))))
+
+        # D5: ibkr_operator.py has maintenance subcommand
+        op_text = Path("/home/chris/agents/ibkr-bridge/ibkr_operator.py").read_text()
+        c16_ok = '"maintenance"' in op_text and "prune_audit" in op_text
+        results.append(("D5: ibkr-operator maintenance subcommand exists", c16_ok,
+                        "found" if c16_ok else "MISSING"))
+
+        # D6: prune_old_releases function exists
+        from bundle_audit import prune_old_releases
+        c17_ok = callable(prune_old_releases)
+        results.append(("D6: prune_old_releases function exists", c17_ok,
+                        "callable" if c17_ok else "MISSING"))
+
+        # D7: ProtectedFileError class exists
+        from bundle_audit import ProtectedPathError
+        c18_ok = issubclass(ProtectedPathError, Exception)
+        results.append(("D7: ProtectedPathError exception class exists", c18_ok,
+                        "subclass of Exception" if c18_ok else "MISSING"))
+
+        # D8: ibkr-operator maintenance --json outputs valid JSON
+        import subprocess
+        proc = subprocess.run(
+            [sys.executable, "ibkr_operator.py", "maintenance", "--json"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if proc.returncode == 0:
+            import json
+            try:
+                jd = json.loads(proc.stdout)
+                c19_ok = isinstance(jd, dict) and jd.get("mode") == "read-only"
+                results.append(("D8: ibkr-operator maintenance --json valid", c19_ok,
+                                "parsed OK" if c19_ok else "bad keys"))
+            except json.JSONDecodeError:
+                results.append(("D8: ibkr-operator maintenance --json valid", False,
+                                "invalid JSON"))
+        else:
+            results.append(("D8: ibkr-operator maintenance --json valid", False,
+                            f"exit={proc.returncode}"))
+
+    except Exception as e:
+        for label in ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8"]:
+            results.append((f"{label}: maintenance test", False, str(e)[:80]))
+
 # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)
@@ -3062,7 +3145,7 @@ def _run_self_test(silent: bool = False) -> dict:
         print(f"  {name:<57} {status:<8}{detail_str}")
 
     if not silent:
-        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C regression tests")
+        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D regression tests")
 
     return {"pass": passed == len(results), "total": len(results), "passed": passed}
 

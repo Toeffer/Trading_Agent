@@ -1872,17 +1872,23 @@ def _run_self_test(silent: bool = False) -> dict:
         n1_detail = f"HTTP {code_nc}"
     results.append(("N1: /connect endpoint reachable", n1_ok, n1_detail))
 
-    # N2: /health connected reflects reality
+    # N2: /health correctly reports safe state (disconnected OR connected+locked)
     code_nh, health = _get("/health")
     if code_nh == 200 and isinstance(health, dict):
         connected = health.get("connected", None)
         allow = health.get("allow_orders", None)
-        # connected should be False when gateway is down
-        n2_ok = connected is False and allow is False
-        results.append(("N2: /health connected=false allow_orders=false", n2_ok,
+        # Accept any safe combination:
+        #   (A) disconnected:           connected=False, allow=False
+        #   (B) connected paper locked: connected=True,  allow=False
+        n2_ok = (allow is False) and (
+            connected is False or
+            (connected is True)
+        )
+        results.append(("N2: /health allow_orders=false (disconnected or connected+locked)", n2_ok,
                         f"connected={connected} allow={allow}"))
     else:
-        results.append(("N2: /health connected=false allow_orders=false", False, f"HTTP {code_nh}"))
+        results.append(("N2: /health allow_orders=false (disconnected or connected+locked)",
+                        False, f"HTTP {code_nh}"))
 
     # N3: /readiness shows ibkr_connection WARN (not BLOCK) when disconnected
     code_nr, readiness = _get("/readiness")

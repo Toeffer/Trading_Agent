@@ -3133,6 +3133,70 @@ def _run_self_test(silent: bool = False) -> dict:
         for label in ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8"]:
             results.append((f"{label}: maintenance test", False, str(e)[:80]))
 
+    # =============================================================
+    # Section E: Resource Health Tests (Phase 4E)
+    # =============================================================
+
+    try:
+        # E1: maintenance_report includes resources key
+        from bundle_audit import _resource_report
+        rr = _resource_report(bundle_count=20, bundle_size_mb=100.0)
+        e1_ok = (
+            isinstance(rr, dict)
+            and "memory" in rr
+            and "swap" in rr
+            and "processes" in rr
+            and "warnings" in rr
+            and "next_safe_action" in rr
+        )
+        results.append(("E1: _resource_report returns all 5 sections", e1_ok,
+                        "mem+swap+procs+warnings+next" if e1_ok else str(list(rr.keys()))))
+
+        # E2: memory section has total_mb, used_mb, available_mb, used_pct
+        mem = rr.get("memory", {})
+        e2_ok = all(k in mem for k in ["total_mb", "used_mb", "available_mb", "used_pct"])
+        results.append(("E2: memory section has all 4 fields", e2_ok,
+                        f"total={mem.get('total_mb')}MB used={mem.get('used_pct')}%" if e2_ok else "missing fields"))
+
+        # E3: swap section has total_mb, used_mb, free_mb
+        swap = rr.get("swap", {})
+        e3_ok = all(k in swap for k in ["total_mb", "used_mb", "free_mb"])
+        results.append(("E3: swap section has 3 fields", e3_ok,
+                        f"total={swap.get('total_mb')}MB free={swap.get('free_mb')}MB" if e3_ok else "missing fields"))
+
+        # E4: processes section has ibkr_bridge and ib_gateway
+        procs = rr.get("processes", {})
+        e4_ok = "ibkr_bridge" in procs and "ib_gateway" in procs
+        results.append(("E4: processes section covers bridge+gateway", e4_ok,
+                        "both present" if e4_ok else str(list(procs.keys()))))
+
+        # E5: warnings is a list, next_safe_action is a string
+        e5_ok = isinstance(rr.get("warnings"), list) and isinstance(rr.get("next_safe_action"), str)
+        results.append(("E5: warnings=list, next_safe_action=str", e5_ok,
+                        f"{len(rr.get('warnings',[]))} warnings, has action" if e5_ok else "wrong types"))
+
+        # E6: thresholds section present
+        e6_ok = isinstance(rr.get("thresholds"), dict)
+        results.append(("E6: thresholds section present", e6_ok,
+                        "found" if e6_ok else "MISSING"))
+
+        # E7: maintenance_report includes resources in full report
+        from bundle_audit import maintenance_report
+        mr = maintenance_report()
+        e7_ok = "resources" in mr and isinstance(mr["resources"], dict)
+        results.append(("E7: maintenance_report includes resources", e7_ok,
+                        f"{len(mr.get('resources',{}))} keys" if e7_ok else "MISSING"))
+
+        # E8: ibkr_operator _print_maintenance has resource display section
+        op_text = Path("/home/chris/agents/ibkr-bridge/ibkr_operator.py").read_text()
+        e8_ok = "resources" in op_text and "System Resources" in op_text
+        results.append(("E8: ibkr-operator maintenance displays resources", e8_ok,
+                        "found" if e8_ok else "MISSING"))
+
+    except Exception as e:
+        for label in ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"]:
+            results.append((f"{label}: resource test", False, str(e)[:80]))
+
 # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)
@@ -3145,7 +3209,7 @@ def _run_self_test(silent: bool = False) -> dict:
         print(f"  {name:<57} {status:<8}{detail_str}")
 
     if not silent:
-        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D regression tests")
+        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E regression tests")
 
     return {"pass": passed == len(results), "total": len(results), "passed": passed}
 

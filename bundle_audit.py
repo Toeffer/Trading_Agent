@@ -488,6 +488,163 @@ def _check_protected(paths: list[Path]) -> Path | None:
     return None
 
 
+# Phase 4E — Resource thresholds
+_RESOURCE_WARN_SWAP_KB = 0              # warn if no swap
+_RESOURCE_WARN_MEM_PCT = 80            # warn if RAM usage >80%
+_RESOURCE_WARN_BRIDGE_MEM_MB = 512     # warn if bridge >512MB
+_RESOURCE_WARN_BUNDLE_SIZE_MB = 200    # warn if audit bundles >200MB
+_RESOURCE_WARN_GATEWAY_MEM_MB = 1024   # warn if Gateway >1GB
+
+
+def _parse_proc_meminfo() -> dict:
+    """Parse /proc/meminfo into a dict of ints (kB)."""
+    result: dict[str, int] = {}
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if ":" in line:
+                    parts = line.split(":")
+                    key = parts[0].strip()
+                    val_str = parts[1].strip().split()[0]
+                    result[key] = int(val_str)
+    except (OSError, ValueError, IndexError):
+        pass
+    return result
+
+
+def _process_rss_mb(pid: int) -> float | None:
+    """Read RSS (resident set size) in MB for a PID from /proc."""
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    kb = line.split()[1]
+                    return int(kb) / 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _process_by_cmdline(keyword: str) -> list[dict]:
+    """Find processes matching a keyword in cmdline."""
+    results = []
+    try:
+        for pdir in Path("/proc").glob("[0-9]*"):
+            try:
+                cmdline = (pdir / "cmdline").read_bytes().decode("utf-8", errors="replace").replace("\x00", " ")
+                if keyword in cmdline:
+                    pid = int(pdir.name)
+                    rss_mb = _process_rss_mb(pid)
+                    results.append({
+                        "pid": pid,
+                        "cmdline": cmdline[:200],
+                        "rss_mb": rss_mb,
+                    })
+            except (OSError, ValueError):
+                pass
+    except OSError:
+        pass
+    return results
+
+
+def _resource_report(bundle_count: int = 0, bundle_size_mb: float = 0.0) -> dict:
+    """Read-only resource health report.
+
+    Reads /proc/meminfo, scans for ibkr-bridge and Gateway processes,
+    and returns resource usage + warnings + recommended action.
+
+    Args:
+        bundle_count: Current audit bundle count for threshold check.
+        bundle_size_mb: Current audit bundle total size in MB.
+
+    Returns:
+        Dict with memory, swap, processes, warnings, next_safe_action.
+    """
+    meminfo = _parse_proc_meminfo()
+
+    total_kb = meminfo.get("MemTotal", 0)
+    available_kb = meminfo.get("MemAvailable", 0)
+    used_kb = total_kb - available_kb if total_kb else 0
+    used_pct = round(used_kb / total_kb * 100, 1) if total_kb else 0.0
+
+    swap_total_kb = meminfo.get("SwapTotal", 0)
+    swap_free_kb = meminfo.get("SwapFree", 0)
+    swap_used_kb = swap_total_kb - swap_free_kb if swap_total_kb else 0
+
+    # Memory info
+    memory = {
+        "total_mb": round(total_kb / 1024, 0),
+        "used_mb": round(used_kb / 1024, 0),
+        "available_mb": round(available_kb / 1024, 0),
+        "used_pct": used_pct,
+    }
+
+    # Swap info
+    swap = {
+        "total_mb": round(swap_total_kb / 1024, 0),
+        "used_mb": round(swap_used_kb / 1024, 0),
+        "free_mb": round(swap_free_kb / 1024, 0),
+    }
+
+    # Process info
+    bridge_procs = _process_by_cmdline("uvicorn")
+    gateway_procs = _process_by_cmdline("ibgateway")
+
+    bridge_rss = max((p["rss_mb"] or 0) for p in bridge_procs) if bridge_procs else None
+    gateway_rss = max((p["rss_mb"] or 0) for p in gateway_procs) if gateway_procs else None
+
+    processes = {
+        "ibkr_bridge": {
+            "running": len(bridge_procs) > 0,
+            "count": len(bridge_procs),
+            "rss_mb": bridge_rss,
+        },
+        "ib_gateway": {
+            "running": len(gateway_procs) > 0,
+            "count": len(gateway_procs),
+            "rss_mb": gateway_rss,
+        },
+    }
+
+    # Warnings
+    warnings: list[str] = []
+
+    if swap_total_kb < _RESOURCE_WARN_SWAP_KB:
+        warnings.append("No swap space configured — system may OOM under load")
+
+    if used_pct > _RESOURCE_WARN_MEM_PCT:
+        warnings.append(f"RAM usage {used_pct}% exceeds threshold {_RESOURCE_WARN_MEM_PCT}%")
+
+    if bridge_rss is not None and bridge_rss > _RESOURCE_WARN_BRIDGE_MEM_MB:
+        warnings.append(f"Bridge memory {bridge_rss:.0f}MB exceeds threshold {_RESOURCE_WARN_BRIDGE_MEM_MB}MB")
+
+    if gateway_rss is not None and gateway_rss > _RESOURCE_WARN_GATEWAY_MEM_MB:
+        warnings.append(f"Gateway memory {gateway_rss:.0f}MB exceeds threshold {_RESOURCE_WARN_GATEWAY_MEM_MB}MB")
+
+    if bundle_size_mb > _RESOURCE_WARN_BUNDLE_SIZE_MB:
+        warnings.append(f"Audit bundle total {bundle_size_mb:.0f}MB exceeds threshold {_RESOURCE_WARN_BUNDLE_SIZE_MB}MB")
+        warnings.append("Run 'ibkr-operator maintenance --prune-audit --keep-audit 20' to reduce")
+
+    if warnings:
+        next_action = "Resolve warnings above — start with prune if bundle size exceeds threshold"
+    else:
+        next_action = "No resource action required"
+
+    return {
+        "memory": memory,
+        "swap": swap,
+        "processes": processes,
+        "warnings": warnings,
+        "thresholds": {
+            "max_ram_pct": _RESOURCE_WARN_MEM_PCT,
+            "max_bridge_mb": _RESOURCE_WARN_BRIDGE_MEM_MB,
+            "max_gateway_mb": _RESOURCE_WARN_GATEWAY_MEM_MB,
+            "max_bundle_mb": _RESOURCE_WARN_BUNDLE_SIZE_MB,
+        },
+        "next_safe_action": next_action,
+    }
+
+
 def maintenance_report() -> dict:
     """Read-only report of audit and release artifact state.
 
@@ -539,6 +696,12 @@ def maintenance_report() -> dict:
     for name, p in _PROTECTED_PATHS.items():
         protected_found.append({"name": name, "exists": p.exists()})
     result["protected_files"] = protected_found
+
+    # Phase 4E — resource health
+    result["resources"] = _resource_report(
+        bundle_count=result["audit_bundles"].get("count", 0),
+        bundle_size_mb=result["audit_bundles"].get("size_mb", 0.0),
+    )
 
     return result
 

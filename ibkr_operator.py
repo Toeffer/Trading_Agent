@@ -876,6 +876,37 @@ def _print_maintenance(result: dict) -> None:
             status = "✓" if f["exists"] else "✗"
             print(f"  {status} {f['name']}")
 
+    # Phase 4E — Resource health
+    rs = result.get("resources", {})
+    if rs:
+        mem = rs.get("memory", {})
+        swap = rs.get("swap", {})
+        procs = rs.get("processes", {})
+        print()
+        print("System Resources")
+        print(f"  RAM:    {mem.get('used_mb', '?')}MB / {mem.get('total_mb', '?')}MB ({mem.get('used_pct', '?')}% used)")
+        print(f"  Swap:   {swap.get('used_mb', '?')}MB / {swap.get('total_mb', '?')}MB")
+
+        bw = procs.get("ibkr_bridge", {})
+        gw = procs.get("ib_gateway", {})
+        bridge_rss = bw.get("rss_mb", None)
+        gateway_rss = gw.get("rss_mb", None)
+        bridge_status = "✓" if bw.get("running") else "✗"
+        gateway_status = "✓" if gw.get("running") else "✗"
+        bridge_mem = f"{bridge_rss:.0f}MB" if bridge_rss else "-"
+        gateway_mem = f"{gateway_rss:.0f}MB" if gateway_rss else "-"
+        print(f"  Bridge:  {bridge_status}  RSS={bridge_mem}")
+        print(f"  Gateway: {gateway_status}  RSS={gateway_mem}")
+
+        warnings = rs.get("warnings", [])
+        if warnings:
+            print()
+            print("Warnings")
+            for w in warnings:
+                print(f"  ⚠ {w}")
+            print()
+            print(f"  Next: {rs.get('next_safe_action', '-')}")
+
     print()
     print("Run with --dry-run to see what would be pruned.")
     print("Run with --prune-audit --keep-audit N to prune audit bundles.")

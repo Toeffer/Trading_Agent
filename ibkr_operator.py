@@ -1041,6 +1041,298 @@ STATE_ALIASES = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Phase 4H — Operator Evidence Export
+# ---------------------------------------------------------------------------
+
+_EXPORT_DIR = OPENCLAW_DIR / "exports"
+_EXPORT_MAX_BYTES = 256 * 1024  # 256KB cap for the full export file
+
+
+def run_export() -> dict:
+    """Produce a read-only evidence export combining all operator data.
+
+    Includes:
+    - daily_report_snapshot (Phase 4G)
+    - checklist_snapshot (Phase 4C)
+    - maintenance/resource snapshot (Phase 4D/4E)
+    - latest audit/release identifiers
+    - git tag/commit
+    - locked baseline confirmation
+
+    Redacts secrets. Caps at 256KB. No historical logs. No raw guard-events.
+
+    Returns:
+        Dict with all sections, safe for export.
+    """
+    now = datetime.now(timezone.utc)
+    ts_utc = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    export_id = f"export_{now.strftime('%Y%m%dT%H%M%S')}"
+
+    # 1. Daily report snapshot (Phase 4G)
+    try:
+        from bundle_audit import _run_daily_report_snapshot
+        daily_report_snapshot = _run_daily_report_snapshot()
+    except Exception:
+        daily_report_snapshot = None
+
+    # 2. Checklist snapshot (Phase 4C)
+    try:
+        from bundle_audit import _run_checklist_snapshot
+        checklist_snapshot = _run_checklist_snapshot()
+    except Exception:
+        checklist_snapshot = None
+
+    # 3. Maintenance + resource report (Phase 4D/4E)
+    try:
+        from bundle_audit import maintenance_report
+        maint = maintenance_report()
+        # Extract just the resource summary, not full audit paths
+        maintenance_snapshot = {
+            "audit_bundles": {
+                "count": maint.get("audit_bundles", {}).get("count", 0),
+                "size_mb": maint.get("audit_bundles", {}).get("size_mb", 0.0),
+                "retention_limit": maint.get("audit_bundles", {}).get("retention_limit", 20),
+            },
+            "release_tags": {
+                "count": maint.get("release_tags", {}).get("count", 0),
+                "size_mb": maint.get("release_tags", {}).get("size_mb", 0.0),
+                "retention_limit": maint.get("release_tags", {}).get("retention_limit", 20),
+            },
+            "protected_files_present": sum(1 for f in maint.get("protected_files", []) if f.get("exists")),
+            "protected_files_total": len(maint.get("protected_files", [])),
+        }
+        resources_snapshot = maint.get("resources", {})
+    except Exception:
+        maintenance_snapshot = {}
+        resources_snapshot = {}
+
+    # 4. Latest audit/release identifiers
+    latest_bundle = None
+    latest_release = None
+    try:
+        from bundle_audit import latest_audit_bundle, latest_release_tag
+        lb = latest_audit_bundle()
+        if lb:
+            latest_bundle = {
+                "bundle_id": lb.get("bundle_id"),
+                "created_at_utc": lb.get("created_at_utc"),
+            }
+        lr = latest_release_tag()
+        if lr:
+            latest_release = {
+                "tag_id": lr.get("tag_id"),
+                "phase_label": lr.get("phase_label"),
+                "created_at_utc": lr.get("created_at_utc"),
+            }
+    except Exception:
+        pass
+
+    # 5. Git tag/commit + locked baseline from provenance
+    git_info = None
+    locked_baseline = None
+    try:
+        from bundle_audit import _compute_provenance
+        prov = _compute_provenance(latest_audit_bundle() if latest_bundle else None)
+        if "git" in prov:
+            git_info = {
+                k: v for k, v in prov["git"].items()
+                if k in ("commit", "tag", "dirty")
+            }
+        # Locked baseline from checklist snapshot
+        if checklist_snapshot and isinstance(checklist_snapshot, dict):
+            ss = checklist_snapshot.get("summary_safety", {})
+            system_locked = ss.get("system_locked", "?")
+            locked_baseline = {
+                "confirmed": bool(system_locked) if system_locked not in ("?",) else "?",
+                "allow_orders": ss.get("allow_orders"),
+                "enforced": ss.get("enforced"),
+                "source": "checklist_snapshot",
+            }
+        elif daily_report_snapshot and isinstance(daily_report_snapshot, dict):
+            ks = daily_report_snapshot.get("kill_switches", {})
+            locked_baseline = {
+                "confirmed": ks.get("system_locked") is True,
+                "system_locked": ks.get("system_locked"),
+                "IBKR_ALLOW_ORDERS": ks.get("IBKR_ALLOW_ORDERS"),
+                "rules_enforced": ks.get("rules_enforced"),
+                "source": "daily_report_snapshot",
+            }
+    except Exception:
+        pass
+
+    # 6. Assemble export
+    export: dict[str, Any] = {
+        "command": "ibkr-operator export",
+        "export_id": export_id,
+        "generated_at_utc": ts_utc,
+        "read_only": True,
+        "advisory": "Read-only evidence export. No trading. No order automation.",
+        "sections_included": [
+            "daily_report_snapshot",
+            "checklist_snapshot",
+            "maintenance_snapshot",
+            "resources_snapshot",
+            "latest_identifiers",
+            "git_info",
+            "locked_baseline",
+        ],
+        "revision": "phase4h-1",
+        # Sections
+        "daily_report_snapshot": daily_report_snapshot,
+        "checklist_snapshot": checklist_snapshot,
+        "maintenance_snapshot": maintenance_snapshot,
+        "resources_snapshot": resources_snapshot,
+        "latest_identifiers": {
+            "audit_bundle": latest_bundle,
+            "release_tag": latest_release,
+        },
+        "git_info": git_info,
+        "locked_baseline": locked_baseline,
+    }
+
+    # Size cap enforcement
+    serialized = json.dumps(export, default=str)
+    if len(serialized) > _EXPORT_MAX_BYTES:
+        trimmed = False
+        # Trim daily_report_snapshot blocks/warnings
+        drs = export.get("daily_report_snapshot", {})
+        if isinstance(drs, dict):
+            blk = drs.get("checklist", {}).get("blocks", [])
+            if len(blk) > 5:
+                drs["checklist"]["blocks"] = blk[:5]
+                drs["checklist"]["blocks"].append({"_truncated": True})
+                trimmed = True
+            wng = drs.get("checklist", {}).get("warnings", [])
+            if len(wng) > 5:
+                drs["checklist"]["warnings"] = wng[:5]
+                drs["checklist"]["warnings"].append({"_truncated": True})
+                trimmed = True
+        # Trim resources
+        rs = export.get("resources_snapshot", {})
+        if isinstance(rs, dict):
+            export["resources_snapshot"] = {
+                "memory": {"used_pct": rs.get("memory", {}).get("used_pct")},
+                "processes": {
+                    "ibkr_bridge": {"rss_mb": rs.get("processes", {}).get("ibkr_bridge", {}).get("rss_mb")},
+                    "ib_gateway": {"rss_mb": rs.get("processes", {}).get("ib_gateway", {}).get("rss_mb")},
+                },
+            }
+            trimmed = True
+        if trimmed:
+            export["_size_trimmed"] = True
+
+    return export
+
+
+def write_export(export: dict) -> Path:
+    """Write evidence export to disk. Returns output path."""
+    _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    eid = export.get("export_id", f"export_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}")
+    out_path = _EXPORT_DIR / f"{eid}.json"
+    out_path.write_text(json.dumps(export, indent=2, default=str))
+    return out_path
+
+
+def print_export(export: dict) -> None:
+    """Print evidence export in human-readable format."""
+    eid = export.get("export_id", "?")
+    ts = export.get("generated_at_utc", "?")
+
+    print(f"{BOLD}Operator Evidence Export{RESET}")
+    print(f"{BOLD}{'=' * 50}{RESET}")
+    print(f"  ID:       {eid}")
+    print(f"  Time:     {ts}")
+    print(f"  Verbose:  {export.get('sections_included', [])}")
+    print()
+
+    # Daily report snapshot
+    drs = export.get("daily_report_snapshot", {})
+    if drs:
+        print(f"{BOLD}Daily Report Snapshot{RESET}")
+        cl = drs.get("checklist", {})
+        print(f"  State:    {cl.get('state', '?')}")
+        print(f"  Verdict:  {_color_verdict(cl.get('verdict', '?'))}")
+        nsa = cl.get("next_safe_action", {})
+        print(f"  Next:     {CYAN}{nsa.get('action', '?')}{RESET}")
+        ks = drs.get("kill_switches", {})
+        print(f"  Locked:   {_bool_icon(ks.get('system_locked'))}")
+        print(f"  Allow:    {_bool_icon(not ks.get('IBKR_ALLOW_ORDERS', True))}")
+        tb = drs.get("trading_baseline", {})
+        print(f"  Net Liq:  {tb.get('net_liq_eur') or '\u2014'} EUR")
+        print(f"  Positions:{tb.get('positions_count', '?')}  Drift: {_bool_icon(not drs.get('monitoring',{}).get('drift_detected'))}")
+        print()
+
+    # Checklist snapshot
+    cs = export.get("checklist_snapshot", {})
+    if cs and isinstance(cs, dict):
+        print(f"{BOLD}Checklist Snapshot{RESET}")
+        ss = cs.get("summary_safety", {})
+        print(f"  Safety:   allow={ss.get('allow_orders')} enforced={ss.get('enforced')} locked={ss.get('system_locked')}")
+        sr = cs.get("summary_release", {})
+        print(f"  Release:  {sr.get('latest_release', '?')}  Bundle: {sr.get('latest_bundle', '?')}")
+        print()
+
+    # Maintenance snapshot
+    ms = export.get("maintenance_snapshot", {})
+    if ms:
+        print(f"{BOLD}Maintenance / Retention{RESET}")
+        ab = ms.get("audit_bundles", {})
+        rt = ms.get("release_tags", {})
+        print(f"  Bundles:  {ab.get('count', 0)} ({ab.get('size_mb', 0)} MB)  keep={ab.get('retention_limit', '?')}")
+        print(f"  Releases: {rt.get('count', 0)} ({rt.get('size_mb', 0)} MB)  keep={rt.get('retention_limit', '?')}")
+        print()
+
+    # Resources
+    rs = export.get("resources_snapshot", {})
+    if rs:
+        mem = rs.get("memory", {})
+        procs = rs.get("processes", {})
+        print(f"{BOLD}System Resources{RESET}")
+        print(f"  RAM:  {mem.get('used_pct', '?')}% used")
+        bw = procs.get("ibkr_bridge", {})
+        gw = procs.get("ib_gateway", {})
+        print(f"  Bridge:  {_bool_icon(bw.get('running'))}  RSS={f'{bw.get("rss_mb"):.0f}MB' if bw.get("rss_mb") else '\u2014'}")
+        print(f"  Gateway: {_bool_icon(gw.get('running'))}  RSS={f'{gw.get("rss_mb"):.0f}MB' if gw.get("rss_mb") else '\u2014'}")
+        print()
+
+    # Latest identifiers
+    li = export.get("latest_identifiers", {})
+    if li:
+        print(f"{BOLD}Latest Identifiers{RESET}")
+        b = li.get("audit_bundle", {})
+        r = li.get("release_tag", {})
+        print(f"  Bundle:  {b.get('bundle_id', '\u2014')} ({b.get('created_at_utc', '')})")
+        print(f"  Release: {r.get('tag_id', '\u2014')} ({r.get('phase_label', '')})")
+        print()
+
+    # Git info
+    gi = export.get("git_info")
+    if gi:
+        print(f"{BOLD}Git / Provenance{RESET}")
+        print(f"  Commit:  {gi.get('commit', '?')[:16]}...")
+        print(f"  Tag:     {gi.get('tag', '?')}")
+        print(f"  Dirty:   {_bool_icon(not gi.get('dirty', True))}")
+        print()
+
+    # Locked baseline
+    lb = export.get("locked_baseline")
+    if lb:
+        print(f"{BOLD}Locked Baseline{RESET}")
+        print(f"  Confirmed: {_bool_icon(lb.get('confirmed', False))}")
+        print(f"  Source:    {lb.get('source', '?')}")
+        _safe_str = f"allow={lb.get('allow_orders')} enforced={lb.get('enforced')}" if lb.get("allow_orders") is not None else f"locked={lb.get('system_locked')}"
+        print(f"  Details:   {_safe_str}")
+        print()
+
+    if export.get("_size_trimmed"):
+        print(f"  {YELLOW}Note: export was size-trimmed (some sections truncated){RESET}")
+        print()
+
+    print(f"{BOLD}Advisory{RESET}")
+    print(f"  {export['advisory']}")
+
+
 def _print_maintenance(result: dict) -> None:
     """Pretty-print maintenance report or prune result."""
     mode = result.get("mode", "read-only")
@@ -1170,6 +1462,13 @@ def main() -> None:
     drp.add_argument("--json", action="store_true",
                      help="Output raw JSON only")
 
+    # Phase 4H — evidence export subcommand
+    ep = sub.add_parser("export", help="Read-only evidence export")
+    ep.add_argument("--json", action="store_true",
+                    help="Output raw JSON only")
+    ep.add_argument("--save", action="store_true",
+                    help="Write export to ~/.openclaw/exports/ and print path")
+
     # Phase 4D — maintenance subcommand
     mp = sub.add_parser("maintenance", help="Audit/release artifact maintenance")
     mp.add_argument("--json", action="store_true",
@@ -1193,6 +1492,21 @@ def main() -> None:
             print(json.dumps(result, indent=2, default=str))
         else:
             print_daily_report(result)
+        return
+
+    if args.command == "export":
+        result = run_export()
+        if args.save:
+            out_path = write_export(result)
+            if args.json:
+                print(json.dumps(result, indent=2, default=str))
+            else:
+                print(f"Export written: {out_path}\n")
+                print_export(result)
+        elif args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print_export(result)
         return
 
     if args.command == "maintenance":

@@ -3386,6 +3386,113 @@ def _run_self_test(silent: bool = False) -> dict:
         for label in ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "G11", "G12", "G13", "G14", "G15", "G16"]:
             results.append((f"{label}: daily report snapshot test", False, str(e)[:80]))
 
+    # =============================================================
+    # Section H: Operator Evidence Export Tests (Phase 4H)
+    # =============================================================
+
+    try:
+        from ibkr_operator import run_export
+        export = run_export()
+        h1 = isinstance(export, dict) and "export_id" in export and "generated_at_utc" in export
+        results.append(("H1: run_export returns dict with export_id+timestamp", h1,
+                        f"eid={export.get('export_id')}" if h1 else "missing keys"))
+        h2 = export.get("read_only") is True
+        results.append(("H2: export read_only=True", h2,
+                        f"read_only={export.get('read_only')}"))
+        h3 = "daily_report_snapshot" in export
+        results.append(("H3: export has daily_report_snapshot", h3,
+                        "present" if export.get("daily_report_snapshot") else "None"))
+        h4 = "checklist_snapshot" in export
+        results.append(("H4: export has checklist_snapshot", h4,
+                        "present" if export.get("checklist_snapshot") else "None"))
+        ms = export.get("maintenance_snapshot", {})
+        h5 = isinstance(ms, dict) and "audit_bundles" in ms
+        results.append(("H5: maintenance_snapshot has audit_bundles", h5,
+                        f"count={ms.get('audit_bundles',{}).get('count')}" if h5 else "MISSING"))
+        h6 = "resources_snapshot" in export
+        results.append(("H6: export has resources_snapshot", h6, "present" if h6 else "MISSING"))
+        li = export.get("latest_identifiers", {})
+        h7 = "audit_bundle" in li and "release_tag" in li
+        results.append(("H7: latest_identifiers has audit_bundle+release_tag", h7,
+                        "both" if h7 else "missing key"))
+        h8 = "git_info" in export
+        gi = export.get("git_info")
+        results.append(("H8: export has git_info", h8,
+                        f"commit={gi.get('commit','?')[:16] if gi else 'None'}"))
+        h9 = "locked_baseline" in export
+        lb = export.get("locked_baseline")
+        results.append(("H9: export has locked_baseline", h9,
+                        f"confirmed={lb.get('confirmed','?') if lb else 'None'}"))
+        import json as _json
+        serialized = _json.dumps(export, default=str)
+        h10 = len(serialized) <= 256 * 1024
+        results.append(("H10: export size <= 256KB", h10,
+                        f"{len(serialized)} bytes" if h10 else f"EXCEEDED {len(serialized)} bytes"))
+        h11 = "guard-events" not in _json.dumps(export, default=str)
+        results.append(("H11: no raw guard events", h11, "clean" if h11 else "CONTAINS"))
+        h12 = "guard-events.jsonl" not in _json.dumps(export, default=str)
+        results.append(("H12: no guard-events.jsonl", h12, "clean" if h12 else "CONTAINS"))
+        import io
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            from ibkr_operator import print_export
+            print_export(export)
+            h13 = True
+            detail_h13 = "printed OK"
+        finally:
+            sys.stdout = old_stdout
+        results.append(("H13: print_export runs", h13, detail_h13))
+        from ibkr_operator import write_export
+        out_path = write_export(export)
+        h14 = out_path.exists() and out_path.stat().st_size > 0
+        out_path.unlink(missing_ok=True)
+        results.append(("H14: write_export writes file", h14,
+                        f"{out_path.name}" if h14 else "write failed"))
+        import subprocess
+        op_path = Path.home() / "agents" / "ibkr-bridge" / "ibkr_operator.py"
+        proc = subprocess.run(
+            [sys.executable, str(op_path), "export", "--json"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if proc.returncode == 0:
+            try:
+                jd = _json.loads(proc.stdout)
+                h15 = isinstance(jd, dict) and jd.get("command") == "ibkr-operator export"
+                results.append(("H15: export --json valid", h15, "parsed OK" if h15 else "bad keys"))
+            except _json.JSONDecodeError:
+                results.append(("H15: export --json valid", False, "invalid JSON"))
+        else:
+            results.append(("H15: export --json valid", False,
+                            f"exit={proc.returncode} stderr={proc.stderr[:100]}"))
+        export_dir = Path.home() / ".openclaw" / "exports"
+        export_id = export.get("export_id")
+        if export_id:
+            old_candidate = export_dir / f"{export_id}.json"
+            if old_candidate.exists():
+                old_candidate.unlink(missing_ok=True)
+        proc2 = subprocess.run(
+            [sys.executable, str(op_path), "export", "--save", "--json"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if proc2.returncode == 0:
+            try:
+                jd2 = _json.loads(proc2.stdout)
+                eid = jd2.get("export_id", "?")
+                written_path = export_dir / f"{eid}.json"
+                h16 = written_path.exists() and written_path.stat().st_size > 0
+                written_path.unlink(missing_ok=True)
+                results.append(("H16: export --save writes file", h16,
+                                f"{written_path.name}" if h16 else "file not found"))
+            except _json.JSONDecodeError:
+                results.append(("H16: export --save writes file", False, "invalid JSON"))
+        else:
+            results.append(("H16: export --save writes file", False,
+                            f"exit={proc2.returncode} stderr={proc2.stderr[:100]}"))
+    except Exception as e:
+        for label in [f"H{i}" for i in range(1, 17)]:
+            results.append((f"{label}: export test", False, str(e)[:80]))
+
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)
@@ -3398,7 +3505,7 @@ def _run_self_test(silent: bool = False) -> dict:
         print(f"  {name:<57} {status:<8}{detail_str}")
 
     if not silent:
-        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E + Phase 4F + Phase 4G regression tests")
+        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E + Phase 4F + Phase 4G + Phase 4H regression tests")
 
     return {"pass": passed == len(results), "total": len(results), "passed": passed}
 

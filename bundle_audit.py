@@ -254,6 +254,152 @@ def _run_checklist_snapshot() -> dict | None:
     except Exception:
         return None
 
+
+# ---------------------------------------------------------------------------
+# Phase 4G — Daily Report Evidence Snapshot
+# ---------------------------------------------------------------------------
+
+_DAILY_REPORT_VERSION = "phase4g-1"
+_MAX_SNAPSHOT_BYTES = 25 * 1024  # 25KB cap
+
+
+def _run_daily_report_snapshot() -> dict | None:
+    """Capture a compact daily report evidence snapshot for audit bundles.
+
+    Delegates to ibkr_operator.run_daily_report() for the live report,
+    then extracts the key evidence sections. Does not include full
+    historical logs, secrets, or raw guard events.
+
+    Cap: ~25KB max serialized. If exceeded, fields are trimmed.
+
+    Sections included:
+      - generated_at, report_version, read_only
+      - checklist (verdict, state, blocks, warnings, next_safe_action)
+      - kill_switches (system_locked, IBKR_ALLOW_ORDERS, rules_enforced)
+      - runtime (bridge status, IBKR connection, mode)
+      - calendar (market_date_et, in_rth, is_tradable_day, reason)
+      - trading baseline (net_liq, cash, positions count, drift)
+      - monitoring (drift_detected, live_alerts, reconciliation_pass)
+      - release (git_tag, latest_release, regression, bundle, audit_verify)
+      - audit_retention (bundle count/size, release tag count/size)
+      - resources (ram_used_pct, bridge/gateway rss)
+
+    Returns:
+        Compact dict, or None on any error.
+    """
+    try:
+        from ibkr_operator import run_daily_report
+        full = run_daily_report()
+    except Exception:
+        return None
+
+    if not isinstance(full, dict):
+        return None
+
+    cl = full.get("checklist", {})
+    ks = full.get("kill_switches", {})
+    rt = full.get("runtime", {})
+    cal = full.get("calendar", {})
+    port = full.get("portfolio", {})
+    mon = full.get("monitoring", {})
+    rel = full.get("release", {})
+    ar = full.get("audit_retention", {})
+    rs = full.get("resources", {})
+
+    # Trading baseline — safe fields only, no raw positions list
+    trading_baseline = {
+        "net_liq_eur": port.get("net_liq_eur"),
+        "cash_eur": port.get("cash_eur"),
+        "positions_count": len(port.get("positions", []) if isinstance(port.get("positions"), list) else []),
+        "expect_positions_count": len(port.get("expected_positions", {}) if isinstance(port.get("expected_positions"), dict) else {}),
+        "open_orders_count": port.get("open_orders_count", 0),
+    }
+
+    snapshot = {
+        "command": "ibkr-operator bundle daily-report-snapshot",
+        "generated_at_utc": full.get("timestamp_utc", _now_iso()),
+        "report_version": _DAILY_REPORT_VERSION,
+        "read_only": True,
+        # Checklist evidence
+        "checklist": {
+            "state": cl.get("state", "?"),
+            "verdict": cl.get("verdict", "?"),
+            "blocks": cl.get("blocks", []),
+            "warnings": cl.get("warnings", []),
+            "next_safe_action": cl.get("next_safe_action", {}),
+        },
+        # Kill switch state
+        "kill_switches": {
+            "system_locked": ks.get("system_locked"),
+            "IBKR_ALLOW_ORDERS": ks.get("IBKR_ALLOW_ORDERS"),
+            "rules_enforced": ks.get("rules_enforced"),
+        },
+        # Runtime
+        "runtime": {
+            "bridge": rt.get("bridge"),
+            "ibkr_connected": rt.get("ibkr_connected"),
+            "mode": rt.get("mode"),
+        },
+        # Calendar
+        "calendar": {
+            "market_date_et": cal.get("market_date_et"),
+            "in_rth": cal.get("in_rth"),
+            "is_tradable_day": cal.get("is_tradable_day"),
+            "reason": cal.get("reason"),
+        },
+        # Trading baseline
+        "trading_baseline": trading_baseline,
+        # Monitoring
+        "monitoring": {
+            "drift_detected": mon.get("drift_detected"),
+            "drift_mismatches": mon.get("drift_mismatches"),
+            "live_alerts": mon.get("live_alerts"),
+            "reconciliation_pass": mon.get("reconciliation_pass"),
+        },
+        # Release status
+        "release": {
+            "git_tag": rel.get("git_tag"),
+            "latest_release": rel.get("latest_release"),
+            "regression": rel.get("regression"),
+            "latest_bundle": rel.get("latest_bundle"),
+            "audit_verify": rel.get("audit_verify"),
+        },
+        # Audit retention
+        "audit_retention": {
+            "bundle_count": ar.get("bundles", {}).get("count", 0),
+            "bundle_size_mb": ar.get("bundles", {}).get("size_mb", 0.0),
+            "release_tag_count": ar.get("release_tags", {}).get("count", 0),
+        },
+        # Resources
+        "resources": {
+            "ram_used_pct": rs.get("memory", {}).get("used_pct"),
+            "bridge_rss_mb": rs.get("processes", {}).get("ibkr_bridge", {}).get("rss_mb"),
+            "gateway_rss_mb": rs.get("processes", {}).get("ib_gateway", {}).get("rss_mb"),
+        },
+    }
+
+    # Size cap enforcement
+    serialized = json.dumps(snapshot, default=str)
+    if len(serialized) > _MAX_SNAPSHOT_BYTES:
+        # Trim warnings and blocks to limit size
+        if len(snapshot["checklist"].get("blocks", [])) > 10:
+            snapshot["checklist"]["blocks"] = snapshot["checklist"]["blocks"][:10]
+            snapshot["checklist"]["blocks"].append({"_truncated": True})
+        if len(snapshot["checklist"].get("warnings", [])) > 10:
+            snapshot["checklist"]["warnings"] = snapshot["checklist"]["warnings"][:10]
+            snapshot["checklist"]["warnings"].append({"_truncated": True})
+        serialized = json.dumps(snapshot, default=str)
+        # If still too large, trim next_safe_action
+        if len(serialized) > _MAX_SNAPSHOT_BYTES:
+            snapshot["checklist"]["next_safe_action"] = {
+                "action": snapshot["checklist"]["next_safe_action"].get("action", "?")[:100],
+                "rationale": snapshot["checklist"]["next_safe_action"].get("rationale", "?")[:100],
+            }
+            snapshot["_size_trimmed"] = True
+
+    return snapshot
+
+
 def create_audit_bundle(skip_endpoints: bool = False, skip_regression: bool = False) -> dict:
     """Create an immutable audit bundle.
 
@@ -324,6 +470,9 @@ def create_audit_bundle(skip_endpoints: bool = False, skip_regression: bool = Fa
     # 5b. Operator checklist snapshot (Phase 4C)
     checklist_snapshot = _run_checklist_snapshot()
 
+    # 5c. Daily report evidence snapshot (Phase 4G)
+    daily_report_snapshot = _run_daily_report_snapshot()
+
     # 6. Build bundle
     bundle_id = f"bundle_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
     bundle: dict[str, Any] = {
@@ -336,6 +485,7 @@ def create_audit_bundle(skip_endpoints: bool = False, skip_regression: bool = Fa
         "code_hashes": code_hashes,
         "simulation_evidence": simulation_evidence,
         "checklist_snapshot": checklist_snapshot,
+        "daily_report_snapshot": daily_report_snapshot,
     }
 
     if not skip_endpoints:
@@ -1273,6 +1423,11 @@ def create_release_tag(phase_label: str = "phase3i_verified", dry_run_report: di
     checklist_snapshot = _run_checklist_snapshot()
     if checklist_snapshot is not None:
         tag["checklist_snapshot"] = checklist_snapshot
+
+    # Include daily report evidence snapshot (Phase 4G)
+    daily_report_snapshot = _run_daily_report_snapshot()
+    if daily_report_snapshot is not None:
+        tag["daily_report_snapshot"] = daily_report_snapshot
 
     if bundle is not None:
         tag["audit_bundle_id"] = bundle.get("bundle_id", "?")

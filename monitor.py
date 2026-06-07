@@ -3279,6 +3279,113 @@ def _run_self_test(silent: bool = False) -> dict:
         for label in ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8"]:
             results.append((f"{label}: daily report test", False, str(e)[:80]))
 
+    # =============================================================
+    # Section G: Daily Report Evidence Snapshot Tests (Phase 4G)
+    # =============================================================
+
+    try:
+        # G1: _run_daily_report_snapshot function exists
+        from bundle_audit import _run_daily_report_snapshot
+        snap = _run_daily_report_snapshot()
+        g1_ok = isinstance(snap, dict)
+        results.append(("G1: _run_daily_report_snapshot returns dict", g1_ok,
+                        f"keys={list(snap.keys())}" if g1_ok else "not a dict"))
+
+        # G2: snapshot has generated_at, report_version, read_only
+        g2_ok = all(k in snap for k in ["generated_at_utc", "report_version", "read_only"])
+        results.append(("G2: snapshot has generated_at/report_version/read_only", g2_ok,
+                        f"ver={snap.get('report_version')} read_only={snap.get('read_only')}" if g2_ok else "missing keys"))
+
+        # G3: read_only is True
+        g3_ok = snap.get("read_only") is True
+        results.append(("G3: snapshot read_only=True", g3_ok,
+                        f"read_only={snap.get('read_only')}"))
+
+        # G4: snapshot has checklist section with state/verdict/next_safe_action
+        sc = snap.get("checklist", {})
+        g4_ok = all(k in sc for k in ["state", "verdict", "next_safe_action"])
+        results.append(("G4: checklist has state/verdict/next_safe_action", g4_ok,
+                        f"verdict={sc.get('verdict')}" if g4_ok else "missing keys"))
+
+        # G5: snapshot has kill_switches section
+        g5_ok = "kill_switches" in snap and isinstance(snap["kill_switches"], dict)
+        ks = snap.get("kill_switches", {})
+        results.append(("G5: kill_switches section present", g5_ok,
+                        f"locked={ks.get('system_locked')}" if g5_ok else "MISSING"))
+
+        # G6: snapshot has trading_baseline with net_liq/cash/positions/open
+        tb = snap.get("trading_baseline", {})
+        g6_ok = all(k in tb for k in ["net_liq_eur", "cash_eur", "positions_count", "open_orders_count"])
+        results.append(("G6: trading_baseline has net_liq/cash/positions/open", g6_ok,
+                        f"net_liq={tb.get('net_liq_eur')} pos={tb.get('positions_count')}" if g6_ok else "missing keys"))
+
+        # G7: snapshot has monitoring section
+        mon = snap.get("monitoring", {})
+        g7_ok = all(k in mon for k in ["drift_detected", "live_alerts", "reconciliation_pass"])
+        results.append(("G7: monitoring has drift/live_alerts/recon_pass", g7_ok,
+                        f"drift={mon.get('drift_detected')}" if g7_ok else "missing keys"))
+
+        # G8: snapshot has release section
+        rl = snap.get("release", {})
+        g8_ok = all(k in rl for k in ["git_tag", "latest_release", "regression", "latest_bundle", "audit_verify"])
+        results.append(("G8: release has git_tag/latest/regression/bundle/verify", g8_ok,
+                        f"tag={rl.get('git_tag')}" if g8_ok else "missing keys"))
+
+        # G9: snapshot has audit_retention section
+        ar = snap.get("audit_retention", {})
+        g9_ok = all(k in ar for k in ["bundle_count", "bundle_size_mb", "release_tag_count"])
+        results.append(("G9: audit_retention has bundle_count/size/release_count", g9_ok,
+                        f"bundles={ar.get('bundle_count')}" if g9_ok else "missing keys"))
+
+        # G10: snapshot has resources section
+        rs = snap.get("resources", {})
+        g10_ok = all(k in rs for k in ["ram_used_pct", "bridge_rss_mb", "gateway_rss_mb"])
+        results.append(("G10: resources has ram/bridge_rss/gateway_rss", g10_ok,
+                        f"ram={rs.get('ram_used_pct')}%" if g10_ok else "missing keys"))
+
+        # G11: snapshot size does not exceed _MAX_SNAPSHOT_BYTES
+        import json as _json
+        serialized = _json.dumps(snap, default=str)
+        g11_ok = len(serialized) <= 25 * 1024
+        results.append(("G11: snapshot <= 25KB", g11_ok,
+                        f"{len(serialized)} bytes" if g11_ok else f"EXCEEDED {len(serialized)} bytes"))
+
+        # G12: daily_report_snapshot included in create_audit_bundle
+        from bundle_audit import create_audit_bundle, write_audit_bundle
+        test_bundle = create_audit_bundle(skip_endpoints=True, skip_regression=True)
+        g12_ok = "daily_report_snapshot" in test_bundle
+        ds = test_bundle.get("daily_report_snapshot", {})
+        results.append(("G12: create_audit_bundle includes daily_report_snapshot", g12_ok,
+                        f"present={g12_ok}" if g12_ok else "MISSING"))
+
+        # G13: daily_report_snapshot in create_release_tag
+        from bundle_audit import create_release_tag
+        test_tag = create_release_tag(phase_label="test_phase4g")
+        g13_ok = "daily_report_snapshot" in test_tag
+        ds_tag = test_tag.get("daily_report_snapshot", {})
+        results.append(("G13: create_release_tag includes daily_report_snapshot", g13_ok,
+                        f"present={g13_ok}" if g13_ok else "MISSING"))
+
+        # G14: No secrets in snapshot (no guard-events, no raw positions list)
+        g14_ok = "guard-events" not in _json.dumps(snap, default=str)
+        results.append(("G14: snapshot does not contain raw guard events", g14_ok,
+                        "clean" if g14_ok else "CONTAINS guard-events"))
+
+        # G15: No full historical logs (no guard-events.jsonl key)
+        g15_ok = "guard-events.jsonl" not in _json.dumps(snap, default=str)
+        results.append(("G15: snapshot does not contain guard-events.jsonl", g15_ok,
+                        "clean" if g15_ok else "CONTAINS guard-events.jsonl"))
+
+        # G16: No calendar or market_date_et in audit_retention view (scope check)
+        cal_view = snap.get("calendar", {})
+        g16_ok = isinstance(cal_view.get("market_date_et"), str) or cal_view.get("market_date_et") is None
+        results.append(("G16: calendar section well-formed", g16_ok,
+                        f"date={cal_view.get('market_date_et')}" if g16_ok else "malformed"))
+
+    except Exception as e:
+        for label in ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "G11", "G12", "G13", "G14", "G15", "G16"]:
+            results.append((f"{label}: daily report snapshot test", False, str(e)[:80]))
+
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)
@@ -3291,7 +3398,7 @@ def _run_self_test(silent: bool = False) -> dict:
         print(f"  {name:<57} {status:<8}{detail_str}")
 
     if not silent:
-        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E + Phase 4F regression tests")
+        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E + Phase 4F + Phase 4G regression tests")
 
     return {"pass": passed == len(results), "total": len(results), "passed": passed}
 

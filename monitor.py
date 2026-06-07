@@ -3628,6 +3628,101 @@ def _run_self_test(silent: bool = False) -> dict:
         for label in [f"I{i}" for i in range(1, 17)]:
             results.append((f"{label}: export retention/verify test", False, str(e)[:80]))
 
+    # =============================================================
+    # Section J: Help Output & Runbook Tests (Phase 4J)
+    # =============================================================
+
+    try:
+        import subprocess
+        op_path = Path.home() / "agents" / "ibkr-bridge" / "ibkr_operator.py"
+
+        # J1: --help lists all 4 subcommands
+        proc = subprocess.run([sys.executable, str(op_path), "--help"],
+                              capture_output=True, text=True, timeout=10)
+        j1 = all(cmd in proc.stdout for cmd in ["checklist", "daily-report", "export", "maintenance"])
+        results.append(("J1: --help lists all 4 subcommands", j1,
+                        "all present" if j1 else "missing some"))
+
+        # J2: checklist --help shows states+flags
+        proc2 = subprocess.run([sys.executable, str(op_path), "checklist", "--help"],
+                               capture_output=True, text=True, timeout=10)
+        j2 = "start-of-day" in proc2.stdout and "--json" in proc2.stdout
+        results.append(("J2: checklist --help shows states+flags", j2,
+                        "present" if j2 else "MISSING"))
+
+        # J3: daily-report --help shows --json
+        proc3 = subprocess.run([sys.executable, str(op_path), "daily-report", "--help"],
+                               capture_output=True, text=True, timeout=10)
+        j3 = "--json" in proc3.stdout
+        results.append(("J3: daily-report --help shows --json", j3,
+                        "found" if j3 else "MISSING"))
+
+        # J4: export --help shows --save and --verify
+        proc4 = subprocess.run([sys.executable, str(op_path), "export", "--help"],
+                               capture_output=True, text=True, timeout=10)
+        j4 = "--save" in proc4.stdout and "--verify" in proc4.stdout
+        results.append(("J4: export --help shows --save and --verify", j4,
+                        "both" if j4 else "missing"))
+
+        # J5: maintenance --help shows --prune-exports
+        proc5 = subprocess.run([sys.executable, str(op_path), "maintenance", "--help"],
+                               capture_output=True, text=True, timeout=10)
+        j5 = "--prune-exports" in proc5.stdout and "--keep-exports" in proc5.stdout
+        results.append(("J5: maintenance --help shows --prune-exports", j5,
+                        "found" if j5 else "MISSING"))
+
+        # J6: maintenance --help shows --dry-run
+        j6 = "--dry-run" in proc5.stdout
+        results.append(("J6: maintenance --help shows --dry-run", j6,
+                        "found" if j6 else "MISSING"))
+
+        # J7: RUNBOOK.md exists
+        rb_path = Path.home() / "agents" / "ibkr-bridge" / "RUNBOOK.md"
+        j7 = rb_path.exists()
+        results.append(("J7: RUNBOOK.md exists", j7,
+                        f"{rb_path.stat().st_size} bytes" if j7 else "MISSING"))
+
+        rb_text = rb_path.read_text() if j7 else ""
+
+        # J8: Safety section
+        j8 = "## Safety" in rb_text
+        results.append(("J8: RUNBOOK.md has Safety section", j8,
+                        "found" if j8 else "MISSING"))
+
+        # J9: Tag Timeline
+        j9 = "## Tag Timeline" in rb_text
+        results.append(("J9: RUNBOOK.md has Tag Timeline", j9,
+                        "found" if j9 else "MISSING"))
+
+        # J10: All 4 commands in examples
+        j10 = all(cmd in rb_text for cmd in ["checklist", "daily-report", "export", "maintenance"])
+        results.append(("J10: RUNBOOK.md covers all 4 commands", j10,
+                        "all" if j10 else "missing some"))
+
+        # J11: Daily start example
+        j11 = "Daily start" in rb_text
+        results.append(("J11: RUNBOOK.md has daily start example", j11,
+                        "found" if j11 else "MISSING"))
+
+        # J12: Weekend check example
+        j12 = "Weekend check" in rb_text
+        results.append(("J12: RUNBOOK.md has weekend check example", j12,
+                        "found" if j12 else "MISSING"))
+
+        # J13: Export verify example
+        j13 = "--verify" in rb_text
+        results.append(("J13: RUNBOOK.md has --verify example", j13,
+                        "found" if j13 else "MISSING"))
+
+        # J14: Read-only vs prune separation
+        j14 = "Read-only commands" in rb_text and "Pruning commands" in rb_text
+        results.append(("J14: RUNBOOK.md separates read-only vs prune", j14,
+                        "found" if j14 else "MISSING"))
+
+    except Exception as e:
+        for label in [f"J{i}" for i in range(1, 15)]:
+            results.append((f"{label}: help/runbook test", False, str(e)[:80]))
+
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)
@@ -3640,7 +3735,7 @@ def _run_self_test(silent: bool = False) -> dict:
         print(f"  {name:<57} {status:<8}{detail_str}")
 
     if not silent:
-        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E + Phase 4F + Phase 4G + Phase 4H + Phase 4I regression tests")
+        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E + Phase 4F + Phase 4G + Phase 4H + Phase 4I + Phase 4J regression tests")
 
     return {"pass": passed == len(results), "total": len(results), "passed": passed}
 

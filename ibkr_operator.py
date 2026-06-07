@@ -784,6 +784,242 @@ def print_checklist(result: dict, explain: bool = False) -> None:
     print(f"{BOLD}Advisory{RESET}")
     print(f"  Read-only. No trading. No order automation.")
 
+
+# ===================================================================
+# Phase 4F — Daily Report (Consolidated)
+# ===================================================================
+
+def run_daily_report() -> dict:
+    """Consolidated daily report gathering checklist, maintenance, and resources.
+
+    Combines:
+    - Checklist verdict, state, next_safe_action
+    - Maintenance report (audit + release retention)
+    - Resource health (RAM, swap, processes)
+    - Kill switch state
+    - Trading baseline
+    - Drift/open orders
+
+    Returns:
+        Dict with all sections for display or JSON export.
+    """
+    now = datetime.now(timezone.utc)
+
+    # 1. Checklist
+    checklist = run_checklist()
+
+    # 2. Maintenance report (Phase 4D) for audit + release retention
+    try:
+        from bundle_audit import maintenance_report as _mr
+        maint = _mr()
+    except Exception:
+        maint = {}
+
+    # 3. Resources (Phase 4E — embedded in maintenance_report)
+    resources = maint.get("resources", {})
+
+    # 4. Extract key sections
+    s = checklist["summary"]
+
+    report: dict[str, Any] = {
+        "command": "ibkr-operator daily-report",
+        "timestamp_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "advisory": "Read-only. No trading. No order automation.",
+        # Checklist
+        "checklist": {
+            "state": checklist["state"],
+            "auto_detected": checklist["auto_detected"],
+            "verdict": checklist["verdict"],
+            "blocks": checklist["blocks"],
+            "warnings": checklist["warnings"],
+            "next_safe_action": checklist["next_safe_action"],
+            "required_manual_confirmations": checklist["required_manual_confirmations"],
+        },
+        # Kill switch state
+        "kill_switches": {
+            "system_locked": s["safety"]["system_locked"],
+            "IBKR_ALLOW_ORDERS": s["safety"]["allow_orders"],
+            "rules_enforced": s["safety"]["enforced"],
+            "startup_safety": s["safety"]["startup_safety"],
+            "order_blocked": s["safety"]["order_blocked"],
+        },
+        # Runtime / trading baseline
+        "runtime": s["runtime"],
+        "calendar": s["calendar"],
+        "portfolio": s["portfolio"],
+        "monitoring": s["monitoring"],
+        "release": s["release"],
+        # Audit retention (from maintenance report)
+        "audit_retention": {
+            "bundles": maint.get("audit_bundles", {}),
+            "release_tags": maint.get("release_tags", {}),
+            "protected_files": maint.get("protected_files", []),
+        },
+        # Resource health (from maintenance report)
+        "resources": resources,
+    }
+
+    return report
+
+
+def print_daily_report(report: dict) -> None:
+    """Print the daily report in human-readable format."""
+    ts = report["timestamp_utc"]
+    cl = report["checklist"]
+    ks = report["kill_switches"]
+    rt = report["runtime"]
+    cal = report["calendar"]
+    port = report["portfolio"]
+    mon = report["monitoring"]
+    rel = report["release"]
+    ar = report["audit_retention"]
+    rs = report["resources"]
+
+    state_label = cl["state"].replace("-", " ").title()
+
+    # ──────────────────────────────────────────────────
+    # Header
+    # ──────────────────────────────────────────────────
+    print(f"{BOLD}Daily Operator Report{RESET}")
+    print(f"{BOLD}{'=' * 50}{RESET}")
+    print(f"  Time:     {ts}")
+    print(f"  State:    {CYAN}{state_label}{RESET}")
+    print(f"  Verdict:  {_color_verdict(cl['verdict'])}")
+    print()
+
+    # ──────────────────────────────────────────────────
+    # Blocks & Warnings
+    # ──────────────────────────────────────────────────
+    if cl["blocks"]:
+        print(f"{BOLD}Blocks{RESET}")
+        for b in cl["blocks"]:
+            print(f"  [{_color_block_status(b['status'])}] {b['check']}: {b['detail']}")
+        print()
+    else:
+        print(f"{BOLD}Blocks{RESET}  {GREEN}None \u2014 all checks pass{RESET}")
+        print()
+
+    if cl["warnings"]:
+        print(f"{BOLD}Warnings{RESET}")
+        for w in cl["warnings"]:
+            print(f"  {YELLOW}\u26a0{RESET} {w}")
+        print()
+
+    # ──────────────────────────────────────────────────
+    # Kill Switches & Safety
+    # ──────────────────────────────────────────────────
+    print(f"{BOLD}Kill Switches / Safety{RESET}")
+    print(f"  System locked: {_bool_icon(ks['system_locked'])}  {ks['system_locked']}")
+    print(f"  Allow orders:  {_bool_icon(not ks['IBKR_ALLOW_ORDERS'])}  IBKR_ALLOW_ORDERS={ks['IBKR_ALLOW_ORDERS']}")
+    print(f"  Rules enforcd: {_bool_icon(not ks['rules_enforced'])}  rules.enforced={ks['rules_enforced']}")
+    print(f"  Startup safet: {_value_color(ks['startup_safety'], ok_vals=('10/10',))}")
+    print(f"  Orders blckd:  {_bool_icon(ks['order_blocked'])}")
+    print()
+
+    # ──────────────────────────────────────────────────
+    # Runtime / Bridge
+    # ──────────────────────────────────────────────────
+    print(f"{BOLD}Runtime / Bridge{RESET}")
+    print(f"  Bridge:   {_value_color(rt['bridge'])}")
+    print(f"  IBKR:     {_bool_icon(rt['ibkr_connected'])}  connected={rt['ibkr_connected']}")
+    print(f"  Mode:     {_value_color(rt['mode'], ok_vals=('paper',))}")
+    print(f"  Account:  {rt['account']}")
+    print()
+
+    # ──────────────────────────────────────────────────
+    # Calendar / RTH
+    # ──────────────────────────────────────────────────
+    print(f"{BOLD}Calendar / RTH{RESET}")
+    print(f"  Date: {cal['market_date_et']} ({cal['day_name']})")
+    print(f"  RTH:  {_bool_icon(cal['in_rth'])}  {cal['reason']}")
+    print(f"  Open: {cal['rth_open_et']} ET  Close: {cal['rth_close_et']} ET")
+    print()
+
+    # ──────────────────────────────────────────────────
+    # Trading Baseline (Portfolio)
+    # ──────────────────────────────────────────────────
+    print(f"{BOLD}Trading Baseline{RESET}")
+    print(f"  Net Liq:  {port['net_liq_eur'] or '\u2014'} EUR")
+    print(f"  Cash:     {port['cash_eur'] or '\u2014'} EUR")
+    print(f"  Positions: {port['positions'] or '\u2014'}")
+    print(f"  Expected:  {port['expected_positions'] or '\u2014'}")
+    print(f"  Open Ord:  {port['open_orders_count']}")
+    print()
+
+    # ──────────────────────────────────────────────────
+    # Monitoring (Drift / Alerts / Recon)
+    # ──────────────────────────────────────────────────
+    print(f"{BOLD}Monitoring{RESET}")
+    print(f"  Drift:     {_bool_icon(not mon['drift_detected'])}  detected={mon['drift_detected']}")
+    print(f"  Mismatch:  {mon['drift_mismatches']}")
+    print(f"  Alerts:    {mon['total_alerts']} total, {mon['live_alerts']} requiring action")
+    print(f"  Recon:     {_bool_icon(mon['reconciliation_pass'])}")
+    print()
+
+    # ──────────────────────────────────────────────────
+    # Release / Audit
+    # ──────────────────────────────────────────────────
+    print(f"{BOLD}Release / Audit{RESET}")
+    print(f"  Git tag:    {rel['git_tag']}")
+    print(f"  Release:    {rel['latest_release']}")
+    print(f"  Regression: {rel['regression']}")
+    print(f"  Bundle:     {rel['latest_bundle']}")
+    print(f"  Audit ver:  {_bool_icon(rel['audit_verify'])}  {rel['audit_verify_score']}")
+
+    ab = ar.get("bundles", {})
+    print(f"  Bundles:    {ab.get('count', 0)} ({ab.get('size_mb', 0)} MB)  keep={ab.get('retention_limit', '?')}")
+    rt_tags = ar.get("release_tags", {})
+    print(f"  Releases:   {rt_tags.get('count', 0)} ({rt_tags.get('size_mb', 0)} MB)  keep={rt_tags.get('retention_limit', '?')}")
+    print()
+
+    # ──────────────────────────────────────────────────
+    # System Resources
+    # ──────────────────────────────────────────────────
+    if rs:
+        mem = rs.get("memory", {})
+        swap = rs.get("swap", {})
+        procs = rs.get("processes", {})
+        print(f"{BOLD}System Resources{RESET}")
+        print(f"  RAM:    {mem.get('used_mb', '?')}MB / {mem.get('total_mb', '?')}MB ({mem.get('used_pct', '?')}% used)")
+        print(f"  Swap:   {swap.get('used_mb', '?')}MB / {swap.get('total_mb', '?')}MB")
+        bw = procs.get("ibkr_bridge", {})
+        gw = procs.get("ib_gateway", {})
+        bridge_rss = bw.get("rss_mb", None)
+        gateway_rss = gw.get("rss_mb", None)
+        print(f"  Bridge:  {_bool_icon(bw.get('running'))}  RSS={f'{bridge_rss:.0f}MB' if bridge_rss else '\u2014'}")
+        print(f"  Gateway: {_bool_icon(gw.get('running'))}  RSS={f'{gateway_rss:.0f}MB' if gateway_rss else '\u2014'}")
+
+        rsw = rs.get("warnings", [])
+        if rsw:
+            print(f"  Warnings:")
+            for w in rsw:
+                print(f"    {YELLOW}\u26a0{RESET} {w}")
+            print(f"  Next: {rs.get('next_safe_action', '\u2014')}")
+        print()
+
+    # ──────────────────────────────────────────────────
+    # Next Safe Action
+    # ──────────────────────────────────────────────────
+    nsa = cl["next_safe_action"]
+    print(f"{BOLD}Next Safe Action{RESET}")
+    print(f"  {CYAN}{nsa['action']}{RESET}")
+    print(f"  {nsa['rationale']}")
+    print()
+
+    # ──────────────────────────────────────────────────
+    # Required Confirmations
+    # ──────────────────────────────────────────────────
+    if cl["required_manual_confirmations"]:
+        print(f"{BOLD}Required Manual Confirmations{RESET}")
+        for i, c in enumerate(cl["required_manual_confirmations"], 1):
+            print(f"  {i}. {c}")
+        print()
+
+    print(f"{BOLD}Advisory{RESET}")
+    print(f"  {report['advisory']}")
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -929,6 +1165,11 @@ def main() -> None:
     cp.add_argument("--offline", action="store_true",
                     help="End-of-day: file-based only, no bridge (subset of checks)")
 
+    # Phase 4F — daily report subcommand
+    drp = sub.add_parser("daily-report", help="Consolidated daily operator report")
+    drp.add_argument("--json", action="store_true",
+                     help="Output raw JSON only")
+
     # Phase 4D — maintenance subcommand
     mp = sub.add_parser("maintenance", help="Audit/release artifact maintenance")
     mp.add_argument("--json", action="store_true",
@@ -945,6 +1186,14 @@ def main() -> None:
                     help="Number of release tags to keep (default: 20)")
 
     args = parser.parse_args()
+
+    if args.command == "daily-report":
+        result = run_daily_report()
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print_daily_report(result)
+        return
 
     if args.command == "maintenance":
         from bundle_audit import (

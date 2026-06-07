@@ -3197,7 +3197,89 @@ def _run_self_test(silent: bool = False) -> dict:
         for label in ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"]:
             results.append((f"{label}: resource test", False, str(e)[:80]))
 
-# Print results table
+    # =============================================================
+    # Section F: Daily Report Tests (Phase 4F)
+    # =============================================================
+
+    try:
+        # F1: run_daily_report function exists and returns dict
+        from ibkr_operator import run_daily_report
+        dr = run_daily_report()
+        f1_ok = isinstance(dr, dict) and "checklist" in dr and "kill_switches" in dr
+        results.append(("F1: run_daily_report returns dict with checklist+kill_switches", f1_ok,
+                        f"keys={list(dr.keys())}" if f1_ok else "missing keys"))
+
+        # F2: Daily report has audit_retention section
+        f2_ok = "audit_retention" in dr and isinstance(dr["audit_retention"], dict)
+        ar = dr.get("audit_retention", {})
+        results.append(("F2: audit_retention section present", f2_ok,
+                        f"bundles={ar.get('bundles',{}).get('count')} tags={ar.get('release_tags',{}).get('count')}" if f2_ok else "MISSING"))
+
+        # F3: Daily report has resources section
+        f3_ok = "resources" in dr and isinstance(dr["resources"], dict)
+        rs = dr.get("resources", {})
+        results.append(("F3: resources section present", f3_ok,
+                        f"mem={rs.get('memory',{}).get('used_pct')}%" if f3_ok else "MISSING"))
+
+        # F4: Checklist has state, verdict, next_safe_action
+        cl = dr.get("checklist", {})
+        f4_ok = all(k in cl for k in ["state", "verdict", "next_safe_action", "blocks", "warnings"])
+        results.append(("F4: checklist has state/verdict/blocks/warnings/next_safe_action", f4_ok,
+                        f"verdict={cl.get('verdict')} state={cl.get('state')}" if f4_ok else "missing keys"))
+
+        # F5: Kill switches section has system_locked, IBKR_ALLOW_ORDERS, rules_enforced
+        ks = dr.get("kill_switches", {})
+        f5_ok = all(k in ks for k in ["system_locked", "IBKR_ALLOW_ORDERS", "rules_enforced", "startup_safety"])
+        results.append(("F5: kill_switches has locked/allow/enforce/startup", f5_ok,
+                        f"locked={ks.get('system_locked')} allow={ks.get('IBKR_ALLOW_ORDERS')}" if f5_ok else "missing keys"))
+
+        # F6: Daily report has runtime, calendar, portfolio, monitoring, release
+        f6_ok = all(k in dr for k in ["runtime", "calendar", "portfolio", "monitoring", "release"])
+        results.append(("F6: report has runtime/calendar/portfolio/monitoring/release", f6_ok,
+                        "all 5 present" if f6_ok else "missing sections"))
+
+        # F7: print_daily_report runs without exception
+        try:
+            import io
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            try:
+                from ibkr_operator import print_daily_report
+                print_daily_report(dr)
+                f7_ok = True
+                detail_f7 = "printed OK"
+            finally:
+                sys.stdout = old_stdout
+        except Exception as e:
+            f7_ok = False
+            detail_f7 = str(e)[:80]
+        results.append(("F7: print_daily_report runs without exception", f7_ok, detail_f7))
+
+        # F8: ibkr-operator daily-report --json produces valid JSON
+        import subprocess
+        op_path = Path.home() / "agents" / "ibkr-bridge" / "ibkr_operator.py"
+        proc = subprocess.run(
+            [sys.executable, str(op_path), "daily-report", "--json"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if proc.returncode == 0:
+            try:
+                jd = json.loads(proc.stdout)
+                f8_ok = isinstance(jd, dict) and "command" in jd and jd["command"] == "ibkr-operator daily-report"
+                results.append(("F8: daily-report --json valid", f8_ok,
+                                "parsed OK" if f8_ok else "bad keys"))
+            except json.JSONDecodeError:
+                results.append(("F8: daily-report --json valid", False,
+                                "invalid JSON"))
+        else:
+            results.append(("F8: daily-report --json valid", False,
+                            f"exit={proc.returncode} stderr={proc.stderr[:100]}"))
+
+    except Exception as e:
+        for label in ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8"]:
+            results.append((f"{label}: daily report test", False, str(e)[:80]))
+
+    # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)
     passed = 0
@@ -3209,7 +3291,7 @@ def _run_self_test(silent: bool = False) -> dict:
         print(f"  {name:<57} {status:<8}{detail_str}")
 
     if not silent:
-        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E regression tests")
+        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E + Phase 4F regression tests")
 
     return {"pass": passed == len(results), "total": len(results), "passed": passed}
 

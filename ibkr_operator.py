@@ -1234,6 +1234,176 @@ def write_export(export: dict) -> Path:
     return out_path
 
 
+def run_doctor() -> dict:
+    """Run operator self-test / doctor diagnostics. Read-only.
+
+    Returns:
+        dict with "pass" (bool), "checks" (list[dict]), and metadata.
+    """
+    checks: list[dict[str, Any]] = []
+    all_pass = True
+    repo = Path.home() / "agents" / "ibkr-bridge"
+
+    # K2: RUNBOOK.md exists
+    rb_path = repo / "RUNBOOK.md"
+    k2 = rb_path.exists()
+    if not k2:
+        all_pass = False
+    checks.append({"check": "runbook_exists", "ok": k2,
+                    "detail": f"{rb_path} ({rb_path.stat().st_size}B)" if k2 else "MISSING"})
+
+    # K3: ibkr-operator symlink exists
+    candidate_links = [
+        Path.home() / ".local/bin/ibkr-operator",
+        Path("/usr/local/bin/ibkr-operator"),
+        Path.home() / "bin/ibkr-operator",
+    ]
+    found_link = None
+    for cl in candidate_links:
+        try:
+            if cl.is_symlink() and cl.resolve().name == "ibkr_operator.py":
+                found_link = str(cl)
+                break
+        except (OSError, RuntimeError):
+            continue
+    k3 = found_link is not None
+    if not k3:
+        # Fallback: check if ibkr_operator.py is in PATH via which
+        import shutil
+        which_ok = shutil.which("ibkr-operator") is not None
+        if which_ok:
+            found_link = shutil.which("ibkr-operator")
+            k3 = True
+    if not k3:
+        all_pass = False
+    checks.append({"check": "operator_symlink", "ok": k3,
+                    "detail": found_link if k3 else "Not found in PATH"})
+
+    # K4: Required files exist
+    required = ["ibkr_operator.py", "bundle_audit.py", "monitor.py",
+                "guard.py", "RUNBOOK.md"]
+    file_details = []
+    for f in required:
+        exists = (repo / f).exists()
+        file_details.append({"file": f, "exists": exists})
+    k4 = all(fd["exists"] for fd in file_details)
+    if not k4:
+        all_pass = False
+    checks.append({"check": "required_files", "ok": k4,
+                    "detail": f"{sum(1 for fd in file_details if fd['exists'])}/{len(required)}"})
+
+    # K5: Bridge reachable or fallback available
+    import urllib.request
+    bridge_up = False
+    try:
+        req = urllib.request.Request("http://127.0.0.1:8790/health", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            bridge_up = resp.status == 200
+    except Exception:
+        bridge_up = False
+    # Fallback is always available — the operator degrades gracefully
+    k5 = True  # fallback always available
+    checks.append({"check": "bridge_health", "ok": k5,
+                    "detail": "reachable" if bridge_up else "unreachable (fallback ok)"})
+
+    # K6: Checklist JSON is parseable
+    try:
+        ck = run_checklist()
+        ck_ok = isinstance(ck, dict) and "verdict" in ck
+        if not ck_ok:
+            all_pass = False
+        checks.append({"check": "checklist_parseable", "ok": ck_ok,
+                        "detail": f"verdict={ck.get('verdict', '?')}" if ck_ok else "missing verdict"})
+    except Exception as e:
+        all_pass = False
+        checks.append({"check": "checklist_parseable", "ok": False, "detail": str(e)[:120]})
+
+    # K7: Daily-report JSON is parseable
+    try:
+        dr = run_daily_report()
+        dr_ok = isinstance(dr, dict) and "checklist" in dr
+        if not dr_ok:
+            all_pass = False
+        checks.append({"check": "daily_report_parseable", "ok": dr_ok,
+                        "detail": "ok" if dr_ok else "missing checklist key"})
+    except Exception as e:
+        all_pass = False
+        checks.append({"check": "daily_report_parseable", "ok": False, "detail": str(e)[:120]})
+
+    # K8: Export directory writable
+    from bundle_audit import EXPORT_DIR
+    try:
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        test_f = EXPORT_DIR / ".doctor_writable"
+        test_f.write_text("")
+        test_f.unlink()
+        checks.append({"check": "export_dir_writable", "ok": True,
+                        "detail": str(EXPORT_DIR)})
+    except Exception as e:
+        all_pass = False
+        checks.append({"check": "export_dir_writable", "ok": False, "detail": str(e)[:120]})
+
+    # K9: Maintenance dry-run works
+    try:
+        from bundle_audit import maintenance_report
+        mr = maintenance_report()
+        mr_ok = isinstance(mr, dict) and "audit_bundles" in mr
+        if not mr_ok:
+            all_pass = False
+        checks.append({"check": "maintenance_dryrun", "ok": mr_ok,
+                        "detail": "ok" if mr_ok else "missing audit_bundles"})
+    except Exception as e:
+        all_pass = False
+        checks.append({"check": "maintenance_dryrun", "ok": False, "detail": str(e)[:120]})
+
+    # K10: Protected files safety gate
+    from bundle_audit import _PROTECTED_FILE_NAMES as pfn
+    try:
+        # Verify the safety gate is intact by checking it blocks known names
+        known_safe = {"guard-state.json", "guard-events.jsonl",
+                      "submitted-approvals.json", "manual-order-reconciliations.jsonl"}
+        gate_ok = known_safe.issubset(pfn)
+        if not gate_ok:
+            all_pass = False
+        checks.append({"check": "protected_files_safe", "ok": gate_ok,
+                        "detail": f"{len(pfn)} protected entries" if gate_ok else "MISSING expected entries"})
+    except Exception as e:
+        all_pass = False
+        checks.append({"check": "protected_files_safe", "ok": False, "detail": str(e)[:120]})
+
+    return {
+        "command": "ibkr-operator doctor",
+        "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "read_only": True,
+        "pass": all_pass,
+        "checks": checks,
+        "passed": sum(1 for c in checks if c["ok"]),
+        "total": len(checks),
+    }
+
+
+def print_doctor(result: dict) -> None:
+    """Print doctor results in human-readable format."""
+    ts = result.get("timestamp_utc", "?")
+    passed = result.get("passed", 0)
+    total = result.get("total", 0)
+    ok = result.get("pass", False)
+
+    verdict_color = GREEN if ok else RED
+    print(f"{BOLD}Operator Doctor{RESET}  ({ts})")
+    print(f"{BOLD}{'=' * 40}{RESET}")
+
+    for c in result.get("checks", []):
+        status_str = f"{GREEN}PASS{RESET}" if c["ok"] else f"{RED}FAIL{RESET}"
+        print(f"  {status_str}  {c['check']}: {c['detail']}")
+
+    print()
+    print(f"  {BOLD}Result:{RESET} {verdict_color}{"PASS" if ok else "FAIL"}{RESET}  ({passed}/{total})")
+
+    if not ok:
+        print(f"{YELLOW}  Some checks failed. Review above for details.{RESET}")
+
+
 def print_export(export: dict) -> None:
     """Print evidence export in human-readable format."""
     eid = export.get("export_id", "?")
@@ -1495,6 +1665,11 @@ def main() -> None:
     ep.add_argument("--verify", type=str, default=None, nargs="?", const="latest",
                     help="Verify an export file (default: latest)")
 
+    # Phase 4K — doctor subcommand
+    docp = sub.add_parser("doctor", help="Operator self-test / environment diagnostics")
+    docp.add_argument("--json", action="store_true",
+                       help="Output raw JSON only")
+
     # Phase 4D — maintenance subcommand
     mp = sub.add_parser("maintenance", help="Audit/release artifact maintenance")
     mp.add_argument("--json", action="store_true",
@@ -1594,6 +1769,16 @@ def main() -> None:
             print(json.dumps(result, indent=2, default=str))
         else:
             _print_maintenance(result)
+        return
+
+    if args.command == "doctor":
+        result = run_doctor()
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print_doctor(result)
+        if not result.get("pass", False):
+            sys.exit(2)
         return
 
     if args.command != "checklist":

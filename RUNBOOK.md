@@ -34,6 +34,13 @@ ibkr-operator export --verify /path/to/file    # verify specific file
 ibkr-operator export --verify latest --json
 ```
 
+### `ibkr-operator doctor`
+Operator self-test / environment diagnostics (read-only).
+```bash
+ibkr-operator doctor
+ibkr-operator doctor --json
+```
+
 ### `ibkr-operator maintenance`
 Inspect and prune artifacts.
 ```bash
@@ -57,6 +64,7 @@ ibkr-operator maintenance --prune-exports --keep-exports 20
 
 ### Daily start (pre-market or RTH open)
 ```bash
+ibkr-operator doctor
 ibkr-operator daily-report
 ```
 
@@ -101,6 +109,7 @@ ibkr-operator maintenance --prune-exports --keep-exports 20
 | `phase4h_operator_export` | 4H | Operator evidence export |
 | `phase4i_export_retention_verify` | 4I | Export retention & verify |
 | `phase4j_help_runbook` | 4J | Help output & runbook |
+| `phase4k_doctor_command` | 4K | Operator self-test / doctor command |
 
 ---
 
@@ -119,6 +128,7 @@ ibkr-operator maintenance --prune-exports --keep-exports 20
 ### Read-only commands (always safe)
 - `ibkr-operator checklist`
 - `ibkr-operator daily-report`
+- `ibkr-operator doctor`
 - `ibkr-operator export`
 - `ibkr-operator maintenance` (no flags)
 - `ibkr-operator maintenance --dry-run`

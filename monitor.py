@@ -3723,6 +3723,111 @@ def _run_self_test(silent: bool = False) -> dict:
         for label in [f"J{i}" for i in range(1, 15)]:
             results.append((f"{label}: help/runbook test", False, str(e)[:80]))
 
+    # =============================================================
+    # Section K: Doctor Command Tests (Phase 4K)
+    # =============================================================
+
+    try:
+        import subprocess
+        op_path = Path.home() / "agents" / "ibkr-bridge" / "ibkr_operator.py"
+
+        # K1: doctor command exists (--help shows it)
+        proc = subprocess.run([sys.executable, str(op_path), "--help"],
+                              capture_output=True, text=True, timeout=10)
+        k1 = "doctor" in proc.stdout
+        results.append(("K1: doctor subcommand in --help", k1,
+                        "found" if k1 else "MISSING"))
+
+        # K2: doctor --help exists
+        proc2 = subprocess.run([sys.executable, str(op_path), "doctor", "--help"],
+                               capture_output=True, text=True, timeout=10)
+        k2 = "--json" in proc2.stdout
+        results.append(("K2: doctor --help shows --json", k2,
+                        "found" if k2 else "MISSING"))
+
+        # K3: doctor runs and returns valid JSON
+        proc3 = subprocess.run([sys.executable, str(op_path), "doctor", "--json"],
+                               capture_output=True, text=True, timeout=30)
+        import json as _json
+        doc = _json.loads(proc3.stdout)
+        k3 = doc.get("command") == "ibkr-operator doctor"
+        results.append(("K3: doctor --json returns ibkr-operator doctor command", k3,
+                        doc.get("command", "?") if k3 else "FAIL"))
+
+        # K4: doctor has read_only=True
+        k4 = doc.get("read_only") is True
+        results.append(("K4: doctor read_only=True", k4,
+                        str(doc.get("read_only")) if k4 else "NOT read_only"))
+
+        # K5: doctor has a 'pass' field
+        k5 = "pass" in doc
+        results.append(("K5: doctor has pass field", k5, "yes" if k5 else "MISSING"))
+
+        # K6: doctor has checks list
+        k6 = isinstance(doc.get("checks"), list) and len(doc["checks"]) > 0
+        results.append(("K6: doctor has checks list", k6,
+                        f"{len(doc['checks'])} checks" if k6 else "MISSING"))
+
+        # K7: doctor checks include runbook_exists
+        check_names = [c["check"] for c in doc.get("checks", [])]
+        k7 = "runbook_exists" in check_names
+        results.append(("K7: doctor checks runbook_exists", k7,
+                        "found" if k7 else "MISSING"))
+
+        # K8: doctor checks include operator_symlink
+        k8 = "operator_symlink" in check_names
+        results.append(("K8: doctor checks operator_symlink", k8,
+                        "found" if k8 else "MISSING"))
+
+        # K9: doctor checks include required_files
+        k9 = "required_files" in check_names
+        results.append(("K9: doctor checks required_files", k9,
+                        "found" if k9 else "MISSING"))
+
+        # K10: doctor checks include bridge_health
+        k10 = "bridge_health" in check_names
+        results.append(("K10: doctor checks bridge_health", k10,
+                        "found" if k10 else "MISSING"))
+
+        # K11: doctor checks include checklist_parseable
+        k11 = "checklist_parseable" in check_names
+        results.append(("K11: doctor checks checklist_parseable", k11,
+                        "found" if k11 else "MISSING"))
+
+        # K12: doctor checks include daily_report_parseable
+        k12 = "daily_report_parseable" in check_names
+        results.append(("K12: doctor checks daily_report_parseable", k12,
+                        "found" if k12 else "MISSING"))
+
+        # K13: doctor checks include export_dir_writable
+        k13 = "export_dir_writable" in check_names
+        results.append(("K13: doctor checks export_dir_writable", k13,
+                        "found" if k13 else "MISSING"))
+
+        # K14: doctor checks include maintenance_dryrun
+        k14 = "maintenance_dryrun" in check_names
+        results.append(("K14: doctor checks maintenance_dryrun", k14,
+                        "found" if k14 else "MISSING"))
+
+        # K15: doctor checks include protected_files_safe
+        k15 = "protected_files_safe" in check_names
+        results.append(("K15: doctor checks protected_files_safe", k15,
+                        "found" if k15 else "MISSING"))
+
+        # K16: doctor passes when all checks ok
+        k16 = doc.get("pass") is True
+        results.append(("K16: doctor passes (all checks ok)", k16,
+                        f"{doc.get('passed')}/{doc.get('total')}" if k16 else "FAIL"))
+
+        # K17: doctor returns passed/total counts
+        k17 = isinstance(doc.get("passed"), int) and isinstance(doc.get("total"), int)
+        results.append(("K17: doctor has passed/total", k17,
+                        f"{doc.get('passed')}/{doc.get('total')}" if k17 else "MISSING"))
+
+    except Exception as e:
+        for label in [f"K{i}" for i in range(1, 18)]:
+            results.append((f"{label}: doctor test", False, str(e)[:80]))
+
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)
@@ -3735,7 +3840,7 @@ def _run_self_test(silent: bool = False) -> dict:
         print(f"  {name:<57} {status:<8}{detail_str}")
 
     if not silent:
-        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E + Phase 4F + Phase 4G + Phase 4H + Phase 4I + Phase 4J regression tests")
+        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E + Phase 4F + Phase 4G + Phase 4H + Phase 4I + Phase 4J + Phase 4K regression tests")
 
     return {"pass": passed == len(results), "total": len(results), "passed": passed}
 

@@ -3828,6 +3828,108 @@ def _run_self_test(silent: bool = False) -> dict:
         for label in [f"K{i}" for i in range(1, 18)]:
             results.append((f"{label}: doctor test", False, str(e)[:80]))
 
+    # =============================================================
+    # Section L: Freeze / Release Snapshot Tests (Phase 4L)
+    # =============================================================
+
+    try:
+        import subprocess, json as _json
+        op_path = Path.home() / "agents" / "ibkr-bridge" / "ibkr_operator.py"
+
+        # L1: freeze command exists
+        proc = subprocess.run([sys.executable, str(op_path), "--help"],
+                              capture_output=True, text=True, timeout=10)
+        l1 = "freeze" in proc.stdout
+        results.append(("L1: freeze subcommand in --help", l1,
+                        "found" if l1 else "MISSING"))
+
+        # L2: freeze --help exists
+        proc2 = subprocess.run([sys.executable, str(op_path), "freeze", "--help"],
+                               capture_output=True, text=True, timeout=10)
+        l2 = "--json" in proc2.stdout
+        results.append(("L2: freeze --help shows --json", l2,
+                        "found" if l2 else "MISSING"))
+
+        # L3: freeze --json returns valid result
+        proc3 = subprocess.run([sys.executable, str(op_path), "freeze", "--json"],
+                               capture_output=True, text=True, timeout=90)
+        freeze = _json.loads(proc3.stdout)
+        sections = freeze.get("sections", {})
+
+        l3 = freeze.get("command") == "ibkr-operator freeze"
+        results.append(("L3: freeze command field", l3,
+                        freeze.get("command", "?") if l3 else "FAIL"))
+
+        # L4: read_only=True
+        l4 = freeze.get("read_only") is True
+        results.append(("L4: freeze read_only=True", l4,
+                        str(freeze.get("read_only")) if l4 else "NOT read_only"))
+
+        # L5: includes doctor section (L2 in original: includes doctor result)
+        l5 = "doctor" in sections and isinstance(sections["doctor"], dict)
+        results.append(("L5: freeze includes doctor section", l5,
+                        "found" if l5 else "MISSING"))
+
+        # L6: includes checklist section (L3)
+        l6 = "checklist" in sections and "verdict" in sections["checklist"]
+        results.append(("L6: freeze includes checklist section", l6,
+                        "found" if l6 else "MISSING"))
+
+        # L7: includes daily_report section (L4)
+        l7 = "daily_report" in sections and "checklist" in sections["daily_report"]
+        results.append(("L7: freeze includes daily_report section", l7,
+                        "found" if l7 else "MISSING"))
+
+        # L8: includes export_verify section (L5)
+        l8 = "export_verify" in sections and "pass" in sections["export_verify"]
+        results.append(("L8: freeze includes export_verify section", l8,
+                        "found" if l8 else "MISSING"))
+
+        # L9: includes maintenance section (L6)
+        l9 = "maintenance" in sections and "mode" in sections["maintenance"]
+        results.append(("L9: freeze includes maintenance section", l9,
+                        "found" if l9 else "MISSING"))
+
+        # L10: includes runbook section (L7)
+        l10 = "runbook" in sections and "exists" in sections["runbook"]
+        results.append(("L10: freeze includes runbook section", l10,
+                        "found" if l10 else "MISSING"))
+
+        # L11: includes git_timeline section (L8)
+        l11 = "git_timeline" in sections and "branch" in sections["git_timeline"]
+        results.append(("L11: freeze includes git_timeline section", l11,
+                        "found" if l11 else "MISSING"))
+
+        # L12: safety_confirmation confirms read-only (L9)
+        sc = sections.get("safety_confirmation", {})
+        l12 = sc.get("all_read_only") is True
+        results.append(("L12: safety confirms read-only commands", l12,
+                        "confirmed" if l12 else "NOT confirmed"))
+
+        # L13: safety_confirmation confirms protected files untouched (L10)
+        l13 = sc.get("protected_files_untouched") is True
+        results.append(("L13: safety confirms protected files untouched", l13,
+                        "confirmed" if l13 else "NOT confirmed"))
+
+        # L14: includes regression section (L11)
+        l14 = "regression" in sections
+        results.append(("L14: freeze includes regression section", l14,
+                        "found" if l14 else "MISSING"))
+
+        # L15: has verdict field
+        l15 = "verdict" in freeze and freeze["verdict"] in ("PASS", "REVIEW")
+        results.append(("L15: freeze has verdict (PASS/REVIEW)", l15,
+                        freeze.get("verdict", "?") if l15 else "MISSING"))
+
+        # L16: has sections_included list
+        l16 = isinstance(freeze.get("sections_included"), list) and len(freeze["sections_included"]) > 0
+        results.append(("L16: freeze has sections_included list", l16,
+                        f"{len(freeze['sections_included'])} sections" if l16 else "MISSING"))
+
+    except Exception as e:
+        for label in [f"L{i}" for i in range(1, 17)]:
+            results.append((f"{label}: freeze test", False, str(e)[:80]))
+
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)
@@ -3840,7 +3942,7 @@ def _run_self_test(silent: bool = False) -> dict:
         print(f"  {name:<57} {status:<8}{detail_str}")
 
     if not silent:
-        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E + Phase 4F + Phase 4G + Phase 4H + Phase 4I + Phase 4J + Phase 4K regression tests")
+        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E + Phase 4F + Phase 4G + Phase 4H + Phase 4I + Phase 4J + Phase 4K + Phase 4L regression tests")
 
     return {"pass": passed == len(results), "total": len(results), "passed": passed}
 

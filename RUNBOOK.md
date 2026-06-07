@@ -41,6 +41,14 @@ ibkr-operator doctor
 ibkr-operator doctor --json
 ```
 
+### `ibkr-operator freeze`
+Release freeze / full CLI evidence snapshot (read-only). Runs all subcommands
+internally and bundles results.
+```bash
+ibkr-operator freeze
+ibkr-operator freeze --json
+```
+
 ### `ibkr-operator maintenance`
 Inspect and prune artifacts.
 ```bash
@@ -110,6 +118,7 @@ ibkr-operator maintenance --prune-exports --keep-exports 20
 | `phase4i_export_retention_verify` | 4I | Export retention & verify |
 | `phase4j_help_runbook` | 4J | Help output & runbook |
 | `phase4k_doctor_command` | 4K | Operator self-test / doctor command |
+| `phase4l_operator_release_freeze` | 4L | Release freeze / full CLI evidence snapshot |
 
 ---
 
@@ -130,6 +139,7 @@ ibkr-operator maintenance --prune-exports --keep-exports 20
 - `ibkr-operator daily-report`
 - `ibkr-operator doctor`
 - `ibkr-operator export`
+- `ibkr-operator freeze`
 - `ibkr-operator maintenance` (no flags)
 - `ibkr-operator maintenance --dry-run`
 

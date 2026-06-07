@@ -1364,6 +1364,16 @@ def _print_maintenance(result: dict) -> None:
             if len(rt.get("paths", [])) > 5:
                 print(f"    ... and {len(rt['paths']) - 5} more")
 
+        ex = result.get("exports", {})
+        if ex.get("count", 0) > 0:
+            print(f"\n  Exports to delete: {ex['count']}")
+            print(f"    by age:  {ex.get('by_age', 0)}")
+            print(f"    by limit: {ex.get('by_limit', 0)}")
+            for p in ex.get("paths", [])[:5]:
+                print(f"    - {p}")
+            if len(ex.get("paths", [])) > 5:
+                print(f"    ... and {len(ex['paths']) - 5} more")
+
         if wd.get("total", 0) == 0:
             print("  Nothing to delete.")
         return
@@ -1371,10 +1381,13 @@ def _print_maintenance(result: dict) -> None:
     if mode == "prune":
         ab = result.get("audit_bundles", {})
         rt = result.get("release_tags", {})
+        ex = result.get("exports", {})
         print(f"  Audit bundles: removed {ab.get('total_removed', 0)}"
               f" (age={ab.get('by_age', 0)}, count={ab.get('by_count', 0)})")
         print(f"  Release tags:  removed {rt.get('total_removed', 0)}"
               f" (age={rt.get('by_age', 0)}, count={rt.get('by_count', 0)})")
+        print(f"  Exports:       removed {ex.get('total_removed', 0)}"
+              f" (age={ex.get('by_age', 0)}, count={ex.get('by_count', 0)})")
         print(f"  Total removed: {result.get('total_removed', 0)}")
         return
 
@@ -1395,6 +1408,16 @@ def _print_maintenance(result: dict) -> None:
     print(f"  Newest:     {rt.get('newest', '-')}")
     print(f"  Oldest:     {rt.get('oldest', '-')}")
     print(f"  Retention:  {rt.get('retention_limit', '?')} max")
+
+    ex = result.get("exports", {})
+    if ex:
+        print()
+        print("Exports")
+        print(f"  Count:      {ex.get('count', 0)}")
+        print(f"  Size:       {ex.get('size_mb', 0)} MB")
+        print(f"  Newest:     {ex.get('newest', '-')}")
+        print(f"  Oldest:     {ex.get('oldest', '-')}")
+        print(f"  Retention:  {ex.get('retention_limit', '?')} max")
 
     pf = result.get("protected_files", [])
     if pf:
@@ -1439,6 +1462,7 @@ def _print_maintenance(result: dict) -> None:
     print("Run with --dry-run to see what would be pruned.")
     print("Run with --prune-audit --keep-audit N to prune audit bundles.")
     print("Run with --prune-releases --keep-releases N to prune release tags.")
+    print("Run with --prune-exports --keep-exports N to prune exports.")
 
 
 def main() -> None:
@@ -1468,6 +1492,8 @@ def main() -> None:
                     help="Output raw JSON only")
     ep.add_argument("--save", action="store_true",
                     help="Write export to ~/.openclaw/exports/ and print path")
+    ep.add_argument("--verify", type=str, default=None, nargs="?", const="latest",
+                    help="Verify an export file (default: latest)")
 
     # Phase 4D — maintenance subcommand
     mp = sub.add_parser("maintenance", help="Audit/release artifact maintenance")
@@ -1483,6 +1509,10 @@ def main() -> None:
                     help="Number of audit bundles to keep (default: 20)")
     mp.add_argument("--keep-releases", type=int, default=None,
                     help="Number of release tags to keep (default: 20)")
+    mp.add_argument("--prune-exports", action="store_true",
+                    help="Prune old export files (requires --keep-exports)")
+    mp.add_argument("--keep-exports", type=int, default=None,
+                    help="Number of exports to keep (default: 20)")
 
     args = parser.parse_args()
 
@@ -1495,6 +1525,23 @@ def main() -> None:
         return
 
     if args.command == "export":
+        if args.verify:
+            from bundle_audit import verify_export
+            vpath = None if args.verify == "latest" else args.verify
+            vresult = verify_export(vpath)
+            if args.json:
+                print(json.dumps(vresult, indent=2, default=str))
+            else:
+                v_verdict = "PASS" if vresult["pass"] else "FAIL"
+                v_color = GREEN if vresult["pass"] else RED
+                print(f"Export Verification: {v_color}{v_verdict}{RESET}")
+                print(f"  Source: {vresult.get('source', '?')}")
+                print(f"  {vresult.get('passed_count', 0)}/{vresult.get('check_count', 0)}")
+                for c in vresult.get("checks", []):
+                    c_status = f"{GREEN}PASS{RESET}" if c["ok"] else f"{RED}FAIL{RESET}"
+                    print(f"  {c_status} {c['check']}: {c['detail']}")
+            return
+
         result = run_export()
         if args.save:
             out_path = write_export(result)
@@ -1517,7 +1564,7 @@ def main() -> None:
             ProtectedPathError,
         )
 
-        has_prune_flag = args.prune_audit or args.prune_releases
+        has_prune_flag = args.prune_audit or args.prune_releases or args.prune_exports
 
         if has_prune_flag:
             # Prune mode — requires explicit flags
@@ -1525,12 +1572,15 @@ def main() -> None:
                 result = plan_prune(
                     keep_audit=args.keep_audit,
                     keep_releases=args.keep_releases,
+                    keep_exports=args.keep_exports,
                 )
             else:
                 try:
                     result = execute_prune(
-                        keep_audit=args.keep_audit,
-                        keep_releases=args.keep_releases,
+                        keep_audit=args.keep_audit if args.prune_audit else 0,
+                        keep_releases=args.keep_releases if args.prune_releases else 0,
+                        keep_exports=args.keep_exports,
+                        prune_exports=args.prune_exports,
                         dry_run=False,
                     )
                 except ProtectedPathError as e:

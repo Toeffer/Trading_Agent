@@ -3493,6 +3493,141 @@ def _run_self_test(silent: bool = False) -> dict:
         for label in [f"H{i}" for i in range(1, 17)]:
             results.append((f"{label}: export test", False, str(e)[:80]))
 
+    # =============================================================
+    # Section I: Export Retention & Verify Tests (Phase 4I)
+    # =============================================================
+
+    try:
+        # I1: prune_old_exports function exists
+        from bundle_audit import prune_old_exports
+        # Run with very high keep to avoid accidental deletion
+        i1_result = prune_old_exports(keep=9999)
+        i1 = isinstance(i1_result, dict) and "total_removed" in i1_result
+        results.append(("I1: prune_old_exports returns dict", i1,
+                        f"removed={i1_result.get('total_removed')}" if i1 else "missing keys"))
+
+        # I2: maintenance_report includes exports section
+        from bundle_audit import maintenance_report
+        mr = maintenance_report()
+        i2 = "exports" in mr and isinstance(mr["exports"], dict)
+        results.append(("I2: maintenance_report includes exports", i2,
+                        f"count={mr['exports'].get('count')}" if i2 else "MISSING"))
+
+        # I3: plan_prune accepts keep_exports
+        from bundle_audit import plan_prune
+        pp = plan_prune(keep_exports=9999)
+        i3 = "exports" in pp and isinstance(pp["exports"], dict)
+        results.append(("I3: plan_prune includes exports", i3,
+                        f"would_delete={pp['exports'].get('count')}" if i3 else "MISSING"))
+
+        # I4: execute_prune accepts prune_exports flag
+        from bundle_audit import execute_prune
+        ep = execute_prune(prune_exports=False, dry_run=True, keep_exports=9999)
+        i4 = "exports" in ep
+        results.append(("I4: execute_prune includes exports", i4,
+                        "present" if i4 else "MISSING"))
+
+        # I5: verify_export function exists
+        from bundle_audit import verify_export
+        v = verify_export({"command": "test"})
+        i5 = isinstance(v, dict) and "pass" in v and "checks" in v
+        results.append(("I5: verify_export returns dict with pass+checks", i5,
+                        f"pass={v.get('pass')}" if i5 else "missing keys"))
+
+        # I6: verify_export detects missing required fields
+        i6 = v.get("pass") is False
+        results.append(("I6: verify_export fails on missing fields", i6,
+                        f"failed={v.get('passed_count')}/{v.get('check_count')}" if i6 else "should have failed"))
+
+        # I7: verify_export on full export passes all checks
+        from ibkr_operator import run_export
+        full_export = run_export()
+        v2 = verify_export(full_export)
+        i7 = v2.get("pass") is True and v2.get("passed_count") == v2.get("check_count")
+        results.append(("I7: verify_export passes on full export", i7,
+                        f"{v2.get('passed_count')}/{v2.get('check_count')}" if i7 else f"FAIL {v2.get('passed_count')}/{v2.get('check_count')}"))
+
+        # I8: verify_export checks read_only=True
+        i8_ok = any(c["check"] == "read_only" and c["ok"] for c in v2.get("checks", []))
+        results.append(("I8: verify_export checks read_only=True", i8_ok,
+                        "pass" if i8_ok else "FAIL"))
+
+        # I9: verify_export checks locked_baseline
+        i9_ok = any(c["check"] == "locked_baseline" and c["ok"] for c in v2.get("checks", []))
+        results.append(("I9: verify_export checks locked_baseline", i9_ok,
+                        "pass" if i9_ok else "FAIL"))
+
+        # I10: verify_export checks git_info
+        i10_ok = any(c["check"] == "git_info" and c["ok"] for c in v2.get("checks", []))
+        results.append(("I10: verify_export checks git_info", i10_ok,
+                        "pass" if i10_ok else "FAIL"))
+
+        # I11: verify_export checks size cap
+        i11_ok = any(c["check"] == "size_cap" and c["ok"] for c in v2.get("checks", []))
+        results.append(("I11: verify_export checks size cap", i11_ok,
+                        "pass" if i11_ok else "FAIL"))
+
+        # I12: verify_export checks no forbidden strings
+        i12_ok = any(c["check"] == "no_forbidden_strings" and c["ok"] for c in v2.get("checks", []))
+        results.append(("I12: verify_export checks no forbidden strings", i12_ok,
+                        "pass" if i12_ok else "FAIL"))
+
+        # I13: verify_export from file path
+        import tempfile, json as _json
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        _json.dump(full_export, tmp, default=str)
+        tmp.close()
+        v3 = verify_export(Path(tmp.name))
+        i13 = v3.get("pass") is True
+        Path(tmp.name).unlink(missing_ok=True)
+        results.append(("I13: verify_export from file path", i13,
+                        f"{v3.get('passed_count')}/{v3.get('check_count')}" if i13 else "FAIL"))
+
+        # I14: verify_export from None loads latest (requires export_ prefix)
+        ts14 = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
+        tmp_path = Path.home() / ".openclaw" / "exports" / f"export_i14_test_{ts14}.json"
+        tmp_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path.write_text(_json.dumps(full_export, default=str))
+        v4 = verify_export(None)  # Loads latest export_*.json
+        i14 = v4.get("pass") is True
+        tmp_path.unlink(missing_ok=True)
+        results.append(("I14: verify_export loads latest", i14,
+                        f"{v4.get('passed_count')}/{v4.get('check_count')}" if i14 else "FAIL"))
+
+        # I15: ibkr-operator export --verify CLI works
+        import subprocess
+        op_path = Path.home() / "agents" / "ibkr-bridge" / "ibkr_operator.py"
+        # Write temp export, verify by path
+        verify_path = Path.home() / ".openclaw" / "exports" / f"_test_cli_verify_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}.json"
+        verify_path.parent.mkdir(parents=True, exist_ok=True)
+        verify_path.write_text(_json.dumps(full_export, default=str))
+        proc = subprocess.run(
+            [sys.executable, str(op_path), "export", "--verify", str(verify_path), "--json"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if proc.returncode == 0:
+            try:
+                jd = _json.loads(proc.stdout)
+                i15 = jd.get("pass") is True and jd.get("passed_count") == jd.get("check_count")
+                results.append(("I15: export --verify CLI works", i15,
+                                f"{jd.get('passed_count')}/{jd.get('check_count')}" if i15 else "FAIL"))
+            except _json.JSONDecodeError:
+                results.append(("I15: export --verify CLI works", False, "invalid JSON"))
+        else:
+            results.append(("I15: export --verify CLI works", False,
+                            f"exit={proc.returncode} stderr={proc.stderr[:100]}"))
+        verify_path.unlink(missing_ok=True)
+
+        # I16: --prune-exports flag exists in maintenance CLI
+        op_text = Path("/home/chris/agents/ibkr-bridge/ibkr_operator.py").read_text()
+        i16 = "--prune-exports" in op_text and "--keep-exports" in op_text
+        results.append(("I16: maintenance --prune-exports flag exists", i16,
+                        "found" if i16 else "MISSING"))
+
+    except Exception as e:
+        for label in [f"I{i}" for i in range(1, 17)]:
+            results.append((f"{label}: export retention/verify test", False, str(e)[:80]))
+
     # Print results table
     print(f"\n{'Test':<60} {'Result':<8} Detail")
     print("-" * 85)
@@ -3505,7 +3640,7 @@ def _run_self_test(silent: bool = False) -> dict:
         print(f"  {name:<57} {status:<8}{detail_str}")
 
     if not silent:
-        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E + Phase 4F + Phase 4G + Phase 4H regression tests")
+        print(f"\nPASS={passed}/{len(results)} Phase 3C + Phase 4B + Phase 4C + Phase 4D + Phase 4E + Phase 4F + Phase 4G + Phase 4H + Phase 4I regression tests")
 
     return {"pass": passed == len(results), "total": len(results), "passed": passed}
 

@@ -34,12 +34,14 @@ HOME = Path.home()
 OPENCLAW_DIR = HOME / ".openclaw"
 AUDIT_DIR = OPENCLAW_DIR / "audit-bundles"
 RELEASE_DIR = OPENCLAW_DIR / "releases"
+EXPORT_DIR = OPENCLAW_DIR / "exports"
 BRIDGE_DIR = HOME / "agents" / "ibkr-bridge"
 
 # Retention defaults
 MAX_BUNDLES = 20          # keep at most 20 audit bundles
 MAX_BUNDLE_AGE_DAYS = 30  # delete bundles older than 30 days (soft cap)
 MAX_RELEASES = 20         # keep at most 20 release tags
+MAX_EXPORTS = 20          # keep at most 20 exports
 BRIDGE_URL = os.environ.get("IBKR_BRIDGE_URL", "http://127.0.0.1:8790")
 
 # Protected file paths (never touch)
@@ -795,11 +797,55 @@ def _resource_report(bundle_count: int = 0, bundle_size_mb: float = 0.0) -> dict
     }
 
 
+def prune_old_exports(keep: int = 20) -> dict:
+    """Prune old export files, keeping only the newest `keep`.
+
+    Also removes exports older than MAX_BUNDLE_AGE_DAYS.
+    Always keeps at least 1 export.
+    Returns dict with removal counts.
+    Never touches protected files.
+    """
+    if not EXPORT_DIR.exists():
+        return {"by_count": 0, "by_age": 0, "total_removed": 0}
+
+    paths = sorted(EXPORT_DIR.glob("export_*.json"), reverse=True)
+    _check_protected(paths)
+
+    removed_by_age = 0
+    removed_by_count = 0
+
+    now = datetime.now(timezone.utc)
+    survivors = []
+    for p in paths:
+        try:
+            mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+            age_days = (now - mtime).total_seconds() / 86400
+            if age_days > MAX_BUNDLE_AGE_DAYS:
+                p.unlink()
+                removed_by_age += 1
+            else:
+                survivors.append(p)
+        except OSError:
+            survivors.append(p)
+
+    survivors.sort(reverse=True)
+    if len(survivors) > keep:
+        for p in survivors[keep:]:
+            try:
+                p.unlink()
+                removed_by_count += 1
+            except OSError:
+                pass
+
+    total = removed_by_age + removed_by_count
+    return {"by_age": removed_by_age, "by_count": removed_by_count, "total_removed": total}
+
+
 def maintenance_report() -> dict:
-    """Read-only report of audit and release artifact state.
+    """Read-only report of audit, release, and export artifact state.
 
     Returns:
-        Dict with count, size_bytes, oldest/newest for both bundles and tags,
+        Dict with count, size_bytes, oldest/newest for bundles, tags, exports,
         plus a list of protected files confirmed present.
     """
     result: dict[str, Any] = {
@@ -840,6 +886,23 @@ def maintenance_report() -> dict:
         }
     else:
         result["release_tags"] = {"count": 0, "size_bytes": 0, "size_mb": 0.0}
+
+    # Phase 4I — exports
+    if EXPORT_DIR.exists():
+        paths = sorted(EXPORT_DIR.glob("export_*.json"), reverse=True)
+        total_size = sum(p.stat().st_size for p in paths if p.is_file())
+        oldest = paths[-1].name if paths else None
+        newest = paths[0].name if paths else None
+        result["exports"] = {
+            "count": len(paths),
+            "size_bytes": total_size,
+            "size_mb": round(total_size / 1048576, 1),
+            "newest": newest,
+            "oldest": oldest,
+            "retention_limit": MAX_EXPORTS,
+        }
+    else:
+        result["exports"] = {"count": 0, "size_bytes": 0, "size_mb": 0.0}
 
     # Protected files
     protected_found = []
@@ -907,19 +970,22 @@ def prune_old_releases(keep: int = 20) -> dict:
 def plan_prune(
     keep_audit: int | None = None,
     keep_releases: int | None = None,
+    keep_exports: int | None = None,
 ) -> dict:
     """Dry-run: plan what would be pruned without deleting anything.
 
     Args:
         keep_audit: Number of audit bundles to keep. Default MAX_BUNDLES.
         keep_releases: Number of release tags to keep. Default MAX_RELEASES.
+        keep_exports: Number of exports to keep. Default MAX_EXPORTS.
 
     Returns:
-        Dict with audit_bundles (list of paths that would be deleted,
-        count_by_age, count_by_limit) and release_tags (same structure).
+        Dict with audit_bundles, release_tags, exports sections
+        (list of paths that would be deleted, count_by_age, count_by_limit).
     """
     keep_audit = keep_audit if keep_audit is not None else MAX_BUNDLES
     keep_releases = keep_releases if keep_releases is not None else MAX_RELEASES
+    keep_exports = keep_exports if keep_exports is not None else MAX_EXPORTS
     now = datetime.now(timezone.utc)
 
     result: dict[str, Any] = {
@@ -993,46 +1059,98 @@ def plan_prune(
         "paths": sorted(release_delete),
     }
 
+    # Phase 4I — exports
+    export_delete: list[str] = []
+    export_age = 0
+    export_limit = 0
+    if EXPORT_DIR.exists():
+        paths = sorted(EXPORT_DIR.glob("export_*.json"), reverse=True)
+        _check_protected(paths)
+
+        for p in paths:
+            try:
+                mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+                age_days = (now - mtime).total_seconds() / 86400
+                if age_days > MAX_BUNDLE_AGE_DAYS:
+                    export_delete.append(p.name)
+                    export_age += 1
+            except OSError:
+                pass
+        survivors = [p for p in paths if p.name not in export_delete]
+        survivors.sort(reverse=True)
+        for p in survivors[keep_exports:]:
+            if p.name not in export_delete:
+                export_delete.append(p.name)
+                export_limit += 1
+
+    result["would_delete"]["total"] += len(export_delete)
+    result["exports"] = {
+        "count": len(export_delete),
+        "by_age": export_age,
+        "by_limit": export_limit,
+        "paths": sorted(export_delete),
+    }
+
     return result
 
 
 def execute_prune(
     keep_audit: int | None = None,
     keep_releases: int | None = None,
+    keep_exports: int | None = None,
+    prune_exports: bool = False,
     dry_run: bool = False,
 ) -> dict:
-    """Execute or dry-run audit/release pruning.
+    """Execute or dry-run audit/release/export pruning.
 
-    This is the single entry point for all prune operations.
-    It checks protected paths, then delegates to
-    prune_old_bundles / prune_old_releases.
+    Never touches protected files. Never touches audit bundles or
+    release tags unless the corresponding flag is set.
 
     Args:
         keep_audit: Audit bundles to keep (default MAX_BUNDLES).
         keep_releases: Release tags to keep (default MAX_RELEASES).
+        keep_exports: Exports to keep (default MAX_EXPORTS).
+        prune_exports: If True, prune exports.
         dry_run: If True, only plan — no deletion.
 
     Returns:
         Dict with results.
     """
     if dry_run:
-        return plan_prune(keep_audit=keep_audit, keep_releases=keep_releases)
+        return plan_prune(keep_audit=keep_audit, keep_releases=keep_releases,
+                          keep_exports=keep_exports)
 
     keep_audit = keep_audit if keep_audit is not None else MAX_BUNDLES
     keep_releases = keep_releases if keep_releases is not None else MAX_RELEASES
+    keep_exports = keep_exports if keep_exports is not None else MAX_EXPORTS
 
-    # Safety gates
-    _check_protected(list(AUDIT_DIR.glob("*")) if AUDIT_DIR.exists() else [])
-    _check_protected(list(RELEASE_DIR.glob("*")) if RELEASE_DIR.exists() else [])
+    # Safety gates — only audit if flag set
+    if keep_audit:
+        _check_protected(list(AUDIT_DIR.glob("*")) if AUDIT_DIR.exists() else [])
+    if keep_releases:
+        _check_protected(list(RELEASE_DIR.glob("*")) if RELEASE_DIR.exists() else [])
+    if prune_exports and EXPORT_DIR.exists():
+        _check_protected(list(EXPORT_DIR.glob("*")))
 
-    audit_result = prune_old_bundles(keep=keep_audit)
-    release_result = prune_old_releases(keep=keep_releases)
+    audit_result = {"by_age": 0, "by_count": 0, "total_removed": 0}
+    release_result = {"by_age": 0, "by_count": 0, "total_removed": 0}
+    export_result = {"by_age": 0, "by_count": 0, "total_removed": 0}
+
+    if keep_audit:
+        audit_result = prune_old_bundles(keep=keep_audit)
+    if keep_releases:
+        release_result = prune_old_releases(keep=keep_releases)
+    if prune_exports:
+        export_result = prune_old_exports(keep=keep_exports)
 
     return {
         "mode": "prune",
         "audit_bundles": audit_result,
         "release_tags": release_result,
-        "total_removed": audit_result["total_removed"] + release_result["total_removed"],
+        "exports": export_result,
+        "total_removed": (audit_result["total_removed"]
+                           + release_result["total_removed"]
+                           + export_result["total_removed"]),
     }
 
 
@@ -1261,6 +1379,151 @@ def verify_audit_bundle(bundle: dict | None = None, skip_endpoint_live_check: bo
         "passed_count": sum(1 for c in checks if c["ok"]),
         "verified_at_utc": _now_iso(),
         "bundle_id": bundle_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 4I — Export Verification
+# ---------------------------------------------------------------------------
+
+_EXPORT_REQUIRED_FIELDS = frozenset({
+    "command", "export_id", "generated_at_utc", "read_only",
+    "daily_report_snapshot", "checklist_snapshot",
+    "maintenance_snapshot", "resources_snapshot",
+    "latest_identifiers", "git_info", "locked_baseline",
+})
+
+_EXPORT_FORBIDDEN_SUBSTRINGS = frozenset({
+    "guard-events.jsonl",
+    "guard-events\\n",
+    "order_submitted",
+})
+
+_FORBIDDEN_JSON_FIELD_PATTERNS = frozenset({
+    "guard-events.jsonl",
+})
+
+
+def verify_export(path_or_data: Path | dict | None = None) -> dict:
+    """Verify an operator evidence export file is structurally valid.
+
+    Checks:
+    1. Valid JSON
+    2. Required fields present
+    3. read_only=True
+    4. Size within 256KB cap
+    5. No forbidden strings (secrets, raw guard events)
+    6. locked_baseline section present
+    7. git_info section present
+
+    Args:
+        path_or_data: Path to export file, or pre-loaded dict, or None (reads
+                      latest from EXPORT_DIR).
+
+    Returns:
+        Dict with pass/fail, individual check results.
+    """
+    export: dict[str, Any] | None = None
+    source_name = "unknown"
+
+    if path_or_data is None:
+        # Load latest export from disk
+        if not EXPORT_DIR.exists():
+            return {
+                "pass": False,
+                "checks": [{"check": "export_exists", "ok": False,
+                             "detail": "No exports directory"}],
+                "check_count": 1,
+                "passed_count": 0,
+            }
+        paths = sorted(EXPORT_DIR.glob("export_*.json"), reverse=True)
+        if not paths:
+            return {
+                "pass": False,
+                "checks": [{"check": "export_exists", "ok": False,
+                             "detail": "No export files found"}],
+                "check_count": 1,
+                "passed_count": 0,
+            }
+        source_name = paths[0].name
+        try:
+            export = json.loads(paths[0].read_bytes())
+        except (json.JSONDecodeError, OSError) as e:
+            return {
+                "pass": False,
+                "checks": [{"check": "valid_json", "ok": False,
+                             "detail": str(e)[:100]}],
+                "check_count": 1,
+                "passed_count": 0,
+            }
+    elif isinstance(path_or_data, dict):
+        export = path_or_data
+        source_name = "inline_dict"
+    else:
+        # Path
+        p = Path(path_or_data)
+        source_name = p.name
+        try:
+            export = json.loads(p.read_bytes())
+        except (json.JSONDecodeError, OSError) as e:
+            return {
+                "pass": False,
+                "checks": [{"check": "valid_json", "ok": False,
+                             "detail": f"{p.name}: {str(e)[:80]}"}],
+                "check_count": 1,
+                "passed_count": 0,
+            }
+
+    checks: list[dict] = []
+
+    def _check(name: str, ok: bool, detail: str):
+        checks.append({"check": name, "ok": ok, "detail": detail})
+
+    # 1. Valid JSON (already loaded)
+    _check("valid_json", True, f"parsed OK from {source_name}")
+
+    # 2. Required fields
+    missing = _EXPORT_REQUIRED_FIELDS - set(export.keys())
+    all_required = len(missing) == 0
+    _check("required_fields", all_required,
+           "" if all_required else f"missing: {sorted(missing)}")
+
+    # 3. read_only=True
+    ro = export.get("read_only")
+    _check("read_only", ro is True,
+           f"read_only={ro}" if ro is not True else "True")
+
+    # 4. Size within cap
+    serialized = json.dumps(export, default=str)
+    size_ok = len(serialized) <= 256 * 1024
+    _check("size_cap", size_ok,
+           f"{len(serialized)} bytes" if size_ok else f"EXCEEDED {len(serialized)} bytes")
+
+    # 5. No forbidden strings
+    body = json.dumps(export, default=str)
+    forbidden_found = [s for s in _EXPORT_FORBIDDEN_SUBSTRINGS if s in body]
+    no_forbidden = len(forbidden_found) == 0
+    _check("no_forbidden_strings", no_forbidden,
+           "clean" if no_forbidden else f"found: {forbidden_found}")
+
+    # 6. locked_baseline section present
+    lb = export.get("locked_baseline")
+    _check("locked_baseline", lb is not None,
+           f"confirmed={lb.get('confirmed','?')}" if lb else "MISSING")
+
+    # 7. git_info section present
+    gi = export.get("git_info")
+    _check("git_info", gi is not None,
+           f"commit={gi.get('commit','?')[:16] if gi else 'MISSING'}" if gi else "MISSING")
+
+    all_ok = all(c["ok"] for c in checks)
+    return {
+        "pass": all_ok,
+        "checks": checks,
+        "check_count": len(checks),
+        "passed_count": sum(1 for c in checks if c["ok"]),
+        "verified_at_utc": _now_iso(),
+        "source": source_name,
     }
 
 

@@ -143,6 +143,31 @@ ibkr-operator maintenance --prune-exports --keep-exports 20
 - `ibkr-operator maintenance` (no flags)
 - `ibkr-operator maintenance --dry-run`
 
+---
+
+## Hermes Advisory Guard (Phase 5B.0)
+
+Policy: `~/.openclaw/memory/hermes-advisory-guard-policy.md`
+
+Hermes is **advisory-only**. It may:
+- Analyze markets, rank candidates, produce trade theses, calculate risk
+- Generate proposal drafts using the mandatory 14-field template
+- Write post-trade learning notes **only if explicitly requested by Chris**
+
+Hermes must **never**:
+- Enable, submit, or approve orders
+- Call IBKR directly, `/order`, `/order/submit`, or `/order/approve`
+- Edit `.env`, rules YAML, guard-state, or approval files
+- Bypass Werner, ibkr-operator, or bridge/guard
+
+Minimum risk rails (Phase 5 pilot):
+- Max position: 5% Net Liq | Max exposure: 25% Net Liq | Max risk/trade: 0.25%
+- Max 2 trades/day, 5/week
+- No trade without stop, if drift detected, open order, or live alert
+- Daily loss ≥ 1% or weekly ≥ 3% Net Liq = NO TRADE
+
+Every proposal requires Chris approval. Advisory only — no order enabled or submitted.
+
 ### Pruning commands (require explicit flags)
 - `ibkr-operator maintenance --prune-audit --keep-audit N`
 - `ibkr-operator maintenance --prune-releases --keep-releases N`

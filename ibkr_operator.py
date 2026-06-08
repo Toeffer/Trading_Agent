@@ -1371,6 +1371,18 @@ def run_doctor() -> dict:
         all_pass = False
         checks.append({"check": "protected_files_safe", "ok": False, "detail": str(e)[:120]})
 
+    # K11: Hermes advisory guard policy exists
+    hermes_policy_path = Path.home() / ".openclaw" / "memory" / "hermes-advisory-guard-policy.md"
+    try:
+        hp_exists = hermes_policy_path.exists()
+        if not hp_exists:
+            all_pass = False
+        checks.append({"check": "hermes_policy_exists", "ok": hp_exists,
+                        "detail": str(hermes_policy_path) if hp_exists else "MISSING"})
+    except Exception as e:
+        all_pass = False
+        checks.append({"check": "hermes_policy_exists", "ok": False, "detail": str(e)[:120]})
+
     return {
         "command": "ibkr-operator doctor",
         "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

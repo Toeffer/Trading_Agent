@@ -41,6 +41,16 @@ ibkr-operator doctor
 ibkr-operator doctor --json
 ```
 
+### `ibkr-operator hermes-proposal`
+Generate a Hermes-advised trade proposal (advisory only).
+```bash
+ibkr-operator hermes-proposal --canary          # test Hermes invocation
+ibkr-operator hermes-proposal                    # default: AAPL BUY 1
+ibkr-operator hermes-proposal --symbol SPY --side BUY --qty 1
+ibkr-operator hermes-proposal --json             # raw JSON output
+ibkr-operator hermes-proposal --output proposal.json
+```
+
 ### `ibkr-operator freeze`
 Release freeze / full CLI evidence snapshot (read-only). Runs all subcommands
 internally and bundles results.
@@ -138,6 +148,7 @@ ibkr-operator maintenance --prune-exports --keep-exports 20
 - `ibkr-operator checklist`
 - `ibkr-operator daily-report`
 - `ibkr-operator doctor`
+- `ibkr-operator hermes-proposal`
 - `ibkr-operator export`
 - `ibkr-operator freeze`
 - `ibkr-operator maintenance` (no flags)
@@ -145,7 +156,7 @@ ibkr-operator maintenance --prune-exports --keep-exports 20
 
 ---
 
-## Hermes Advisory Guard (Phase 5B.0)
+## Hermes Advisory Guard (Phase 5B.0) & Invocation Adapter (Phase 5B.1)
 
 Policy: `~/.openclaw/memory/hermes-advisory-guard-policy.md`
 

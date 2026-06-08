@@ -1917,6 +1917,278 @@ def _print_maintenance(result: dict) -> None:
     print("Run with --prune-exports --keep-exports N to prune exports.")
 
 
+# ---------------------------------------------------------------------------
+# Phase 5B.1 — Hermes Advisory Proposal
+# ---------------------------------------------------------------------------
+
+
+def _run_hermes_canary() -> dict:
+    """Run a Hermes canary test. Returns evidence block."""
+    import subprocess
+    from datetime import datetime, timezone
+
+    request_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    prompt = "Reply with exactly: HERMES_CANARY_OK. No other text."
+
+    try:
+        result = subprocess.run(
+            ["hermes", "chat", "-q", prompt, "-m", "gpt-5.5",
+             "--provider", "openai-codex", "-Q"],
+            capture_output=True, text=True, timeout=60,
+        )
+        response_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stdout = result.stdout.strip()
+        session_id = None
+        combined = stdout + "\n" + (result.stderr or "")
+        for line in combined.split("\n"):
+            if "session_id" in line.lower():
+                parts = line.split(":", 1)
+                if len(parts) > 1:
+                    session_id = parts[-1].strip()
+                    break
+        ok = "HERMES_CANARY_OK" in stdout and result.returncode == 0
+        return {
+            "command": "ibkr-operator hermes-proposal --canary",
+            "timestamp_utc": response_ts,
+            "ok": ok,
+            "raw_response": stdout[:500],
+            "evidence": {
+                "hermes_invoked": True,
+                "hermes_command_or_adapter": "ibkr-operator hermes-proposal -> hermes chat -q",
+                "hermes_provider": "openai-codex",
+                "hermes_model": "gpt-5.5",
+                "hermes_request_timestamp_utc": request_ts,
+                "hermes_response_timestamp_utc": response_ts,
+                "hermes_session_id": session_id,
+                "hermes_log_reference": f"hermes session {session_id or 'unknown'}",
+                "fallback_used": False,
+                "final_proposal_source": "canary (test)",
+            },
+        }
+    except FileNotFoundError:
+        return {"command": "hermes-proposal --canary", "ok": False,
+                "error": "hermes CLI not found"}
+    except subprocess.TimeoutExpired:
+        return {"command": "hermes-proposal --canary", "ok": False,
+                "error": "Hermes timed out"}
+
+
+def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
+    """Generate a Hermes-advised trade proposal.
+
+    Advisory only. No order enablement. No state mutation.
+    """
+    from datetime import datetime, timezone
+    import json
+    import subprocess
+
+    request_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Gather baseline data
+    baseline = {}
+    try:
+        ck = run_checklist()
+        baseline["checklist"] = ck
+    except Exception:
+        baseline["checklist"] = {"error": "checklist unavailable"}
+    try:
+        dr = run_daily_report()
+        baseline["daily_report"] = dr
+    except Exception:
+        baseline["daily_report"] = {"error": "daily_report unavailable"}
+    try:
+        doc = run_doctor()
+        baseline["doctor"] = doc
+    except Exception:
+        baseline["doctor"] = {"error": "doctor unavailable"}
+
+    # Build Hermes prompt
+    prompt_parts = [
+        "You are Hermes, an advisory-only trading research engine.",
+        "You are generating a trade proposal for Chris to review.",
+        "",
+        "IMPORTANT RULES:",
+        "- Advisory only. No order enabled or submitted.",
+        "- You must NOT call any trading endpoints.",
+        "- You must NOT suggest that orders are already approved.",
+        "- You must NOT mutate any files.",
+        "- Your proposal is a DRAFT for Chris to review.",
+        "",
+        "RISK RAILS (Phase 5 Pilot):",
+        "- Max single position: 5% of Net Liq",
+        "- Max total exposure: 25% of Net Liq",
+        "- Max risk per trade: 0.25% of Net Liq",
+        "- Max daily trades: 2, Max weekly: 5",
+        "- No trade without stop/invalidation",
+        "- No trade if drift, open order, or live requires_action alert",
+        "- No trade if daily loss >= 1% or weekly >= 3% Net Liq",
+        "",
+        "HUMAN CONFIRMATION:",
+        "- Every trade > EUR 0 requires Chris approval",
+        "- Any order enablement requires Chris approval",
+        "- Any order submit requires Chris approval",
+        "",
+        "BASELINE DATA:",
+        json.dumps(baseline, indent=2, default=str),
+        "",
+        f"USER REQUEST: Generate a trade proposal for {side} {qty} {symbol}.",
+        "",
+        "OUTPUT FORMAT: Valid JSON only. Use this exact structure:",
+        """{
+  "symbol": "...",
+  "side": "...",
+  "quantity": N,
+  "entry_reference": "...",
+  "stop_loss_invalidation": "...",
+  "max_loss_eur": N.N,
+  "max_loss_pct": N.N,
+  "position_notional_eur": N.N,
+  "position_notional_pct": N.N,
+  "portfolio_exposure_after_pct": N.N,
+  "daily_drawdown_status": "...",
+  "weekly_drawdown_status": "...",
+  "reason_to_trade": "...",
+  "reason_not_to_trade": "...",
+  "preflight_command": "...",
+  "facts": [...],
+  "assumptions": [...],
+  "estimates": [...],
+  "unknowns": [...],
+  "why_not_wait": "...",
+  "awaiting_chris_approval": true,
+  "advisory_only": true
+}""",
+    ]
+    prompt = "\n".join(prompt_parts)
+
+    try:
+        start = time.time()
+        result = subprocess.run(
+            ["hermes", "chat", "-q", prompt, "-m", "gpt-5.5",
+             "--provider", "openai-codex", "-Q"],
+            capture_output=True, text=True, timeout=180,
+        )
+        elapsed = round(time.time() - start, 2)
+        response_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+        session_id = None
+        for line in (stdout + "\n" + stderr).split("\n"):
+            if "session_id" in line.lower():
+                parts = line.split(":", 1)
+                if len(parts) > 1:
+                    session_id = parts[-1].strip()
+                    break
+
+        # Parse JSON from response
+        proposal = None
+        try:
+            start_idx = stdout.find("{")
+            end_idx = stdout.rfind("}")
+            if start_idx >= 0 and end_idx > start_idx:
+                proposal = json.loads(stdout[start_idx:end_idx + 1])
+        except (json.JSONDecodeError, ValueError):
+            proposal = None
+
+        evidence = {
+            "hermes_invoked": True,
+            "hermes_command_or_adapter": "ibkr-operator hermes-proposal -> hermes chat -q",
+            "hermes_provider": "openai-codex",
+            "hermes_model": "gpt-5.5",
+            "hermes_request_timestamp_utc": request_ts,
+            "hermes_response_timestamp_utc": response_ts,
+            "hermes_session_id": session_id,
+            "hermes_log_reference": f"hermes session {session_id or 'unknown'}",
+            "fallback_used": False,
+            "final_proposal_source": "Hermes" if proposal else "unknown",
+            "elapsed_seconds": elapsed,
+        }
+
+        return {
+            "command": "ibkr-operator hermes-proposal",
+            "timestamp_utc": response_ts,
+            "ok": proposal is not None,
+            "proposal": proposal,
+            "raw_response": stdout[:2000],
+            "evidence": evidence,
+            "advisory_only": True,
+        }
+
+    except FileNotFoundError:
+        return {"command": "hermes-proposal", "ok": False,
+                "error": "hermes CLI not found. Install hermes or check PATH.",
+                "evidence": {"hermes_invoked": False,
+                            "final_proposal_source": "unknown"}}
+    except subprocess.TimeoutExpired:
+        return {"command": "hermes-proposal", "ok": False,
+                "error": "Hermes timed out after 180s",
+                "evidence": {"hermes_invoked": True,
+                            "final_proposal_source": "unknown"}}
+
+
+def _print_hermes_result(result: dict) -> None:
+    """Print Hermes proposal result in human-readable format."""
+    if not result.get("ok"):
+        print(f"Hermes proposal FAILED: {result.get('error', 'unknown')}")
+        print()
+    else:
+        print(f"{BOLD}Hermes-Advised Proposal{RESET}")
+        print(f"{'=' * 40}")
+        print()
+
+    # Print evidence
+    ev = result.get("evidence", {})
+    print(f"{BOLD}Hermes Evidence Block{RESET}")
+    print(f"  hermes_invoked: {ev.get('hermes_invoked', '?')}")
+    print(f"  hermes_provider: {ev.get('hermes_provider', '?')}")
+    print(f"  hermes_model: {ev.get('hermes_model', '?')}")
+    print(f"  hermes_session_id: {ev.get('hermes_session_id', '?')}")
+    print(f"  request: {ev.get('hermes_request_timestamp_utc', '?')}")
+    print(f"  response: {ev.get('hermes_response_timestamp_utc', '?')}")
+    print(f"  elapsed: {ev.get('elapsed_seconds', '?')}s")
+    print(f"  source: {ev.get('final_proposal_source', '?')}")
+    print()
+
+    if result.get("ok") and result.get("proposal"):
+        p = result["proposal"]
+        print(f"{BOLD}Proposal{RESET}")
+        print(f"  Symbol:          {p.get('symbol', '?')}")
+        print(f"  Side:            {p.get('side', '?')}")
+        print(f"  Quantity:        {p.get('quantity', '?')}")
+        print(f"  Entry:           {p.get('entry_reference', '?')}")
+        print(f"  Stop/Invalid:    {p.get('stop_loss_invalidation', '?')}")
+        print(f"  Max Loss:        {p.get('max_loss_eur', '?')} EUR / {p.get('max_loss_pct', '?')}%")
+        print(f"  Notional:        {p.get('position_notional_eur', '?')} EUR / {p.get('position_notional_pct', '?')}%")
+        print(f"  Exposure after:  {p.get('portfolio_exposure_after_pct', '?')}%")
+        print(f"  Daily drawdown:  {p.get('daily_drawdown_status', '?')}")
+        print(f"  Weekly drawdown: {p.get('weekly_drawdown_status', '?')}")
+        print(f"  Reason to trade: {p.get('reason_to_trade', '?')}")
+        print(f"  Reason not to:   {p.get('reason_not_to_trade', '?')}")
+        print()
+        print(f"  Preflight cmd:")
+        print(f"    {p.get('preflight_command', '?')}")
+        print()
+        if p.get("facts"):
+            print(f"{BOLD}Facts{RESET}")
+            for f in p["facts"]:
+                print(f"  \u2022 {f}")
+        if p.get("assumptions"):
+            print(f"{BOLD}Assumptions{RESET}")
+            for a in p["assumptions"]:
+                print(f"  \u2022 {a}")
+        if p.get("unknowns"):
+            print(f"{BOLD}Unknowns{RESET}")
+            for u in p["unknowns"]:
+                print(f"  \u2022 {u}")
+        print()
+        print(f"  {BOLD}Awaiting Chris approval{RESET} \u2014 {p.get('awaiting_chris_approval', False)}")
+        print(f"  {BOLD}Advisory only{RESET} \u2014 {p.get('advisory_only', False)}")
+
+    print()
+    print(f"{BOLD}Advisory only. No order enabled or submitted. No state mutated.{RESET}")
+
+
 def main() -> None:
     import argparse
 
@@ -1956,6 +2228,22 @@ def main() -> None:
     fp = sub.add_parser("freeze", help="Release freeze / full CLI evidence snapshot")
     fp.add_argument("--json", action="store_true",
                      help="Output raw JSON only")
+
+    # Phase 5B.1 — Hermes advisory proposal subcommand
+    hp = sub.add_parser("hermes-proposal",
+                         help="Generate Hermes-advised trade proposal (advisory only)")
+    hp.add_argument("--json", action="store_true",
+                    help="Output raw JSON only")
+    hp.add_argument("--canary", action="store_true",
+                    help="Test Hermes invocation and show evidence block")
+    hp.add_argument("--symbol", type=str, default="AAPL",
+                    help="Symbol for proposal (default: AAPL)")
+    hp.add_argument("--side", type=str, default="BUY",
+                    help="Side for proposal (default: BUY)")
+    hp.add_argument("--qty", type=int, default=1,
+                    help="Quantity for proposal (default: 1)")
+    hp.add_argument("--output", type=str, default=None,
+                    help="Save output to file")
 
     # Phase 4D — maintenance subcommand
     mp = sub.add_parser("maintenance", help="Audit/release artifact maintenance")
@@ -2056,6 +2344,21 @@ def main() -> None:
             print(json.dumps(result, indent=2, default=str))
         else:
             _print_maintenance(result)
+        return
+
+    if args.command == "hermes-proposal":
+        if args.canary:
+            result = _run_hermes_canary()
+        else:
+            result = _run_hermes_proposal(args.symbol, args.side, args.qty)
+        if args.json or args.canary:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_hermes_result(result)
+        if args.output and result.get("ok"):
+            with open(args.output, "w") as f:
+                json.dump(result, f, indent=2)
+            print(f"Output saved to {args.output}")
         return
 
     if args.command == "doctor":

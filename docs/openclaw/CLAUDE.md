@@ -13,7 +13,7 @@ The active project is **IBKR stocks/ETF paper-trading setup and read-only planni
 
 Crypto/Kraken/grid/regime trading is disabled and archived. Do not run crypto checks, crypto regime analysis, grid logic, Kraken checks, or any old crypto workflows.
 
-**Phase 1 read-only setup complete. Phase 2 preflight + submit + approval complete. Phase 2F monitoring complete. Phase 2G close-only SELL + ack-hardening complete.**
+**Phase 1 read-only setup complete. Phase 2 preflight + submit + approval complete. Phase 2F monitoring complete. Phase 2G close-only SELL + ack-hardening complete. Phase 5C dual decision cycles complete (AAPL SELL + META BUY).**
 
 Current status:
 
@@ -322,13 +322,18 @@ Approval handling is not yet implemented. No order submission path exists.
 
 ### Symbol Allowlist
 
-Use explicit allowlist mode only. Initially allowed symbols:
+Use explicit allowlist mode only. Currently allowed symbols:
 
 ```text
 AAPL
-SPY
-QQQ
+META
+NVDA
+AMD
 ```
+
+SPY and QQQ removed after KID/PRIIPs regulation blocked US ETFs on paper account.
+META, NVDA, AMD added as individual stocks (no KID issue).
+`guard.py` `ALLOWED_SYMBOLS` synchronized with the YAML allowlist.
 
 Reject all other symbols by default. Also reject options, crypto, futures, forex, CFDs, leveraged ETFs, inverse ETFs, and shorting.
 
@@ -560,6 +565,10 @@ phase3w-dry-run-scenario-library: YES (dry_run_scenarios.py, 10 named scenarios,
 phase3x-scenario-report: YES (GET /report and /report/all, run_scenario_report/generate_full_report, CLI, 6 X-tests, 129/129 PASS)
 phase3y-dry-run-checkpoint: YES (/audit/release includes dry_run_simulation, create_release_tag(dry_run_report=), 9 Y-tests, 138/138 PASS)
 phase3j-release-tagging: YES (GET /audit/release, GET /audit/release/latest, CLI --tag, provenance with source hashes, 7 J-tests)
+phase5c-dual-decision-cycles: YES (AAPL SELL filled, META BUY filled, QQQ blocked by PRIIPs)
+phase5c-position-sizing-rationale: YES (mandatory section in every proposal)
+phase5c-data-provenance-policy: YES (Hermes source-labeling, IBKR=truth)
+phase5c-allowlist-updated: YES (AAPL, META, NVDA, AMD -- removed SPY, QQQ)
 automation-ready: NO (manual approval only)
 live-ready: NO (paper only)
 ```
@@ -750,7 +759,7 @@ Known test artifacts (order_ids 12345, 99999; approvals aprv_noexec, aprv_7) cla
 - Startup reconciliation detects legacy unconfirmed orders (no ibkr_metadata) and auto-corrects daily_trade_count
 - `position_drift_check()` excludes unconfirmed orders from expected position computation
 
-**Current position:** AAPL flat (SELL closed). 1 unconfirmed legacy order (order_id=24, never reached IBKR). No drift. daily_trade_count=2 for 2026-06-03.
+**Current position:** META 72 @ $596.28 (BUY opened 2026-06-09). AAPL flat (SELL closed 2026-06-09). 2 cancelled QQQ order remnants (orders 52, 60, 71 -- PRIIPs blocked). Daily trade count reset after closeout.
 
 **Submit path:**
 - MKT-only — LMT remains preflight-validation only
@@ -762,7 +771,11 @@ Known test artifacts (order_ids 12345, 99999; approvals aprv_noexec, aprv_7) cla
 - Crash recovery: scan-and-report only
 - `/order` remains permanently HTTP 403
 
-**Paper-order-ready achieved.** First paper order executed 2026-06-02 (AAPL BUY 1 MKT, order_id=12, filled @ $314.92). Both kill switches rolled back.
+**Paper-order-ready achieved.** Two live decision cycles completed 2026-06-09:
+  - AAPL SELL 1 MKT @ ~$300.30 (order_id=24) -- close-only ✅
+  - META BUY 72 MKT @ $596.28 avg (order_id=25) -- open ✅
+  - QQQ BUY 59 MKT (order_ids 52, 60, 71) -- blocked by KID/PRIIPs ❌
+Both kill switches rolled back after each cycle.
 
 **To place another paper order, Chris must:**
 1. Set `IBKR_ALLOW_ORDERS=true` in `.env`

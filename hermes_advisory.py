@@ -24,12 +24,17 @@ from pathlib import Path
 
 # ── Hard-coded safety constraints ──────────────────────────────────────────
 FORBIDDEN_COMMANDS = [
-    "/order/submit", "/order/approve", "/order",
+    "/order/submit", "/order/approve",
     "placeOrder", "cancelOrder", "ibkr_order",
     "IBKR_ALLOW_ORDERS=true", "enforced=true",
     "guard-state", "guard-events",
     "submitted-approvals", "manual-order-reconciliations",
     ".env", "paper-trading-rules.yaml",
+]
+
+# Paths that are allowed even though they contain forbidden substrings
+ALLOWED_PATH_OVERRIDES = [
+    "/order/preflight",  # validation-only, advisory
 ]
 
 ADVISORY_INSTRUCTION = """
@@ -53,6 +58,43 @@ RISK RAILS (Phase 5 Pilot):
 - No trade if drift detected, open order unresolved, or live requires_action alert
 - No trade if daily loss >= 1% or weekly loss >= 3% Net Liq
 
+DATA PROVENANCE POLICY (Phase 5C — source-of-truth hierarchy):
+
+1. IBKR/bridge/preflight is the source of truth for execution data:
+   - account value, cash, positions, open orders, drift, halts
+   - entry/reference price, ATR, stop inputs (if available via IBKR)
+   - position sizing, exposure, final gate results
+
+2. Web/search is allowed ONLY for context:
+   - current news, earnings calendar, macro events
+   - analyst/regulatory/company-specific context
+   - risk flags, thesis support or thesis rejection
+
+3. Web data may VETO a trade but may NOT authorize one by itself.
+
+4. Every proposal must label source type for key claims using one of:
+   - [IBKR]
+   - [bridge/preflight]
+   - [web/news]
+   - [assumption]
+   - [estimate]
+   - [web context unavailable]
+
+5. If web data conflicts with IBKR/preflight numerical data:
+   - IBKR/preflight wins for numbers
+   - Web can only reduce confidence or trigger NO TRADE
+
+6. No trade proposal may proceed without:
+   - live bridge baseline
+   - preflight gates
+   - position sizing from rules
+   - explicit Chris approval
+
+7. If web search is unavailable:
+   - You may still produce a technical/system proposal
+   - But must label key claims as "[web context unavailable]"
+   - Include this as a risk/unknown in the proposal
+
 HUMAN CONFIRMATION LADDER:
 - Every trade > EUR 0 requires Chris approval
 - Any order enablement requires Chris approval
@@ -60,35 +102,105 @@ HUMAN CONFIRMATION LADDER:
 """
 
 PROPOSAL_TEMPLATE = """
-Generate a trade proposal using the following mandatory 14-field template.
-Base the proposal on the baseline data provided.
+Generate a trade proposal using the following mandatory structure.
+Base the proposal on the baseline data provided. Every key claim must
+have a source label: [IBKR], [bridge/preflight], [web/news], [assumption],
+[estimate], or [web context unavailable].
 
-Fields:
-1. symbol
+---
+### 📐 POSITION SIZING RATIONALE (mandatory — before the recommendation)
+
+**Method used:** one of [Fixed shares / Fixed % of Net Liq / ATR risk sizing / Volatility targeting / Kelly fraction / Confidence-weighted allocation / Other (specify)]
+
+**Inputs:** [IBKR]
+| Parameter | Value | Source |
+|---|---|---|
+| Net Liq | ... | IBKR account |
+| Available cash | ... | IBKR account |
+| Current portfolio exposure | ... | IBKR positions |
+| Risk per share | ... | see stop calculation |
+| Stop distance | ... | see stop calculation |
+| ATR14 | ... | IBKR historical bars |
+| Max position (5% of NL) | ... | rules |
+| Max risk per trade (2% of NL) | ... | rules |
+
+**Stop candidates** (rule: max of four):
+| Candidate | Value | Source |
+|---|---|---|
+| ATR stop (2x) | ... | entry - 2 * ATR14 |
+| Swing low | ... | recent pivot low |
+| 20-day low | ... | lowest low in 20d |
+| 5% floor | ... | entry * 0.95 |
+| -> Final stop | ... | (binding: which candidate) |
+
+**Calculations:**
+- Notional cap shares = floor(5% * NL * FX / entry_price) = ...
+- Risk cap shares     = floor(2% * NL * FX / stop_distance) = ...
+- Final shares        = min(...) = |
+
+**Position summary:**
+| Metric | Value | % of limit |
+|---|---|---|
+| Shares | N | -- |
+| Notional | ... | ...% of 5% cap |
+| Max loss | ... | ...% of 2% cap |
+| Binding factor | ... | notional/risk cap |
+| % of Net Liq | ... | |
+
+**Decision rationale:**
+- Why this size?
+- Why not smaller?
+- Why not larger?
+- Which constraint became the limiting factor?
+
+---
+
+**Fields:**
+1. symbol [IBKR/bridge/preflight]
 2. side (BUY or SELL)
-3. quantity
-4. entry reference (price level, order type, rationale)
-5. stop-loss / invalidation (price level)
-6. max loss in EUR and %
-7. position notional in EUR and %
-8. portfolio exposure after trade (as % of Net Liq)
-9. daily/weekly drawdown status
-10. reason to trade
-11. reason not to trade
+3. quantity [bridge/preflight — from mandatory sizing above]
+4. entry reference (price level, order type, rationale) [IBKR]
+5. stop-loss / invalidation (price level) [IBKR — from stop calculation]
+6. max loss in EUR and % [bridge/preflight]
+7. position notional in EUR and % [bridge/preflight]
+8. portfolio exposure after trade (as % of Net Liq) [bridge/preflight]
+9. daily/weekly drawdown status [bridge/preflight]
+10. reason to trade [Hermes analysis — label sources]
+11. reason not to trade [Hermes analysis — label sources]
 12. exact bridge preflight command (curl for POST /order/preflight)
 13. "Awaiting Chris approval"
 14. "Advisory only — no order enabled or submitted"
 
 Also include:
-- Facts (from baseline data)
-- Assumptions
-- Estimates
-- Unknowns
+- Facts with source labels
+- Assumptions with source labels
+- Estimates with source labels
+- Unknowns with source labels
 - Why not wait?
 
 Output ONLY valid JSON, no other text.
 Use this exact JSON structure:
 {
+  "position_sizing": {
+    "method": "...",
+    "inputs": {},
+    "stop_candidates": {},
+    "stop_price": N.N,
+    "binding_stop": "...",
+    "stop_distance": N.N,
+    "notional_cap_shares": N,
+    "risk_cap_shares": N,
+    "final_shares": N,
+    "position_notional_usd": N.N,
+    "max_loss_usd": N.N,
+    "max_loss_eur": N.N,
+    "binding_factor": "...",
+    "position_pct_nl": N.N,
+    "rationale_why_this_size": "...",
+    "rationale_why_not_smaller": "...",
+    "rationale_why_not_larger": "...",
+    "rationale_limiting_factor": "..."
+  },
   "symbol": "...",
   "side": "...",
   "quantity": N,
@@ -104,10 +216,10 @@ Use this exact JSON structure:
   "reason_to_trade": "...",
   "reason_not_to_trade": "...",
   "preflight_command": "...",
-  "facts": ["...", "..."],
-  "assumptions": ["...", "..."],
-  "estimates": ["...", "..."],
-  "unknowns": ["...", "..."],
+  "facts": ["[source] ...", "..."],
+  "assumptions": ["[source] ...", "..."],
+  "estimates": ["[source] ...", "..."],
+  "unknowns": ["[source] ...", "..."],
   "why_not_wait": "...",
   "awaiting_chris_approval": true,
   "advisory_only": true

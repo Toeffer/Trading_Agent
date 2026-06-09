@@ -2960,7 +2960,7 @@ def submit_order(
 # --- Config Loading ---
 
 EXPECTED_VERSION = "1.3-draft"
-ALLOWED_SYMBOLS = ["AAPL", "SPY", "QQQ"]
+ALLOWED_SYMBOLS = ["AAPL", "META", "NVDA", "AMD"]
 
 
 def load_rules(path: Path | None = None) -> dict:

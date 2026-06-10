@@ -4354,18 +4354,27 @@ def _compute_positions_from_events() -> dict[str, int]:
 
     net: dict[str, int] = {}
     for e in submitted:
-        oid = e.get("order_id")
+        oid = str(e.get("order_id", "")) if e.get("order_id") is not None else ""
+        aid = e.get("approval_id", "")
+
+        # Skip test artifacts
+        if oid in _KNOWN_TEST_ORDER_IDS_POSITION or aid in _KNOWN_TEST_APPROVALS_POSITION:
+            continue
         if oid in unconfirmed_oids:
             continue
+
         symbol = e.get("symbol", "").upper()
         if not symbol:
             continue
-        action = e.get("action", "").upper()
+        action = (e.get("action") or "").upper()
         qty = int(e.get("totalQuantity", 0) or 0)
+        if qty <= 0:
+            continue  # qty=0 events are test placeholders
         if action == "BUY":
             net[symbol] = net.get(symbol, 0) + qty
         elif action == "SELL":
             net[symbol] = net.get(symbol, 0) - qty
+        # Unknown action (None/empty) — skip, these are test artifacts
 
     return {s: q for s, q in net.items() if q > 0}
 

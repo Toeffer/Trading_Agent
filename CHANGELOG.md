@@ -9,22 +9,43 @@ a fact there changes, its old form lands here with a date. Append-only.
 
 ---
 
-## Order history (paper account DUQ542875)
+## Order history (paper account DUQ542875) — Phase H3 authoritative ledger
 
-| Date | Symbol | Action | Qty | Type | Order ID | Fill | Notes |
-|---|---|---|---:|---|---|---|---|
-| 2026-06-02 | — | first paper order | — | — | — | First order executed; both kill switches rolled back after |
-| 2026-06-03 | AAPL | SELL | 1 | MKT | 36 (permId 551562267) | $314.50 | Close-only |
-| 2026-06-09 | AAPL | SELL | 1 | MKT | 24 | ~$300.30 | Close-only — Phase 5C cycle 1 |
-| 2026-06-09 | META | BUY | 72 | MKT | 25 | $596.28 avg | Open — Phase 5C cycle 2 (current position) |
-| 2026-06-09 | QQQ | BUY | 59 | MKT | 52, 60, 71 | — | **Blocked** by KID/PRIIPs |
+> **H3 reconstructed 2026-06-10** from `guard-events.jsonl` `order_submitted` events
+> filtered to `ibkr_metadata.status=Filled`. Non-filled submissions excluded.
 
-> ⚠️ **Verify:** the source file presented two different AAPL closes as "the" close event
-> — order 36 @ $314.50 (06-03) and order 24 @ ~$300.30 (06-09). Both are tabled above;
-> confirm against `/monitor/events` which fills are real vs. test artifacts.
+| Date | Symbol | Action | Qty | Fill | ib_oid | permId | Approval (short) |
+|---|---:|---:|---:|---:|---:|:---|
+| 2026-06-03 | AAPL | SELL | 1 | $314.50 | 36 | 551562267 | `aprv_519fb1f8` |
+| 2026-06-03 | AAPL | BUY | 1 | $314.28 | 8 | 551562294 | `aprv_305f24cc` |
+| 2026-06-04 | AAPL | SELL | 1 | $310.98 | 16 | 1657699826 | `aprv_c871f6b7` |
+| 2026-06-08 | AAPL | BUY | 1 | $310.34 | 24 | 75943855 | `aprv_b81da452` |
+| 2026-06-09 | META | BUY | 72 | $596.28 | 24 | 71835605 | `aprv_3a934a5c` |
 
-Known test artifacts (classified `historical`, `requires_action=false`): order_ids 12345,
-99999; approvals `aprv_noexec`, `aprv_7`.
+> **Non-filled submissions (excluded from ledger):**
+> - AAPL SELL order 24 (permId 1529342545, 2026-06-09) — Submitted, 0 filled.
+>   The ~$300.30 reference price was an estimate, not a fill.
+> - AAPL SELL order 16 (permId 2055135190, 2026-06-04) — PreSubmitted, 0 filled.
+>   Retried as permId 1657699826 which filled.
+
+> **QQQ cancellation remnants:** 5 unconfirmed orders (IDs 40, 46, 52, 60, 71) across
+> 2 approval attempts — all KID/PRIIPs blocks. None reached IBKR; none increment
+> `daily_trade_count`. The prior CHANGELOG entry "2 cancelled, IDs 52/60/71" was
+> doubly incorrect: actual count is 5, not 2 or 3.
+
+> **ID type map (H3):**
+> - `approval_id` — guard-internal UUID linking preflight → approve → submit
+> - `local_order_id` — ephemeral integer assigned by bridge per submit call
+> - `ib_oid` — IBKR internal order ID (reused across days/symbols — normal)
+> - `permId` — IBKR permanent order ID (globally unique per order)
+
+> **Gate D semantics (H3):** `daily_trade_count` increments only on IBKR-acknowledged
+> fills. Rejected attempts, blocked submits, and unconfirmed (ACK_TIMEOUT) orders do
+> NOT increment the count. Gate D uses `current >= max_trades` so the (N+1)th attempt
+> is always blocked once the cap is reached.
+
+Known test artifacts (order_ids 12345, 99999; approvals `aprv_noexec`, `aprv_7`):
+excluded from ledger — no ibkr_metadata.
 
 ---
 
@@ -163,20 +184,18 @@ stop or while drift/open-order/live-alert is present, NO TRADE at daily loss ≥
 
 ## Verification Queue (resolve against the live system)
 
-0. **Risk-rails divergence (highest priority — safety-relevant).** `CLAUDE.md §5`
-   (v1.3-draft, YAML-sourced) states 2% risk/trade, 30% exposure, no weekly trade cap. The
-   RUNBOOK's Phase 5 Hermes pilot rails state 0.25% risk/trade, 25% exposure, 5 trades/week.
-   Loss halts match (−1% day / −3% week), and max position matches (5%). Two readings:
-   **(A)** advisory overlay — `guard.py` enforces the wider v1.3-draft caps as the hard
-   ceiling, Hermes proposes inside a tighter envelope (most likely; the matching loss halts
-   and the fact that 0.25% = 5% notional × 5% stop floor both support this); **(B)**
-   supersession — the YAML/guard were tightened to the pilot numbers and §5 is stale.
-   Resolve by reading `paper-trading-rules.yaml` + the limit constants in `guard.py`. If (B),
-   update `CLAUDE.md §5`. If (A), §5 is correct as the enforced ceiling and the pilot envelope
-   stays documented under Hermes.
-1. **AAPL close discrepancy** — order 36 @ $314.50 (06-03) vs order 24 @ ~$300.30 (06-09).
-   Which is the real close? Cross-check `/monitor/events`.
-2. **QQQ remnant count** — source said "2 cancelled" but listed three IDs (52, 60, 71).
+0. ✅ **RESOLVED (H2): Risk-rails divergence.** Reading (A) confirmed — guard.py enforces
+   the v1.3-draft YAML caps (2% risk, 30% exposure) as the hard ceiling; Hermes proposes
+   inside a tighter advisory envelope (0.25% risk, 25% exposure, 5 trades/week). CLAUDE.md
+   §5 now documents the two-tier model explicitly. See `CLAUDE.md §5 Two-Tier Risk Model`.
+1. ✅ **RESOLVED (H3): AAPL close discrepancy.** The authoritative AAPL close is order 36
+   @ $314.50 (2026-06-03, permId 551562267, status=Filled). Order 24 @ ~$300.30
+   (2026-06-09, permId 1529342545) was Submitted but not filled — the price was an
+   estimate, not a fill. Reconstructed ledger in § Order History above.
+2. ✅ **RESOLVED (H3): QQQ remnant count.** The actual count is 5 unconfirmed orders
+   (IDs 40, 46, 52, 60, 71) across 2 approval attempts. The prior note "2 cancelled"
+   was doubly incorrect — it said 2 but listed 3 IDs, and the real count is 5. All five
+   are KID/PRIIPs artifacts that never reached IBKR. See § Order History above.
 3. **Model identity** — source listed `openrouter/deepseek/deepseek-v4-flash` as Tier 1
    (Strong); "flash" usually denotes a fast tier. Confirm the router resolves
    safety-critical edits to a genuine strong model.

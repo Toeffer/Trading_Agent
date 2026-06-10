@@ -616,6 +616,26 @@ def reconcile_snapshot() -> dict:
         positions_flat=positions_flat,
     )
 
+    # H4: Guardian Alerts — stop-breach and kill-switch watchdog
+    try:
+        from guard import _run_h4_stop_breach_check, _run_h4_watchdog_check
+        h4_stop_alerts = _run_h4_stop_breach_check()
+        for a in h4_stop_alerts:
+            a["source"] = "live"
+            a["h4_feature"] = "stop_breach"
+            classified_alerts.append(a)
+    except Exception:
+        pass
+
+    try:
+        h4_watchdog_alerts = _run_h4_watchdog_check()
+        for a in h4_watchdog_alerts:
+            a["source"] = "live"
+            a["h4_feature"] = "kill_switch_watchdog"
+            classified_alerts.append(a)
+    except Exception:
+        pass
+
     # Build result
     result: dict[str, Any] = {
         "timestamp_utc": now_utc.isoformat(),

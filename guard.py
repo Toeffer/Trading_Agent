@@ -548,7 +548,7 @@ def fetch_account() -> dict:
     buying_power_eur = float(bp_raw) if bp_raw else 0.0
 
     fx_raw = _get_tag("ExchangeRate")
-    exchange_rate = float(fx_raw) if fx_raw else 1.0
+    exchange_rate = float(fx_raw) if fx_raw else None  # H4.2: no silent 1.0 fallback
 
     return {
         "net_liquidation_eur": net_liquidation_eur,
@@ -1551,6 +1551,17 @@ def run_preflight(
         })
         return {"passed": False, "error": str(e), "gate": "allowlist"}
 
+    # H4.1: Structural US-domiciled ETF rejection (BUY only — SELL closes are fine)
+    if not is_close:
+        try:
+            _reject_us_domiciled_etf(symbol)
+        except ValueError as e:
+            append_guard_event("preflight_fail", {
+                "symbol": symbol, "passed": False,
+                "reason": str(e), "gate": "us_etf_block",
+            })
+            return {"passed": False, "error": str(e), "gate": "us_etf_block"}
+
     # Load data — use injected providers if given, else default (HTTP self-call)
     try:
         rules = load_rules()
@@ -1572,6 +1583,30 @@ def run_preflight(
 
     net_liquidation_eur = account["net_liquidation_eur"]
     exchange_rate = account["exchange_rate"]
+
+    # H4.2: FX plausibility guard — reject if EUR/USD outside [0.8, 1.4]
+    if exchange_rate is None or not isinstance(exchange_rate, (int, float)):
+        append_guard_event("preflight_fail", {
+            "symbol": symbol, "passed": False,
+            "reason": "EUR/USD rate unavailable from IBKR account",
+            "gate": "fx_plausibility",
+        })
+        return {
+            "passed": False,
+            "error": "EUR/USD rate unavailable: cannot compute USD sizing.",
+            "gate": "fx_plausibility",
+        }
+    if exchange_rate < 0.8 or exchange_rate > 1.4:
+        append_guard_event("preflight_fail", {
+            "symbol": symbol, "passed": False,
+            "reason": f"EUR/USD rate {exchange_rate:.4f} outside [0.80, 1.40]",
+            "gate": "fx_plausibility",
+        })
+        return {
+            "passed": False,
+            "error": f"EUR/USD rate {exchange_rate:.4f} outside plausibility range [0.80, 1.40].",
+            "gate": "fx_plausibility",
+        }
 
     if is_close:
         # SELL: use bid price for exit reference; skip stop calc
@@ -4133,6 +4168,349 @@ _reconcile_summary = reconcile_approvals_on_startup()
 # Phase H1: Mark startup as complete — from here on, protected file
 # writes require H1 token authorization through the bridge.
 h1_startup_done()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase H4 — Guardian Alerts (read-only)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# US-domiciled ETF symbol blocklist (structural, not just allowlist-based)
+_US_ETF_BLOCKLIST: set[str] = {
+    "SPY", "QQQ", "IVV", "VOO", "VTI", "VEA", "VWO", "BND",
+    "AGG", "GLD", "SLV", "IWM", "DIA", "EEM", "EFA", "XLF",
+    "XLE", "XLK", "XLV", "XLY", "XLI", "XLP", "XLB", "XLU",
+    "TLT", "LQD", "HYG", "VNQ", "ARKK", "SMH", "SOXX", "IBB",
+    "TQQQ", "SQQQ", "UPRO", "SPXU", "SOXL", "FAS", "FAZ",
+}
+
+
+def _reject_us_domiciled_etf(symbol: str, contract_provider=None) -> None:
+    """Reject US-domiciled ETFs structurally for this EU paper account.
+
+    Dual check:
+    1. Symbol-level: match against known US ETF blocklist (always active).
+    2. Contract-level (if provider available): secType=="ETF" on US exchange.
+
+    Raises ValueError if the symbol is a US-domiciled ETF.
+    """
+    sym = symbol.upper().strip()
+
+    # Check 1: known blocklist
+    if sym in _US_ETF_BLOCKLIST:
+        raise ValueError(
+            f"Symbol '{sym}' is a US-domiciled ETF — blocked for EU paper "
+            f"account DUQ542875 under KID/PRIIPs regulation."
+        )
+
+    # Check 2: structural via contract lookup (if provider available)
+    if contract_provider is not None:
+        try:
+            contract = contract_provider(sym)
+            if isinstance(contract, dict):
+                sec_type = contract.get("secType", "").upper()
+                exchange = contract.get("exchange", "").upper()
+                us_exchanges = {"SMART", "NASDAQ", "NYSE", "ARCA", "BATS",
+                                "IEX", "NMS", "AMEX", "BEX", "CBOE"}
+                if sec_type == "ETF" and any(ex in exchange for ex in us_exchanges):
+                    raise ValueError(
+                        f"Symbol '{sym}' resolved as ETF on US exchange "
+                        f"({exchange}) — blocked for EU paper account."
+                    )
+        except ValueError:
+            raise  # re-raise our own ValueError
+        except Exception:
+            pass  # contract lookup failed — fall through, rely on blocklist
+
+
+def _fetch_exchange_rate(account_provider=None) -> float:
+    """Fetch EUR/USD exchange rate with plausibility guard (H4.2).
+
+    Returns float EUR/USD rate.
+
+    Raises:
+        ValueError: rate fetch failed or outside [0.8, 1.4] plausibility range.
+    """
+    if account_provider is not None:
+        try:
+            account = account_provider()
+        except Exception as e:
+            raise ValueError(
+                f"EUR/USD fetch failed: account provider error: {e}"
+            )
+    else:
+        try:
+            account = fetch_account()
+        except (RuntimeError, ValueError) as e:
+            raise ValueError(
+                f"EUR/USD fetch failed: bridge account endpoint error: {e}"
+            )
+
+    fx_raw = account.get("exchange_rate") if isinstance(account, dict) else None
+
+    if fx_raw is None:
+        raise ValueError(
+            "EUR/USD rate unavailable: ExchangeRate tag missing from "
+            "IBKR account data. Cannot compute USD sizing."
+        )
+
+    try:
+        fx_rate = float(fx_raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"EUR/USD rate unparseable: {fx_raw!r}. Cannot compute USD sizing."
+        )
+
+    if fx_rate < 0.8 or fx_rate > 1.4:
+        raise ValueError(
+            f"EUR/USD rate {fx_rate:.4f} outside plausibility range [0.80, 1.40]. "
+            f"Refusing to compute USD sizing with implausible FX."
+        )
+
+    return fx_rate
+
+
+def check_stop_breach(
+    quote_provider=None,
+    position_provider=None,
+) -> list[dict]:
+    """Check all active positions for stop-loss breaches (H4.3).
+
+    Read-only: generates alerts, does NOT submit orders or auto-exit.
+
+    For each active position:
+    1. Find the associated stop from approval records / order_submitted events.
+    2. Get live quote (bid for SELL stops, ask/close for BUY stops).
+    3. Compare: if BUY and close <= stop → alert.
+
+    Args:
+        quote_provider: Callable(symbol) -> dict with close/bid/ask.
+        position_provider: Callable() -> list of position dicts.
+
+    Returns:
+        List of breach alert dicts (empty if no breaches).
+    """
+    alerts: list[dict] = []
+
+    # Get active positions from event ledger
+    positions = _compute_positions_from_events()
+    if not positions:
+        return alerts
+
+    for symbol, net_qty in positions.items():
+        if net_qty <= 0:
+            continue  # no long position
+
+        # Find the most recent BUY order_submitted event for this symbol
+        # that has a stop_price in its approval record
+        stop_price = _find_active_stop(symbol)
+        if stop_price is None:
+            continue  # no stop recorded
+
+        # Get live quote
+        try:
+            if quote_provider:
+                quote = quote_provider(symbol)
+            else:
+                quote = fetch_quote(symbol)
+        except Exception:
+            continue  # can't get quote — skip, don't false-alert
+
+        if not isinstance(quote, dict):
+            continue
+
+        close = quote.get("close") or quote.get("last") or 0.0
+        if close <= 0:
+            continue
+
+        # Breach check: for a BUY position, stop is breached if close <= stop
+        if close <= stop_price:
+            alerts.append({
+                "alert_type": "stop_breach",
+                "symbol": symbol,
+                "position_qty": net_qty,
+                "stop_price": stop_price,
+                "current_price": close,
+                "breach_pct": round((stop_price - close) / stop_price * 100, 2),
+                "severity": "high",
+                "action_required": "Chris review — NO auto-exit",
+            })
+
+    return alerts
+
+
+def _compute_positions_from_events() -> dict[str, int]:
+    """Compute net positions from order_submitted events in guard-events.jsonl.
+
+    Returns dict of symbol → net_qty (BUY +qty, SELL -qty).
+    Ignores test artifacts and unconfirmed orders.
+    """
+    events = read_guard_events()
+    submitted = [e for e in events
+                 if e.get("event_type") == "order_submitted"]
+
+    # Exclude unconfirmed orders
+    unconfirmed_oids = {e.get("order_id") for e in events
+                        if e.get("event_type") == "order_unconfirmed"}
+
+    net: dict[str, int] = {}
+    for e in submitted:
+        oid = e.get("order_id")
+        if oid in unconfirmed_oids:
+            continue
+        symbol = e.get("symbol", "").upper()
+        if not symbol:
+            continue
+        action = e.get("action", "").upper()
+        qty = int(e.get("totalQuantity", 0) or 0)
+        if action == "BUY":
+            net[symbol] = net.get(symbol, 0) + qty
+        elif action == "SELL":
+            net[symbol] = net.get(symbol, 0) - qty
+
+    return {s: q for s, q in net.items() if q > 0}
+
+
+def _find_active_stop(symbol: str) -> float | None:
+    """Find the most recent stop_price for an active BUY position.
+
+    Searches:
+    1. approval-records.jsonl for approved BUY proposals with stop_price.
+    2. order_submitted events with stop_price in metadata.
+
+    Returns stop_price float or None if not found.
+    """
+    sym = symbol.upper()
+
+    # Check approval records
+    try:
+        records = read_approval_records()
+        for rec in reversed(records):
+            proposal = rec.get("proposal", {})
+            if proposal.get("symbol", "").upper() == sym:
+                if proposal.get("action", "").upper() == "BUY":
+                    sp = proposal.get("stop_price")
+                    if sp is not None:
+                        return float(sp)
+    except Exception:
+        pass
+
+    # Check order_submitted events for stop_price in metadata
+    events = read_guard_events()
+    for e in reversed(events):
+        if e.get("event_type") != "order_submitted":
+            continue
+        if e.get("symbol", "").upper() != sym:
+            continue
+        if e.get("action", "").upper() != "BUY":
+            continue
+        sp = e.get("stop_price")
+        if sp is not None:
+            return float(sp)
+
+    return None
+
+
+def check_kill_switch_watchdog(
+    max_minutes: int = 10,
+    rules: dict | None = None,
+) -> list[dict]:
+    """Check if kill switches have been true too long without an active trade cycle (H4.4).
+
+    Read-only: generates alerts, does NOT disable switches or submit orders.
+
+    Alert condition:
+    - IBKR_ALLOW_ORDERS=true AND rules.enforced=true
+    - AND no active approval cycle within the last max_minutes
+
+    Args:
+        max_minutes: Max allowed minutes before alert (default 10).
+        rules: Pre-loaded rules dict.
+
+    Returns:
+        List of watchdog alert dicts (empty if no alert).
+    """
+    from datetime import datetime as dt, timezone as tz
+
+    alerts: list[dict] = []
+
+    if not _check_ibkr_allowed():
+        return alerts
+
+    if not _check_enforced(rules=rules):
+        return alerts
+
+    # Both kill switches are true — check for active trade cycle
+    now_utc = dt.now(tz.utc)
+
+    # Look for active/pending approvals within max_minutes
+    has_active_cycle = False
+    try:
+        for aid, record in _active_approvals.items():
+            status = record.get("status", "")
+            if status in ("pending", "approved"):
+                created_str = record.get("created_at", "")
+                if created_str:
+                    try:
+                        created = dt.fromisoformat(created_str)
+                        if created.tzinfo is None:
+                            created = created.replace(tzinfo=tz.utc)
+                        age_minutes = (now_utc - created).total_seconds() / 60.0
+                        if age_minutes <= max_minutes + 5:
+                            has_active_cycle = True
+                            break
+                    except (ValueError, TypeError):
+                        pass
+    except Exception:
+        pass
+
+    if not has_active_cycle:
+        # Check guard state for last trade timestamp
+        try:
+            gs = load_guard_state()
+            last_trade_str = gs.get("last_trade_utc", "")
+            if last_trade_str:
+                last_trade = dt.fromisoformat(last_trade_str)
+                if last_trade.tzinfo is None:
+                    last_trade = last_trade.replace(tzinfo=tz.utc)
+                age_minutes = (now_utc - last_trade).total_seconds() / 60.0
+                if age_minutes <= max_minutes + 5:
+                    has_active_cycle = True
+        except Exception:
+            pass
+
+    if not has_active_cycle:
+        alerts.append({
+            "alert_type": "kill_switch_watchdog",
+            "severity": "medium",
+            "detail": (
+                f"Both kill switches (IBKR_ALLOW_ORDERS=true, "
+                f"rules.enforced=true) have been active for >{max_minutes} "
+                f"minutes with no active trade cycle detected. "
+                f"Chris: consider rolling back if no trade is planned."
+            ),
+            "action_required": "Chris review — no auto-disable",
+        })
+
+    return alerts
+
+
+# H4 helpers: grant monitor.py access to H4 check functions
+# These are imported by monitor.py for the /monitor/alerts endpoint.
+def _run_h4_stop_breach_check(quote_provider=None, position_provider=None) -> list[dict]:
+    """Public entry point for H4 stop-breach check."""
+    try:
+        return check_stop_breach(quote_provider=quote_provider,
+                                 position_provider=position_provider)
+    except Exception:
+        return []
+
+
+def _run_h4_watchdog_check(max_minutes: int = 10, rules=None) -> list[dict]:
+    """Public entry point for H4 kill-switch watchdog check."""
+    try:
+        return check_kill_switch_watchdog(max_minutes=max_minutes, rules=rules)
+    except Exception:
+        return []
 
 
 if __name__ == "__main__":

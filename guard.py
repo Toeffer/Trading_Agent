@@ -42,6 +42,102 @@ GUARD_STATE_PATH = Path(os.environ.get(
     str(Path.home() / ".openclaw" / "guard-state.json")
 ))
 
+# ---------------------------------------------------------------------------
+# Phase H1 — Protected File Paths
+# ---------------------------------------------------------------------------
+# These files must never be modified by Werner/OpenClaw directly.
+# All mutations require H1 token authorization through the bridge.
+
+PROTECTED_PATHS: set[Path] = set()
+
+
+def _init_protected_paths() -> None:
+    """Initialize the set of protected file paths.
+
+    Called once at module load. Protected files include:
+    - .env (bridge configuration)
+    - paper-trading-rules.yaml (risk rules)
+    - guard-state.json (trading state)
+    - approval-records.jsonl (approval history)
+    - active-approvals.json (pending approvals snapshot)
+    - submitted-approvals.json (submitted tracking)
+
+    Note: guard-events.jsonl is NOT in the protected set — it is
+    append-only and safety events (submit_blocked, etc.) must always
+    be loggable without H1 token.
+    """
+    home = Path.home()
+    PROTECTED_PATHS.update([
+        Path(home / "agents" / "ibkr-bridge" / ".env").resolve(),
+        Path(home / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml").resolve(),
+        Path(home / ".openclaw" / "guard-state.json").resolve(),
+        Path(home / ".openclaw" / "approval-records.jsonl").resolve(),
+        Path(home / ".openclaw" / "active-approvals.json").resolve(),
+        Path(home / ".openclaw" / "submitted-approvals.json").resolve(),
+    ])
+
+
+_init_protected_paths()
+
+# Module-level H1 authorization flag — set by bridge on token-verified requests
+_h1_authorized: bool = False
+# Startup phase flag — H1 enforcement is suspended during module init
+_h1_startup_complete: bool = False
+
+
+def h1_startup_done() -> None:
+    """Mark H1 startup phase as complete.
+
+    Called by bridge after startup reconciliation finishes.
+    After this, all protected file writes require H1 token authorization.
+    """
+    global _h1_startup_complete
+    _h1_startup_complete = True
+
+
+def h1_authorize() -> None:
+    """Enable H1-authorized mode for the current request context.
+
+    Called by bridge endpoints that have verified the H1 approval token.
+    Must be paired with h1_deauthorize().
+    """
+    global _h1_authorized
+    _h1_authorized = True
+
+
+def h1_deauthorize() -> None:
+    """Disable H1-authorized mode after request completes."""
+    global _h1_authorized
+    _h1_authorized = False
+
+
+def _is_protected_path(target: Path) -> bool:
+    """Check if a path is in the protected set."""
+    try:
+        resolved = target.resolve()
+    except OSError:
+        resolved = target
+    return resolved in PROTECTED_PATHS
+
+
+def _assert_h1_authorized_for_path(target: Path) -> None:
+    """Raise PermissionError if target is protected and H1 not authorized.
+
+    This enforces that Werner/OpenClaw cannot mutate protected files
+    without passing through the bridge's H1 token verification.
+
+    Startup reconciliation (before h1_startup_done()) is exempt.
+    """
+    # Skip enforcement during module startup reconciliation
+    if not _h1_startup_complete:
+        return
+    if _is_protected_path(target) and not _h1_authorized:
+        raise PermissionError(
+            f"Protected file write blocked: {target}. "
+            f"H1 approval token required for mutations to this file. "
+            f"Werner/OpenClaw cannot modify protected configuration or guard-state directly."
+        )
+
 # --- Guards for Step 2 (will be wired from rules in orchestrator) ---
 
 EXPECTED_SCHEMA_VERSION = 1
@@ -241,6 +337,8 @@ def _rollover_guard_state(state: dict) -> bool:
 def save_guard_state_atomic(state: dict, path: Path | None = None) -> None:
     """Write guard state to JSON file using atomic tmp-write + fsync + replace.
 
+    Phase H1: Requires H1 authorization for protected paths.
+
     Writes to a .tmp file in the same directory, calls os.fsync() on the
     file descriptor to ensure data is flushed to disk, then uses os.replace()
     for atomic rename.
@@ -250,6 +348,9 @@ def save_guard_state_atomic(state: dict, path: Path | None = None) -> None:
         path: Optional override path. Defaults to GUARD_STATE_PATH.
     """
     p = Path(path) if path else GUARD_STATE_PATH
+
+    # Phase H1: Block unauthorized writes to protected files
+    _assert_h1_authorized_for_path(p)
 
     # Ensure parent directory exists
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -292,17 +393,19 @@ BRIDGE_BASE = os.environ.get("IBKR_BRIDGE_URL", "http://127.0.0.1:8790")
 HTTP_TIMEOUT = 10  # seconds for each bridge request
 
 
-def _require_allowed_symbol(symbol: str) -> str:
-    """Validate symbol is in the Phase 2 explicit allowlist.
+def _require_allowed_symbol(symbol: str, rules: dict | None = None) -> str:
+    """Validate symbol is in the current YAML allowlist (Phase H2 — single source of truth).
 
-    Raises ValueError if symbol is not AAPL, SPY, or QQQ.
+    Raises ValueError if symbol is not in the allowlist defined in
+    paper-trading-rules.yaml.
     Returns the uppercased symbol.
     """
+    allowed = _get_allowed_symbols(rules=rules)
     sym = symbol.upper().strip()
-    if sym not in ALLOWED_SYMBOLS:
+    if sym not in allowed:
         raise ValueError(
-            f"Symbol '{sym}' is not in the Phase 2 explicit allowlist "
-            f"{ALLOWED_SYMBOLS}. Only AAPL, SPY, QQQ are currently allowed."
+            f"Symbol '{sym}' is not in the current allowlist "
+            f"{allowed}. See paper-trading-rules.yaml symbol_allowlist.allow."
         )
     return sym
 
@@ -462,10 +565,10 @@ def fetch_account() -> dict:
 def fetch_quote(symbol: str) -> dict:
     """Fetch a delayed quote for an allowed symbol.
 
-    Rejects symbols not in the explicit allowlist before any HTTP call.
+    Rejects symbols not in the YAML allowlist before any HTTP call.
 
     Args:
-        symbol: Stock/ETF symbol (AAPL, SPY, or QQQ).
+        symbol: Stock/ETF symbol (must be in YAML allowlist).
 
     Returns:
         Normalised dict with:
@@ -514,10 +617,10 @@ def fetch_quote(symbol: str) -> dict:
 def fetch_bars(symbol: str, duration: str = "30 D", bar_size: str = "1 day") -> list:
     """Fetch daily OHLC bars for an allowed symbol.
 
-    Rejects symbols not in the explicit allowlist before any HTTP call.
+    Rejects symbols not in the YAML allowlist before any HTTP call.
 
     Args:
-        symbol: Stock/ETF symbol (AAPL, SPY, or QQQ).
+        symbol: Stock/ETF symbol (must be in YAML allowlist).
         duration: IBKR duration string (default "30 D").
         bar_size: IBKR bar size string (default "1 day").
 
@@ -1299,6 +1402,10 @@ def append_guard_event(
     }
 
     log_path = Path(path) if path else GUARD_EVENTS_PATH
+
+    # Phase H1: Block unauthorized writes to protected files
+    _assert_h1_authorized_for_path(log_path)
+
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     line = json.dumps(event, sort_keys=True) + "\n"
@@ -1705,8 +1812,15 @@ def _strip_forbidden_approval(payload: dict) -> dict:
 
 
 def _append_approval_record(record: dict) -> None:
-    """Append one JSON line to approval-records.jsonl."""
+    """Append one JSON line to approval-records.jsonl.
+
+    Phase H1: Requires H1 authorization for protected paths.
+    """
     path = APPROVAL_RECORDS_PATH
+
+    # Phase H1: Block unauthorized writes to protected files
+    _assert_h1_authorized_for_path(path)
+
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(record, sort_keys=True) + "\n"
     with open(path, "a", encoding="utf-8") as f:
@@ -2001,8 +2115,15 @@ def _load_submitted_approvals() -> set[str]:
 
 
 def _save_submitted_approvals() -> None:
-    """Atomically persist the submitted approvals set to disk."""
+    """Atomically persist the submitted approvals set to disk.
+
+    Phase H1: Requires H1 authorization for protected paths.
+    """
     p = _submitted_approvals_path()
+
+    # Phase H1: Block unauthorized writes to protected files
+    _assert_h1_authorized_for_path(p)
+
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(sorted(_submitted_approvals), indent=2))
@@ -2097,8 +2218,15 @@ def _load_active_approvals() -> dict[str, dict]:
 
 
 def _save_active_approvals() -> None:
-    """Atomically persist _active_approvals to disk."""
+    """Atomically persist _active_approvals to disk.
+
+    Phase H1: Requires H1 authorization for protected paths.
+    """
     p = _active_approvals_path()
+
+    # Phase H1: Block unauthorized writes to protected files
+    _assert_h1_authorized_for_path(p)
+
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = p.with_suffix(".json.tmp")
     with open(tmp_path, "w") as f:
@@ -2524,9 +2652,10 @@ def revalidate_before_submit(
     else:
         details["stop_drift_pct"] = None
 
-    # 7. Symbol allowlist check
-    if symbol.upper() not in [s.upper() for s in ALLOWED_SYMBOLS]:
-        return _fail("SYMBOL_BLOCKED", f"Symbol '{symbol}' is not in the allowlist")
+    # 7. Symbol allowlist check (Phase H2 — from YAML, single source of truth)
+    allowed = _get_allowed_symbols()
+    if symbol.upper() not in allowed:
+        return _fail("SYMBOL_BLOCKED", f"Symbol '{symbol}' is not in the allowlist {allowed}")
 
     # All checks passed
     return {
@@ -2960,7 +3089,26 @@ def submit_order(
 # --- Config Loading ---
 
 EXPECTED_VERSION = "1.3-draft"
-ALLOWED_SYMBOLS = ["AAPL", "META", "NVDA", "AMD"]
+
+
+def _get_allowed_symbols(rules: dict | None = None) -> list[str]:
+    """Return the current allowlist from paper-trading-rules.yaml.
+
+    This is the SINGLE SOURCE OF TRUTH for symbol allowlisting (Phase H2).
+    All gates, preflight, quote/bars restrictions, and submit-time checks
+    route through this function — no hardcoded duplicate exists.
+
+    Args:
+        rules: Optional pre-loaded rules dict (avoids re-reading YAML).
+
+    Returns:
+        List of uppercase symbol strings that are currently tradeable.
+    """
+    if rules is None:
+        rules = load_rules()
+    allowlist = rules.get("symbol_allowlist", {})
+    allowed = allowlist.get("allow", [])
+    return [s.upper().strip() for s in allowed if isinstance(s, str)]
 
 
 def load_rules(path: Path | None = None) -> dict:
@@ -3028,12 +3176,8 @@ def load_rules(path: Path | None = None) -> dict:
     allowed = allowlist.get("allow", [])
     if not isinstance(allowed, list) or len(allowed) == 0:
         raise ValueError("symbol_allowlist.allow must be a non-empty list")
-    # Phase 2 must start with exactly AAPL, SPY, QQQ
-    if sorted(allowed) != sorted(ALLOWED_SYMBOLS):
-        raise ValueError(
-            f"symbol_allowlist.allow must be {ALLOWED_SYMBOLS} for Phase 2, "
-            f"got {allowed}"
-        )
+    # Phase H2: YAML is the single source of truth for allowlist.
+    # No hardcoded comparison — the YAML defines what is allowed.
 
     # --- Numeric cap validation (sanity checks) ---
     notional = rules.get("max_position_notional", {}).get("value")
@@ -3985,6 +4129,10 @@ def _run_self_test() -> None:
 # Reconcile submitted approvals from disk + events + records
 # so submitted approvals survive bridge restarts.
 _reconcile_summary = reconcile_approvals_on_startup()
+
+# Phase H1: Mark startup as complete — from here on, protected file
+# writes require H1 token authorization through the bridge.
+h1_startup_done()
 
 
 if __name__ == "__main__":

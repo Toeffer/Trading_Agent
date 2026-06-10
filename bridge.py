@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
 
 load_dotenv()
@@ -27,6 +27,34 @@ IBKR_ACCOUNT = os.getenv("IBKR_ACCOUNT", "")
 IBKR_READ_ONLY = os.getenv("IBKR_READ_ONLY", "true").lower() == "true"
 IBKR_ALLOW_ORDERS = os.getenv("IBKR_ALLOW_ORDERS", "false").lower() == "true"
 
+# ---------------------------------------------------------------------------
+# Phase H1 — Enforced Approval Token
+# ---------------------------------------------------------------------------
+H1_APPROVAL_TOKEN_HASH = os.getenv("H1_APPROVAL_TOKEN_HASH", "")
+
+
+def _verify_h1_token(token: str | None) -> bool:
+    """Verify the H1 approval token against the stored SHA-256 hash.
+
+    The actual token is known only to Chris (provided out-of-band).
+    Werner/OpenClaw cannot read or generate a valid token because only
+    the hash is stored in .env, which is itself protected from Werner
+    write access.
+
+    Returns True if the token hash matches the stored hash.
+    Returns False if no H1 token hash is configured (backward compat).
+    """
+    import hashlib
+    if not H1_APPROVAL_TOKEN_HASH:
+        return False
+    if not token or not isinstance(token, str):
+        return False
+    token = token.strip()
+    if not token:
+        return False
+    return hashlib.sha256(token.encode()).hexdigest() == H1_APPROVAL_TOKEN_HASH
+
+
 ib = IB() if IB else None
 
 # ---------------------------------------------------------------------------
@@ -42,6 +70,7 @@ def _run_startup_safety() -> dict:
     - IBKR_ALLOW_ORDERS is false
     - rules.enforced is false
     - /order remains 403 (no order payloads)
+    - H1_APPROVAL_TOKEN_HASH configured (Phase H1)
     - guard-state.json readable and parseable
     - guard-events.jsonl readable and parseable
     - submitted-approvals.json reconcilable
@@ -181,7 +210,13 @@ def _run_startup_safety() -> dict:
     _check("order_endpoint_blocked", True,
            "/order returns HTTP 403 (design invariant)")
 
-    # 10. Readiness endpoint available (module-import check)
+    # 10. Phase H1: H1_APPROVAL_TOKEN_HASH configured
+    h1_hash = os.getenv("H1_APPROVAL_TOKEN_HASH", "")
+    h1_configured = bool(h1_hash and len(h1_hash) == 64 and all(c in "0123456789abcdef" for c in h1_hash))
+    _check("h1_approval_token_configured", h1_configured,
+           "SHA-256 hash present and valid" if h1_configured else "H1_APPROVAL_TOKEN_HASH missing or invalid — enforced approval boundary inactive")
+
+    # 11. Readiness endpoint available (module-import check)
     try:
         from monitor import rth_check
         _check("readiness_endpoint_available", True, "monitor.rth_check importable")
@@ -870,7 +905,12 @@ def contract_stock(req: ContractLookup) -> Dict[str, Any]:
 
 @app.post("/order")
 def order_blocked() -> Dict[str, Any]:
-    raise HTTPException(status_code=403, detail="orders disabled: setup/read-only mode")
+    raise HTTPException(
+        status_code=403,
+        detail="orders disabled by policy: manual-approval execution path required. "
+               "Use /order/preflight → /order/approve → /order/submit with H1 token. "
+               "This endpoint is permanently blocked by design (safety invariant §3.1).",
+    )
 
 
 # --- Preflight Validation Endpoint (Phase 2) ---
@@ -911,7 +951,7 @@ def order_preflight(req: PreflightRequest) -> Dict[str, Any]:
 
 # --- Approval Endpoint (Phase 2C Step 3) ---
 
-from guard import approve_approval, deny_approval, get_active_approval, load_rules, _check_ibkr_allowed, _check_enforced, append_guard_event, submit_order, mark_approval_submitted, save_guard_state_atomic, load_guard_state, _now_utc_iso, poll_order_status, read_guard_events
+from guard import approve_approval, deny_approval, get_active_approval, load_rules, _check_ibkr_allowed, _check_enforced, append_guard_event, submit_order, mark_approval_submitted, save_guard_state_atomic, load_guard_state, _now_utc_iso, poll_order_status, read_guard_events, h1_authorize, h1_deauthorize
 
 
 class ApproveRequest(BaseModel):
@@ -921,47 +961,67 @@ class ApproveRequest(BaseModel):
 
 
 @app.post("/order/approve")
-def order_approve(req: ApproveRequest) -> Dict[str, Any]:
+def order_approve(
+    req: ApproveRequest,
+    x_h1_token: str | None = Header(None, alias="X-H1-Token"),
+) -> Dict[str, Any]:
     """Approve or deny a pending preflight approval.
+
+    Phase H1: Requires X-H1-Token header with Chris's approval token.
+    Werner/OpenClaw cannot read or generate this token — only the
+    SHA-256 hash is stored in .env.
 
     Never submits an order. Never calls /order or ib.placeOrder.
     Returns approval status only — no executable order payloads.
     """
-    decision = req.decision.lower().strip()
+    # Phase H1: Enforced approval token
+    if not _verify_h1_token(x_h1_token):
+        raise HTTPException(
+            status_code=401,
+            detail="H1 approval token required. Werner/OpenClaw cannot approve orders. "
+                   "Chris must provide the X-H1-Token header.",
+        )
 
-    if decision not in ("approve", "deny"):
-        raise HTTPException(status_code=400, detail=f"Invalid decision '{req.decision}'. Must be 'approve' or 'deny'.")
-
-    # Pre-check: does the approval exist and is pending?
-    active = get_active_approval(req.approval_id)
-    if active is None:
-        # It might exist but not be pending — give a generic message
-        raise HTTPException(status_code=404, detail=f"Approval '{req.approval_id}' not found, expired, or already ruled.")
-
+    # Phase H1: Authorize guard mutations for this request
+    h1_authorize()
     try:
-        if decision == "approve":
-            record = approve_approval(req.approval_id, req.ruled_by)
-        else:
-            record = deny_approval(req.approval_id, req.ruled_by)
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        decision = req.decision.lower().strip()
 
-    result = {
-        "status": record["status"],
-        "approval_id": record["approval_id"],
-        "ruled_by": record["ruled_by"],
-        "ruling_at_utc": record["ruling_at_utc"],
-        "symbol": record["proposal"].get("symbol"),
-        "action": record["proposal"].get("action"),
-        "totalQuantity": record["proposal"].get("totalQuantity"),
-    }
+        if decision not in ("approve", "deny"):
+            raise HTTPException(status_code=400, detail=f"Invalid decision '{req.decision}'. Must be 'approve' or 'deny'.")
 
-    # Ensure no executable fields leak
-    exec_fields = ["order_id", "ibkr_order", "transmit", "account", "tif", "permId", "clientId", "submitted"]
-    for f in exec_fields:
-        result.pop(f, None)
+        # Pre-check: does the approval exist and is pending?
+        active = get_active_approval(req.approval_id)
+        if active is None:
+            # It might exist but not be pending — give a generic message
+            raise HTTPException(status_code=404, detail=f"Approval '{req.approval_id}' not found, expired, or already ruled.")
 
-    return result
+        try:
+            if decision == "approve":
+                record = approve_approval(req.approval_id, req.ruled_by)
+            else:
+                record = deny_approval(req.approval_id, req.ruled_by)
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+
+        result = {
+            "status": record["status"],
+            "approval_id": record["approval_id"],
+            "ruled_by": record["ruled_by"],
+            "ruling_at_utc": record["ruling_at_utc"],
+            "symbol": record["proposal"].get("symbol"),
+            "action": record["proposal"].get("action"),
+            "totalQuantity": record["proposal"].get("totalQuantity"),
+        }
+
+        # Ensure no executable fields leak
+        exec_fields = ["order_id", "ibkr_order", "transmit", "account", "tif", "permId", "clientId", "submitted"]
+        for f in exec_fields:
+            result.pop(f, None)
+
+        return result
+    finally:
+        h1_deauthorize()
 
 
 class SubmitRequest(BaseModel):
@@ -1081,8 +1141,15 @@ def _validate_approval_for_submit(approval_id: str) -> dict | None:
 
 
 @app.post("/order/submit")
-def order_submit(req: SubmitRequest) -> Dict[str, Any]:
+def order_submit(
+    req: SubmitRequest,
+    x_h1_token: str | None = Header(None, alias="X-H1-Token"),
+) -> Dict[str, Any]:
     """Submit an approved preflight as an IBKR MKT order.
+
+    Phase H1: Requires X-H1-Token header with Chris's approval token.
+    Werner/OpenClaw cannot read or generate this token — only the
+    SHA-256 hash is stored in .env.
 
     BLOCKED-FIRST: While either kill switch is false, returns ORDERS_BLOCKED
     and never reaches IBKR. This endpoint is the only submit path — /order
@@ -1091,9 +1158,19 @@ def order_submit(req: SubmitRequest) -> Dict[str, Any]:
     Kill switches:
       1. IBKR_ALLOW_ORDERS env var (bridge-level gate)
       2. paper-trading-rules.yaml enforced flag (rules-level gate)
+      3. H1_APPROVAL_TOKEN required (Phase H1 enforced approval)
 
-    Both must be true before any order reaches IBKR.
+    All three must pass before any order reaches IBKR.
     """
+    # 0. Phase H1: Enforced approval token
+    if not _verify_h1_token(x_h1_token):
+        return {
+            "submitted": False,
+            "error": "H1 approval token required. Werner/OpenClaw cannot submit orders. "
+                     "Chris must provide the X-H1-Token header.",
+            "code": "H1_TOKEN_REQUIRED",
+        }
+
     # 1. Validate approval BEFORE kill switch checks
     # This ensures expired/submitted/denied approvals return proper codes
     # even when kill switches are off (enables acceptance testing).
@@ -1127,14 +1204,19 @@ def order_submit(req: SubmitRequest) -> Dict[str, Any]:
         }
 
     # 3. Both kill switches pass — delegate to guard.submit_order
-    result = submit_order(
-        req.approval_id,
-        order_provider=_internal_place_order,
-        status_provider=_internal_order_status,
-        account_provider=_internal_fetch_account if is_connected() else None,
-        quote_provider=_internal_fetch_quote if is_connected() else None,
-        bars_provider=_internal_fetch_bars if is_connected() else None,
-    )
+    # Phase H1: Authorize guard mutations for this request
+    h1_authorize()
+    try:
+        result = submit_order(
+            req.approval_id,
+            order_provider=_internal_place_order,
+            status_provider=_internal_order_status,
+            account_provider=_internal_fetch_account if is_connected() else None,
+            quote_provider=_internal_fetch_quote if is_connected() else None,
+            bars_provider=_internal_fetch_bars if is_connected() else None,
+        )
+    finally:
+        h1_deauthorize()
     return result
 
 

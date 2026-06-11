@@ -21,6 +21,7 @@ a fact there changes, its old form lands here with a date. Append-only.
 | 2026-06-04 | AAPL | SELL | 1 | $310.98 | 16 | 1657699826 | `aprv_c871f6b7` |
 | 2026-06-08 | AAPL | BUY | 1 | $310.34 | 24 | 75943855 | `aprv_b81da452` |
 | 2026-06-09 | META | BUY | 72 | $596.28 | 24 | 71835605 | `aprv_3a934a5c` |
+| 2026-06-11 | META | SELL | 72 | PENDING | — | — | (Phase 6A EXIT — Chris approved) |
 
 > **Non-filled submissions (excluded from ledger):**
 > - AAPL SELL order 24 (permId 1529342545, 2026-06-09) — Submitted, 0 filled.
@@ -173,6 +174,36 @@ Liq, max exposure 25%, max risk/trade 0.25%, max 2 trades/day and 5/week, no tra
 stop or while drift/open-order/live-alert is present, NO TRADE at daily loss ≥1% or weekly
 ≥3%. **These diverge from the guard's v1.3-draft caps — see Verification Queue item 6.**
 
+### Phase H4.1 — Operational Hygiene — COMPLETE (2026-06-11)
+- Stale guard-event reconciliation: 2 stale events (>48h) reconciled against IBKR live
+  orders (ibkr_live_count=0). AAPL SELL 24/perm 1529342545 → NotFoundInIBKR; META BUY
+  24/perm 71835605 → Filled (position confirmed). Both appended to
+  `manual-order-reconciliations.jsonl` as manual_terminal.
+- trade_date rollover: guard-state.json trade_date rolled to 2026-06-11,
+  day_start_nl_eur captured at 998,133.
+- Stop-breach advisory rule: if stop_breach==true, suppress new BUY proposals; only HOLD
+  or EXIT may be proposed. Applied to META stop-breach (stop $579.22, current $559.48).
+
+### Phase 6A — META Stop-Breach Review — COMPLETE (2026-06-11)
+- Structured stop-breach response process established: Step 0 breach confirmation, Step 1
+  artifacts-only thesis reconstruction, Step 2 current state, Step 3 Hermes adversarial
+  review (steelmanned EXIT/HOLD, blind re-underwrite, decision-quality vs outcome-quality),
+  Step 4 exactly one recommendation (EXIT default), Step 5 trade journal.
+- META breach confirmed: $559.48 below recorded stop ($579.22) and -5% floor ($566.47).
+  5 straight red candles. AI capex quantified at $125-145B.
+- Hermes adversarial review: strongest case for EXIT (honor pre-committed stop regime);
+  case for HOLD (stop at 0.91×ATR was tight, ordinary volatility); blind re-underwrite
+  returned NO (would not buy today); "holding is largely not different from buying."
+- ⚠️ Hermes was invoked as sessions_spawn subagent (deepseek-v4-pro), NOT via Codex CLI
+  with its configured GPT-5.5 model. Chris noted: for future, invoke Hermes via default
+  model path (Codex/GPT-5.5). Noted as process gap.
+- Recommendation: EXIT (Chris approved). Execution pending.
+- Trade journal: `~/.openclaw/memory/trade-journal/META-2026-06-09.md`
+- 5 process gaps logged (thesis fields unrecorded: reason to trade, reason not to trade,
+  sizing rationale narrative, market context, Hermes session reference).
+- Lesson: thesis archiving is mandatory — approval record schema should include a
+  `proposal_rationale` field from Hermes proposal.
+
 ### Phase 5C — Dual decision cycles — COMPLETE (2026-06-09)
 - Two live paper cycles: AAPL SELL filled (close-only) + META BUY 72 @ $596.28 filled;
   QQQ BUY blocked by KID/PRIIPs. Both kill switches rolled back after each cycle.
@@ -208,3 +239,7 @@ stop or while drift/open-order/live-alert is present, NO TRADE at daily loss ≥
    the 14 fields (likely in `hermes-advisory-guard-policy.md`) and reconcile the two.
 7. **SPY in CLI help** — `hermes-proposal --help` may still print `--symbol SPY` as its
    example; SPY is off the allowlist. Update the CLI's example string if so.
+8. **⏳ PROPOSAL: Stop-breach → default EXIT.** Phase 6A established that a confirmed
+   stop breach triggers an automatic EXIT recommendation within 30 min of RTH. HOLD
+   requires written Chris override (`STOP_OVERRIDE_REQUESTED`). Add this as a standing
+   policy rule in `CLAUDE.md §3` and `paper-trading-rules.yaml` if Chris approves.

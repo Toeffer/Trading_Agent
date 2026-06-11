@@ -110,6 +110,16 @@ ibkr-operator export --save
 ibkr-operator export --verify latest
 ```
 
+### Stop-breach response (Phase 6A)
+When a position breaches its recorded stop or -5% floor:
+1. Werner runs Phase 6A review: confirm breach → reconstruct thesis → Hermes
+   adversarial review → recommendation (EXIT default).
+2. Hermes invoked via Codex CLI / GPT-5.5 (NOT sessions_spawn subagent).
+3. If EXIT recommended: Chris unlocks → preflight SELL (Gate G close-only) →
+   Chris H1 approve/submit → verify fill → relock.
+4. Journal entry: `~/.openclaw/memory/trade-journal/SYMBOL-DATE.md`
+5. HOLD requires Chris written STOP_OVERRIDE_REQUESTED.
+
 ### Maintenance — review retention
 ```bash
 ibkr-operator maintenance
@@ -180,6 +190,10 @@ Hermes is **advisory-only**. It may:
 - Analyze markets, rank candidates, produce trade theses, calculate risk
 - Generate proposal drafts using the mandatory 14-field template
 - Write post-trade learning notes **only if explicitly requested by Chris**
+
+**Invocation:** Hermes MUST be invoked via its configured Codex CLI path with
+GPT-5.5 model. Do NOT use `sessions_spawn` (inherits Werner's model — wrong
+model for Hermes analysis). See Phase 6A CHANGELOG entry.
 
 Hermes must **never**:
 - Enable, submit, or approve orders

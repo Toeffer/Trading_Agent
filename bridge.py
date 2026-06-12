@@ -971,10 +971,17 @@ def order_approve(
     Werner/OpenClaw cannot read or generate this token — only the
     SHA-256 hash is stored in .env.
 
+    LOCAL-STATE ONLY. Never calls IBKR, /account, /positions, monitor,
+    reconciliation, readiness, open-orders, or any network/broker path.
+
+    Fast path (nonexistent approval): returns 404 without touching
+    guard file I/O or approval bookkeeping.  Only the H1 token check
+    and an in-memory dict lookup.
+
     Never submits an order. Never calls /order or ib.placeOrder.
     Returns approval status only — no executable order payloads.
     """
-    # Phase H1: Enforced approval token
+    # 1. Verify H1 token — fast SHA-256 comparison, no I/O
     if not _verify_h1_token(x_h1_token):
         raise HTTPException(
             status_code=401,
@@ -982,19 +989,23 @@ def order_approve(
                    "Chris must provide the X-H1-Token header.",
         )
 
-    # Phase H1: Authorize guard mutations for this request
+    # 2. Fast local-state lookup first — no authorization, no guard.py
+    #    function calls needed yet.  Inline dict access for nonexistent
+    #    IDs (including the canary aprv_canary) returns 404 in
+    #    microseconds.  No file I/O, network, or broker paths touched.
+    from guard import _active_approvals
+    active = _active_approvals.get(req.approval_id)
+    if active is None or active.get("status") != "pending":
+        raise HTTPException(status_code=404, detail=f"Approval '{req.approval_id}' not found, expired, or already ruled.")
+
+    # 3. Approval exists and is pending — authorize mutations, validate
+    #    decision, and rule the approval.
     h1_authorize()
     try:
         decision = req.decision.lower().strip()
 
         if decision not in ("approve", "deny"):
             raise HTTPException(status_code=400, detail=f"Invalid decision '{req.decision}'. Must be 'approve' or 'deny'.")
-
-        # Pre-check: does the approval exist and is pending?
-        active = get_active_approval(req.approval_id)
-        if active is None:
-            # It might exist but not be pending — give a generic message
-            raise HTTPException(status_code=404, detail=f"Approval '{req.approval_id}' not found, expired, or already ruled.")
 
         try:
             if decision == "approve":
@@ -1014,7 +1025,6 @@ def order_approve(
             "totalQuantity": record["proposal"].get("totalQuantity"),
         }
 
-        # Ensure no executable fields leak
         exec_fields = ["order_id", "ibkr_order", "transmit", "account", "tif", "permId", "clientId", "submitted"]
         for f in exec_fields:
             result.pop(f, None)

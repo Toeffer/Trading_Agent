@@ -326,6 +326,19 @@ manually, then reconnect the bridge (§L1).
 > through them. Both switches must be set; either alone keeps `/order/submit` =
 > `ORDERS_BLOCKED`. Roll both back after the cycle.
 
+**Step 0 — H1 token canary (mandatory).** Before touching any switches, verify
+the H1 approval token is valid:
+
+```
+ibkr-operator doctor          # shows h1_token_canary check
+# or run manually:
+sudo ibkr-trade-window approve aprv_canary
+```
+
+Expected result: `Approval 'aprv_canary' not found, expired, or already ruled.`
+Any `H1_TOKEN_REQUIRED`, HTTP 401, token error, or unexpected output is **NO-GO**.
+Do not proceed if the canary fails.
+
 1. Set `IBKR_ALLOW_ORDERS=true` in `.env`.
 2. Set `enforced=true` in `paper-trading-rules.yaml`.
 3. Restart the bridge.

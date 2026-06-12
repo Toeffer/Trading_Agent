@@ -43,63 +43,100 @@ GUARD_STATE_PATH = Path(os.environ.get(
 ))
 
 # ---------------------------------------------------------------------------
-# Phase H1 — Protected File Paths (H1.3 Class A/B split)
+# Phase H1 — Protected File Paths (H1.3: ContextVar internal-write authorization)
 # ---------------------------------------------------------------------------
-# H1.3 splits mutations into two classes:
+# H1 blocks direct/external mutation of protected files without H1 token.
+# H1.3 adds a narrow contextvars.ContextVar that authorizes deterministic
+# bridge-internal bookkeeping writes during preflight/rollover/reconciliation.
 #
-# CLASS A — internal bookkeeping, NO H1 token required:
-#   These files can be written during preflight to break the circular
-#   dependency where preflight→create approval_id→write→H1 token→no
-#   approval_id possible.
-#   - active-approvals.json   (pending approval snapshots)
-#   - approval-records.jsonl  (approval history / audit trail)
-#   - guard-events.jsonl      (append-only safety event log; never protected)
+# ALL files remain in PROTECTED_PATHS.  The ContextVar provides a scoped
+# exception for Class-A internal writes only — it never authorizes:
+#   - /order/approve, /order/submit (require real H1 token)
+#   - .env or paper-trading-rules.yaml mutation
+#   - submitted-approvals.json mutation
+#   - direct/manual protected-file writes
 #
-# CLASS B — broker-affecting / protected, H1 token REQUIRED:
-#   These files control execution or broker state and must never be
-#   modified by Werner/OpenClaw directly.
+# Class A (internal-write allowed when ContextVar is set):
+#   - active-approvals.json    (pending approval snapshots)
+#   - approval-records.jsonl   (approval history / audit trail)
+#   - guard-events.jsonl       (append-only safety event log)
+#   - guard-state.json         (deterministic rollover / reconciliation only)
+#
+# Class B (always requires H1 token or startup exemption):
 #   - .env                     (bridge configuration, token hash)
 #   - paper-trading-rules.yaml (risk rules, enforced flag)
-#   - guard-state.json         (halt flags, trade counts, NL anchors)
 #   - submitted-approvals.json (one-use submission tracking)
-#
-# /order/approve and /order/submit still require X-H1-Token.
-# /order/preflight is validation-only and writes only Class A files.
+
+import contextvars
+import contextlib
 
 PROTECTED_PATHS: set[Path] = set()
 
+# Paths allowed for deterministic bridge-internal writes
+# when _internal_write_allowed ContextVar is True.
+_INTERNAL_WRITE_PATHS: set[Path] = set()
+
 
 def _init_protected_paths() -> None:
-    """Initialize the set of protected file paths (Class B only).
+    """Initialize protected and internal-write path sets.
 
     Called once at module load.
 
-    Class B (protected, H1 required):
-    - .env
-    - paper-trading-rules.yaml
-    - guard-state.json
-    - submitted-approvals.json
-
-    Class A (NOT protected, no H1 required):
-    - active-approvals.json
-    - approval-records.jsonl
-    - guard-events.jsonl
+    PROTECTED_PATHS — all files H1 must guard (6 paths).
+    _INTERNAL_WRITE_PATHS — subset allowed during internal
+      bridge context (preflight, rollover, reconciliation).
     """
     home = Path.home()
     PROTECTED_PATHS.update([
         Path(home / "agents" / "ibkr-bridge" / ".env").resolve(),
         Path(home / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml").resolve(),
         Path(home / ".openclaw" / "guard-state.json").resolve(),
+        Path(home / ".openclaw" / "approval-records.jsonl").resolve(),
+        Path(home / ".openclaw" / "active-approvals.json").resolve(),
         Path(home / ".openclaw" / "submitted-approvals.json").resolve(),
+    ])
+    _INTERNAL_WRITE_PATHS.update([
+        Path(home / ".openclaw" / "active-approvals.json").resolve(),
+        Path(home / ".openclaw" / "approval-records.jsonl").resolve(),
+        Path(home / ".openclaw" / "guard-events.jsonl").resolve(),
+        Path(home / ".openclaw" / "guard-state.json").resolve(),
     ])
 
 
 _init_protected_paths()
 
+# ContextVar for narrow internal-write authorization.
+# Set only during deterministic bridge-internal bookkeeping
+# (preflight, rollover, startup reconciliation).  Never set
+# during /order/approve or /order/submit — those use _h1_authorized.
+_internal_write_allowed: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "internal_write_allowed", default=False
+)
+
 # Module-level H1 authorization flag — set by bridge on token-verified requests
 _h1_authorized: bool = False
 # Startup phase flag — H1 enforcement is suspended during module init
 _h1_startup_complete: bool = False
+
+
+@contextlib.contextmanager
+def internal_write_context():
+    """Context manager authorizing internal Class A writes without H1 token.
+
+    Yields control with _internal_write_allowed ContextVar set to True.
+    Only _INTERNAL_WRITE_PATHS are affected; Class B files (.env, rules,
+    submitted-approvals.json) remain blocked.
+
+    Usage:
+        with internal_write_context():
+            # writes to guard-state.json, active-approvals.json, etc. allowed
+            ...
+    """
+    token = _internal_write_allowed.set(True)
+    try:
+        yield
+    finally:
+        _internal_write_allowed.reset(token)
 
 
 def h1_startup_done() -> None:
@@ -137,23 +174,43 @@ def _is_protected_path(target: Path) -> bool:
     return resolved in PROTECTED_PATHS
 
 
+def _is_internal_write_path(target: Path) -> bool:
+    """Check if a path is in the internal-write allowlist (Class A)."""
+    try:
+        resolved = target.resolve()
+    except OSError:
+        resolved = target
+    return resolved in _INTERNAL_WRITE_PATHS
+
+
 def _assert_h1_authorized_for_path(target: Path) -> None:
-    """Raise PermissionError if target is protected and H1 not authorized.
+    """Raise PermissionError if target is protected and not authorized.
 
-    This enforces that Werner/OpenClaw cannot mutate protected files
-    without passing through the bridge's H1 token verification.
+    Authorization hierarchy (any one suffices):
+    1. Startup phase not yet complete  (_h1_startup_complete == False)
+    2. H1 token verified               (_h1_authorized == True)
+    3. Internal write context + Class A path  (ContextVar + path in
+       _INTERNAL_WRITE_PATHS)
 
-    Startup reconciliation (before h1_startup_done()) is exempt.
+    Class B files (.env, rules, submitted-approvals.json) are NEVER
+    authorized by the internal context — they always require H1 token
+    or startup exemption.
     """
     # Skip enforcement during module startup reconciliation
     if not _h1_startup_complete:
         return
-    if _is_protected_path(target) and not _h1_authorized:
-        raise PermissionError(
-            f"Protected file write blocked: {target}. "
-            f"H1 approval token required for mutations to this file. "
-            f"Werner/OpenClaw cannot modify protected configuration or guard-state directly."
-        )
+    if not _is_protected_path(target):
+        return
+    if _h1_authorized:
+        return
+    # H1.3: Allow deterministic internal writes for Class A paths
+    if _internal_write_allowed.get() and _is_internal_write_path(target):
+        return
+    raise PermissionError(
+        f"Protected file write blocked: {target}. "
+        f"H1 approval token required for mutations to this file. "
+        f"Werner/OpenClaw cannot modify protected configuration or guard-state directly."
+    )
 
 # --- Guards for Step 2 (will be wired from rules in orchestrator) ---
 
@@ -339,23 +396,14 @@ def _rollover_guard_state(state: dict) -> bool:
     except Exception:
         pass
 
-    try:
-        save_guard_state_atomic(state)
-    except PermissionError:
-        # H1.3: guard-state.json is Class B (H1-protected).
-        # During locked state, rollover persistence is deferred.
-        # The in-memory state is already mutated for correct gate evaluation.
-        pass
+    save_guard_state_atomic(state)
 
-    try:
-        append_guard_event("guard_calendar_rollover", {
-            "from_trade_date": current_trade_date,
-            "to_trade_date": today_str,
-            "daily_trade_count_reset": True,
-            "daily_halt_cleared": True,
-        })
-    except PermissionError:
-        pass  # guard-events.jsonl is Class A, but belt-and-suspenders
+    append_guard_event("guard_calendar_rollover", {
+        "from_trade_date": current_trade_date,
+        "to_trade_date": today_str,
+        "daily_trade_count_reset": True,
+        "daily_halt_cleared": True,
+    })
 
     return True
 
@@ -1554,275 +1602,279 @@ def run_preflight(
     Returns:
         Validation result dict. Never returns executable order payloads.
     """
-    try:
-        norm = _validate_preflight_request(request)
-    except ValueError as e:
-        return {"passed": False, "error": str(e)}
-
-    symbol = norm["symbol"]
-    proposed_shares = norm["totalQuantity"]
-    action = norm["action"]
-    is_close = (action == "SELL")
-
-    # Clean up expired pending approvals before processing
-    expire_all_pending()
-
-    # Early-reject unknown symbols before any data retrieval
-    try:
-        _require_allowed_symbol(symbol)
-    except ValueError as e:
-        append_guard_event("preflight_fail", {
-            "symbol": symbol, "passed": False,
-            "reason": str(e), "gate": "allowlist",
-        })
-        return {"passed": False, "error": str(e), "gate": "allowlist"}
-
-    # H4.1: Structural US-domiciled ETF rejection (BUY only — SELL closes are fine)
-    if not is_close:
+    # H1.3: Internal write context authorizes Class A file writes
+    # (active-approvals.json, approval-records.jsonl, guard-events.jsonl,
+    # guard-state.json rollover) without H1 token during preflight.
+    with internal_write_context():
         try:
-            _reject_us_domiciled_etf(symbol)
+            norm = _validate_preflight_request(request)
+        except ValueError as e:
+            return {"passed": False, "error": str(e)}
+
+        symbol = norm["symbol"]
+        proposed_shares = norm["totalQuantity"]
+        action = norm["action"]
+        is_close = (action == "SELL")
+
+        # Clean up expired pending approvals before processing
+        expire_all_pending()
+
+        # Early-reject unknown symbols before any data retrieval
+        try:
+            _require_allowed_symbol(symbol)
         except ValueError as e:
             append_guard_event("preflight_fail", {
                 "symbol": symbol, "passed": False,
-                "reason": str(e), "gate": "us_etf_block",
+                "reason": str(e), "gate": "allowlist",
             })
-            return {"passed": False, "error": str(e), "gate": "us_etf_block"}
+            return {"passed": False, "error": str(e), "gate": "allowlist"}
 
-    # Load data — use injected providers if given, else default (HTTP self-call)
-    try:
-        rules = load_rules()
-        state = load_guard_state()
-
-        # Calendar day rollover: if trade_date < current UTC date,
-        # reset daily counters before running any gates.
-        _rollover_guard_state(state)
-
-        account = account_provider() if account_provider else fetch_account()
-        quote = quote_provider(symbol) if quote_provider else fetch_quote(symbol)
-        bars = bars_provider(symbol) if bars_provider else fetch_bars(symbol)
-    except (RuntimeError, ValueError, FileNotFoundError) as e:
-        append_guard_event("preflight_fail", {
-            "symbol": symbol, "passed": False,
-            "reason": f"Data retrieval failed: {e}",
-        })
-        return {"passed": False, "error": f"Data retrieval failed: {e}"}
-
-    net_liquidation_eur = account["net_liquidation_eur"]
-    exchange_rate = account["exchange_rate"]
-
-    # H4.2: FX plausibility guard — reject if EUR/USD outside [0.8, 1.4]
-    if exchange_rate is None or not isinstance(exchange_rate, (int, float)):
-        append_guard_event("preflight_fail", {
-            "symbol": symbol, "passed": False,
-            "reason": "EUR/USD rate unavailable from IBKR account",
-            "gate": "fx_plausibility",
-        })
-        return {
-            "passed": False,
-            "error": "EUR/USD rate unavailable: cannot compute USD sizing.",
-            "gate": "fx_plausibility",
-        }
-    if exchange_rate < 0.8 or exchange_rate > 1.4:
-        append_guard_event("preflight_fail", {
-            "symbol": symbol, "passed": False,
-            "reason": f"EUR/USD rate {exchange_rate:.4f} outside [0.80, 1.40]",
-            "gate": "fx_plausibility",
-        })
-        return {
-            "passed": False,
-            "error": f"EUR/USD rate {exchange_rate:.4f} outside plausibility range [0.80, 1.40].",
-            "gate": "fx_plausibility",
-        }
-
-    if is_close:
-        # SELL: use bid price for exit reference; skip stop calc
-        entry_price = quote.get("bid") or quote.get("close") or 0.0
-        if entry_price is None or entry_price <= 0:
-            entry_price = quote.get("close", 0.0)
-        # No stop needed for closing a position
-        stop_price = None
-        stop_distance = 0.0
-        atr14 = None
-    else:
-        entry_price = quote["ask"]
-
-    # Compute or validate stop (BUY only)
-    if not is_close:
-        user_stop = norm.get("stopPrice")
-        if user_stop is not None:
+        # H4.1: Structural US-domiciled ETF rejection (BUY only — SELL closes are fine)
+        if not is_close:
             try:
-                user_stop = float(user_stop)
-            except (TypeError, ValueError):
-                return {"passed": False, "error": "stopPrice must be numeric"}
-            if user_stop >= entry_price:
-                return {
-                    "passed": False,
-                    "error": f"stopPrice ({user_stop}) must be below entry price ({entry_price:.2f})",
-                }
-            stop_price = user_stop
-            stop_distance = entry_price - stop_price
-            atr14 = None
-        else:
-            try:
-                stop_result = calc_stop(entry_price, bars)
-                stop_price = stop_result["stop_price"]
-                stop_distance = stop_result["stop_distance"]
-                atr14 = stop_result["atr14"]
+                _reject_us_domiciled_etf(symbol)
             except ValueError as e:
                 append_guard_event("preflight_fail", {
                     "symbol": symbol, "passed": False,
-                    "reason": f"Stop calculation failed: {e}",
+                    "reason": str(e), "gate": "us_etf_block",
                 })
-                return {"passed": False, "error": f"Stop calculation failed: {e}"}
+                return {"passed": False, "error": str(e), "gate": "us_etf_block"}
 
-    # Compute share sizing (BUY only; SELL uses existing position size)
-    if is_close:
-        sizing = None
-        final_max_shares = 0
-    else:
-        sizing = compute_final_max_shares(
-            rules, net_liquidation_eur, exchange_rate,
-            entry_price, stop_distance,
-        )
-        final_max_shares = sizing["final_max_shares"]
-
-    # Run gates (SELL path skips B, C, F)
-    gates = []
-    all_pass = True
-
-    # Gate A \u2014 allowlist (both BUY and SELL)
-    ok, reason, details = gate_allowlist(symbol, rules)
-    gates.append({"gate": "allowlist", "passed": ok, "reason": reason, "details": details})
-    if not ok:
-        all_pass = False
-
-    if is_close:
-        # SELL (close-only): skip B (notional), C (risk), F (exposure)
-        # Run D (trades/day), E (loss halts), G (close-only position gate)
-
-        # Gate D \u2014 trades per day
-        ok, reason, details = gate_trades_per_day(state, rules)
-        gates.append({"gate": "trades_per_day", "passed": ok, "reason": reason, "details": details})
-        if not ok:
-            all_pass = False
-
-        # Gate E \u2014 loss halts
-        ok, reason, details = gate_loss_halts(state, net_liquidation_eur, rules)
-        gates.append({"gate": "loss_halts", "passed": ok, "reason": reason, "details": details})
-        if not ok:
-            all_pass = False
-
-        # Gate G \u2014 close-only position validation
-        ok, reason, details = gate_close_only(symbol, proposed_shares, position_provider)
-        gates.append({"gate": "close_only", "passed": ok, "reason": reason, "details": details})
-        if not ok:
-            all_pass = False
-
-        # Gate H \u2014 open order conflict check (close-only)
-        ok, reason, details = gate_open_orders(symbol, open_order_provider)
-        gates.append({"gate": "open_orders", "passed": ok, "reason": reason, "details": details})
-        if not ok:
-            all_pass = False
-
-    else:
-        # BUY: run gates B, C, D, E, F
-
-        # Gate B \u2014 notional (no existing exposure in this call)
-        ok, reason, details = gate_notional(
-            symbol, proposed_shares, entry_price,
-            rules, net_liquidation_eur, exchange_rate,
-        )
-        gates.append({"gate": "notional", "passed": ok, "reason": reason, "details": details})
-        if not ok:
-            all_pass = False
-
-        # Gate C \u2014 risk
-        ok, reason, details = gate_risk(
-            proposed_shares, stop_distance,
-            rules, net_liquidation_eur, exchange_rate,
-        )
-        gates.append({"gate": "risk", "passed": ok, "reason": reason, "details": details})
-        if not ok:
-            all_pass = False
-
-        # Gate D \u2014 trades per day
-        ok, reason, details = gate_trades_per_day(state, rules)
-        gates.append({"gate": "trades_per_day", "passed": ok, "reason": reason, "details": details})
-        if not ok:
-            all_pass = False
-
-        # Gate E \u2014 loss halts
-        ok, reason, details = gate_loss_halts(state, net_liquidation_eur, rules)
-        gates.append({"gate": "loss_halts", "passed": ok, "reason": reason, "details": details})
-        if not ok:
-            all_pass = False
-
-        # Gate F \u2014 exposure (no positions in this call)
-        ok, reason, details = gate_exposure(
-            proposed_shares, entry_price,
-            rules, net_liquidation_eur, exchange_rate,
-            [],
-        )
-        gates.append({"gate": "exposure", "passed": ok, "reason": reason, "details": details})
-        if not ok:
-            all_pass = False
-
-    # Build result
-    result = {
-        "passed": all_pass,
-        "symbol": symbol,
-        "action": norm["action"],
-        "orderType": norm["orderType"],
-        "totalQuantity": proposed_shares,
-        "entry_price": round(entry_price, 2) if not is_close else None,
-        "stop_price": round(stop_price, 2) if not is_close else None,
-        "stop_distance": round(stop_distance, 2) if not is_close else None,
-        "atr14": round(atr14, 2) if not is_close and atr14 is not None else None,
-        "gates": gates,
-    }
-
-    # Add close-specific fields for SELL
-    if is_close:
-        pos_info = _get_existing_position(symbol, position_provider)
-        result["close_only"] = True
-        result["position_source"] = pos_info["source"]
-        result["existing_position_qty"] = pos_info["qty"]
-        result["position_note"] = pos_info["note"]
-    else:
-        result["binding_cap"] = sizing["binding_cap"] if sizing else None
-        result["final_max_shares"] = final_max_shares
-        result["shares_requested"] = proposed_shares
-        result["shares_exceeds_max"] = proposed_shares > final_max_shares
-        result["close_only"] = False
-        result["position_source"] = None
-
-    # Log event and create approval record
-    if all_pass:
+        # Load data — use injected providers if given, else default (HTTP self-call)
         try:
-            approval = create_approval_record(result)
-            result["approval_id"] = approval["approval_id"]
-            result["approval_expires_at_utc"] = approval["expires_at_utc"]
-        except ValueError as e:
-            result["passed"] = False
-            result["error"] = f"Approval creation failed: {e}"
-            return result
+            rules = load_rules()
+            state = load_guard_state()
 
-        append_guard_event("preflight_pass", {
-            "symbol": symbol, "passed": True,
-            "reason": "All gates green",
-            "approval_id": approval["approval_id"],
-            "final_max_shares": final_max_shares,
-            "binding_cap": sizing["binding_cap"] if sizing else None,
-        })
-    else:
-        failed_gates = [g["gate"] for g in gates if not g["passed"]]
-        append_guard_event("preflight_fail", {
-            "symbol": symbol, "passed": False,
-            "reason": f"Gates blocked: {failed_gates}",
-            "failed_gates": failed_gates,
-        })
+            # Calendar day rollover: if trade_date < current UTC date,
+            # reset daily counters before running any gates.
+            _rollover_guard_state(state)
 
-    return result
+            account = account_provider() if account_provider else fetch_account()
+            quote = quote_provider(symbol) if quote_provider else fetch_quote(symbol)
+            bars = bars_provider(symbol) if bars_provider else fetch_bars(symbol)
+        except (RuntimeError, ValueError, FileNotFoundError) as e:
+            append_guard_event("preflight_fail", {
+                "symbol": symbol, "passed": False,
+                "reason": f"Data retrieval failed: {e}",
+            })
+            return {"passed": False, "error": f"Data retrieval failed: {e}"}
+
+        net_liquidation_eur = account["net_liquidation_eur"]
+        exchange_rate = account["exchange_rate"]
+
+        # H4.2: FX plausibility guard — reject if EUR/USD outside [0.8, 1.4]
+        if exchange_rate is None or not isinstance(exchange_rate, (int, float)):
+            append_guard_event("preflight_fail", {
+                "symbol": symbol, "passed": False,
+                "reason": "EUR/USD rate unavailable from IBKR account",
+                "gate": "fx_plausibility",
+            })
+            return {
+                "passed": False,
+                "error": "EUR/USD rate unavailable: cannot compute USD sizing.",
+                "gate": "fx_plausibility",
+            }
+        if exchange_rate < 0.8 or exchange_rate > 1.4:
+            append_guard_event("preflight_fail", {
+                "symbol": symbol, "passed": False,
+                "reason": f"EUR/USD rate {exchange_rate:.4f} outside [0.80, 1.40]",
+                "gate": "fx_plausibility",
+            })
+            return {
+                "passed": False,
+                "error": f"EUR/USD rate {exchange_rate:.4f} outside plausibility range [0.80, 1.40].",
+                "gate": "fx_plausibility",
+            }
+
+        if is_close:
+            # SELL: use bid price for exit reference; skip stop calc
+            entry_price = quote.get("bid") or quote.get("close") or 0.0
+            if entry_price is None or entry_price <= 0:
+                entry_price = quote.get("close", 0.0)
+            # No stop needed for closing a position
+            stop_price = None
+            stop_distance = 0.0
+            atr14 = None
+        else:
+            entry_price = quote["ask"]
+
+        # Compute or validate stop (BUY only)
+        if not is_close:
+            user_stop = norm.get("stopPrice")
+            if user_stop is not None:
+                try:
+                    user_stop = float(user_stop)
+                except (TypeError, ValueError):
+                    return {"passed": False, "error": "stopPrice must be numeric"}
+                if user_stop >= entry_price:
+                    return {
+                        "passed": False,
+                        "error": f"stopPrice ({user_stop}) must be below entry price ({entry_price:.2f})",
+                    }
+                stop_price = user_stop
+                stop_distance = entry_price - stop_price
+                atr14 = None
+            else:
+                try:
+                    stop_result = calc_stop(entry_price, bars)
+                    stop_price = stop_result["stop_price"]
+                    stop_distance = stop_result["stop_distance"]
+                    atr14 = stop_result["atr14"]
+                except ValueError as e:
+                    append_guard_event("preflight_fail", {
+                        "symbol": symbol, "passed": False,
+                        "reason": f"Stop calculation failed: {e}",
+                    })
+                    return {"passed": False, "error": f"Stop calculation failed: {e}"}
+
+        # Compute share sizing (BUY only; SELL uses existing position size)
+        if is_close:
+            sizing = None
+            final_max_shares = 0
+        else:
+            sizing = compute_final_max_shares(
+                rules, net_liquidation_eur, exchange_rate,
+                entry_price, stop_distance,
+            )
+            final_max_shares = sizing["final_max_shares"]
+
+        # Run gates (SELL path skips B, C, F)
+        gates = []
+        all_pass = True
+
+        # Gate A \u2014 allowlist (both BUY and SELL)
+        ok, reason, details = gate_allowlist(symbol, rules)
+        gates.append({"gate": "allowlist", "passed": ok, "reason": reason, "details": details})
+        if not ok:
+            all_pass = False
+
+        if is_close:
+            # SELL (close-only): skip B (notional), C (risk), F (exposure)
+            # Run D (trades/day), E (loss halts), G (close-only position gate)
+
+            # Gate D \u2014 trades per day
+            ok, reason, details = gate_trades_per_day(state, rules)
+            gates.append({"gate": "trades_per_day", "passed": ok, "reason": reason, "details": details})
+            if not ok:
+                all_pass = False
+
+            # Gate E \u2014 loss halts
+            ok, reason, details = gate_loss_halts(state, net_liquidation_eur, rules)
+            gates.append({"gate": "loss_halts", "passed": ok, "reason": reason, "details": details})
+            if not ok:
+                all_pass = False
+
+            # Gate G \u2014 close-only position validation
+            ok, reason, details = gate_close_only(symbol, proposed_shares, position_provider)
+            gates.append({"gate": "close_only", "passed": ok, "reason": reason, "details": details})
+            if not ok:
+                all_pass = False
+
+            # Gate H \u2014 open order conflict check (close-only)
+            ok, reason, details = gate_open_orders(symbol, open_order_provider)
+            gates.append({"gate": "open_orders", "passed": ok, "reason": reason, "details": details})
+            if not ok:
+                all_pass = False
+
+        else:
+            # BUY: run gates B, C, D, E, F
+
+            # Gate B \u2014 notional (no existing exposure in this call)
+            ok, reason, details = gate_notional(
+                symbol, proposed_shares, entry_price,
+                rules, net_liquidation_eur, exchange_rate,
+            )
+            gates.append({"gate": "notional", "passed": ok, "reason": reason, "details": details})
+            if not ok:
+                all_pass = False
+
+            # Gate C \u2014 risk
+            ok, reason, details = gate_risk(
+                proposed_shares, stop_distance,
+                rules, net_liquidation_eur, exchange_rate,
+            )
+            gates.append({"gate": "risk", "passed": ok, "reason": reason, "details": details})
+            if not ok:
+                all_pass = False
+
+            # Gate D \u2014 trades per day
+            ok, reason, details = gate_trades_per_day(state, rules)
+            gates.append({"gate": "trades_per_day", "passed": ok, "reason": reason, "details": details})
+            if not ok:
+                all_pass = False
+
+            # Gate E \u2014 loss halts
+            ok, reason, details = gate_loss_halts(state, net_liquidation_eur, rules)
+            gates.append({"gate": "loss_halts", "passed": ok, "reason": reason, "details": details})
+            if not ok:
+                all_pass = False
+
+            # Gate F \u2014 exposure (no positions in this call)
+            ok, reason, details = gate_exposure(
+                proposed_shares, entry_price,
+                rules, net_liquidation_eur, exchange_rate,
+                [],
+            )
+            gates.append({"gate": "exposure", "passed": ok, "reason": reason, "details": details})
+            if not ok:
+                all_pass = False
+
+        # Build result
+        result = {
+            "passed": all_pass,
+            "symbol": symbol,
+            "action": norm["action"],
+            "orderType": norm["orderType"],
+            "totalQuantity": proposed_shares,
+            "entry_price": round(entry_price, 2) if not is_close else None,
+            "stop_price": round(stop_price, 2) if not is_close else None,
+            "stop_distance": round(stop_distance, 2) if not is_close else None,
+            "atr14": round(atr14, 2) if not is_close and atr14 is not None else None,
+            "gates": gates,
+        }
+
+        # Add close-specific fields for SELL
+        if is_close:
+            pos_info = _get_existing_position(symbol, position_provider)
+            result["close_only"] = True
+            result["position_source"] = pos_info["source"]
+            result["existing_position_qty"] = pos_info["qty"]
+            result["position_note"] = pos_info["note"]
+        else:
+            result["binding_cap"] = sizing["binding_cap"] if sizing else None
+            result["final_max_shares"] = final_max_shares
+            result["shares_requested"] = proposed_shares
+            result["shares_exceeds_max"] = proposed_shares > final_max_shares
+            result["close_only"] = False
+            result["position_source"] = None
+
+        # Log event and create approval record
+        if all_pass:
+            try:
+                approval = create_approval_record(result)
+                result["approval_id"] = approval["approval_id"]
+                result["approval_expires_at_utc"] = approval["expires_at_utc"]
+            except ValueError as e:
+                result["passed"] = False
+                result["error"] = f"Approval creation failed: {e}"
+                return result
+
+            append_guard_event("preflight_pass", {
+                "symbol": symbol, "passed": True,
+                "reason": "All gates green",
+                "approval_id": approval["approval_id"],
+                "final_max_shares": final_max_shares,
+                "binding_cap": sizing["binding_cap"] if sizing else None,
+            })
+        else:
+            failed_gates = [g["gate"] for g in gates if not g["passed"]]
+            append_guard_event("preflight_fail", {
+                "symbol": symbol, "passed": False,
+                "reason": f"Gates blocked: {failed_gates}",
+                "failed_gates": failed_gates,
+            })
+
+        return result
 
 
 # --- Approval Records (Phase 2C Step 1) ---

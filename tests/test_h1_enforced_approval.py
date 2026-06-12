@@ -91,92 +91,105 @@ def main():
     check(not (token_hash and hashlib.sha256("".encode()).hexdigest() == token_hash),
           "Empty string token does not match stored hash")
 
-    # ── H1-T2: Protected File Write Enforcement ────────────────────────
-    print("\n── H1-T2: Protected File Write Enforcement ──")
+    # ── H1-T2: Protected File Write Enforcement (H1.3 ContextVar) ─────
+    print("\n── H1-T2: Protected File Write Enforcement (H1.3 ContextVar) ──")
 
-    # Import guard module to test protected paths
     sys.path.insert(0, str(Path.home() / "agents" / "ibkr-bridge"))
     try:
-        from guard import PROTECTED_PATHS, _is_protected_path, _assert_h1_authorized_for_path, h1_authorize, h1_deauthorize, save_guard_state_atomic, GUARD_STATE_PATH
+        from guard import (PROTECTED_PATHS, _INTERNAL_WRITE_PATHS,
+                           _is_protected_path, _is_internal_write_path,
+                           _assert_h1_authorized_for_path,
+                           h1_authorize, h1_deauthorize,
+                           internal_write_context,
+                           save_guard_state_atomic, GUARD_STATE_PATH)
 
-        # T2.1: Protected paths set has exactly 4 Class B entries (H1.3)
-        check(len(PROTECTED_PATHS) == 4,
-              f"PROTECTED_PATHS has {len(PROTECTED_PATHS)} entries (expected 4 Class B)")
+        # T2.1: All 6 paths remain in PROTECTED_PATHS (H1.3 keeps protection)
+        check(len(PROTECTED_PATHS) == 6,
+              f"PROTECTED_PATHS has {len(PROTECTED_PATHS)} entries (expected all 6)")
 
-        # T2.2: Class B (protected) paths are in protected set
+        # T2.2: _INTERNAL_WRITE_PATHS has 4 Class A entries
+        check(len(_INTERNAL_WRITE_PATHS) == 4,
+              f"_INTERNAL_WRITE_PATHS has {len(_INTERNAL_WRITE_PATHS)} entries (expected 4 Class A)")
+
         home = Path.home()
-        class_b_paths = [
+
+        # T2.3: All 6 paths are in PROTECTED_PATHS
+        all_protected_paths = [
             home / "agents" / "ibkr-bridge" / ".env",
             home / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml",
             home / ".openclaw" / "guard-state.json",
-            home / ".openclaw" / "submitted-approvals.json",
-        ]
-        for kp in class_b_paths:
-            resolved = kp.resolve() if kp.exists() else kp
-            found = False
-            for pp in PROTECTED_PATHS:
-                try:
-                    if str(pp) == str(resolved) or str(pp) == str(kp):
-                        found = True
-                        break
-                except Exception:
-                    pass
-            if not found:
-                for pp in PROTECTED_PATHS:
-                    if pp.name == kp.name:
-                        found = True
-                        break
-            check(found, f"Class B protected: {kp.name}")
-
-        # T2.3: Class A paths are NOT in protected set (H1.3)
-        class_a_paths = [
             home / ".openclaw" / "active-approvals.json",
             home / ".openclaw" / "approval-records.jsonl",
-            home / ".openclaw" / "guard-events.jsonl",
+            home / ".openclaw" / "submitted-approvals.json",
         ]
-        for ca in class_a_paths:
-            ca_protected = False
+        for kp in all_protected_paths:
+            found = False
             for pp in PROTECTED_PATHS:
-                if pp.name == ca.name:
-                    ca_protected = True
+                if pp.name == kp.name:
+                    found = True
                     break
-            check(not ca_protected,
-                  f"Class A (no H1 required): {ca.name} is NOT in PROTECTED_PATHS")
+            check(found, f"Protected (all 6): {kp.name}")
 
-        # T2.3b: guard-events.jsonl specifically (append-only safety log)
-        events_path = home / ".openclaw" / "guard-events.jsonl"
-        events_protected = False
-        for pp in PROTECTED_PATHS:
-            if pp.name == "guard-events.jsonl":
-                events_protected = True
-                break
-        check(not events_protected,
-              "guard-events.jsonl is NOT in PROTECTED_PATHS (append-only safety log)")
+        # T2.4: Class A paths are in _INTERNAL_WRITE_PATHS
+        class_a_names = {"active-approvals.json", "approval-records.jsonl",
+                         "guard-events.jsonl", "guard-state.json"}
+        for pp in _INTERNAL_WRITE_PATHS:
+            check(pp.name in class_a_names,
+                  f"Internal-write path {pp.name} is Class A")
 
-        # T2.4: Unauthorized write to protected path raises PermissionError
-        # Ensure we're not authorized
+        # T2.5: Class B paths are NOT in _INTERNAL_WRITE_PATHS
+        class_b_names = {".env", "paper-trading-rules.yaml", "submitted-approvals.json"}
+        for pp in _INTERNAL_WRITE_PATHS:
+            check(pp.name not in class_b_names,
+                  f"Internal-write path {pp.name} is NOT Class B")
+
+        # T2.6: Direct write (no context, no token) blocked
         h1_deauthorize()
         try:
             _assert_h1_authorized_for_path(GUARD_STATE_PATH)
-            check(False, "Unauthorized write to guard-state should raise PermissionError")
+            check(False, "Direct write to guard-state should raise PermissionError")
         except PermissionError as e:
             check("H1 approval token required" in str(e),
-                  f"PermissionError mentions H1 token: {str(e)[:80]}")
-        except Exception as e:
-            check(False, f"Expected PermissionError, got {type(e).__name__}: {e}")
+                  f"Direct write blocked: {str(e)[:80]}")
 
-        # T2.5: Authorized write succeeds
+        # T2.7: Internal write context allows Class A (guard-state.json)
+        try:
+            with internal_write_context():
+                _assert_h1_authorized_for_path(GUARD_STATE_PATH)
+            check(True, "Internal context allows guard-state.json write")
+        except PermissionError:
+            check(False, "Internal context should allow guard-state.json write")
+
+        # T2.8: Internal write context still blocks Class B (.env)
+        env_path = home / "agents" / "ibkr-bridge" / ".env"
+        try:
+            with internal_write_context():
+                _assert_h1_authorized_for_path(env_path)
+            check(False, "Internal context should NOT allow .env write")
+        except PermissionError:
+            check(True, "Internal context correctly blocks .env write (Class B)")
+
+        # T2.9: Internal write context still blocks submitted-approvals.json
+        sa_path = home / ".openclaw" / "submitted-approvals.json"
+        try:
+            with internal_write_context():
+                _assert_h1_authorized_for_path(sa_path)
+            check(False, "Internal context should NOT allow submitted-approvals.json write")
+        except PermissionError:
+            check(True, "Internal context correctly blocks submitted-approvals.json (Class B)")
+
+        # T2.10: H1-authorized still works
         h1_authorize()
         try:
             _assert_h1_authorized_for_path(GUARD_STATE_PATH)
-            check(True, "Authorized write to guard-state passes check")
+            check(True, "H1-authorized write passes")
         except PermissionError:
-            check(False, "Authorized write should NOT raise PermissionError")
+            check(False, "H1-authorized should pass")
         finally:
             h1_deauthorize()
 
     except ImportError as e:
-        check(False, f"Cannot import guard module: {e}")
+        check(False, f"Cannot import guard module for T2: {e}")
     except Exception as e:
         check(False, f"Unexpected error in T2: {e}")
 
@@ -423,45 +436,45 @@ def main():
     check(result.returncode != 0,
           "Token file NOT tracked in git")
 
-    # ── H1-T11: Preflight Write Path While Locked (H1.3) ────────────
-    print("\n── H1-T11: Preflight Write Path While Locked (H1.3) ──")
+    # ── H1-T11: Preflight Write Path (H1.3 ContextVar) ─────────────
+    print("\n── H1-T11: Preflight Write Path (H1.3 ContextVar) ──")
 
     try:
-        from guard import (h1_deauthorize, h1_startup_done,
+        from guard import (h1_deauthorize, internal_write_context,
                            create_approval_record, _save_active_approvals,
-                           _append_approval_record, ACTIVE_APPROVALS_PATH,
-                           APPROVAL_RECORDS_PATH, GUARD_EVENTS_PATH,
-                           _active_approvals)
+                           _append_approval_record,
+                           _INTERNAL_WRITE_PATHS,
+                           GUARD_EVENTS_PATH)
 
         # T11.1: Ensure H1 is deauthorized (simulate locked state)
         h1_deauthorize()
         check(True, "H1 deauthorized — simulating locked state")
 
-        # T11.2: _save_active_approvals() succeeds while locked (Class A)
+        # T11.2: _save_active_approvals() with internal context succeeds
         try:
-            _save_active_approvals()
-            check(True, "_save_active_approvals() succeeds while H1 locked (Class A)")
+            with internal_write_context():
+                _save_active_approvals()
+            check(True, "_save_active_approvals() with internal context succeeds")
         except PermissionError as e:
             check(False, f"_save_active_approvals() wrongly blocked: {e}")
 
-        # T11.3: _append_approval_record() succeeds while locked (Class A)
-        # Build a minimal record to avoid coupling to preflight internals
+        # T11.3: _append_approval_record() with internal context succeeds
         test_record = {
-            "approval_id": "aprv_h1_3_test",
-            "preflight_id": "pf_h1_3_test",
+            "approval_id": "aprv_h1_3_ctxvar_test",
+            "preflight_id": "pf_h1_3_ctxvar_test",
             "status": "pending",
             "created_at_utc": "2026-06-12T00:00:00Z",
             "expires_at_utc": "2026-06-12T00:05:00Z",
             "proposal": {"symbol": "TEST", "action": "BUY", "totalQuantity": 1},
         }
         try:
-            _append_approval_record(test_record)
-            check(True, "_append_approval_record() succeeds while H1 locked (Class A)")
+            with internal_write_context():
+                _append_approval_record(test_record)
+            check(True, "_append_approval_record() with internal context succeeds")
         except PermissionError as e:
             check(False, f"_append_approval_record() wrongly blocked: {e}")
 
-        # T11.4: create_approval_record from a passing preflight result
-        # Build a fake passing preflight to test the creation path
+        # T11.4: create_approval_record() with internal context returns valid approval_id
         fake_preflight = {
             "passed": True,
             "symbol": "AAPL",
@@ -480,7 +493,8 @@ def main():
             ],
         }
         try:
-            approval = create_approval_record(fake_preflight)
+            with internal_write_context():
+                approval = create_approval_record(fake_preflight)
             check(approval.get("approval_id", "").startswith("aprv_"),
                   f"create_approval_record() returns valid approval_id: {approval.get('approval_id', 'NONE')}")
             check(approval.get("status") == "pending",
@@ -488,32 +502,65 @@ def main():
             check(approval.get("expires_at_utc") is not None,
                   "Approval has expires_at_utc")
         except PermissionError as e:
-            check(False, f"create_approval_record() wrongly blocked by H1: {e}")
+            check(False, f"create_approval_record() wrongly blocked: {e}")
         except ValueError as e:
             check(False, f"create_approval_record() failed: {e}")
 
-        # T11.5: Class B path still blocked while locked
+        # T11.5: Direct write (no internal context) still blocked
+        from guard import GUARD_STATE_PATH
         try:
-            from guard import save_guard_state_atomic, GUARD_STATE_PATH
+            from guard import save_guard_state_atomic
             save_guard_state_atomic({"schema_version": 1})
-            check(False, "save_guard_state_atomic() should be blocked while H1 locked")
+            check(False, "Direct save_guard_state_atomic() should be blocked")
         except PermissionError:
-            check(True, "save_guard_state_atomic() correctly blocked (Class B)")
+            check(True, "Direct save_guard_state_atomic() correctly blocked (no context)")
 
-        # T11.6: submitted-approvals.json write still blocked while locked
+        # T11.6: Submitted approvals write blocked even with internal context (Class B)
         try:
             from guard import _save_submitted_approvals, _submitted_approvals
             old = set(_submitted_approvals)
-            _submitted_approvals.add("aprv_h1_3_fake_submitted")
+            _submitted_approvals.add("aprv_h1_3_fake_contextvar")
             try:
-                _save_submitted_approvals()
-                check(False, "_save_submitted_approvals() should be blocked while H1 locked")
+                with internal_write_context():
+                    _save_submitted_approvals()
+                check(False, "_save_submitted_approvals() should be blocked even with internal context")
             except PermissionError:
-                check(True, "_save_submitted_approvals() correctly blocked (Class B)")
+                check(True, "_save_submitted_approvals() correctly blocked with internal context (Class B)")
             finally:
-                _submitted_approvals.discard("aprv_h1_3_fake_submitted")
+                _submitted_approvals.discard("aprv_h1_3_fake_contextvar")
         except Exception as e:
             check(False, f"Unexpected error in T11.6: {e}")
+
+        # T11.7: append_guard_event with internal context succeeds
+        try:
+            from guard import append_guard_event
+            with internal_write_context():
+                evt = append_guard_event("preflight_pass", {
+                    "symbol": "CTXVAR_TEST",
+                    "passed": True,
+                })
+            check(evt.get("event_type") == "preflight_pass",
+                  "append_guard_event() with internal context succeeds")
+        except PermissionError as e:
+            check(False, f"append_guard_event() wrongly blocked with internal context: {e}")
+
+        # T11.8: Rollover guard state write via internal context
+        try:
+            from guard import load_guard_state, _rollover_guard_state
+            state = load_guard_state()
+            # Force a future trade_date to trigger rollover, then restore
+            original_date = state.get("trade_date", "")
+            state["trade_date"] = "2000-01-01"  # ancient date forces rollover
+            with internal_write_context():
+                rolled = _rollover_guard_state(state)
+            check(rolled is True or rolled is False,
+                  f"_rollover_guard_state() with internal context completes without PermissionError (rolled={rolled})")
+            # Restore original
+            state["trade_date"] = original_date
+        except PermissionError as e:
+            check(False, f"_rollover_guard_state() wrongly blocked with internal context: {e}")
+        except Exception as e:
+            check(False, f"_rollover_guard_state() unexpected error: {e}")
 
     except ImportError as e:
         check(False, f"Cannot import guard module for T11: {e}")

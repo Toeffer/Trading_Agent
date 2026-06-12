@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE="http://127.0.0.1:8790"
+TOKEN_FILE="/etc/ibkr-bridge/h1_token"
+
+usage() {
+  echo "Usage:"
+  echo "  sudo ibkr-trade-window approve APPROVAL_ID"
+  echo "  sudo ibkr-trade-window submit APPROVAL_ID"
+  echo "  sudo ibkr-trade-window approve-submit APPROVAL_ID"
+  echo "  sudo ibkr-trade-window relock"
+  exit 2
+}
+
+require_token() {
+  [[ -r "$TOKEN_FILE" ]] || { echo "ERROR: token not readable: $TOKEN_FILE" >&2; exit 1; }
+  H1_TOKEN="$(/usr/bin/tr -d '\n' < "$TOKEN_FILE")"
+  [[ ${#H1_TOKEN} -ge 32 ]] || { echo "ERROR: token invalid length" >&2; exit 1; }
+}
+
+approve() {
+  local id="$1"
+  require_token
+  curl --connect-timeout 2 --max-time 8 -sS -X POST "$BASE/order/approve" \
+    -H "X-H1-Token: $H1_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"approval_id\":\"$id\",\"decision\":\"approve\"}" \
+    | python3 -m json.tool
+}
+
+submit() {
+  local id="$1"
+  require_token
+  curl --connect-timeout 2 --max-time 120 -sS -X POST "$BASE/order/submit" \
+    -H "X-H1-Token: $H1_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"approval_id\":\"$id\"}" \
+    | python3 -m json.tool
+}
+
+relock() {
+  cd /home/chris/agents/ibkr-bridge
+
+  sed -i 's/^IBKR_ALLOW_ORDERS=.*/IBKR_ALLOW_ORDERS=false/' .env
+
+  python3 - <<'PY'
+from pathlib import Path
+p = Path("/home/chris/.openclaw/risk-rules/paper-trading-rules.yaml")
+s = p.read_text()
+s = s.replace("enforced: true", "enforced: false", 1)
+p.write_text(s)
+PY
+
+  pkill -9 -f "uvicorn bridge:app" || true
+  pkill -9 -f "python3 -m uvicorn bridge:app" || true
+  sleep 2
+  rm -rf /tmp/bridge.log
+  install -o chris -g chris -m 664 /dev/null /tmp/bridge.log
+  runuser -u chris -- bash -lc 'cd /home/chris/agents/ibkr-bridge && nohup .venv/bin/python3 -m uvicorn bridge:app --host 127.0.0.1 --port 8790 > /tmp/bridge.log 2>&1 &'
+  sleep 5
+  curl -s "$BASE/health" | python3 -m json.tool
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  approve)
+    [[ $# -eq 2 ]] || usage
+    approve "$2"
+    ;;
+  submit)
+    [[ $# -eq 2 ]] || usage
+    submit "$2"
+    ;;
+  approve-submit)
+    [[ $# -eq 2 ]] || usage
+    approve "$2"
+    submit "$2"
+    ;;
+  relock)
+    relock
+    ;;
+  *)
+    usage
+    ;;
+esac

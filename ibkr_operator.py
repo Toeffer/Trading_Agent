@@ -1383,6 +1383,36 @@ def run_doctor() -> dict:
         all_pass = False
         checks.append({"check": "hermes_policy_exists", "ok": False, "detail": str(e)[:120]})
 
+    # K12: H1 token canary — verifies Chris's approval token is valid.
+    # Uses a fake approval ID that should never exist; the expected
+    # response is "Approval not found", proving the token was accepted.
+    # Never prints, logs, or exports the raw H1 token.
+    try:
+        canary = _run_h1_canary()
+        canary_status = canary.get("status", "FAIL")
+        if canary_status == "MANUAL_REQUIRED":
+            # sudo needs password — show the exact command to run manually
+            canary_ok = False  # doesn't fail doctor, but flags as action needed
+            checks.append({
+                "check": "h1_token_canary", "ok": False,
+                "status": "MANUAL_REQUIRED",
+                "detail": canary.get("manual_command",
+                    "sudo /usr/local/sbin/ibkr-trade-window approve aprv_canary"),
+            })
+        elif canary_status == "PASS":
+            canary_ok = True
+            checks.append({"check": "h1_token_canary", "ok": True,
+                           "detail": canary.get("detail", "H1 token valid")})
+        else:
+            canary_ok = False
+            all_pass = False
+            checks.append({"check": "h1_token_canary", "ok": False,
+                           "detail": canary.get("detail", "H1 token canary failed")})
+    except Exception as e:
+        all_pass = False
+        checks.append({"check": "h1_token_canary", "ok": False,
+                       "detail": f"Canary error: {str(e)[:120]}"})
+
     return {
         "command": "ibkr-operator doctor",
         "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1406,11 +1436,17 @@ def print_doctor(result: dict) -> None:
     print(f"{BOLD}{'=' * 40}{RESET}")
 
     for c in result.get("checks", []):
-        status_str = f"{GREEN}PASS{RESET}" if c["ok"] else f"{RED}FAIL{RESET}"
+        status = c.get("status", "")
+        if status == "MANUAL_REQUIRED":
+            status_str = f"{YELLOW}MANUAL{RESET}"
+        elif c["ok"]:
+            status_str = f"{GREEN}PASS{RESET}"
+        else:
+            status_str = f"{RED}FAIL{RESET}"
         print(f"  {status_str}  {c['check']}: {c['detail']}")
 
     print()
-    print(f"  {BOLD}Result:{RESET} {verdict_color}{"PASS" if ok else "FAIL"}{RESET}  ({passed}/{total})")
+    print(f"  {BOLD}Result:{RESET} {verdict_color}{'PASS' if ok else 'FAIL'}{RESET}  ({passed}/{total})")
 
     if not ok:
         print(f"{YELLOW}  Some checks failed. Review above for details.{RESET}")
@@ -1920,6 +1956,110 @@ def _print_maintenance(result: dict) -> None:
 # ---------------------------------------------------------------------------
 # Phase 5B.1 — Hermes Advisory Proposal
 # ---------------------------------------------------------------------------
+
+
+def _run_h1_canary() -> dict:
+    """Run an H1 token canary test via the sudo trade-window helper.
+
+    Invokes 'sudo /usr/local/sbin/ibkr-trade-window approve aprv_canary'.
+    Uses a fake approval ID that should never exist — the expected
+    response is 'Approval not found', which proves the H1 token was
+    accepted and the bridge processed the request.
+
+    NEVER prints, logs, exports, or persists the raw H1 token.
+    The token stays in /etc/ibkr-bridge/h1_token (root:root 600).
+
+    Returns dict with:
+      ok: True if canary passed
+      status: "PASS" | "FAIL" | "MANUAL_REQUIRED"
+    """
+    import subprocess
+    from datetime import datetime, timezone
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    helper = "/usr/local/sbin/ibkr-trade-window"
+    canary_id = "aprv_canary"
+
+    # Check if sudo can run non-interactively (no password prompt)
+    try:
+        sudo_test = subprocess.run(
+            ["sudo", "-n", "true"],
+            capture_output=True, text=True, timeout=5,
+        )
+        can_sudo = sudo_test.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        can_sudo = False
+
+    if not can_sudo:
+        return {
+            "ok": False,
+            "status": "MANUAL_REQUIRED",
+            "detail": "sudo requires password or is unavailable",
+            "manual_command": f"sudo {helper} approve {canary_id}",
+            "timestamp_utc": ts,
+        }
+
+    # Run the canary
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", helper, "approve", canary_id],
+            capture_output=True, text=True, timeout=30,
+        )
+        combined = (result.stdout or "") + "\n" + (result.stderr or "")
+        combined_lower = combined.lower()
+    except FileNotFoundError:
+        return {
+            "ok": False,
+            "status": "FAIL",
+            "detail": f"Helper not found at {helper}",
+            "timestamp_utc": ts,
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "status": "FAIL",
+            "detail": f"Canary timed out (30s)",
+            "timestamp_utc": ts,
+        }
+
+    # Classify result — never include raw output in logs/output.
+    # The expected response from the bridge for a fake approval is:
+    #   "Approval 'aprv_canary' not found, expired, or already ruled."
+    # Any other response means the H1 token is invalid or the bridge
+    # rejected the request.
+
+    if "not found, expired, or already ruled" in combined_lower:
+        return {
+            "ok": True,
+            "status": "PASS",
+            "detail": "H1 token accepted — fake approval correctly rejected",
+            "timestamp_utc": ts,
+        }
+
+    # Specific failure modes
+    if "h1_token_required" in combined_lower or "401" in combined:
+        return {
+            "ok": False,
+            "status": "FAIL",
+            "detail": "H1_TOKEN_REQUIRED — token missing, invalid, or not sent",
+            "timestamp_utc": ts,
+        }
+
+    if "error" in combined_lower and "token" in combined_lower:
+        return {
+            "ok": False,
+            "status": "FAIL",
+            "detail": "Token error — check /etc/ibkr-bridge/h1_token permissions and content",
+            "timestamp_utc": ts,
+        }
+
+    # Unexpected output — bridge may be down
+    return {
+        "ok": False,
+        "status": "FAIL",
+        "detail": f"Unexpected response — bridge may be unavailable or token invalid",
+        "timestamp_utc": ts,
+    }
 
 
 def _run_hermes_canary() -> dict:

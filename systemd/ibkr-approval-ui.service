@@ -1,0 +1,18 @@
+[Unit]
+Description=IBKR R1 Tailnet Approval UI
+After=network-online.target tailscaled.service
+Requires=tailscaled.service
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris/agents/ibkr-bridge
+ExecStart=/home/chris/agents/ibkr-bridge/.venv/bin/python3 -m uvicorn approval_ui:app --host 100.115.99.61 --port 8791
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -48,6 +48,8 @@ GUARD_STATE_PATH = Path(os.environ.get(
 # These files must never be modified by Werner/OpenClaw directly.
 # All mutations require H1 token authorization through the bridge.
 
+import contextvars
+
 PROTECTED_PATHS: set[Path] = set()
 
 
@@ -79,8 +81,13 @@ def _init_protected_paths() -> None:
 
 _init_protected_paths()
 
-# Module-level H1 authorization flag — set by bridge on token-verified requests
-_h1_authorized: bool = False
+# Phase H1: ContextVar-based H1 authorization — per-request, no global boolean.
+# Replaces the old global _h1_authorized which could cause race conditions
+# under concurrent requests (one request's deauthorize could unguard another).
+_h1_authorized: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "h1_authorized", default=False
+)
+
 # Startup phase flag — H1 enforcement is suspended during module init
 _h1_startup_complete: bool = False
 
@@ -98,17 +105,16 @@ def h1_startup_done() -> None:
 def h1_authorize() -> None:
     """Enable H1-authorized mode for the current request context.
 
-    Called by bridge endpoints that have verified the H1 approval token.
-    Must be paired with h1_deauthorize().
+    Uses ContextVar so authorization is scoped to the current
+    request/thread — no global boolean that could race under
+    concurrent requests.  Must be paired with h1_deauthorize().
     """
-    global _h1_authorized
-    _h1_authorized = True
+    _h1_authorized.set(True)
 
 
 def h1_deauthorize() -> None:
     """Disable H1-authorized mode after request completes."""
-    global _h1_authorized
-    _h1_authorized = False
+    _h1_authorized.set(False)
 
 
 def _is_protected_path(target: Path) -> bool:
@@ -123,15 +129,15 @@ def _is_protected_path(target: Path) -> bool:
 def _assert_h1_authorized_for_path(target: Path) -> None:
     """Raise PermissionError if target is protected and H1 not authorized.
 
-    This enforces that Werner/OpenClaw cannot mutate protected files
-    without passing through the bridge's H1 token verification.
+    Authorization is per-request via contextvars.ContextVar — no
+    global boolean that could deadlock or race under concurrency.
 
     Startup reconciliation (before h1_startup_done()) is exempt.
     """
     # Skip enforcement during module startup reconciliation
     if not _h1_startup_complete:
         return
-    if _is_protected_path(target) and not _h1_authorized:
+    if _is_protected_path(target) and not _h1_authorized.get():
         raise PermissionError(
             f"Protected file write blocked: {target}. "
             f"H1 approval token required for mutations to this file. "

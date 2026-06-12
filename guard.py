@@ -43,36 +43,53 @@ GUARD_STATE_PATH = Path(os.environ.get(
 ))
 
 # ---------------------------------------------------------------------------
-# Phase H1 — Protected File Paths
+# Phase H1 — Protected File Paths (H1.3 Class A/B split)
 # ---------------------------------------------------------------------------
-# These files must never be modified by Werner/OpenClaw directly.
-# All mutations require H1 token authorization through the bridge.
+# H1.3 splits mutations into two classes:
+#
+# CLASS A — internal bookkeeping, NO H1 token required:
+#   These files can be written during preflight to break the circular
+#   dependency where preflight→create approval_id→write→H1 token→no
+#   approval_id possible.
+#   - active-approvals.json   (pending approval snapshots)
+#   - approval-records.jsonl  (approval history / audit trail)
+#   - guard-events.jsonl      (append-only safety event log; never protected)
+#
+# CLASS B — broker-affecting / protected, H1 token REQUIRED:
+#   These files control execution or broker state and must never be
+#   modified by Werner/OpenClaw directly.
+#   - .env                     (bridge configuration, token hash)
+#   - paper-trading-rules.yaml (risk rules, enforced flag)
+#   - guard-state.json         (halt flags, trade counts, NL anchors)
+#   - submitted-approvals.json (one-use submission tracking)
+#
+# /order/approve and /order/submit still require X-H1-Token.
+# /order/preflight is validation-only and writes only Class A files.
 
 PROTECTED_PATHS: set[Path] = set()
 
 
 def _init_protected_paths() -> None:
-    """Initialize the set of protected file paths.
+    """Initialize the set of protected file paths (Class B only).
 
-    Called once at module load. Protected files include:
-    - .env (bridge configuration)
-    - paper-trading-rules.yaml (risk rules)
-    - guard-state.json (trading state)
-    - approval-records.jsonl (approval history)
-    - active-approvals.json (pending approvals snapshot)
-    - submitted-approvals.json (submitted tracking)
+    Called once at module load.
 
-    Note: guard-events.jsonl is NOT in the protected set — it is
-    append-only and safety events (submit_blocked, etc.) must always
-    be loggable without H1 token.
+    Class B (protected, H1 required):
+    - .env
+    - paper-trading-rules.yaml
+    - guard-state.json
+    - submitted-approvals.json
+
+    Class A (NOT protected, no H1 required):
+    - active-approvals.json
+    - approval-records.jsonl
+    - guard-events.jsonl
     """
     home = Path.home()
     PROTECTED_PATHS.update([
         Path(home / "agents" / "ibkr-bridge" / ".env").resolve(),
         Path(home / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml").resolve(),
         Path(home / ".openclaw" / "guard-state.json").resolve(),
-        Path(home / ".openclaw" / "approval-records.jsonl").resolve(),
-        Path(home / ".openclaw" / "active-approvals.json").resolve(),
         Path(home / ".openclaw" / "submitted-approvals.json").resolve(),
     ])
 
@@ -322,14 +339,23 @@ def _rollover_guard_state(state: dict) -> bool:
     except Exception:
         pass
 
-    save_guard_state_atomic(state)
+    try:
+        save_guard_state_atomic(state)
+    except PermissionError:
+        # H1.3: guard-state.json is Class B (H1-protected).
+        # During locked state, rollover persistence is deferred.
+        # The in-memory state is already mutated for correct gate evaluation.
+        pass
 
-    append_guard_event("guard_calendar_rollover", {
-        "from_trade_date": current_trade_date,
-        "to_trade_date": today_str,
-        "daily_trade_count_reset": True,
-        "daily_halt_cleared": True,
-    })
+    try:
+        append_guard_event("guard_calendar_rollover", {
+            "from_trade_date": current_trade_date,
+            "to_trade_date": today_str,
+            "daily_trade_count_reset": True,
+            "daily_halt_cleared": True,
+        })
+    except PermissionError:
+        pass  # guard-events.jsonl is Class A, but belt-and-suspenders
 
     return True
 

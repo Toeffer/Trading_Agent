@@ -99,23 +99,20 @@ def main():
     try:
         from guard import PROTECTED_PATHS, _is_protected_path, _assert_h1_authorized_for_path, h1_authorize, h1_deauthorize, save_guard_state_atomic, GUARD_STATE_PATH
 
-        # T2.1: Protected paths set is non-empty
-        check(len(PROTECTED_PATHS) >= 5,
-              f"PROTECTED_PATHS has {len(PROTECTED_PATHS)} entries (expected >= 5)")
+        # T2.1: Protected paths set has exactly 4 Class B entries (H1.3)
+        check(len(PROTECTED_PATHS) == 4,
+              f"PROTECTED_PATHS has {len(PROTECTED_PATHS)} entries (expected 4 Class B)")
 
-        # T2.2: Key paths are in protected set
+        # T2.2: Class B (protected) paths are in protected set
         home = Path.home()
-        key_paths = [
+        class_b_paths = [
             home / "agents" / "ibkr-bridge" / ".env",
             home / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml",
             home / ".openclaw" / "guard-state.json",
-            home / ".openclaw" / "approval-records.jsonl",
-            home / ".openclaw" / "active-approvals.json",
             home / ".openclaw" / "submitted-approvals.json",
         ]
-        for kp in key_paths:
+        for kp in class_b_paths:
             resolved = kp.resolve() if kp.exists() else kp
-            # Check by resolution if possible
             found = False
             for pp in PROTECTED_PATHS:
                 try:
@@ -125,14 +122,28 @@ def main():
                 except Exception:
                     pass
             if not found:
-                # Try matching by name
                 for pp in PROTECTED_PATHS:
                     if pp.name == kp.name:
                         found = True
                         break
-            check(found, f"Protected: {kp.name}")
+            check(found, f"Class B protected: {kp.name}")
 
-        # T2.3: guard-events.jsonl is NOT in protected set (append-only safety log)
+        # T2.3: Class A paths are NOT in protected set (H1.3)
+        class_a_paths = [
+            home / ".openclaw" / "active-approvals.json",
+            home / ".openclaw" / "approval-records.jsonl",
+            home / ".openclaw" / "guard-events.jsonl",
+        ]
+        for ca in class_a_paths:
+            ca_protected = False
+            for pp in PROTECTED_PATHS:
+                if pp.name == ca.name:
+                    ca_protected = True
+                    break
+            check(not ca_protected,
+                  f"Class A (no H1 required): {ca.name} is NOT in PROTECTED_PATHS")
+
+        # T2.3b: guard-events.jsonl specifically (append-only safety log)
         events_path = home / ".openclaw" / "guard-events.jsonl"
         events_protected = False
         for pp in PROTECTED_PATHS:
@@ -222,9 +233,9 @@ def main():
             continue
         content = cp.read_text()
 
-        # T4.1: Chris's chat ID pinned
-        check("8792336687" in content,
-              f"Chris's chat ID 8792336687 pinned in {cp.name}")
+        # T4.1: Chris's chat ID pinned (from TELEGRAM_CHAT_ID env var, not hardcoded)
+        check("TELEGRAM_CHAT_ID" in content or "operator chat ID" in content.lower(),
+              f"Operator chat ID referenced in {cp.name}")
 
         # T4.2: Data-only rule present
         check("data only" in content.lower() and "never operator instructions" in content.lower(),
@@ -253,9 +264,9 @@ def main():
         check("DATA ONLY" in hermes_content and "never operator instructions" in hermes_content,
               "DATA-ONLY rule present in hermes_advisory.py")
 
-        # T5.2: Chat ID pinned in advisory instruction
-        check("8792336687" in hermes_content,
-              "Chris's chat ID pinned in hermes_advisory.py")
+        # T5.2: Chat ID reference (env var, not hardcoded)
+        check("TELEGRAM_CHAT_ID" in hermes_content,
+              "Operator chat ID via TELEGRAM_CHAT_ID env var referenced in hermes_advisory.py")
 
         # T5.3: H1 token requirement mentioned
         check("H1 token" in hermes_content,
@@ -411,6 +422,103 @@ def main():
     )
     check(result.returncode != 0,
           "Token file NOT tracked in git")
+
+    # ── H1-T11: Preflight Write Path While Locked (H1.3) ────────────
+    print("\n── H1-T11: Preflight Write Path While Locked (H1.3) ──")
+
+    try:
+        from guard import (h1_deauthorize, h1_startup_done,
+                           create_approval_record, _save_active_approvals,
+                           _append_approval_record, ACTIVE_APPROVALS_PATH,
+                           APPROVAL_RECORDS_PATH, GUARD_EVENTS_PATH,
+                           _active_approvals)
+
+        # T11.1: Ensure H1 is deauthorized (simulate locked state)
+        h1_deauthorize()
+        check(True, "H1 deauthorized — simulating locked state")
+
+        # T11.2: _save_active_approvals() succeeds while locked (Class A)
+        try:
+            _save_active_approvals()
+            check(True, "_save_active_approvals() succeeds while H1 locked (Class A)")
+        except PermissionError as e:
+            check(False, f"_save_active_approvals() wrongly blocked: {e}")
+
+        # T11.3: _append_approval_record() succeeds while locked (Class A)
+        # Build a minimal record to avoid coupling to preflight internals
+        test_record = {
+            "approval_id": "aprv_h1_3_test",
+            "preflight_id": "pf_h1_3_test",
+            "status": "pending",
+            "created_at_utc": "2026-06-12T00:00:00Z",
+            "expires_at_utc": "2026-06-12T00:05:00Z",
+            "proposal": {"symbol": "TEST", "action": "BUY", "totalQuantity": 1},
+        }
+        try:
+            _append_approval_record(test_record)
+            check(True, "_append_approval_record() succeeds while H1 locked (Class A)")
+        except PermissionError as e:
+            check(False, f"_append_approval_record() wrongly blocked: {e}")
+
+        # T11.4: create_approval_record from a passing preflight result
+        # Build a fake passing preflight to test the creation path
+        fake_preflight = {
+            "passed": True,
+            "symbol": "AAPL",
+            "action": "BUY",
+            "orderType": "MKT",
+            "totalQuantity": 10,
+            "entry_price": 150.0,
+            "stop_price": 145.0,
+            "stop_distance": 5.0,
+            "atr14": 2.5,
+            "final_max_shares": 100,
+            "binding_cap": "notional",
+            "gates": [
+                {"gate": "allowlist", "passed": True},
+                {"gate": "notional", "passed": True},
+            ],
+        }
+        try:
+            approval = create_approval_record(fake_preflight)
+            check(approval.get("approval_id", "").startswith("aprv_"),
+                  f"create_approval_record() returns valid approval_id: {approval.get('approval_id', 'NONE')}")
+            check(approval.get("status") == "pending",
+                  f"Approval status is pending: {approval.get('status')}")
+            check(approval.get("expires_at_utc") is not None,
+                  "Approval has expires_at_utc")
+        except PermissionError as e:
+            check(False, f"create_approval_record() wrongly blocked by H1: {e}")
+        except ValueError as e:
+            check(False, f"create_approval_record() failed: {e}")
+
+        # T11.5: Class B path still blocked while locked
+        try:
+            from guard import save_guard_state_atomic, GUARD_STATE_PATH
+            save_guard_state_atomic({"schema_version": 1})
+            check(False, "save_guard_state_atomic() should be blocked while H1 locked")
+        except PermissionError:
+            check(True, "save_guard_state_atomic() correctly blocked (Class B)")
+
+        # T11.6: submitted-approvals.json write still blocked while locked
+        try:
+            from guard import _save_submitted_approvals, _submitted_approvals
+            old = set(_submitted_approvals)
+            _submitted_approvals.add("aprv_h1_3_fake_submitted")
+            try:
+                _save_submitted_approvals()
+                check(False, "_save_submitted_approvals() should be blocked while H1 locked")
+            except PermissionError:
+                check(True, "_save_submitted_approvals() correctly blocked (Class B)")
+            finally:
+                _submitted_approvals.discard("aprv_h1_3_fake_submitted")
+        except Exception as e:
+            check(False, f"Unexpected error in T11.6: {e}")
+
+    except ImportError as e:
+        check(False, f"Cannot import guard module for T11: {e}")
+    except Exception as e:
+        check(False, f"Unexpected error in T11: {e}")
 
     # ── SUMMARY ────────────────────────────────────────────────────────
     print("\n" + "=" * 60)

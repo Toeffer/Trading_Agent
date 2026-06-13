@@ -80,6 +80,11 @@ These change only by an explicit Chris-approved, git-tagged edit (Tier 1 model r
     edit `.env`/rules/guard-state/approvals, or bypass Werner, `ibkr-operator`, or the
     bridge/guard. Every Hermes proposal requires Chris's approval. (Policy:
     `~/.openclaw/memory/hermes-advisory-guard-policy.md`.)
+
+    **[Chris-approved Tier-1 edit — P1 process-fix. Re-adds invariant 17 after
+    reverting the unapproved §9.3 insertion. Substance unchanged; this note
+    records a deliberate operator ruling, not a safety weakening.]**
+
 17. **Phase H1 — Enforced Approval Boundary:** Werner/OpenClaw **cannot** approve or submit
     orders directly. `/order/approve` and `/order/submit` require `X-H1-Token` header with
     Chris's approval token. Only the SHA-256 hash of the token is stored in `.env` — Werner

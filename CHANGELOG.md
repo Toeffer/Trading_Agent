@@ -189,8 +189,9 @@ stop or while drift/open-order/live-alert is present, NO TRADE at daily loss ≥
   artifacts-only thesis reconstruction, Step 2 current state, Step 3 Hermes adversarial
   review (steelmanned EXIT/HOLD, blind re-underwrite, decision-quality vs outcome-quality),
   Step 4 exactly one recommendation (EXIT default), Step 5 trade journal.
-- META breach confirmed: $559.48 below recorded stop ($579.22) and -5% floor ($566.47).
-  5 straight red candles. AI capex quantified at $125-145B.
+- META breach confirmed: $559.48 below recorded stop ($579.22) and -5% floor ($566.47);
+  -10% absolute floor ($536.66) remained intact and anchored the "risk if held" vs
+  "risk if exited" decision calculus. 5 straight red candles. AI capex quantified at $125-145B.
 - Hermes adversarial review: strongest case for EXIT (honor pre-committed stop regime);
   case for HOLD (stop at 0.91×ATR was tight, ordinary volatility); blind re-underwrite
   returned NO (would not buy today); "holding is largely not different from buying."

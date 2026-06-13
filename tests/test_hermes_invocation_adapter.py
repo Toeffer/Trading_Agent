@@ -58,6 +58,7 @@ def main():
         "hermes_command_or_adapter",
         "hermes_provider",
         "hermes_model",
+        "resolved_model",
         "hermes_request_timestamp_utc",
         "hermes_response_timestamp_utc",
         "hermes_session_id",
@@ -194,6 +195,64 @@ def main():
               "Failure produces source=unknown")
         check('"hermes_invoked": False' in op,
               "hermes CLI not found sets hermes_invoked=false")
+
+    # ---- P6: Hermes model-audit — resolved_model is not Werner's family ----
+    print("\n📐 P6: Hermes Model-Audit — Werner-Family Exclusion")
+
+    # Werner's model families (must NOT appear in Hermes artifacts)
+    werner_model_families = [
+        "opencode-go",
+        "deepseek",
+        "openclaw-go",
+    ]
+
+    # P6a: resolved_model field is coded in both adapter and operator
+    if adapter_path.exists():
+        code = adapter_path.read_text()
+        check('"resolved_model"' in code,
+              "hermes_advisory.py codes resolved_model in evidence blocks")
+        check(code.count('"resolved_model"') >= 4,
+              f"resolved_model appears in >= 4 evidence blocks (found {code.count(chr(34) + 'resolved_model' + chr(34))})")
+
+    if operator_path.exists():
+        op = operator_path.read_text()
+        check('"resolved_model"' in op,
+              "ibkr_operator.py codes resolved_model in evidence blocks")
+
+    # P6b: resolved_model values never match Werner family
+    if adapter_path.exists():
+        code = adapter_path.read_text()
+        import re
+        resolved_vals = re.findall(r'"resolved_model":\s*"([^"]+)"', code)
+        null_vals = re.findall(r'"resolved_model":\s*(null|None)', code)
+        check(len(resolved_vals) + len(null_vals) >= 1,
+              f"Found {len(resolved_vals) + len(null_vals)} resolved_model value(s) in hermes_advisory.py")
+        for val in resolved_vals:
+            for fam in werner_model_families:
+                check(fam.lower() not in val.lower(),
+                      f"resolved_model '{val}' not Werner-family (not {fam})")
+
+    if operator_path.exists():
+        op = operator_path.read_text()
+        resolved_vals = re.findall(r'"resolved_model":\s*"([^"]+)"', op)
+        null_vals = re.findall(r'"resolved_model":\s*(null|None)', op)
+        check(len(resolved_vals) + len(null_vals) >= 1,
+              f"Found {len(resolved_vals) + len(null_vals)} resolved_model value(s) in ibkr_operator.py")
+        for val in resolved_vals:
+            for fam in werner_model_families:
+                check(fam.lower() not in val.lower(),
+                      f"resolved_model '{val}' not Werner-family (not {fam})")
+
+    # P6c: resolved_model in live canary evidence (if available)
+    if 'canary' in dir() and canary.get("ok"):
+        ev = canary.get("evidence", {})
+        rmodel = ev.get("resolved_model")
+        check(rmodel is not None, f"Canary evidence has resolved_model (value: {rmodel!r})")
+        if rmodel:
+            for fam in werner_model_families:
+                check(fam.lower() not in str(rmodel).lower(),
+                      f"Canary resolved_model not Werner-family '{fam}'")
+            check("/" in str(rmodel), f"resolved_model has provider/model separator: {rmodel}")
 
     # ---- H8: Summary of all checks ----
     print("\n" + "=" * 60)

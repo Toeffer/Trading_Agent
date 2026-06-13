@@ -22,6 +22,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+# P3: proposal persistence
+from guard import save_proposal_file
+
 # ── Hard-coded safety constraints ──────────────────────────────────────────
 FORBIDDEN_COMMANDS = [
     "/order/submit", "/order/approve",
@@ -66,6 +69,14 @@ RISK RAILS (Phase 5 Pilot):
 - No trade without stop/invalidation
 - No trade if drift detected, open order unresolved, or live requires_action alert
 - No trade if daily loss >= 1% or weekly loss >= 3% Net Liq
+
+CLOSE-ONLY SELL NOTE:
+Close-only SELLs (reducing/exiting existing long positions) are exempt from
+new-entry sizing rails: position sizing, notional caps, exposure limits, and
+risk-per-trade limits. Trade count limits, loss halt gates, open order conflict
+checks, and all broker/execution safety checks still apply. Stop/invalidation
+rails remain advisory context for why an exit may be needed; they must not be
+used to size or block a close-only exit.
 
 DATA PROVENANCE POLICY (Phase 5C — source-of-truth hierarchy):
 
@@ -260,6 +271,7 @@ def invoke_hermes(prompt: str, model: str = "gpt-5.5",
     """
     request_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     request_id = str(uuid.uuid4())[:8]
+    resolved_model = f"{provider}/{model}"
 
     cmd = [
         "hermes", "chat",
@@ -301,6 +313,7 @@ def invoke_hermes(prompt: str, model: str = "gpt-5.5",
                     "hermes_command_or_adapter": "hermes_advisory.py -> hermes chat -q",
                     "hermes_provider": provider,
                     "hermes_model": model,
+                    "resolved_model": resolved_model,
                     "hermes_request_timestamp_utc": request_ts,
                     "hermes_response_timestamp_utc": response_ts,
                     "hermes_session_id": session_id or request_id,
@@ -319,6 +332,7 @@ def invoke_hermes(prompt: str, model: str = "gpt-5.5",
             "hermes_command_or_adapter": "hermes_advisory.py -> hermes chat -q",
             "hermes_provider": provider,
             "hermes_model": model,
+            "resolved_model": resolved_model,
             "hermes_request_timestamp_utc": request_ts,
             "hermes_response_timestamp_utc": response_ts,
             "hermes_session_id": session_id or request_id,
@@ -346,6 +360,7 @@ def invoke_hermes(prompt: str, model: str = "gpt-5.5",
                 "hermes_command_or_adapter": "hermes_advisory.py -> hermes chat -q",
                 "hermes_provider": provider,
                 "hermes_model": model,
+                "resolved_model": resolved_model,
                 "hermes_request_timestamp_utc": request_ts,
                 "hermes_response_timestamp_utc": response_ts,
                 "hermes_session_id": None,
@@ -366,6 +381,7 @@ def invoke_hermes(prompt: str, model: str = "gpt-5.5",
                 "hermes_command_or_adapter": "N/A — hermes CLI not found",
                 "hermes_provider": None,
                 "hermes_model": None,
+                "resolved_model": None,
                 "hermes_request_timestamp_utc": request_ts,
                 "hermes_response_timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "hermes_session_id": None,
@@ -473,12 +489,21 @@ def main():
     # Check for forbidden patterns
     violations = check_forbidden(raw)
 
+    # P3: Persist valid proposal to ~/.openclaw/proposals/
+    saved_path = None
+    if proposal is not None and isinstance(proposal, dict):
+        try:
+            saved_path = save_proposal_file(proposal)
+        except (ValueError, OSError) as e:
+            print(f"Warning: could not persist proposal: {e}", file=sys.stderr)
+
     output = {
         "proposal": proposal,
         "raw_response": raw,
         "violations": violations,
         "evidence": result["evidence"],
         "forbidden_action_detected": len(violations) > 0,
+        "proposal_path": str(saved_path) if saved_path else None,
     }
 
     # If forbidden patterns found, override source

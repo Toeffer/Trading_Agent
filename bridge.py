@@ -927,6 +927,7 @@ class PreflightRequest(BaseModel):
     limitPrice: float | None = None
     stopPrice: float | None = None
     mode: str | None = None
+    proposal_path: str | None = None  # P3: path to persisted proposal JSON
 
 
 @app.post("/order/preflight")
@@ -938,6 +939,7 @@ def order_preflight(req: PreflightRequest) -> Dict[str, Any]:
     Returns validation result only — no executable order payloads.
     """
     request_dict = req.model_dump(exclude_none=True)
+    proposal_path = request_dict.pop("proposal_path", None)
     result = run_preflight(
         request_dict,
         account_provider=_internal_fetch_account if is_connected() else None,
@@ -945,6 +947,7 @@ def order_preflight(req: PreflightRequest) -> Dict[str, Any]:
         bars_provider=_internal_fetch_bars if is_connected() else None,
         position_provider=_internal_fetch_positions if is_connected() else None,
         open_order_provider=open_orders_check,
+        proposal_path=proposal_path,
     )
     return result
 
@@ -1288,6 +1291,7 @@ class DryRunRequest(BaseModel):
     mode: str = "dry-run"
     dry_run_auto_approve: bool = True
     dry_run_fill_qty: int | None = None   # None = full fill
+    proposal_path: str | None = None  # P3: path to persisted proposal JSON
 
 
 @app.post("/order/dry-run")
@@ -1310,6 +1314,9 @@ def order_dry_run(req: DryRunRequest) -> Dict[str, Any]:
     request_dict = req.model_dump(exclude_none=True)
     fill_qty = req.dry_run_fill_qty if req.dry_run_fill_qty is not None else req.totalQuantity
     start_ts = _now_utc_iso()
+    proposal_path = request_dict.pop("proposal_path", None)
+    dry_run_auto = request_dict.pop("dry_run_auto_approve", True)
+    request_dict.pop("dry_run_fill_qty", None)
 
     if fill_qty < 0 or fill_qty > req.totalQuantity:
         return {"ok": False, "error": f"dry_run_fill_qty ({fill_qty}) must be 0..{req.totalQuantity}",
@@ -1324,6 +1331,7 @@ def order_dry_run(req: DryRunRequest) -> Dict[str, Any]:
             bars_provider=_internal_fetch_bars if is_connected() else None,
             position_provider=_internal_fetch_positions if is_connected() else None,
             open_order_provider=open_orders_check,
+            proposal_path=proposal_path,
         )
     except Exception as e:
         return {"ok": False, "step": "preflight", "error": str(e), "code": "PREFLIGHT_FAILED"}

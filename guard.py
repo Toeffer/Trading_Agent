@@ -1021,31 +1021,113 @@ def gate_trades_per_day(guard_state: dict, rules: dict) -> tuple:
     return (True, f"Trades today: {current}/{max_trades}", {"daily_trade_count": current, "max_trades_per_day": max_trades})
 
 
-def gate_loss_halts(guard_state: dict, current_nl_eur: float, rules: dict) -> tuple:
-    """Gate E — Daily and weekly loss halts."""
-    if guard_state.get("daily_halt_active", False):
-        return (False, "Daily loss halt active. Entries frozen for remainder of day.", {"halt_type": "daily", "halt_active": True})
-    if guard_state.get("weekly_halt_active", False):
-        return (False, "Weekly loss halt active. Entries frozen until manual review.", {"halt_type": "weekly", "halt_active": True})
+def gate_loss_halts(
+    guard_state: dict,
+    current_nl_eur: float,
+    rules: dict,
+    *,
+    action: str = "BUY",
+    symbol: str | None = None,
+    proposed_shares: int = 0,
+    position_provider=None,
+) -> tuple:
+    """Gate E — Daily and weekly loss halts.
+
+    P2b: Close-only SELL exits that reduce or flatten an existing long
+    position are exempt from loss halts.  The exemption is narrow:
+    - BUY / new exposure during a loss halt → blocked (no change).
+    - SELL that would open or increase short exposure → blocked.
+    - SELL quantity ≤ confirmed existing long position → may pass.
+    - If position cannot be confirmed → fail closed.
+    """
+    # Determine whether a loss halt is active or would be triggered
+    halt_active = guard_state.get("daily_halt_active", False) or guard_state.get("weekly_halt_active", False)
     day_start = guard_state.get("day_start_nl_eur")
     week_start = guard_state.get("week_start_nl_eur")
     details = {"daily_halt_triggered": False, "weekly_halt_triggered": False}
     reason_parts = []
+
     if day_start and day_start > 0:
         daily_loss_pct = (day_start - current_nl_eur) / day_start * 100
         daily_threshold = rules["loss_halts"]["daily"]["value"]
         if daily_loss_pct >= daily_threshold:
             details["daily_halt_triggered"] = True
             reason_parts.append(f"Portfolio down {daily_loss_pct:.2f}% from day-start (threshold {daily_threshold}%)")
+            halt_active = True
+
     if week_start and week_start > 0:
         weekly_loss_pct = (week_start - current_nl_eur) / week_start * 100
         weekly_threshold = rules["loss_halts"]["weekly"]["value"]
         if weekly_loss_pct >= weekly_threshold:
             details["weekly_halt_triggered"] = True
             reason_parts.append(f"Portfolio down {weekly_loss_pct:.2f}% from week-start (threshold {weekly_threshold}%)")
-    if details["daily_halt_triggered"] or details["weekly_halt_triggered"]:
-        return (False, "; ".join(reason_parts), {**details, "halt_active": False})
-    return (True, "No loss halt triggered", details)
+            halt_active = True
+
+    if not halt_active:
+        return (True, "No loss halt triggered", details)
+
+    # ── P2b: close-only SELL exemption ────────────────────────────────
+    if action == "SELL":
+        if not symbol or proposed_shares <= 0:
+            # Cannot validate without symbol / positive quantity
+            return (
+                False,
+                f"Loss halt active, SELL cannot be validated: "
+                + ("; ".join(reason_parts) if reason_parts else "halt active"),
+                {**details, "halt_active": halt_active, "p2b_note": "sell_no_symbol_or_qty"},
+            )
+
+        # Confirm existing position
+        pos = _get_existing_position(symbol, position_provider)
+        existing_qty = pos.get("qty", 0)
+        pos_source = pos.get("source", "none")
+
+        if pos_source == "none" or existing_qty <= 0:
+            # Cannot confirm a long position → fail closed
+            return (
+                False,
+                f"Loss halt active, existing position unconfirmed for {symbol}: "
+                + ("; ".join(reason_parts) if reason_parts else "halt active"),
+                {**details, "halt_active": halt_active,
+                 "p2b_note": "position_unconfirmed",
+                 "existing_position": existing_qty,
+                 "position_source": pos_source},
+            )
+
+        if proposed_shares > existing_qty:
+            # SELL exceeds existing long → could open short → blocked
+            return (
+                False,
+                f"Loss halt active, SELL {proposed_shares} > existing {existing_qty} {symbol}: "
+                + ("; ".join(reason_parts) if reason_parts else "halt active"),
+                {**details, "halt_active": halt_active,
+                 "p2b_note": "oversize_sell_blocked",
+                 "existing_position": existing_qty,
+                 "position_source": pos_source},
+            )
+
+        # Close-only SELL exemption: confirmed position, quantity ≤ existing
+        return (
+            True,
+            f"Loss halt overridden for close-only SELL {proposed_shares} {symbol} "
+            f"(existing: {existing_qty}, {pos_source}): "
+            + ("; ".join(reason_parts) if reason_parts else "halt active"),
+            {**details, "halt_active": halt_active,
+             "p2b_exempt": True,
+             "p2b_note": "close_only_sell_exempt",
+             "existing_position": existing_qty,
+             "position_source": pos_source},
+        )
+
+    # BUY (or unknown action): loss halt blocks entries
+    if guard_state.get("daily_halt_active", False):
+        return (False, "Daily loss halt active. Entries frozen for remainder of day.",
+                {"halt_type": "daily", "halt_active": True})
+    if guard_state.get("weekly_halt_active", False):
+        return (False, "Weekly loss halt active. Entries frozen until manual review.",
+                {"halt_type": "weekly", "halt_active": True})
+    # Threshold-based halt (BUY side)
+    return (False, "; ".join(reason_parts), {**details, "halt_active": True})
 
 
 def gate_exposure(
@@ -1234,11 +1316,318 @@ def gate_close_only(
     )
 
 
+# --- Phase 3 (P3): Gate H — Proposal Discipline ---
+
+PROPOSALS_PATH = Path(os.environ.get(
+    "IBKR_PROPOSALS_PATH",
+    str(Path.home() / ".openclaw" / "proposals")
+))
+
+# ── Common mandatory fields (both BUY and SELL) ────────────────────────
+
+# String fields required for every proposal regardless of side
+_MANDATORY_PROPOSAL_STRING_FIELDS_COMMON = frozenset({
+    "symbol",
+    "side",
+    "reason_to_trade",
+    "reason_not_to_trade",
+    "daily_drawdown_status",
+    "weekly_drawdown_status",
+    "preflight_command",
+})
+
+# Numeric fields required for every proposal
+_MANDATORY_PROPOSAL_NUMERIC_FIELDS_COMMON = frozenset({
+    "quantity",
+})
+
+# Boolean fields required for every proposal
+_MANDATORY_PROPOSAL_BOOL_FIELDS = frozenset({
+    "awaiting_chris_approval",
+    "advisory_only",
+})
+
+# ── BUY / new-entry mandatory fields ────────────────────────────────────
+
+_MANDATORY_BUY_STRING_FIELDS = frozenset({
+    "entry_reference",
+    "stop_loss_invalidation",
+})
+
+_MANDATORY_BUY_NUMERIC_FIELDS = frozenset({
+    "max_loss_eur",
+    "max_loss_pct",
+    "position_notional_eur",
+    "position_notional_pct",
+    "portfolio_exposure_after_pct",
+})
+
+# Minimum position_sizing sub-fields required for a valid BUY proposal
+_MANDATORY_POSITION_SIZING_FIELDS = frozenset({
+    "method",
+    "stop_price",
+    "final_shares",
+})
+
+# ── SELL / close-only EXIT mandatory fields ─────────────────────────────
+
+_MANDATORY_SELL_STRING_FIELDS = frozenset({
+    "entry_reference",  # serves as exit reference / exit rationale
+})
+
+_MANDATORY_SELL_NUMERIC_FIELDS: frozenset = frozenset()  # no extra numerics for EXIT
+
+# ── Legacy alias (used by tests) ────────────────────────────────────────
+_MANDATORY_PROPOSAL_STRING_FIELDS = (
+    _MANDATORY_PROPOSAL_STRING_FIELDS_COMMON
+    | _MANDATORY_BUY_STRING_FIELDS
+    | _MANDATORY_SELL_STRING_FIELDS
+)
+_MANDATORY_PROPOSAL_NUMERIC_FIELDS = (
+    _MANDATORY_PROPOSAL_NUMERIC_FIELDS_COMMON
+    | _MANDATORY_BUY_NUMERIC_FIELDS
+    | _MANDATORY_SELL_NUMERIC_FIELDS
+)
+
+
+def save_proposal_file(proposal: dict, proposal_id: str | None = None) -> Path:
+    """Persist a proposal dict to ~/.openclaw/proposals/ as a JSON file.
+
+    Creates the directory if it does not exist. The file is named
+    ``{proposal_id}.json`` or, when proposal_id is None,
+    ``{timestamp}_{symbol}.json``.
+
+    Args:
+        proposal: Proposal dict (must contain at least ``symbol``).
+        proposal_id: Optional stable identifier; auto-generated when None.
+
+    Returns:
+        Path to the written file.
+
+    Raises:
+        ValueError: proposal is not a dict or missing ``symbol``.
+        OSError: directory creation or file write fails.
+    """
+    if not isinstance(proposal, dict):
+        raise ValueError(f"proposal must be a dict, got {type(proposal).__name__}")
+    symbol = (proposal.get("symbol") or "unknown").upper()
+    if proposal_id is None:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        proposal_id = f"{ts}_{symbol}"
+
+    PROPOSALS_PATH.mkdir(parents=True, exist_ok=True)
+    filepath = PROPOSALS_PATH / f"{proposal_id}.json"
+
+    payload = {
+        "proposal_id": proposal_id,
+        "saved_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        **proposal,
+    }
+
+    tmp = filepath.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, filepath)
+
+    return filepath
+
+
+def gate_proposal_discipline(
+    proposal_path: str | Path | None = None,
+) -> tuple:
+    """Gate H — Proposal discipline validation.
+
+    Validates that a trade proposal file exists, is well-formed JSON,
+    and contains all mandatory fields. Fails closed on missing,
+    incomplete, or malformed proposals — no silent defaults, no
+    phantom proposals.
+
+    Args:
+        proposal_path: Path to a proposal JSON file.
+            If None, the gate fails closed (proposal required).
+
+    Returns:
+        (pass: bool, reason: str, details: dict)
+    """
+    if proposal_path is None:
+        return (
+            False,
+            "No proposal file provided. Every trade requires a persisted "
+            "proposal under ~/.openclaw/proposals/.",
+            {"proposal_path": None, "error": "missing_proposal"},
+        )
+
+    path = Path(proposal_path)
+
+    # Existence
+    if not path.exists():
+        return (
+            False,
+            f"Proposal file not found: {path}",
+            {"proposal_path": str(path), "error": "file_not_found"},
+        )
+
+    # Parse
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            proposal = json.load(f)
+    except json.JSONDecodeError as e:
+        return (
+            False,
+            f"Malformed proposal JSON in {path.name}: {e}",
+            {"proposal_path": str(path), "error": "malformed_json", "parse_error": str(e)},
+        )
+    except OSError as e:
+        return (
+            False,
+            f"Cannot read proposal file {path}: {e}",
+            {"proposal_path": str(path), "error": "read_error", "os_error": str(e)},
+        )
+
+    # Type
+    if not isinstance(proposal, dict):
+        return (
+            False,
+            f"Proposal must be a JSON object, got {type(proposal).__name__}",
+            {"proposal_path": str(path), "error": "not_a_dict"},
+        )
+
+    # Determine side: BUY or SELL dictates which fields are mandatory.
+    # Default to BUY for field-check purposes when side is missing —
+    # the missing "side" will be caught by the common string-field check below.
+    side_raw = proposal.get("side", "")
+    side = side_raw.upper().strip() if isinstance(side_raw, str) else ""
+    # Use BUY as the template for checking when side is indeterminate;
+    # the side field itself will appear in missing_string_fields if absent.
+    is_exit_hint = (side == "SELL")
+
+    # Build the effective mandatory field sets
+    effective_string_fields = (
+        _MANDATORY_PROPOSAL_STRING_FIELDS_COMMON
+        | (_MANDATORY_SELL_STRING_FIELDS if is_exit_hint else _MANDATORY_BUY_STRING_FIELDS)
+    )
+    effective_numeric_fields = (
+        _MANDATORY_PROPOSAL_NUMERIC_FIELDS_COMMON
+        | (_MANDATORY_SELL_NUMERIC_FIELDS if is_exit_hint else _MANDATORY_BUY_NUMERIC_FIELDS)
+    )
+
+    # ── Phase 1: common mandatory fields (apply to both BUY and SELL) ──
+    missing_strings = []
+    for field in sorted(_MANDATORY_PROPOSAL_STRING_FIELDS_COMMON):
+        value = proposal.get(field)
+        if not isinstance(value, str) or not value.strip():
+            missing_strings.append(field)
+
+    missing_numerics = []
+    for field in sorted(_MANDATORY_PROPOSAL_NUMERIC_FIELDS_COMMON):
+        value = proposal.get(field)
+        if not isinstance(value, (int, float)):
+            missing_numerics.append(field)
+
+    missing_bools = []
+    for field in sorted(_MANDATORY_PROPOSAL_BOOL_FIELDS):
+        value = proposal.get(field)
+        if not isinstance(value, bool):
+            missing_bools.append(field)
+
+    # If common fields are missing, fail early (don't evaluate side-specific)
+    if missing_strings or missing_numerics or missing_bools:
+        all_missing = missing_strings + missing_numerics + missing_bools
+        return (
+            False,
+            f"Incomplete proposal: {len(all_missing)} missing/invalid field(s): "
+            f"{', '.join(all_missing[:8])}"
+            + (f" ... +{len(all_missing) - 8} more" if len(all_missing) > 8 else ""),
+            {
+                "proposal_path": str(path),
+                "error": "incomplete_proposal",
+                "side": side or None,
+                "missing_string_fields": missing_strings,
+                "missing_numeric_fields": missing_numerics,
+                "missing_bool_fields": missing_bools,
+                "total_missing": len(all_missing),
+            },
+        )
+
+    # ── Phase 2: side validity ─────────────────────────────────────────
+    if side not in ("BUY", "SELL"):
+        return (
+            False,
+            f"Proposal side must be BUY or SELL, got {side!r}",
+            {"proposal_path": str(path), "error": "invalid_side", "side": side},
+        )
+
+    is_exit = (side == "SELL")
+
+    # ── Phase 3: side-specific mandatory fields ────────────────────────
+    side_strings = []
+    side_numerics = []
+    side_sizing = []
+
+    if is_exit:
+        # SELL: require entry_reference as exit rationale
+        for field in sorted(_MANDATORY_SELL_STRING_FIELDS):
+            value = proposal.get(field)
+            if not isinstance(value, str) or not value.strip():
+                side_strings.append(field)
+        # No extra numerics or position_sizing for EXIT
+    else:
+        # BUY: require entry_reference, stop_loss_invalidation, position_sizing, etc.
+        for field in sorted(_MANDATORY_BUY_STRING_FIELDS):
+            value = proposal.get(field)
+            if not isinstance(value, str) or not value.strip():
+                side_strings.append(field)
+        for field in sorted(_MANDATORY_BUY_NUMERIC_FIELDS):
+            value = proposal.get(field)
+            if not isinstance(value, (int, float)):
+                side_numerics.append(field)
+        pos_sizing = proposal.get("position_sizing")
+        if isinstance(pos_sizing, dict):
+            for field in sorted(_MANDATORY_POSITION_SIZING_FIELDS):
+                if field not in pos_sizing or pos_sizing[field] is None:
+                    side_sizing.append(f"position_sizing.{field}")
+        else:
+            side_sizing.append("position_sizing (missing or not an object)")
+
+    all_missing = side_strings + side_numerics + side_sizing
+    if all_missing:
+        return (
+            False,
+            f"Incomplete proposal ({side}): {len(all_missing)} missing/invalid field(s): "
+            f"{', '.join(all_missing[:8])}"
+            + (f" ... +{len(all_missing) - 8} more" if len(all_missing) > 8 else ""),
+            {
+                "proposal_path": str(path),
+                "error": "incomplete_proposal",
+                "side": side,
+                "missing_string_fields": side_strings,
+                "missing_numeric_fields": side_numerics,
+                "missing_sizing_fields": side_sizing,
+                "total_missing": len(all_missing),
+            },
+        )
+
+    return (
+        True,
+        f"Proposal validated ({side}): {path.name}",
+        {
+            "proposal_path": str(path),
+            "proposal_id": proposal.get("proposal_id"),
+            "symbol": proposal.get("symbol"),
+            "side": side,
+            "quantity": proposal.get("quantity"),
+        },
+    )
+
+
 def gate_open_orders(
     symbol: str,
     open_order_provider=None,
 ) -> tuple:
-    """Gate H — Open order conflict check.
+    """Open order conflict check.
 
     For SELL close-only preflight only. Rejects if any unresolved
     open/pending order exists for the same symbol.
@@ -1513,14 +1902,15 @@ def run_preflight(
     bars_provider=None,
     position_provider=None,
     open_order_provider=None,
+    proposal_path: str | Path | None = None,
 ) -> dict:
     """Run full preflight validation for a proposed order.
 
     Orchestrates: request validation, rules load, state load,
     account fetch, quote fetch, bars fetch, stop calc,
-    gates A-G, share sizing, event logging.
+    gates A-H, share sizing, event logging.
 
-    For SELL (close-only): gates A, D, E, G run. Gates B, C, F skipped
+    For SELL (close-only): gates A, D, E, G, H run. Gates B, C, F skipped
     (notional/risk/exposure not applicable to closing positions).
 
     Args:
@@ -1530,6 +1920,9 @@ def run_preflight(
         bars_provider: Optional callable(symbol) -> list for bar data.
         position_provider: Optional callable() -> list of position dicts.
             Required for SELL preflight to verify existing position.
+        proposal_path: Optional path to a persisted proposal JSON file.
+            Gate H validates this file exists and is well-formed.
+            When None, Gate H fails closed (proposal required).
 
     Returns:
         Validation result dict. Never returns executable order payloads.
@@ -1676,6 +2069,12 @@ def run_preflight(
     if not ok:
         all_pass = False
 
+    # Gate H \u2014 proposal discipline (both BUY and SELL)
+    ok, reason, details = gate_proposal_discipline(proposal_path)
+    gates.append({"gate": "proposal", "passed": ok, "reason": reason, "details": details})
+    if not ok:
+        all_pass = False
+
     if is_close:
         # SELL (close-only): skip B (notional), C (risk), F (exposure)
         # Run D (trades/day), E (loss halts), G (close-only position gate)
@@ -1686,19 +2085,21 @@ def run_preflight(
         if not ok:
             all_pass = False
 
-        # Gate E \u2014 loss halts
-        ok, reason, details = gate_loss_halts(state, net_liquidation_eur, rules)
+        # Gate E — loss halts (P2b: close-only SELL exempt)
+        ok, reason, details = gate_loss_halts(
+            state, net_liquidation_eur, rules,
+            action=action, symbol=symbol,
+            proposed_shares=proposed_shares,
+            position_provider=position_provider,
+        )
         gates.append({"gate": "loss_halts", "passed": ok, "reason": reason, "details": details})
         if not ok:
             all_pass = False
-
-        # Gate G \u2014 close-only position validation
-        ok, reason, details = gate_close_only(symbol, proposed_shares, position_provider)
         gates.append({"gate": "close_only", "passed": ok, "reason": reason, "details": details})
         if not ok:
             all_pass = False
 
-        # Gate H \u2014 open order conflict check (close-only)
+        # Open order conflict check (close-only)
         ok, reason, details = gate_open_orders(symbol, open_order_provider)
         gates.append({"gate": "open_orders", "passed": ok, "reason": reason, "details": details})
         if not ok:

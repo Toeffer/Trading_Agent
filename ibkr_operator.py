@@ -2097,6 +2097,7 @@ def _run_hermes_canary() -> dict:
                 "hermes_command_or_adapter": "ibkr-operator hermes-proposal -> hermes chat -q",
                 "hermes_provider": "openai-codex",
                 "hermes_model": "gpt-5.5",
+                "resolved_model": "openai-codex/gpt-5.5",
                 "hermes_request_timestamp_utc": request_ts,
                 "hermes_response_timestamp_utc": response_ts,
                 "hermes_session_id": session_id,
@@ -2162,6 +2163,12 @@ def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
         "- No trade without stop/invalidation",
         "- No trade if drift, open order, or live requires_action alert",
         "- No trade if daily loss >= 1% or weekly >= 3% Net Liq",
+        "",
+        "CLOSE-ONLY SELL NOTE:",
+        "Close-only SELLs (reducing/exiting existing long positions) are exempt from",
+        "position sizing, notional caps, exposure limits, risk-per-trade, and",
+        "stop/invalidation rails. Trade count limits, loss halt gates, and open order",
+        "conflict checks still apply.",
         "",
         "HUMAN CONFIRMATION:",
         "- Every trade > EUR 0 requires Chris approval",
@@ -2236,6 +2243,7 @@ def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
             "hermes_command_or_adapter": "ibkr-operator hermes-proposal -> hermes chat -q",
             "hermes_provider": "openai-codex",
             "hermes_model": "gpt-5.5",
+            "resolved_model": "openai-codex/gpt-5.5",
             "hermes_request_timestamp_utc": request_ts,
             "hermes_response_timestamp_utc": response_ts,
             "hermes_session_id": session_id,
@@ -2259,11 +2267,13 @@ def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
         return {"command": "hermes-proposal", "ok": False,
                 "error": "hermes CLI not found. Install hermes or check PATH.",
                 "evidence": {"hermes_invoked": False,
+                            "resolved_model": None,
                             "final_proposal_source": "unknown"}}
     except subprocess.TimeoutExpired:
         return {"command": "hermes-proposal", "ok": False,
                 "error": "Hermes timed out after 180s",
                 "evidence": {"hermes_invoked": True,
+                            "resolved_model": "openai-codex/gpt-5.5",
                             "final_proposal_source": "unknown"}}
 
 
@@ -2283,6 +2293,7 @@ def _print_hermes_result(result: dict) -> None:
     print(f"  hermes_invoked: {ev.get('hermes_invoked', '?')}")
     print(f"  hermes_provider: {ev.get('hermes_provider', '?')}")
     print(f"  hermes_model: {ev.get('hermes_model', '?')}")
+    print(f"  resolved_model: {ev.get('resolved_model', '?')}")
     print(f"  hermes_session_id: {ev.get('hermes_session_id', '?')}")
     print(f"  request: {ev.get('hermes_request_timestamp_utc', '?')}")
     print(f"  response: {ev.get('hermes_response_timestamp_utc', '?')}")

@@ -1,0 +1,55 @@
+[Unit]
+Description=IBKR OpenClaw Bridge (paper trading, read-only by default)
+Documentation=https://github.com/openclaw/ibkr-bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris/agents/ibkr-bridge
+EnvironmentFile=/home/chris/agents/ibkr-bridge/.env
+ExecStart=/home/chris/agents/ibkr-bridge/.venv/bin/python3 -m uvicorn bridge:app --host 127.0.0.1 --port 8790
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# ------------------------------------------------------------------ #
+# Hardening — Step 7 OS boundary / process hardening
+# ------------------------------------------------------------------ #
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=false
+ReadWritePaths=/home/chris/.openclaw /tmp
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# Bridge does NOT access the H1 token file.
+# Token verification uses the env var H1_APPROVAL_TOKEN_HASH only.
+
+# Logging — journald only (not dual-logged to /tmp/bridge.log)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ibkr-bridge
+
+# Safety invariants
+# IBKR_ALLOW_ORDERS=false — enforced by .env
+# rules.enforced=false — enforced by paper-trading-rules.yaml
+# Order endpoints (approve, submit, connect) are disabled by default
+
+[Install]
+WantedBy=multi-user.target

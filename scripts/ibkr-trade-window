@@ -42,6 +42,7 @@ submit() {
 relock() {
   cd /home/chris/agents/ibkr-bridge
 
+  # 1. Reset safety flags
   sed -i 's/^IBKR_ALLOW_ORDERS=.*/IBKR_ALLOW_ORDERS=false/' .env
 
   python3 - <<'PY'
@@ -52,14 +53,20 @@ s = s.replace("enforced: true", "enforced: false", 1)
 p.write_text(s)
 PY
 
-  pkill -9 -f "uvicorn bridge:app" || true
-  pkill -9 -f "python3 -m uvicorn bridge:app" || true
-  sleep 2
-  rm -rf /tmp/bridge.log
-  install -o chris -g chris -m 664 /dev/null /tmp/bridge.log
-  runuser -u chris -- bash -lc 'cd /home/chris/agents/ibkr-bridge && nohup .venv/bin/python3 -m uvicorn bridge:app --host 127.0.0.1 --port 8790 > /tmp/bridge.log 2>&1 &'
-  sleep 5
+  # 2. Restart via systemd (replaces ad-hoc nohup + pkill)
+  systemctl restart ibkr-bridge.service
+  sleep 3
+
+  # 3. Verify bridge is healthy and read-only
+  echo "=== Bridge health after relock ==="
   curl -s "$BASE/health" | python3 -m json.tool
+
+  # 4. Confirm no duplicate uvicorn processes
+  local count
+  count=$(pgrep -c -f "uvicorn bridge:app" || true)
+  if [[ "$count" -gt 1 ]]; then
+    echo "WARNING: $count uvicorn bridge processes detected (expected 1)" >&2
+  fi
 }
 
 cmd="${1:-}"

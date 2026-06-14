@@ -203,9 +203,9 @@ def main():
         check("H1_TOKEN_REQUIRED" in bridge_content,
               "H1_TOKEN_REQUIRED error code defined for submit")
 
-        # T3.7: h1_authorize/h1_deauthorize imported
-        check("h1_authorize" in bridge_content and "h1_deauthorize" in bridge_content,
-              "h1_authorize/h1_deauthorize imported in bridge.py")
+        # T3.7: h1_authorized_scope context manager imported
+        check("h1_authorized_scope" in bridge_content,
+              "h1_authorized_scope context manager imported in bridge.py")
     else:
         check(False, "bridge.py not found")
 

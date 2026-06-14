@@ -13,13 +13,16 @@ EnvironmentFile=/home/chris/agents/ibkr-bridge/.env
 ExecStart=/home/chris/agents/ibkr-bridge/.venv/bin/python3 -m uvicorn bridge:app --host 127.0.0.1 --port 8790
 Restart=on-failure
 RestartSec=5
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=10
 
 # ------------------------------------------------------------------ #
 # Hardening — Step 7 OS boundary / process hardening
 # ------------------------------------------------------------------ #
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectHome=read-only
+ProtectHome=false
 ReadWritePaths=/home/chris/.openclaw /tmp
 ProtectSystem=strict
 ProtectKernelTunables=true

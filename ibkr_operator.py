@@ -2161,13 +2161,14 @@ def _run_heartbeat() -> dict:
     live_alert_count = len(live_alerts) if isinstance(live_alerts, list) else 0
     reconciliation_passed = recon.get("passed", None) if isinstance(recon, dict) else None
 
-    all_ok = len(endpoint_failures) == 0
+    all_endpoints_ok = len(endpoint_failures) == 0
 
     artifact = {
         "advisory": "Read-only heartbeat. No orders. No mutations. No H1 token.",
         "timestamp": ts_str,
         "bridge_url": BRIDGE_URL,
-        "ok": all_ok,
+        "all_endpoints_ok": all_endpoints_ok,
+        "endpoint_failures": endpoint_failures,
         "connected": connected,
         "read_only": read_only,
         "allow_orders": allow_orders,
@@ -2178,20 +2179,30 @@ def _run_heartbeat() -> dict:
         "reconciliation_passed": reconciliation_passed,
         "endpoints_ok": ok_count,
         "endpoints_total": len(_HEARTBEAT_ENDPOINTS),
-        "endpoint_failures": endpoint_failures,
         "endpoint_results": results,
     }
 
-    # Write artifact
-    HEARTBEAT_DIR.mkdir(parents=True, exist_ok=True)
-    artifact_path = HEARTBEAT_DIR / f"heartbeat-{ts_file}.json"
-    tmp = artifact_path.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(artifact, f, indent=2, default=str, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, artifact_path)
-    artifact["_artifact_path"] = str(artifact_path)
+    # Write artifact.  Execution success (ok) is determined by whether we
+    # successfully wrote the artifact, not by whether every endpoint was
+    # healthy.  Endpoint failures are still recorded in the JSON.
+    execution_ok = False
+    artifact_path = None
+    try:
+        HEARTBEAT_DIR.mkdir(parents=True, exist_ok=True)
+        artifact_path = HEARTBEAT_DIR / f"heartbeat-{ts_file}.json"
+        tmp = artifact_path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(artifact, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, artifact_path)
+        execution_ok = True
+    except OSError as e:
+        artifact["_write_error"] = str(e)
+
+    artifact["ok"] = execution_ok
+    if artifact_path is not None:
+        artifact["_artifact_path"] = str(artifact_path)
 
     return artifact
 
@@ -3356,8 +3367,15 @@ def main() -> None:
         if args.json:
             print(json.dumps(result, indent=2, default=str, ensure_ascii=False))
         elif not args.quiet:
-            ok_str = f"{GREEN}OK{RESET}" if result["ok"] else f"{RED}DEGRADED{RESET}"
-            print(f"{BOLD}IBKR Bridge Heartbeat{RESET}  [{ok_str}]")
+            endpoints_healthy = result.get("all_endpoints_ok", result.get("ok", False))
+            artifact_written = result.get("ok", False)
+            if not artifact_written:
+                status_str = f"{RED}FAIL{RESET}"
+            elif endpoints_healthy:
+                status_str = f"{GREEN}OK{RESET}"
+            else:
+                status_str = f"{RED}DEGRADED{RESET}"
+            print(f"{BOLD}IBKR Bridge Heartbeat{RESET}  [{status_str}]")
             print(f"  Timestamp:      {result['timestamp']}")
             print(f"  Bridge:          {result['bridge_url']}")
             print(f"  Connected:       {result['connected']}")

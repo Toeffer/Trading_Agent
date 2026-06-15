@@ -49,6 +49,7 @@ GUARD_STATE_PATH = Path(os.environ.get(
 # All mutations require H1 token authorization through the bridge.
 
 import contextvars
+from contextlib import contextmanager
 
 PROTECTED_PATHS: set[Path] = set()
 
@@ -115,6 +116,35 @@ def h1_authorize() -> None:
 def h1_deauthorize() -> None:
     """Disable H1-authorized mode after request completes."""
     _h1_authorized.set(False)
+
+
+@contextmanager
+def h1_authorized_scope():
+    """Context manager for H1-authorized critical section.
+
+    Sets authorization only for the narrow critical section.
+    Always resets in finally — no exception path can leak
+    authorization across requests/tasks.
+
+    Usage:
+        with h1_authorized_scope():
+            save_guard_state_atomic(data)
+
+    Replaces the raw h1_authorize()/h1_deauthorize() pair
+    which is error-prone (forgotten finally, misplaced
+    deauthorize before critical section completes).
+
+    Safety invariants:
+    - Never stores authorization globally (ContextVar only)
+    - Never uses mutable global bool for H1 authorization
+    - Authorization is request/task-local
+    - Reset guaranteed in finally (even on exception)
+    """
+    h1_authorize()
+    try:
+        yield
+    finally:
+        h1_deauthorize()
 
 
 def _is_protected_path(target: Path) -> bool:

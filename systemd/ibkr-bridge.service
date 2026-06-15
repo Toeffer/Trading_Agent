@@ -12,11 +12,14 @@ WorkingDirectory=/home/chris/agents/ibkr-bridge
 EnvironmentFile=/home/chris/agents/ibkr-bridge/.env
 ExecStart=/home/chris/agents/ibkr-bridge/.venv/bin/python3 -m uvicorn bridge:app --host 127.0.0.1 --port 8790
 Restart=on-failure
-RestartSec=5
+RestartSec=30
 KillMode=control-group
 KillSignal=SIGTERM
 TimeoutStopSec=10
 
+MemoryMax=2000M
+OOMPolicy=stop
+MemorySwapMax=0
 # ------------------------------------------------------------------ #
 # Hardening — Step 7 OS boundary / process hardening
 # ------------------------------------------------------------------ #

@@ -954,7 +954,7 @@ def order_preflight(req: PreflightRequest) -> Dict[str, Any]:
 
 # --- Approval Endpoint (Phase 2C Step 3) ---
 
-from guard import approve_approval, deny_approval, get_active_approval, load_rules, _check_ibkr_allowed, _check_enforced, append_guard_event, submit_order, mark_approval_submitted, save_guard_state_atomic, load_guard_state, _now_utc_iso, poll_order_status, read_guard_events, h1_authorize, h1_deauthorize
+from guard import approve_approval, deny_approval, get_active_approval, load_rules, _check_ibkr_allowed, _check_enforced, append_guard_event, submit_order, mark_approval_submitted, save_guard_state_atomic, load_guard_state, _now_utc_iso, poll_order_status, read_guard_events, h1_authorized_scope
 
 
 class ApproveRequest(BaseModel):
@@ -1003,8 +1003,7 @@ def order_approve(
 
     # 3. Approval exists and is pending — authorize mutations, validate
     #    decision, and rule the approval.
-    h1_authorize()
-    try:
+    with h1_authorized_scope():
         decision = req.decision.lower().strip()
 
         if decision not in ("approve", "deny"):
@@ -1033,8 +1032,6 @@ def order_approve(
             result.pop(f, None)
 
         return result
-    finally:
-        h1_deauthorize()
 
 
 class SubmitRequest(BaseModel):
@@ -1218,8 +1215,7 @@ def order_submit(
 
     # 3. Both kill switches pass — delegate to guard.submit_order
     # Phase H1: Authorize guard mutations for this request
-    h1_authorize()
-    try:
+    with h1_authorized_scope():
         result = submit_order(
             req.approval_id,
             order_provider=_internal_place_order,
@@ -1228,8 +1224,6 @@ def order_submit(
             quote_provider=_internal_fetch_quote if is_connected() else None,
             bars_provider=_internal_fetch_bars if is_connected() else None,
         )
-    finally:
-        h1_deauthorize()
     return result
 
 

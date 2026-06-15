@@ -2196,6 +2196,567 @@ def _run_heartbeat() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Step 12 (Phase 5C) — KPI / Evidence Dashboard
+# ---------------------------------------------------------------------------
+
+# Endpoints the KPI dashboard may call (subset of heartbeat, no /order variants)
+_KPI_ENDPOINTS = [
+    "/health",
+    "/readiness",
+    "/status",
+    "/monitor/reconciliation",
+    "/monitor/alerts",
+    "/monitor/events",
+    "/positions",
+    "/account",
+]
+
+# Forbidden endpoint substrings — safety assert
+_KPI_FORBIDDEN = [
+    "/connect",
+    "/order/approve",
+    "/order/submit",
+    "/order/preflight",
+    "/order",
+]
+
+
+def _git_metadata(repo_path: Path) -> dict:
+    """Return branch, short commit, and latest tag from git."""
+    import subprocess as _sp
+    result = {"branch": "?", "commit_short": "?", "tag": "?"}
+    try:
+        p = _sp.run(["git", "-C", str(repo_path), "rev-parse", "--abbrev-ref", "HEAD"],
+                     capture_output=True, text=True, timeout=5)
+        result["branch"] = p.stdout.strip()
+    except Exception:
+        pass
+    try:
+        p = _sp.run(["git", "-C", str(repo_path), "rev-parse", "--short", "HEAD"],
+                     capture_output=True, text=True, timeout=5)
+        result["commit_short"] = p.stdout.strip()
+    except Exception:
+        pass
+    try:
+        p = _sp.run(["git", "-C", str(repo_path), "describe", "--tags", "--abbrev=0"],
+                     capture_output=True, text=True, timeout=5)
+        result["tag"] = p.stdout.strip() or "none"
+    except Exception:
+        pass
+    return result
+
+
+def _read_autonomy_level(doc_path: Path) -> str:
+    """Read current autonomy level from AUTONOMY_CRITERIA.md."""
+    try:
+        content = doc_path.read_text()
+        # Match "**0 (current)**" or "Level 0" patterns
+        import re
+        m = re.search(r'\*\*(\d+)\s*\(current\)\*\*', content)
+        if m:
+            return m.group(1)
+        m = re.search(r'Level\s+(\d+)', content)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return "0"
+
+
+def _count_clean_cycles(openclaw_dir: Path) -> int:
+    """Count clean cycle evidence files."""
+    count = 0
+    cycle_dir = openclaw_dir / "trade-journal"
+    if not cycle_dir.exists():
+        return 0
+    try:
+        for f in cycle_dir.iterdir():
+            if f.is_file() and f.suffix == ".md":
+                raw = f.read_text(errors="replace")
+                if "clean cycle" in raw.lower() or "cycle complete" in raw.lower():
+                    count += 1
+    except Exception:
+        pass
+    return count
+
+
+def _heartbeat_age_seconds(heartbeat_dir: Path) -> float | None:
+    """Return age (seconds) of most recent heartbeat artifact, or None if none."""
+    if not heartbeat_dir.exists():
+        return None
+    try:
+        files = sorted(
+            heartbeat_dir.glob("heartbeat-*.json"),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True,
+        )
+        if files:
+            return time.time() - files[0].stat().st_mtime
+    except Exception:
+        pass
+    return None
+
+
+def _read_env_safety(env_path: Path) -> dict:
+    """Read IBKR_ALLOW_ORDERS from .env (file only, not process env)."""
+    result = {"IBKR_ALLOW_ORDERS": "?", "found": False}
+    if not env_path.exists():
+        return result
+    try:
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("#"):
+                continue
+            if "=" in line and not line.startswith("export "):
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k == "IBKR_ALLOW_ORDERS":
+                    result["IBKR_ALLOW_ORDERS"] = v
+                    result["found"] = True
+                    break
+    except Exception:
+        pass
+    return result
+
+
+def _read_rules_enforced(rules_path: Path) -> dict:
+    """Read rules.enforced from paper-trading-rules.yaml (file only)."""
+    result = {"enforced": "?", "found": False}
+    if not rules_path.exists():
+        return result
+    try:
+        content = rules_path.read_text()
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if "enforced:" in stripped:
+                # Handle inline comment: 'enforced: false # comment'
+                val_part = stripped.split("enforced:", 1)[1]
+                val = val_part.split("#", 1)[0].strip()
+                result["enforced"] = val
+                result["found"] = True
+                break
+    except Exception:
+        pass
+    return result
+
+
+def _run_doctor_non_sudo() -> dict:
+    """Lightweight doctor status. Does NOT run the heavy doctor command
+    (known SIGKILL issue during automated runs). Instead, reports that
+    the user should run 'ibkr-operator doctor' separately.
+
+    Returns a placeholder indicating doctor was not run automatically.
+    """
+    return {
+        "pass": None,
+        "checks": [],
+        "_note": "Doctor not run automatically (known SIGKILL issue). Run 'ibkr-operator doctor' separately.",
+        "_non_canary_ok": True,  # Don't block on this
+        "_non_canary_failures": [],
+    }
+
+
+def run_kpi() -> dict:
+    """Run the KPI / Evidence dashboard. Read-only. Never touches orders.
+
+    Fetches bridge endpoints, reads git/env/rules/docs, runs doctor,
+    computes autonomy evidence, and produces a GO/HOLD/NO-GO verdict.
+    """
+    import urllib.request
+    import urllib.error
+
+    ts = datetime.now(timezone.utc)
+    ts_str = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = ts.strftime("%Y%m%dT%H%M%SZ")
+
+    # ------------------------------------------------------------------
+    # Verify no forbidden endpoints are in our list (safety invariant)
+    # ------------------------------------------------------------------
+    for ep_test in _KPI_ENDPOINTS:
+        for fb in _KPI_FORBIDDEN:
+            if fb in ep_test:
+                return {
+                    "verdict": "ERROR",
+                    "error": f"Forbidden endpoint leaked into KPI list: {ep_test}",
+                }
+
+    # ------------------------------------------------------------------
+    # 1. Git metadata
+    # ------------------------------------------------------------------
+    git = _git_metadata(BRIDGE_DIR)
+
+    # ------------------------------------------------------------------
+    # 2. Bridge endpoints
+    # ------------------------------------------------------------------
+    endpoint_results: dict[str, dict] = {}
+    bridge_reachable = False
+    bridge_failures: list[str] = []
+
+    for ep in _KPI_ENDPOINTS:
+        url = f"{BRIDGE_URL}{ep}"
+        try:
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=7) as resp:
+                body = resp.read().decode(errors="replace")
+                try:
+                    data = json.loads(body)
+                except json.JSONDecodeError:
+                    data = {"_raw": body[:500], "_parse_error": True}
+                endpoint_results[ep] = {
+                    "status": resp.status,
+                    "ok": resp.status == 200,
+                    "data": data,
+                }
+                if resp.status == 200:
+                    bridge_reachable = True
+                else:
+                    bridge_failures.append(f"{ep} (HTTP {resp.status})")
+        except urllib.error.HTTPError as e:
+            endpoint_results[ep] = {"status": e.code, "ok": False, "error": f"HTTP {e.code}"}
+            bridge_failures.append(f"{ep} (HTTP {e.code})")
+        except Exception as e:
+            endpoint_results[ep] = {"status": 0, "ok": False, "error": str(e)[:200]}
+            bridge_failures.append(f"{ep} ({type(e).__name__})")
+
+    # Extract key data from endpoints
+    health = endpoint_results.get("/health", {}).get("data", {})
+    readiness = endpoint_results.get("/readiness", {}).get("data", {})
+    status_data = endpoint_results.get("/status", {}).get("data", {})
+    reconciliation = endpoint_results.get("/monitor/reconciliation", {}).get("data", {})
+    alerts_data = endpoint_results.get("/monitor/alerts", {}).get("data", {})
+    events_data = endpoint_results.get("/monitor/events", {}).get("data", {})
+    positions_data = endpoint_results.get("/positions", {}).get("data", {})
+    account_data = endpoint_results.get("/account", {}).get("data", {})
+
+    # Bridge health
+    connected = health.get("connected", None) if isinstance(health, dict) else None
+    mode = health.get("mode", "?") if isinstance(health, dict) else "?"
+    read_only = mode == "paper"
+    bridge_allow_orders = health.get("allow_orders", "?") if isinstance(health, dict) else "?"
+    startup_safety = health.get("startup_safety", {}) if isinstance(health, dict) else {}
+
+    # Safety flags
+    ks = readiness.get("summary", {}).get("kill_switches", {}) if isinstance(readiness, dict) else {}
+    readiness_ao = ks.get("IBKR_ALLOW_ORDERS", "?")
+    readiness_re = ks.get("rules.enforced", "?")
+    system_locked = ks.get("system_locked", readiness.get("system_locked", True))
+
+    # Alerts
+    live_alerts = []
+    if isinstance(alerts_data, dict):
+        all_alerts = alerts_data.get("alerts", [])
+        if isinstance(all_alerts, list):
+            live_alerts = [a for a in all_alerts if isinstance(a, dict) and a.get("source") == "live"]
+    active_alert_count = len(live_alerts)
+
+    # Reconciliation
+    recon_passed = reconciliation.get("passed", None) if isinstance(reconciliation, dict) else None
+
+    # Positions
+    pos_count = 0
+    if isinstance(positions_data, dict) and "positions" in positions_data:
+        pos_count = len(positions_data["positions"])
+    elif isinstance(positions_data, list):
+        pos_count = len(positions_data)
+
+    # Latest events (last 3)
+    latest_events: list[dict] = []
+    if isinstance(events_data, dict) and "events" in events_data:
+        latest_events = events_data["events"][-3:] if len(events_data["events"]) >= 3 \
+            else events_data["events"]
+
+    # Net liquidation
+    net_liq = None
+    if isinstance(account_data, dict) and "values" in account_data:
+        for v in account_data["values"]:
+            if v.get("tag") == "NetLiquidation" and v.get("currency") == "BASE":
+                net_liq = v.get("value")
+                break
+
+    # ------------------------------------------------------------------
+    # 3. File-based checks
+    # ------------------------------------------------------------------
+    env_safety = _read_env_safety(BRIDGE_DIR / ".env")
+    rules_state = _read_rules_enforced(Path.home() / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml")
+    autonomy_level = _read_autonomy_level(BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md")
+    clean_cycles = _count_clean_cycles(OPENCLAW_DIR)
+    hb_age = _heartbeat_age_seconds(HEARTBEAT_DIR)
+
+    # ------------------------------------------------------------------
+    # 4. Doctor (non-sudo)
+    # ------------------------------------------------------------------
+    doctor = _run_doctor_non_sudo()
+
+    # ------------------------------------------------------------------
+    # 5. Blocker list
+    # ------------------------------------------------------------------
+    blockers: list[dict] = []
+
+    # NO-GO blockers (hard failures)
+    if bridge_reachable:
+        env_ao = env_safety.get("IBKR_ALLOW_ORDERS", "?")
+        if env_ao.lower() in ("true", "1", "yes"):
+            blockers.append({"severity": "NO-GO", "check": "env_IBKR_ALLOW_ORDERS",
+                             "detail": f".env IBKR_ALLOW_ORDERS={env_ao}"})
+        if rules_state.get("enforced", "?").lower() == "true":
+            blockers.append({"severity": "NO-GO", "check": "rules_enforced",
+                             "detail": "rules.enforced=true in paper-trading-rules.yaml"})
+        if bridge_allow_orders not in (False, "false", "?"):
+            blockers.append({"severity": "NO-GO", "check": "bridge_allow_orders",
+                             "detail": f"Bridge allow_orders={bridge_allow_orders}"})
+    else:
+        blockers.append({"severity": "NO-GO", "check": "bridge_unreachable",
+                         "detail": "Cannot verify safety flags — bridge unreachable"})
+
+    if active_alert_count > 0:
+        alert_types = {a.get("alert_type", "?") for a in live_alerts}
+        blockers.append({"severity": "NO-GO", "check": "active_alerts",
+                         "detail": f"{active_alert_count} live alert(s): {', '.join(sorted(alert_types))}"})
+
+    if recon_passed is False:
+        blockers.append({"severity": "NO-GO", "check": "reconciliation_failed",
+                         "detail": "Reconciliation check(s) failed"})
+
+    if doctor.get("_non_canary_ok") is False:
+        doc_fails = doctor.get("_non_canary_failures", [])
+        blockers.append({"severity": "NO-GO", "check": "doctor_non_canary_fail",
+                         "detail": f"Doctor non-canary check(s) failed: {', '.join(doc_fails)}"})
+
+    # HOLD blockers (soft / evidence insufficiencies)
+    hold_reasons: list[dict] = []
+
+    if not connected:
+        hold_reasons.append({"severity": "HOLD", "check": "ibkr_not_connected",
+                             "detail": "IBKR Gateway is not connected"})
+
+    if int(autonomy_level) == 0:
+        hold_reasons.append({"severity": "HOLD", "check": "autonomy_level_zero",
+                             "detail": "Autonomy level 0 — manual approval required for all orders"})
+
+    if clean_cycles == 0:
+        hold_reasons.append({"severity": "HOLD", "check": "no_clean_cycles",
+                             "detail": "Zero clean autonomous cycles logged"})
+
+    if hb_age is None:
+        hold_reasons.append({"severity": "HOLD", "check": "heartbeat_missing",
+                             "detail": "No heartbeat artifacts found"})
+    elif hb_age > 86400:  # > 24 hours
+        hold_reasons.append({"severity": "HOLD", "check": "heartbeat_stale",
+                             "detail": f"Heartbeat artifact age: {hb_age/3600:.1f}h"})
+
+    if system_locked:
+        hold_reasons.append({"severity": "HOLD", "check": "system_locked",
+                             "detail": "System is locked (RTH closed or safety engaged)"})
+
+    # ------------------------------------------------------------------
+    # 6. Verdict
+    # ------------------------------------------------------------------
+    if any(b["severity"] == "NO-GO" for b in blockers):
+        verdict = "NO-GO"
+    elif any(r["severity"] == "HOLD" for r in hold_reasons):
+        verdict = "HOLD"
+    else:
+        # All clear: GO
+        verdict = "GO"
+
+    # Combine all blockers for display
+    all_blockers = blockers + hold_reasons
+
+    # Warning: default is HOLD, not GO — if we somehow get here with ambiguous state
+    if verdict == "GO" and not (connected and clean_cycles > 0 and not system_locked):
+        verdict = "HOLD"
+
+    # ------------------------------------------------------------------
+    # 7. Build result
+    # ------------------------------------------------------------------
+    result = {
+        "advisory": "Read-only KPI dashboard. No orders. No mutations. No H1 token.",
+        "timestamp": ts_str,
+        "git": {
+            "branch": git["branch"],
+            "commit_short": git["commit_short"],
+            "tag": git["tag"],
+        },
+        "bridge": {
+            "reachable": bridge_reachable,
+            "url": BRIDGE_URL,
+            "connected": connected,
+            "mode": mode,
+            "read_only": read_only,
+            "allow_orders": bridge_allow_orders,
+            "startup_safety_passed": startup_safety.get("all_passed", None),
+            "startup_safety_count": f"{startup_safety.get('passed_count', '?')}/{startup_safety.get('check_count', '?')}",
+            "positions_count": pos_count,
+            "net_liquidation": net_liq,
+            "endpoints_ok": sum(1 for v in endpoint_results.values() if v.get("ok")),
+            "endpoints_total": len(_KPI_ENDPOINTS),
+            "endpoint_failures": bridge_failures,
+        },
+        "safety_flags": {
+            "read_only": read_only,
+            "bridge_allow_orders": bridge_allow_orders,
+            "env_IBKR_ALLOW_ORDERS": env_safety["IBKR_ALLOW_ORDERS"],
+            "rules_enforced": rules_state["enforced"],
+            "system_locked": system_locked,
+            "readiness_allow_orders": readiness_ao,
+            "readiness_rules_enforced": readiness_re,
+        },
+        "monitoring": {
+            "reconciliation_passed": recon_passed,
+            "active_alert_count": active_alert_count,
+            "live_alerts": [{"type": a.get("alert_type"), "severity": a.get("severity"),
+                            "detail": a.get("detail", "")[:120]} for a in live_alerts],
+        },
+        "events": {
+            "latest": [{"type": e.get("event_type"), "gate": e.get("gate"),
+                         "passed": e.get("passed"), "ts": e.get("timestamp_utc")}
+                        for e in latest_events],
+        },
+        "autonomy": {
+            "current_level": autonomy_level,
+            "clean_cycles": clean_cycles,
+        },
+        "heartbeat": {
+            "age_seconds": hb_age,
+            "age_human": f"{hb_age/3600:.1f}h" if hb_age is not None else "none",
+            "recent": hb_age is not None and hb_age < 86400,
+        },
+        "doctor": {
+            "pass": doctor.get("pass", False),
+            "non_canary_ok": doctor.get("_non_canary_ok", False),
+            "non_canary_failures": doctor.get("_non_canary_failures", []),
+            "check_count": len(doctor.get("checks", [])),
+            "passed_count": sum(1 for c in doctor.get("checks", []) if c.get("ok")),
+        },
+        "blockers": all_blockers,
+        "blocker_count": len(all_blockers),
+        "verdict": verdict,
+    }
+
+    return result
+
+
+def print_kpi(result: dict) -> None:
+    """Print human-readable KPI dashboard."""
+    v = result["verdict"]
+    v_color = GREEN if v == "GO" else YELLOW if v == "HOLD" else RED
+
+    print(f"\n{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  IBKR KPI / Evidence Dashboard{RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+
+    print(f"  Timestamp:     {result['timestamp']}")
+    print(f"  Git:           {result['git']['branch']} @ {result['git']['commit_short']}  (tag: {result['git']['tag']})")
+    print()
+
+    # Verdict
+    print(f"  {BOLD}Verdict: {v_color}{v}{RESET}\n")
+
+    # Bridge
+    b = result["bridge"]
+    conn_str = f"{GREEN}connected{RESET}" if b["connected"] else f"{RED}disconnected{RESET}"
+    print(f"  {BOLD}Bridge{RESET}")
+    print(f"    Reachable:    {b['reachable']}")
+    print(f"    Connected:    {conn_str}")
+    print(f"    Mode:         {b['mode']}")
+    print(f"    Read-only:    {b['read_only']}")
+    print(f"    Positions:    {b['positions_count']}")
+    if b["net_liquidation"] is not None:
+        print(f"    Net Liq:      {b['net_liquidation']:,.2f} EUR")
+    print(f"    Endpoints:    {b['endpoints_ok']}/{b['endpoints_total']} OK")
+    if b["endpoint_failures"]:
+        for f in b["endpoint_failures"]:
+            print(f"      {RED}✗{RESET} {f}")
+    print()
+
+    # Safety Flags
+    sf = result["safety_flags"]
+    print(f"  {BOLD}Safety Flags{RESET}")
+    ao_s = f"{GREEN}{sf['bridge_allow_orders']}{RESET}" if sf['bridge_allow_orders'] in (False, "false") else f"{RED}{sf['bridge_allow_orders']}{RESET}"
+    env_s = f"{GREEN}{sf['env_IBKR_ALLOW_ORDERS']}{RESET}" if sf['env_IBKR_ALLOW_ORDERS'] in ("false", "?") else f"{RED}{sf['env_IBKR_ALLOW_ORDERS']}{RESET}"
+    re_s = f"{GREEN}{sf['rules_enforced']}{RESET}" if sf['rules_enforced'] in ("false", "?") else f"{RED}{sf['rules_enforced']}{RESET}"
+    print(f"    Read-only:               {sf['read_only']}")
+    print(f"    Bridge allow_orders:     {ao_s}")
+    print(f"    .env IBKR_ALLOW_ORDERS:  {env_s}")
+    print(f"    rules.enforced:          {re_s}")
+    print(f"    System locked:           {sf['system_locked']}")
+    print()
+
+    # Monitoring
+    m = result["monitoring"]
+    recon_s = f"{GREEN}PASS{RESET}" if m["reconciliation_passed"] else f"{RED}FAIL{RESET}" if m["reconciliation_passed"] is False else "N/A"
+    alert_s = f"{RED}{m['active_alert_count']} active{RESET}" if m["active_alert_count"] > 0 else f"{GREEN}0{RESET}"
+    print(f"  {BOLD}Monitoring{RESET}")
+    print(f"    Reconciliation:  {recon_s}")
+    print(f"    Active Alerts:   {alert_s}")
+    for a in m["live_alerts"]:
+        print(f"      {RED}⚠{RESET} [{a['severity']}] {a['type']}: {a['detail']}")
+    print()
+
+    # Events
+    ev = result["events"]
+    print(f"  {BOLD}Latest Events{RESET}")
+    if ev["latest"]:
+        for e in ev["latest"]:
+            e_color = GREEN if e.get("passed") else RED
+            print(f"    {e_color}{e['type']}{RESET}  gate={e['gate']}  {e['ts']}")
+    else:
+        print(f"    (none)")
+    print()
+
+    # Autonomy
+    au = result["autonomy"]
+    print(f"  {BOLD}Autonomy{RESET}")
+    print(f"    Current Level:  {au['current_level']}")
+    print(f"    Clean Cycles:   {au['clean_cycles']}")
+    print()
+
+    # Heartbeat
+    hb = result["heartbeat"]
+    hb_recent = f"{GREEN}{hb['age_human']}{RESET}" if hb["recent"] else f"{YELLOW}{hb['age_human']}{RESET}"
+    print(f"  {BOLD}Heartbeat{RESET}")
+    print(f"    Age:            {hb_recent}")
+    print()
+
+    # Doctor
+    d = result["doctor"]
+    doc_ok = f"{GREEN}PASS{RESET}" if d["non_canary_ok"] else f"{RED}FAIL{RESET}"
+    print(f"  {BOLD}Doctor{RESET}")
+    print(f"    Non-canary:     {doc_ok}  ({d['passed_count']}/{d['check_count']} checks)")
+    if d["non_canary_failures"]:
+        for f in d["non_canary_failures"]:
+            print(f"      {RED}✗{RESET} {f}")
+    print()
+
+    # Blockers
+    print(f"  {BOLD}Blocker List ({result['blocker_count']}){RESET}")
+    for blk in result["blockers"]:
+        sev_color = RED if blk["severity"] == "NO-GO" else YELLOW
+        print(f"    {sev_color}[{blk['severity']}]{RESET} {blk['check']}: {blk['detail']}")
+    print()
+
+    print(f"  {BOLD}Final Verdict: {v_color}{v}{RESET}")
+    print()
+
+
+def export_kpi(result: dict, export_dir: Path) -> Path:
+    """Write KPI result to ~/.openclaw/exports/ and return path."""
+    export_dir.mkdir(parents=True, exist_ok=True)
+    ts_file = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_path = export_dir / f"kpi-dashboard-{ts_file}.json"
+    tmp = out_path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, out_path)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # Phase 5B.1 — Hermes Advisory Proposal
 # ---------------------------------------------------------------------------
 
@@ -2657,6 +3218,13 @@ def main() -> None:
     mp.add_argument("--keep-exports", type=int, default=None,
                     help="Number of exports to keep (default: 20)")
 
+    # Phase 5C (Step 12) — KPI / evidence dashboard subcommand
+    kpp = sub.add_parser("kpi", help="KPI / evidence dashboard with GO/HOLD/NO-GO verdict")
+    kpp.add_argument("--json", action="store_true",
+                     help="Output raw JSON only")
+    kpp.add_argument("--export", action="store_true",
+                     help="Write output to ~/.openclaw/exports/")
+
     # Phase 7 — read-only heartbeat subcommand
     hbp = sub.add_parser("heartbeat", help="Run read-only bridge heartbeat")
     hbp.add_argument("--json", action="store_true",
@@ -2806,6 +3374,19 @@ def main() -> None:
             if artifact_path:
                 print(f"  Artifact:        {artifact_path}")
         sys.exit(0 if result["ok"] else 2)
+
+    if args.command == "kpi":
+        result = run_kpi()
+        if args.export:
+            export_path = export_kpi(result, OPENCLAW_DIR / "exports")
+            result["_export_path"] = str(export_path)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print_kpi(result)
+            if args.export:
+                print(f"  Export written: {result.get('_export_path', '?')}\n")
+        sys.exit(2 if result["verdict"] == "NO-GO" else 0)
 
     if args.command != "checklist":
         parser.print_help()

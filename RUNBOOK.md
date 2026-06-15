@@ -45,6 +45,14 @@ ibkr-operator export --verify /path/to/file     # verify specific file
 ibkr-operator export --verify latest --json
 ```
 
+### `ibkr-operator kpi`
+KPI / evidence dashboard with GO/HOLD/NO-GO verdict.
+```bash
+ibkr-operator kpi
+ibkr-operator kpi --json
+ibkr-operator kpi --json --export     # writes to ~/.openclaw/exports/
+```
+
 ### `ibkr-operator doctor`
 Operator self-test / environment diagnostics (read-only).
 ```bash

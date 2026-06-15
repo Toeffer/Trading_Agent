@@ -215,6 +215,9 @@ class TestKillSwitchInvariants:
                         # Allow the safety check itself (this file)
                         if fp.name == "test_ci_invariant_assertions.py":
                             continue
+                        # Allow KPI dashboard test files (safety assertions)
+                        if fp.name == "test_kpi_dashboard.py":
+                            continue
                         # Allow strategy/autonomy doc tests (safety assertions)
                         if fp.name == "test_strategy_autonomy_docs.py":
                             continue

@@ -77,6 +77,9 @@ def _read_heartbeat_src() -> str:
             in_func = True
         elif in_func and line.startswith("def ") and "heartbeat" not in line:
             break
+        elif in_func and line.startswith("# ---") and "heartbeat" not in line:
+            # Section separator — stop at next section header
+            break
         elif in_func:
             src_lines.append(line)
     return "".join(src_lines)

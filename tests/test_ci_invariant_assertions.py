@@ -215,6 +215,9 @@ class TestKillSwitchInvariants:
                         # Allow the safety check itself (this file)
                         if fp.name == "test_ci_invariant_assertions.py":
                             continue
+                        # Allow strategy/autonomy doc tests (safety assertions)
+                        if fp.name == "test_strategy_autonomy_docs.py":
+                            continue
                         # Allow quoted false values (safety references)
                         if '"IBKR_ALLOW_ORDERS=false"' in line or "'IBKR_ALLOW_ORDERS=false'" in line:
                             continue

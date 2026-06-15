@@ -75,6 +75,7 @@ TARGET_TESTS=(
     "tests/test_p8_systemd_hardening.py"
     "tests/test_ci_collection_safety.py"
     "tests/test_ci_invariant_assertions.py"
+    "tests/test_strategy_autonomy_docs.py"
 )
 
 echo "--- Targeted test suite ---"

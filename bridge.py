@@ -441,12 +441,19 @@ def _internal_fetch_positions() -> list:
 
 
 def _internal_place_order(approval_record: dict) -> dict:
-    """Place a MKT order via IBKR directly and wait for IBKR acknowledgment.
+    """Place an order via IBKR directly and wait for IBKR acknowledgment.
+
+    P5 Bracket Support:
+    For BUY entries with a stop_price in the proposal, constructs a
+    broker-side protective stop bracket:
+      - Parent BUY order: transmit=False
+      - Child SELL stop order: parentId=<parent>, transmit=True
+    If the child stop placement fails, the parent is cancelled (fail-closed).
 
     Returns the format expected by guard.submit_order():
-        {"success": True, "order_id": int, "ib_order_id": ..., "status": ..., ...}
-        or {"success": False, "code": "IBKR_ACK_TIMEOUT", "error": str}
-        or {"success": False, "error": str}
+        {"success": True, "order_id": int, "ib_order_id": ..., "status": ...,
+         "bracket_evidence": {...}, "stop_order_id": int, ...}
+        or {"success": False, "code": "...", "error": str}
 
     Never returns success without IBKR acknowledgment.
     Never called while kill switches are false — guarded by submit_order().
@@ -461,6 +468,8 @@ def _internal_place_order(approval_record: dict) -> dict:
     symbol = proposal.get("symbol", "")
     qty = proposal.get("totalQuantity", 0)
     action = proposal.get("action", "BUY")
+    stop_price = proposal.get("stop_price")
+    entry_price = proposal.get("entry_price")
 
     if not symbol:
         return {"success": False, "error": "No symbol in proposal"}
@@ -472,6 +481,231 @@ def _internal_place_order(approval_record: dict) -> dict:
     contract = qualified[0]
 
     from ib_insync import Order as IbOrder
+
+    ACKNOWLEDGED_STATUSES = {"Submitted", "PreSubmitted", "Filled", "PartiallyFilled", "PendingSubmit", "PendingCancel"}
+    MAX_POLLS = 30
+    POLL_INTERVAL_S = 0.5
+
+    def _poll_for_ack(trade, trade_order_id: int, label: str = "order"):
+        """Poll for IBKR acknowledgment of a placed trade."""
+        for attempt in range(1, MAX_POLLS + 1):
+            try:
+                ib.sleep(POLL_INTERVAL_S)
+            except Exception:
+                import time as _tm
+                _tm.sleep(POLL_INTERVAL_S)
+
+            # Check 1: trade.orderStatus.status
+            status = getattr(trade.orderStatus, 'status', None) or ""
+            filled = getattr(trade.orderStatus, 'filled', 0)
+            remaining = getattr(trade.orderStatus, 'remaining', 0)
+            avg_fill_price = getattr(trade.orderStatus, 'avgFillPrice', 0.0)
+
+            if status in ACKNOWLEDGED_STATUSES:
+                return {
+                    "ack": True,
+                    "order_id": trade_order_id,
+                    "ib_order_id": trade_order_id,
+                    "permId": getattr(trade.order, 'permId', None),
+                    "status": status,
+                    "filled": filled,
+                    "remaining": remaining,
+                    "avgFillPrice": avg_fill_price,
+                    "last_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                }
+
+            # Check 2: appears in ib.openTrades()
+            try:
+                open_trades = ib.openTrades()
+                for ot in open_trades:
+                    if ot.order and ot.order.orderId == trade_order_id:
+                        ot_status = getattr(ot.orderStatus, 'status', None) or ""
+                        if ot_status in ACKNOWLEDGED_STATUSES:
+                            return {
+                                "ack": True,
+                                "order_id": trade_order_id,
+                                "ib_order_id": trade_order_id,
+                                "permId": getattr(ot.order, 'permId', None),
+                                "status": ot_status,
+                                "filled": getattr(ot.orderStatus, 'filled', 0),
+                                "remaining": getattr(ot.orderStatus, 'remaining', 0),
+                                "avgFillPrice": getattr(ot.orderStatus, 'avgFillPrice', 0.0),
+                                "last_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                            }
+            except Exception:
+                pass
+
+            # Check 3: appears in ib.trades()
+            try:
+                all_trades = ib.trades()
+                for at in all_trades:
+                    if at.order and at.order.orderId == trade_order_id:
+                        at_status = getattr(at.orderStatus, 'status', None) or ""
+                        if at_status in ACKNOWLEDGED_STATUSES:
+                            return {
+                                "ack": True,
+                                "order_id": trade_order_id,
+                                "ib_order_id": trade_order_id,
+                                "permId": getattr(at.order, 'permId', None),
+                                "status": at_status,
+                                "filled": getattr(at.orderStatus, 'filled', 0),
+                                "remaining": getattr(at.orderStatus, 'remaining', 0),
+                                "avgFillPrice": getattr(at.orderStatus, 'avgFillPrice', 0.0),
+                                "last_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                            }
+            except Exception:
+                pass
+
+            # Check 4: execution/fill appeared
+            try:
+                fills = ib.fills()
+                for f in fills:
+                    if f.execution and getattr(f.execution, 'orderId', None) == trade_order_id:
+                        return {
+                            "ack": True,
+                            "order_id": trade_order_id,
+                            "ib_order_id": trade_order_id,
+                            "permId": getattr(trade.order, 'permId', None),
+                            "status": "Filled",
+                            "filled": int(getattr(f.execution, 'shares', qty)),
+                            "remaining": 0,
+                            "avgFillPrice": float(getattr(f.execution, 'price', 0.0)),
+                            "last_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                            "fill_time": str(getattr(f.execution, 'time', '')),
+                        }
+            except Exception:
+                pass
+
+        # Timeout
+        return {
+            "ack": False,
+            "code": "IBKR_ACK_TIMEOUT",
+            "error": f"IBKR did not acknowledge {label} within polling window",
+            "order_id": trade_order_id,
+            "last_status": status if 'status' in dir() else "Unknown",
+        }
+
+    # ---- P5 Bracket Path: BUY with stop_price ----
+    if action.upper() == "BUY" and stop_price is not None and stop_price > 0:
+        stop_price_f = float(stop_price)
+        qty_int = int(qty)
+
+        # 1. Place parent BUY with transmit=False
+        parent_order = IbOrder()
+        parent_order.action = "BUY"
+        parent_order.totalQuantity = qty_int
+        parent_order.orderType = "MKT"
+        parent_order.account = IBKR_ACCOUNT or ""
+        parent_order.transmit = False
+
+        try:
+            parent_trade = ib.placeOrder(contract, parent_order)
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Parent BUY placeOrder failed: {type(e).__name__}: {e}",
+                "code": "PARENT_PLACE_FAILED",
+            }
+
+        if not parent_trade or not hasattr(parent_trade, 'order') or not parent_trade.order:
+            return {"success": False, "error": "Parent BUY placeOrder returned no trade object"}
+
+        parent_order_id = int(parent_trade.order.orderId)
+        parent_perm_id = getattr(parent_trade.order, 'permId', None)
+
+        # 2. Wait for parent acknowledgment or timeout
+        parent_ack = _poll_for_ack(parent_trade, parent_order_id, "parent BUY")
+        if not parent_ack.get("ack"):
+            # Parent never acknowledged - fail closed (nothing to cancel, it's dead)
+            parent_ack["success"] = False
+            parent_ack["code"] = parent_ack.get("code", "PARENT_ACK_TIMEOUT")
+            return parent_ack
+
+        # 3. Create child protective SELL stop with parentId
+        try:
+            child_order = IbOrder()
+            child_order.action = "SELL"
+            child_order.totalQuantity = qty_int
+            child_order.orderType = "STP"
+            child_order.auxPrice = stop_price_f
+            child_order.account = IBKR_ACCOUNT or ""
+            child_order.parentId = parent_order_id
+            child_order.transmit = True  # Transmits the entire bracket
+
+            child_trade = ib.placeOrder(contract, child_order)
+        except Exception as e:
+            # Child placement failed — cancel parent to avoid orphaned order
+            _cancel_parent_safe(parent_order_id)
+            return {
+                "success": False,
+                "error": f"Protective stop placeOrder failed: {type(e).__name__}: {e}",
+                "code": "STOP_PLACE_FAILED",
+                "parent_order_id": parent_order_id,
+            }
+
+        if not child_trade or not hasattr(child_trade, 'order') or not child_trade.order:
+            _cancel_parent_safe(parent_order_id)
+            return {
+                "success": False,
+                "error": "Protective stop placeOrder returned no trade object",
+                "code": "STOP_NO_TRADE",
+                "parent_order_id": parent_order_id,
+            }
+
+        child_order_id = int(child_trade.order.orderId)
+        child_perm_id = getattr(child_trade.order, 'permId', None)
+
+        # 4. Wait for child stop acknowledgment
+        child_ack = _poll_for_ack(child_trade, child_order_id, "child SELL stop")
+        if not child_ack.get("ack"):
+            # Stop not acknowledged — cancel parent, fail closed
+            _cancel_parent_safe(parent_order_id)
+            child_ack["success"] = False
+            child_ack["code"] = child_ack.get("code", "STOP_ACK_TIMEOUT")
+            return child_ack
+
+        # 5. Both acknowledged — build combined bracket evidence
+        bracket_evidence = {
+            "parent_order_id": parent_order_id,
+            "parent_permId": parent_perm_id,
+            "parent_transmit": False,
+            "stop_order_id": child_order_id,
+            "stop_permId": child_perm_id,
+            "stop_transmit": True,
+            "stop_price": stop_price_f,
+            "entry_price": entry_price,
+            "quantity": qty_int,
+            "action": "BUY",
+            "stop_action": "SELL",
+            "bracket": True,
+            "protective_stop": True,
+        }
+
+        return {
+            "success": True,
+            "order_id": parent_order_id,
+            "ib_order_id": parent_order_id,
+            "stop_order_id": child_order_id,
+            "permId": parent_perm_id,
+            "status": parent_ack.get("status", "Submitted"),
+            "filled": parent_ack.get("filled", 0),
+            "remaining": parent_ack.get("remaining", 0),
+            "avgFillPrice": parent_ack.get("avgFillPrice", 0.0),
+            "last_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "bracket_evidence": bracket_evidence,
+        }
+
+    # ---- Simple Path: SELL (close-only) or BUY without stop is BLOCKED ----
+    # P5 defense-in-depth: BUY entries must never be submitted without a
+    # valid protective stop.  The simple path handles SELL close-only exits.
+    if action.upper() == "BUY":
+        return {
+            "success": False,
+            "error": "BUY entry requires a protective bracket stop. "
+                     "No valid stop_price found in approval proposal.",
+            "code": "BRACKET_STOP_REQUIRED",
+        }
+
     order = IbOrder()
     order.action = action.upper()
     order.totalQuantity = int(qty)
@@ -487,113 +721,45 @@ def _internal_place_order(approval_record: dict) -> dict:
         return {"success": False, "error": "IBKR placeOrder returned no trade object"}
 
     order_id = int(trade.order.orderId)
-    perm_id = getattr(trade.order, 'permId', None)
 
-    # Poll for IBKR acknowledgment
-    ACKNOWLEDGED_STATUSES = {"Submitted", "PreSubmitted", "Filled", "PartiallyFilled", "PendingSubmit", "PendingCancel"}
-    MAX_POLLS = 30
-    POLL_INTERVAL_S = 0.5
+    ack_result = _poll_for_ack(trade, order_id, "order")
+    if not ack_result.get("ack"):
+        ack_result["success"] = False
+        ack_result["code"] = ack_result.get("code", "IBKR_ACK_TIMEOUT")
+        return ack_result
 
-    for attempt in range(1, MAX_POLLS + 1):
-        try:
-            ib.sleep(POLL_INTERVAL_S)
-        except Exception:
-            import time as _tm
-            _tm.sleep(POLL_INTERVAL_S)
+    return ack_result
 
-        # Check 1: trade.orderStatus.status
-        status = getattr(trade.orderStatus, 'status', None) or ""
-        filled = getattr(trade.orderStatus, 'filled', 0)
-        remaining = getattr(trade.orderStatus, 'remaining', 0)
-        avg_fill_price = getattr(trade.orderStatus, 'avgFillPrice', 0.0)
 
-        if status in ACKNOWLEDGED_STATUSES:
-            return {
-                "success": True,
-                "order_id": order_id,
-                "ib_order_id": order_id,
-                "permId": perm_id or getattr(trade.order, 'permId', None),
-                "status": status,
-                "filled": filled,
-                "remaining": remaining,
-                "avgFillPrice": avg_fill_price,
-                "last_timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            }
+def _cancel_parent_safe(order_id: int) -> bool:
+    """Attempt to cancel a parent order by order ID. Best-effort; never raises.
 
-        # Check 2: appears in ib.openTrades()
-        try:
-            open_trades = ib.openTrades()
-            for ot in open_trades:
-                if ot.order and ot.order.orderId == order_id:
-                    ot_status = getattr(ot.orderStatus, 'status', None) or ""
-                    if ot_status in ACKNOWLEDGED_STATUSES:
-                        return {
-                            "success": True,
-                            "order_id": order_id,
-                            "ib_order_id": order_id,
-                            "permId": getattr(ot.order, 'permId', None),
-                            "status": ot_status,
-                            "filled": getattr(ot.orderStatus, 'filled', 0),
-                            "remaining": getattr(ot.orderStatus, 'remaining', 0),
-                            "avgFillPrice": getattr(ot.orderStatus, 'avgFillPrice', 0.0),
-                            "last_timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                        }
-        except Exception:
-            pass
+    Finds the order via ib.trades()/ib.openTrades() matching the order_id,
+    then calls ib.cancelOrder() with the Order object.
 
-        # Check 3: appears in ib.trades()
-        try:
-            all_trades = ib.trades()
-            for at in all_trades:
-                if at.order and at.order.orderId == order_id:
-                    at_status = getattr(at.orderStatus, 'status', None) or ""
-                    if at_status in ACKNOWLEDGED_STATUSES:
-                        return {
-                            "success": True,
-                            "order_id": order_id,
-                            "ib_order_id": order_id,
-                            "permId": getattr(at.order, 'permId', None),
-                            "status": at_status,
-                            "filled": getattr(at.orderStatus, 'filled', 0),
-                            "remaining": getattr(at.orderStatus, 'remaining', 0),
-                            "avgFillPrice": getattr(at.orderStatus, 'avgFillPrice', 0.0),
-                            "last_timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                        }
-        except Exception:
-            pass
+    Returns True if cancellation was attempted, False if the order couldn't
+    be found or the IB connection was unavailable.
+    """
+    try:
+        if not ib or not ib.isConnected():
+            return False
+        # Search open trades for the matching order
+        for t in ib.openTrades():
+            if t.order and t.order.orderId == order_id:
+                ib.cancelOrder(t.order)
+                return True
+        for t in ib.trades():
+            if t.order and t.order.orderId == order_id:
+                ib.cancelOrder(t.order)
+                return True
+    except Exception:
+        pass
+    return False
 
-        # Check 4: execution/fill appeared
-        try:
-            fills = ib.fills()
-            for f in fills:
-                if f.execution and getattr(f.execution, 'orderId', None) == order_id:
-                    return {
-                        "success": True,
-                        "order_id": order_id,
-                        "ib_order_id": order_id,
-                        "permId": perm_id,
-                        "status": "Filled",
-                        "filled": int(getattr(f.execution, 'shares', qty)),
-                        "remaining": 0,
-                        "avgFillPrice": float(getattr(f.execution, 'price', 0.0)),
-                        "last_timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                        "fill_time": str(getattr(f.execution, 'time', '')),
-                    }
-        except Exception:
-            pass
 
-        if attempt == 1:
-            # First sleep done, give IBKR more time on subsequent attempts
-            pass
-
-    # Timeout — IBKR never acknowledged
-    return {
-        "success": False,
-        "code": "IBKR_ACK_TIMEOUT",
-        "error": "IBKR did not acknowledge order within polling window",
-        "order_id": order_id,
-        "last_status": status or "Unknown",
-    }
+# ---- ORIGINAL _internal_place_order (replaced above) ----
+# The function above subsumes the original single-order logic.
+# _poll_for_ack is shared between bracket and simple paths.
 
 
 def _internal_order_status(order_id: int | str) -> str | None:

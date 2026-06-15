@@ -455,23 +455,13 @@ def main() -> int:
     param = sig.parameters.get("proposal_path")
     check("proposal_path default is None", param.default is None if param else False)
 
-    # Test that run_preflight calls Gate H when proposal_path is None
-    # (Gate H fails closed, but H1 authorization blocks full run_preflight)
-    try:
-        result = run_preflight(
-            {"symbol": "AAPL", "action": "BUY", "totalQuantity": 10, "orderType": "MKT"},
-            proposal_path=None,
-        )
-        # If we get here (H1 authorized or startup phase), check gates
-        gates = result.get("gates", [])
-        proposal_gate = [g for g in gates if g.get("gate") == "proposal"]
-        check("Gate H (proposal) appears in gates", len(proposal_gate) > 0)
-        if proposal_gate:
-            check("Gate H fails when no proposal_path", not proposal_gate[0]["passed"])
-    except PermissionError:
-        # H1 enforcement active — expected. Gate H wiring verified via signature.
-        check("run_preflight enforces H1 (expected)", True)
-        check("Gate H wired (sig verified above)", True)
+    # P3 unit check: missing proposal_path fails closed directly.
+    # Do not call full run_preflight here; later gates may fetch live
+    # bridge state or fail before/after Gate H depending on later hardening.
+    ok, reason, details = gate_proposal_discipline(None)
+    check("Gate H direct check fails when no proposal_path", not ok)
+    check("Gate H direct check error is missing_proposal",
+          details.get("error") == "missing_proposal")
 
     # With valid proposal file + H1 authorization still needed for guard-state
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:

@@ -2234,24 +2234,28 @@ _KPI_FORBIDDEN = [
 
 
 def _git_metadata(repo_path: Path) -> dict:
-    """Return branch, short commit, and latest tag from git."""
+    """Return branch, short commit, and latest tag from git.
+
+    Uses bounded subprocess timeouts so KPI never hangs on git.
+    """
     import subprocess as _sp
+    _GIT_TIMEOUT = 3  # seconds — git should be sub-second locally
     result = {"branch": "?", "commit_short": "?", "tag": "?"}
     try:
         p = _sp.run(["git", "-C", str(repo_path), "rev-parse", "--abbrev-ref", "HEAD"],
-                     capture_output=True, text=True, timeout=5)
+                     capture_output=True, text=True, timeout=_GIT_TIMEOUT)
         result["branch"] = p.stdout.strip()
     except Exception:
         pass
     try:
         p = _sp.run(["git", "-C", str(repo_path), "rev-parse", "--short", "HEAD"],
-                     capture_output=True, text=True, timeout=5)
+                     capture_output=True, text=True, timeout=_GIT_TIMEOUT)
         result["commit_short"] = p.stdout.strip()
     except Exception:
         pass
     try:
         p = _sp.run(["git", "-C", str(repo_path), "describe", "--tags", "--abbrev=0"],
-                     capture_output=True, text=True, timeout=5)
+                     capture_output=True, text=True, timeout=_GIT_TIMEOUT)
         result["tag"] = p.stdout.strip() or "none"
     except Exception:
         pass
@@ -2401,17 +2405,22 @@ def run_kpi() -> dict:
     git = _git_metadata(BRIDGE_DIR)
 
     # ------------------------------------------------------------------
-    # 2. Bridge endpoints
+    # 2. Bridge endpoints (hard per-endpoint timeout, total bounded)
     # ------------------------------------------------------------------
     endpoint_results: dict[str, dict] = {}
     bridge_reachable = False
     bridge_failures: list[str] = []
 
+    # Hard per-endpoint timeout — KPI must complete even when bridge is
+    # degraded.  Local HTTP responses should be sub-second; 5s is generous
+    # for a local socket but prevents hanging tests.
+    _KPI_ENDPOINT_TIMEOUT = 5.0
+
     for ep in _KPI_ENDPOINTS:
         url = f"{BRIDGE_URL}{ep}"
         try:
             req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=7) as resp:
+            with urllib.request.urlopen(req, timeout=_KPI_ENDPOINT_TIMEOUT) as resp:
                 body = resp.read().decode(errors="replace")
                 try:
                     data = json.loads(body)

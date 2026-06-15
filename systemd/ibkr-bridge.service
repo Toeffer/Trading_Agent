@@ -17,10 +17,9 @@ KillMode=control-group
 KillSignal=SIGTERM
 TimeoutStopSec=10
 
-MemoryHigh=800M
-MemoryMax=1200M
+MemoryMax=2000M
 OOMPolicy=stop
-
+MemorySwapMax=0
 # ------------------------------------------------------------------ #
 # Hardening — Step 7 OS boundary / process hardening
 # ------------------------------------------------------------------ #

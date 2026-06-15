@@ -927,6 +927,142 @@ def calc_stop(entry_price: float, bars: list) -> dict:
     }
 
 
+# --- P5 Bracket-Stop Validation (Step 5P) ---
+
+
+def validate_bracket_stop(
+    stop_price: float | None,
+    entry_price: float,
+    quantity: int,
+    action: str,
+    stop_quantity: int | None = None,
+) -> dict:
+    """Validate bracket/protective stop for a proposed order.
+
+    For BUY entries: requires a valid stop_price below entry_price,
+    stop quantity matching entry quantity (unless explicitly rejected),
+    and returns bracket construction evidence.
+
+    For SELL close-only: no bracket required, returns valid=True with
+    bracket=False. Never opens/increases a short.
+
+    Args:
+        stop_price: Stop price (None or 0 for SELL / auto-calc).
+        entry_price: Entry/reference price.
+        quantity: Entry order quantity.
+        action: 'BUY' or 'SELL'.
+        stop_quantity: Optional explicit stop quantity (defaults to quantity).
+
+    Returns:
+        Dict with keys:
+        - valid: bool
+        - bracket: bool (True for BUY, False for SELL)
+        - protective_stop: bool
+        - stop_price, stop_action, quantity, stop_distance
+        - parent_transmit: bool (False for parent BUY)
+        - stop_transmit: bool (True for child stop)
+        - error: str (when not valid)
+    """
+    # SELL close-only: no bracket required
+    if action.upper() == "SELL":
+        return {
+            "valid": True,
+            "bracket": False,
+            "protective_stop": False,
+            "stop_price": None,
+            "stop_action": None,
+            "quantity": quantity,
+            "stop_quantity": None,
+            "stop_distance": None,
+            "parent_transmit": False,
+            "stop_transmit": False,
+            "error": None,
+        }
+
+    # BUY entry: must have valid stop
+    if stop_price is None or (isinstance(stop_price, (int, float)) and stop_price <= 0):
+        return {
+            "valid": False,
+            "bracket": True,
+            "protective_stop": True,
+            "stop_price": stop_price,
+            "stop_action": "SELL",
+            "quantity": quantity,
+            "stop_quantity": stop_quantity,
+            "stop_distance": None,
+            "parent_transmit": False,
+            "stop_transmit": True,
+            "error": "BUY entry requires a protective stop. stop_price is missing or invalid.",
+        }
+
+    # Stop must be strictly below entry price
+    try:
+        stop_price = float(stop_price)
+        entry_price = float(entry_price)
+    except (TypeError, ValueError):
+        return {
+            "valid": False,
+            "bracket": True,
+            "protective_stop": True,
+            "stop_price": stop_price,
+            "stop_action": "SELL",
+            "quantity": quantity,
+            "stop_quantity": stop_quantity,
+            "stop_distance": None,
+            "parent_transmit": False,
+            "stop_transmit": True,
+            "error": "stop_price and entry_price must be numeric.",
+        }
+
+    if stop_price >= entry_price:
+        return {
+            "valid": False,
+            "bracket": True,
+            "protective_stop": True,
+            "stop_price": stop_price,
+            "stop_action": "SELL",
+            "quantity": quantity,
+            "stop_quantity": stop_quantity,
+            "stop_distance": round(entry_price - stop_price, 2),
+            "parent_transmit": False,
+            "stop_transmit": True,
+            "error": f"stop_price ({stop_price}) must be below entry price ({entry_price}).",
+        }
+
+    # Validate stop quantity
+    effective_stop_qty = stop_quantity if stop_quantity is not None else quantity
+    if effective_stop_qty != quantity:
+        return {
+            "valid": False,
+            "bracket": True,
+            "protective_stop": True,
+            "stop_price": stop_price,
+            "stop_action": "SELL",
+            "quantity": quantity,
+            "stop_quantity": effective_stop_qty,
+            "stop_distance": round(entry_price - stop_price, 2),
+            "parent_transmit": False,
+            "stop_transmit": True,
+            "error": f"Stop quantity ({effective_stop_qty}) must match entry quantity ({quantity}).",
+        }
+
+    # Valid bracket construction
+    stop_distance = round(entry_price - stop_price, 2)
+    return {
+        "valid": True,
+        "bracket": True,
+        "protective_stop": True,
+        "stop_price": stop_price,
+        "stop_action": "SELL",
+        "quantity": quantity,
+        "stop_quantity": effective_stop_qty,
+        "stop_distance": stop_distance,
+        "parent_transmit": False,
+        "stop_transmit": True,
+        "error": None,
+    }
+
+
 # --- Validation Gates (Step 5) ---
 
 
@@ -1866,7 +2002,7 @@ def read_guard_events(path: str | Path | None = None) -> list[dict]:
 
 ALLOWED_REQUEST_FIELDS = frozenset({
     "symbol", "action", "totalQuantity", "orderType",
-    "limitPrice", "stopPrice", "mode",
+    "limitPrice", "stopPrice", "stopPercent", "mode",
 })
 
 ALLOWED_ACTIONS = frozenset({"BUY", "SELL"})
@@ -1914,6 +2050,19 @@ def _validate_preflight_request(request: dict) -> dict:
         if limit_price is None or not isinstance(limit_price, (int, float)) or limit_price <= 0:
             raise ValueError("LMT orders require a valid limitPrice > 0")
 
+    # P5: Normalize stopPercent if present
+    stop_percent = request.get("stopPercent")
+    if stop_percent is not None:
+        try:
+            stop_percent = float(stop_percent)
+        except (TypeError, ValueError):
+            raise ValueError(f"stopPercent must be numeric, got {stop_percent}")
+        if not (-99.0 < stop_percent < 0):
+            raise ValueError(
+                f"stopPercent must be negative (e.g. -5.0 for 5% below entry), "
+                f"got {stop_percent}"
+            )
+
     return {
         "symbol": symbol,
         "action": action,
@@ -1921,6 +2070,7 @@ def _validate_preflight_request(request: dict) -> dict:
         "orderType": order_type,
         "limitPrice": request.get("limitPrice"),
         "stopPrice": request.get("stopPrice"),
+        "stopPercent": stop_percent,
         "mode": request.get("mode"),
     }
 
@@ -2052,7 +2202,24 @@ def run_preflight(
     # Compute or validate stop (BUY only)
     if not is_close:
         user_stop = norm.get("stopPrice")
-        if user_stop is not None:
+        user_stop_pct = norm.get("stopPercent")
+
+        # P5: stopPercent takes precedence if both are provided
+        if user_stop_pct is not None:
+            # stopPercent is a negative number, e.g. -5.0 = 5% below entry
+            derived_stop = entry_price * (1.0 + user_stop_pct / 100.0)
+            if derived_stop <= 0 or derived_stop >= entry_price:
+                return {
+                    "passed": False,
+                    "error": (
+                        f"Derived stop from stopPercent={user_stop_pct}% "
+                        f"({derived_stop:.2f}) must be below entry price ({entry_price:.2f})"
+                    ),
+                }
+            stop_price = derived_stop
+            stop_distance = entry_price - stop_price
+            atr14 = None
+        elif user_stop is not None:
             try:
                 user_stop = float(user_stop)
             except (TypeError, ValueError):
@@ -3437,7 +3604,35 @@ def submit_order(
             "revalidation": reval,
         }
 
-    # 4. Call order provider
+    # 4. P5 Bracket validation (before calling provider)
+    proposal = record.get("proposal", {})
+    validation = record.get("validation", {})
+    action = proposal.get("action", "BUY")
+    stop_price_val = validation.get("stop_price") or proposal.get("stop_price")
+    entry_price_val = validation.get("entry_price") or proposal.get("entry_price")
+    quantity_val = proposal.get("totalQuantity", 0)
+
+    if action.upper() == "BUY":
+        bracket_check = validate_bracket_stop(
+            stop_price=stop_price_val,
+            entry_price=entry_price_val,
+            quantity=quantity_val,
+            action=action,
+        )
+        if not bracket_check.get("valid"):
+            append_guard_event("order_failed", {
+                "approval_id": approval_id,
+                "error": bracket_check.get("error"),
+                "symbol": proposal.get("symbol"),
+                "reason": "bracket_stop_validation_failed",
+            })
+            return {
+                "submitted": False,
+                "error": bracket_check.get("error", "Protective stop validation failed"),
+                "code": "BRACKET_STOP_INVALID",
+            }
+
+    # 5. Call order provider
     if order_provider is None:
         order_provider = lambda rec: {"success": False, "error": "No order provider configured"}
 
@@ -3523,15 +3718,32 @@ def submit_order(
         "last_timestamp_utc": provider_result.get("last_timestamp_utc"),
     }
 
-    # Log order_submitted with full IBKR metadata
-    append_guard_event("order_submitted", {
+    # P5: Include bracket evidence if present
+    bracket_evidence = provider_result.get("bracket_evidence")
+    stop_order_id = provider_result.get("stop_order_id")
+    if bracket_evidence:
+        ibkr_metadata["bracket_evidence"] = bracket_evidence
+        ibkr_metadata["stop_order_id"] = stop_order_id
+        ibkr_metadata["stop_price"] = bracket_evidence.get("stop_price")
+        ibkr_metadata["parent_transmit"] = bracket_evidence.get("parent_transmit")
+        ibkr_metadata["stop_transmit"] = bracket_evidence.get("stop_transmit")
+        ibkr_metadata["bracket"] = True
+        ibkr_metadata["protective_stop"] = True
+
+    # Log order_submitted with full IBKR metadata including P5 bracket evidence
+    event_data = {
         "approval_id": approval_id,
         "order_id": order_id,
         "symbol": record.get("proposal", {}).get("symbol"),
         "action": record.get("proposal", {}).get("action"),
         "totalQuantity": record.get("proposal", {}).get("totalQuantity"),
         "ibkr_metadata": ibkr_metadata,
-    })
+    }
+    if bracket_evidence:
+        event_data["bracket_evidence"] = bracket_evidence
+        event_data["stop_order_id"] = stop_order_id
+        event_data["protective_stop_price"] = bracket_evidence.get("stop_price")
+    append_guard_event("order_submitted", event_data)
 
     # Poll status
     poll_result = poll_order_status(
@@ -3554,6 +3766,14 @@ def submit_order(
         "ibkr_metadata": ibkr_metadata,
         "note": "Order submitted to IBKR paper account with IBKR acknowledgment",
     }
+
+    # P5: Include stop_order_id and bracket info in result when present
+    if stop_order_id:
+        result["stop_order_id"] = stop_order_id
+    if bracket_evidence:
+        result["protective_stop"] = True
+        result["bracket"] = True
+        result["stop_price"] = bracket_evidence.get("stop_price")
 
     return result
 

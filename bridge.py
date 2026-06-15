@@ -695,7 +695,17 @@ def _internal_place_order(approval_record: dict) -> dict:
             "bracket_evidence": bracket_evidence,
         }
 
-    # ---- Simple Path: SELL or BUY without stop ----
+    # ---- Simple Path: SELL (close-only) or BUY without stop is BLOCKED ----
+    # P5 defense-in-depth: BUY entries must never be submitted without a
+    # valid protective stop.  The simple path handles SELL close-only exits.
+    if action.upper() == "BUY":
+        return {
+            "success": False,
+            "error": "BUY entry requires a protective bracket stop. "
+                     "No valid stop_price found in approval proposal.",
+            "code": "BRACKET_STOP_REQUIRED",
+        }
+
     order = IbOrder()
     order.action = action.upper()
     order.totalQuantity = int(qty)
@@ -721,13 +731,30 @@ def _internal_place_order(approval_record: dict) -> dict:
     return ack_result
 
 
-def _cancel_parent_safe(order_id: int) -> None:
-    """Attempt to cancel a parent order. Best-effort; never raises."""
+def _cancel_parent_safe(order_id: int) -> bool:
+    """Attempt to cancel a parent order by order ID. Best-effort; never raises.
+
+    Finds the order via ib.trades()/ib.openTrades() matching the order_id,
+    then calls ib.cancelOrder() with the Order object.
+
+    Returns True if cancellation was attempted, False if the order couldn't
+    be found or the IB connection was unavailable.
+    """
     try:
-        if ib and ib.isConnected():
-            ib.cancelOrder(ib.order(order_id))
+        if not ib or not ib.isConnected():
+            return False
+        # Search open trades for the matching order
+        for t in ib.openTrades():
+            if t.order and t.order.orderId == order_id:
+                ib.cancelOrder(t.order)
+                return True
+        for t in ib.trades():
+            if t.order and t.order.orderId == order_id:
+                ib.cancelOrder(t.order)
+                return True
     except Exception:
         pass
+    return False
 
 
 # ---- ORIGINAL _internal_place_order (replaced above) ----

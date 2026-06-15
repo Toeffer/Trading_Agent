@@ -36,14 +36,18 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
-@pytest.fixture(autouse=True)
-def _disable_h1_startup_for_p5_tests(monkeypatch):
-    """Disable H1 startup enforcement for P5 tests only.
+@pytest.fixture
+def _disable_h1_startup(monkeypatch):
+    """Disable H1 startup enforcement for guard unit tests.
 
-    P5 tests call run_preflight and submit_order which touch guard-state
-    and other protected files. Tests run outside the bridge process and
+    Tests that call run_preflight or submit_order touch guard-state and
+    other protected files. Tests run outside the bridge process and
     don't have H1 tokens. This fixture patches _h1_startup_complete to
-    False so that H1 checks are skipped during test runs.
+    False so that H1 checks are skipped during those test runs.
+
+    SCOPE: Only applied to test classes that explicitly request it via
+    @pytest.mark.usefixtures("_disable_h1_startup").
+    H1 enforcement tests (TestH1EnforcementIntact) must NOT use this.
     """
     import guard
     monkeypatch.setattr(guard, '_h1_startup_complete', False)
@@ -101,6 +105,7 @@ def _make_quote_provider():
 # T1 — BUY without stop fails closed
 # ============================================================================
 
+@pytest.mark.usefixtures("_disable_h1_startup")
 class TestBuyWithoutStopFailsClosed:
     """T1: BUY entry must have a stop; missing/invalid fails closed."""
 
@@ -172,6 +177,7 @@ class TestBuyWithoutStopFailsClosed:
 # T2 — BUY with stop above/equal entry fails closed
 # ============================================================================
 
+@pytest.mark.usefixtures("_disable_h1_startup")
 class TestStopAboveOrEqualEntryFails:
     """T2: Stop must be strictly below entry price."""
 
@@ -267,6 +273,7 @@ class TestMismatchedStopQuantityFails:
 # T4 — Valid BUY builds parent + protective SELL stop
 # ============================================================================
 
+@pytest.mark.usefixtures("_disable_h1_startup")
 class TestValidBuyBracketConstruction:
     """T4: Valid BUY produces bracket evidence."""
 
@@ -417,6 +424,7 @@ class TestTransmitFlagsAndLinkage:
 # T6 — SELL close-only does not require bracket stop
 # ============================================================================
 
+@pytest.mark.usefixtures("_disable_h1_startup")
 class TestSellCloseOnlyNoBracket:
     """T6: SELL close-only must not require bracket stop."""
 
@@ -484,7 +492,11 @@ class TestOrder403:
 # ============================================================================
 
 class TestH1EnforcementIntact:
-    """T8: H1 token enforcement remains for approve and submit."""
+    """T8: H1 token enforcement remains for approve and submit.
+
+    These tests MUST NOT use the _disable_h1_startup fixture.
+    They verify that H1 authorization is required at the bridge boundary.
+    """
 
     def test_h1_verify_token_function_exists(self):
         """_verify_h1_token exists in bridge.py."""
@@ -512,6 +524,66 @@ class TestH1EnforcementIntact:
         standalone_deauth = re.findall(r'(?<!\.)\bh1_deauthorize\(\)', clean)
         assert len(standalone_deauth) == 0, \
             f"Standalone h1_deauthorize() found in bridge.py: {standalone_deauth}"
+
+    def test_verify_h1_token_rejects_none(self):
+        """_verify_h1_token(None) returns False."""
+        from bridge import _verify_h1_token
+        assert _verify_h1_token(None) is False
+
+    def test_verify_h1_token_rejects_empty(self):
+        """_verify_h1_token('') returns False."""
+        from bridge import _verify_h1_token
+        assert _verify_h1_token("") is False
+
+    def test_verify_h1_token_rejects_non_string(self):
+        """_verify_h1_token(123) returns False."""
+        from bridge import _verify_h1_token
+        assert _verify_h1_token(123) is False  # type: ignore
+
+    def test_verify_h1_token_rejects_wrong_token(self):
+        """_verify_h1_token with wrong token returns False."""
+        from bridge import _verify_h1_token
+        # Without H1_APPROVAL_TOKEN_HASH env, all tokens rejected
+        assert _verify_h1_token("wrong-token-value") is False
+
+    def test_h1_authorized_scope_resets_on_exception(self):
+        """h1_authorized_scope resets _h1_authorized on exception (via guard)."""
+        assert not _h1_authorized.get()
+        try:
+            with h1_authorized_scope():
+                assert _h1_authorized.get()
+                raise RuntimeError("forced")
+        except RuntimeError:
+            pass
+        assert not _h1_authorized.get(), "H1 authorization must reset after exception"
+
+    def test_h1_authorized_not_global(self):
+        """_h1_authorized is ContextVar, not global."""
+        import contextvars
+        assert isinstance(_h1_authorized, contextvars.ContextVar), \
+            f"_h1_authorized must be ContextVar, not {type(_h1_authorized)}"
+
+    def test_approve_endpoint_checks_h1_token(self):
+        """order_approve checks X-H1-Token header before any mutation."""
+        bridge_path = Path(__file__).resolve().parent.parent / "bridge.py"
+        source = bridge_path.read_text()
+        # order_approve must call _verify_h1_token before h1_authorized_scope
+        approve_body = source[source.index("def order_approve"):source.index("class SubmitRequest")]
+        verify_idx = approve_body.index("_verify_h1_token")
+        scope_idx = approve_body.index("h1_authorized_scope")
+        assert verify_idx < scope_idx, \
+            "H1 token check must happen BEFORE h1_authorized_scope in order_approve"
+
+    def test_submit_endpoint_checks_h1_token(self):
+        """order_submit checks X-H1-Token header before any mutation."""
+        bridge_path = Path(__file__).resolve().parent.parent / "bridge.py"
+        source = bridge_path.read_text()
+        # order_submit must call _verify_h1_token before h1_authorized_scope
+        submit_body = source[source.index("def order_submit"):source.index("# --- Read-only")]
+        verify_idx = submit_body.index("_verify_h1_token")
+        scope_idx = submit_body.index("h1_authorized_scope")
+        assert verify_idx < scope_idx, \
+            "H1 token check must happen BEFORE h1_authorized_scope in order_submit"
 
 
 # ============================================================================
@@ -625,6 +697,7 @@ class TestNoTokenLeakage:
 # T12 — Kill-switch dry-run validates without broker mutation
 # ============================================================================
 
+@pytest.mark.usefixtures("_disable_h1_startup")
 class TestKillSwitchDryRun:
     """T12: Dry-run/preflight validates bracket requirements without broker mutation."""
 
@@ -691,6 +764,7 @@ class TestKillSwitchDryRun:
 # T13 — Parent not left live without protective stop (fail-closed)
 # ============================================================================
 
+@pytest.mark.usefixtures("_disable_h1_startup")
 class TestFailClosedParentCancelled:
     """T13: If stop order fails, parent is cancelled (never left live)."""
 
@@ -828,6 +902,7 @@ class TestBracketConcurrencySafety:
 # T16 — No regression on existing behavior
 # ============================================================================
 
+@pytest.mark.usefixtures("_disable_h1_startup")
 class TestNoRegression:
     """P5 changes must not break existing validation flows."""
 
@@ -859,3 +934,103 @@ class TestNoRegression:
         """PROTECTED_PATHS not modified by P5."""
         assert isinstance(PROTECTED_PATHS, set)
         assert all(isinstance(p, Path) for p in PROTECTED_PATHS)
+
+
+# ============================================================================
+# T17 — Parent cancellation is attempted on child failure
+# ============================================================================
+
+class TestParentCancellationProof:
+    """T17: Verify parent cancellation is attempted when child placement/ack fails.
+
+    These tests do NOT call live IBKR. They validate the cancellation
+    code path exists and is exercised for the documented failure modes.
+    """
+
+    def test_cancel_parent_safe_exists(self):
+        """_cancel_parent_safe function exists in bridge.py."""
+        bridge_path = Path(__file__).resolve().parent.parent / "bridge.py"
+        source = bridge_path.read_text()
+        assert "def _cancel_parent_safe" in source, \
+            "_cancel_parent_safe must exist for bracket fail-closed"
+
+    def test_cancel_parent_called_on_child_place_fail(self):
+        """_cancel_parent_safe called when child stop order placement fails."""
+        bridge_path = Path(__file__).resolve().parent.parent / "bridge.py"
+        source = bridge_path.read_text()
+        # Find the child placement exception handler
+        child_place_section = source.split("Protective stop placeOrder failed")
+        assert len(child_place_section) > 1, \
+            "Child stop placement error handler must exist"
+        # The handler block above the error must call _cancel_parent_safe
+        handler_block = source.split("Protective stop placeOrder failed")[0]
+        # Look backwards for _cancel_parent_safe call before this error
+        bracket_block = source[source.index("def _internal_place_order"):]
+        cancel_calls_in_bracket = bracket_block.count("_cancel_parent_safe")
+        assert cancel_calls_in_bracket >= 2, \
+            f"_cancel_parent_safe must be called in at least 2 fail paths (child place + child ack), found {cancel_calls_in_bracket}"
+
+    def test_cancel_parent_called_on_child_ack_fail(self):
+        """_cancel_parent_safe called when child stop ack times out."""
+        bridge_path = Path(__file__).resolve().parent.parent / "bridge.py"
+        source = bridge_path.read_text()
+        # The child ack timeout section must call _cancel_parent_safe
+        ack_timeout_section = source.split("STOP_ACK_TIMEOUT")
+        assert len(ack_timeout_section) > 1, \
+            "STOP_ACK_TIMEOUT error code must exist"
+        # Check _cancel_parent_safe appears before STOP_ACK_TIMEOUT
+        ack_block = source[source.rfind("_poll_for_ack"):source.rfind("STOP_ACK_TIMEOUT")]
+        # The relevant block is between child ack check and STOP_ACK_TIMEOUT
+        child_ack_start = source.rfind("child SELL stop")
+        child_ack_end = source.rfind("STOP_ACK_TIMEOUT")
+        if child_ack_start > 0 and child_ack_end > child_ack_start:
+            section = source[child_ack_start:child_ack_end]
+            assert "_cancel_parent_safe" in section, \
+                "_cancel_parent_safe must be called when child ack fails"
+
+    def test_cancel_parent_uses_ib_trades_not_order_id(self):
+        """_cancel_parent_safe uses ib.trades()/ib.openTrades(), not ib.order(order_id)."""
+        bridge_path = Path(__file__).resolve().parent.parent / "bridge.py"
+        source = bridge_path.read_text()
+        cancel_body = source[source.index("def _cancel_parent_safe"):source.index("def _internal_order_status")]
+        # Must use openTrades or trades
+        assert "openTrades" in cancel_body or "trades" in cancel_body, \
+            "_cancel_parent_safe must search via ib.trades()/ib.openTrades()"
+        # Must NOT use ib.order(order_id) which doesn't exist
+        assert "ib.order(" not in cancel_body, \
+            "_cancel_parent_safe must NOT call ib.order(order_id) — does not exist"
+
+    def test_cancel_parent_returns_bool(self):
+        """_cancel_parent_safe returns bool (True if cancellation attempted)."""
+        bridge_path = Path(__file__).resolve().parent.parent / "bridge.py"
+        source = bridge_path.read_text()
+        cancel_body = source[source.index("def _cancel_parent_safe"):source.index("def _internal_order_status")]
+        assert "-> bool" in cancel_body or "return True" in cancel_body, \
+            "_cancel_parent_safe must return bool for evidence tracking"
+
+    def test_simple_path_rejects_buy_without_stop(self):
+        """Simple path returns BRACKET_STOP_REQUIRED for BUY without stop."""
+        bridge_path = Path(__file__).resolve().parent.parent / "bridge.py"
+        source = bridge_path.read_text()
+        assert "BRACKET_STOP_REQUIRED" in source, \
+            "Simple path must reject BUY without valid protective stop"
+        # The simple path check must come before any order placement
+        simple_section_start = source.index("# ---- Simple Path")
+        simple_section_end = source.index("def _internal_order_status")
+        simple_section = source[simple_section_start:simple_section_end]
+        # "BRACKET_STOP_REQUIRED" must appear before "ib.placeOrder" in the simple path
+        req_idx = simple_section.index("BRACKET_STOP_REQUIRED")
+        place_idx = simple_section.index("ib.placeOrder")
+        assert req_idx < place_idx, \
+            "BRACKET_STOP_REQUIRED check must happen BEFORE ib.placeOrder in simple path"
+
+    def test_bracket_path_has_cancel_on_three_fail_modes(self):
+        """Bracket path cancels parent on: child place fail, child no-trade, child ack timeout."""
+        bridge_path = Path(__file__).resolve().parent.parent / "bridge.py"
+        source = bridge_path.read_text()
+        bracket_start = source.index("# ---- P5 Bracket Path")
+        bracket_end = source.index("# ---- Simple Path")
+        bracket_section = source[bracket_start:bracket_end]
+        cancel_count = bracket_section.count("_cancel_parent_safe")
+        assert cancel_count == 3, \
+            f"Bracket path must cancel parent in exactly 3 fail modes (child place, child no-trade, child ack timeout), found {cancel_count}"

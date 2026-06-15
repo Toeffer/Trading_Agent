@@ -78,6 +78,7 @@ TARGET_TESTS=(
     "tests/test_strategy_autonomy_docs.py"
     "tests/test_kpi_dashboard.py"
     "tests/test_step13_remediation.py"
+    "tests/test_clean_cycle_rehearsal.py"
 )
 
 echo "--- Targeted test suite ---"

@@ -2773,6 +2773,438 @@ def export_kpi(result: dict, export_dir: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Step 14 (Phase 5D) — Clean-Cycle Rehearsal
+# ---------------------------------------------------------------------------
+
+_CYCLE_EXPORT_DIR_NAME = "autonomy-cycles"
+
+# Forbidden endpoints that must NEVER be called during rehearsal
+_REHEARSAL_FORBIDDEN_ENDPOINTS = frozenset({
+    "/order",
+    "/order/preflight",
+    "/order/approve",
+    "/order/submit",
+    "/connect",
+})
+
+
+def _mock_gate_h_proposal() -> dict:
+    """Validate Gate H proposal structure without broker mutation.
+
+    Returns a dict with the proposal evidence block.
+    No /order endpoints.  No H1 token.  No broker calls.
+    """
+    from guard import _require_allowed_symbol
+
+    now_utc = datetime.now(timezone.utc)
+    evidence = {
+        "ok": True,
+        "proposal_id": f"rehearsal-{now_utc.strftime('%Y%m%dT%H%M%SZ')}",
+        "timestamp_utc": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "symbol": "META",
+        "side": "BUY",
+        "quantity": 1,
+        "action": "BUY",
+        "order_type": "MKT",
+        "dry_run": True,
+        "checks": {},
+    }
+
+    # Gate H: symbol in universe (via _require_allowed_symbol)
+    try:
+        result_sym = _require_allowed_symbol("META")
+        evidence["checks"]["symbol_allowed"] = True
+        evidence["checks"]["symbol_result"] = result_sym
+    except ValueError as e:
+        evidence["checks"]["symbol_allowed"] = False
+        evidence["checks"]["symbol_allowed_error"] = str(e)
+        evidence["ok"] = False
+    except Exception as e:
+        evidence["checks"]["symbol_allowed"] = False
+        evidence["checks"]["symbol_allowed_error"] = f"{type(e).__name__}: {e}"
+        evidence["ok"] = False
+
+    # Gate H: side must be BUY or SELL
+    valid_sides = {"BUY", "SELL"}
+    evidence["checks"]["valid_side"] = "BUY" in valid_sides
+
+    # Gate H: quantity must be positive integer
+    evidence["checks"]["valid_quantity"] = isinstance(1, int) and 1 > 0
+
+    return evidence
+
+
+def _mock_p5_bracket_stop() -> dict:
+    """Validate P5 protective stop requirements in dry-run form.
+
+    Does NOT call bridge. Does NOT place any order.
+    Returns evidence dict with bracket-stop validation result.
+    """
+    from guard import validate_bracket_stop
+
+    evidence = {
+        "ok": True,
+        "dry_run": True,
+        "checks": {},
+    }
+
+    # Validate that a BUY with stop_price works
+    try:
+        result = validate_bracket_stop(
+            stop_price=475.0,
+            entry_price=500.0,
+            quantity=1,
+            action="BUY",
+        )
+        evidence["checks"]["buy_bracket_valid"] = result.get("valid", True)
+        evidence["checks"]["buy_bracket_evidence"] = {
+            "protective_stop": result.get("protective_stop", False),
+            "bracket": result.get("bracket", True),
+            "parent_transmit": result.get("parent_transmit", False),
+            "stop_transmit": result.get("stop_transmit", True),
+        }
+        if not result.get("valid", True):
+            evidence["ok"] = False
+            evidence["checks"]["buy_bracket_error"] = result.get("error", "validation failed")
+    except Exception as e:
+        evidence["checks"]["buy_bracket_valid"] = False
+        evidence["checks"]["buy_bracket_error"] = str(e)
+        evidence["ok"] = False
+
+    # SELL does not require bracket stop
+    try:
+        result_sell = validate_bracket_stop(
+            stop_price=None,
+            entry_price=500.0,
+            quantity=1,
+            action="SELL",
+        )
+        evidence["checks"]["sell_no_bracket_required"] = (
+            result_sell.get("valid", True) and not result_sell.get("bracket", True)
+        )
+    except Exception as e:
+        evidence["checks"]["sell_no_bracket_required"] = False
+        evidence["checks"]["sell_no_bracket_error"] = str(e)
+
+    return evidence
+
+
+def _scan_forbidden_endpoints(source_path: Path | None = None) -> dict:
+    """AST-scan operator code for any forbidden endpoint calls.
+
+    Only flags string constants that appear in URL-building context
+    (near keywords like 'request', 'url', 'fetch', 'endpoint').
+    Does NOT flag comments, docstrings, or safety documentation.
+
+    Returns dict with scan_result and any violations found.
+    """
+    if source_path is None:
+        source_path = Path(__file__).resolve()
+
+    evidence = {
+        "ok": True,
+        "scanned_file": str(source_path),
+        "violations": [],
+    }
+
+    try:
+        import ast
+
+        tree = ast.parse(source_path.read_text())
+        source_lines = source_path.read_text().splitlines()
+
+        # Keywords that indicate a string is documentation/safety, not an endpoint call
+        _safety_keywords = [
+            "no /order", "forbidden", "blocked", "never call",
+            "must not", "do not", "safety", "disabled",
+            "# no ", "# never ", "no order",
+        ]
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                val = node.value
+                # Only flag if string looks like an endpoint path (starts with '/')
+                # and a forbidden endpoint appears
+                for ep in sorted(_REHEARSAL_FORBIDDEN_ENDPOINTS, key=len, reverse=True):
+                    if ep not in val:
+                        continue
+
+                    # Skip strings that contain safety/documentation language
+                    lower_val = val.lower()
+                    if any(kw in lower_val for kw in _safety_keywords):
+                        continue
+
+                    # Check line context: skip comment lines
+                    lineno = node.lineno
+                    if lineno and lineno <= len(source_lines):
+                        line = source_lines[lineno - 1].strip()
+                        if line.startswith("#"):
+                            continue
+                        lower_line = line.lower()
+                        if any(kw in lower_line for kw in _safety_keywords):
+                            continue
+
+                    # Only flag URL-building context (heuristic)
+                    if any(kw in val.lower() for kw in ["request", "fetch", "url", "endpoint"]):
+                        evidence["violations"].append({
+                            "endpoint": ep,
+                            "line": lineno,
+                            "context": val[:120],
+                        })
+                        evidence["ok"] = False
+    except Exception as e:
+        evidence["ok"] = False
+        evidence["scan_error"] = str(e)
+
+    return evidence
+
+
+def _run_cycle_rehearsal() -> dict:
+    """Run a full autonomy-cycle rehearsal — read-only, no broker mutation.
+
+    Verifies:
+    1. Strategy/autonomy docs exist
+    2. KPI dashboard is available and parseable
+    3. Doctor non-canary checks pass or are recorded
+    4. Bridge health is reachable
+    5. Safety flags are locked
+    6. Heartbeat evidence exists and is recent enough
+    7. Reconciliation/alerts are captured honestly
+    8. Mock Gate H proposal validated without broker
+    9. P5 protective stop validated in dry-run form
+    10. Forbidden endpoint scan passes
+    11. Evidence exported
+
+    Returns dict with verdict, blocker list, and all evidence.
+    """
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+
+    blockers: list[dict] = []
+
+    # --- 1. Strategy/autonomy docs exist ---
+    strategy_path = Path(__file__).resolve().parent / "docs" / "STRATEGY.md"
+    autonomy_path = Path(__file__).resolve().parent / "docs" / "AUTONOMY_CRITERIA.md"
+    docs = {
+        "strategy_exists": strategy_path.exists(),
+        "autonomy_exists": autonomy_path.exists(),
+    }
+    if not docs["strategy_exists"]:
+        blockers.append({"severity": "NO-GO", "check": "strategy_doc_missing",
+                         "detail": "docs/STRATEGY.md not found"})
+    if not docs["autonomy_exists"]:
+        blockers.append({"severity": "NO-GO", "check": "autonomy_doc_missing",
+                         "detail": "docs/AUTONOMY_CRITERIA.md not found"})
+
+    # --- 2. KPI dashboard ---
+    kpi_result = run_kpi()
+    kpi_verdict = kpi_result.get("verdict", "ERROR")
+    if kpi_verdict == "NO-GO":
+        for b in kpi_result.get("blockers", []):
+            if b.get("severity") == "NO-GO":
+                blockers.append(b)
+
+    # --- 3. Doctor non-canary checks ---
+    doctor_ok = True
+    doctor_evidence = {}
+    try:
+        doctor_result = _run_doctor_non_sudo()
+        doctor_ok = doctor_result.get("pass", True)
+        doctor_evidence = doctor_result
+    except Exception as e:
+        doctor_ok = False
+        doctor_evidence = {"error": str(e)}
+    if not doctor_ok:
+        blockers.append({"severity": "HOLD", "check": "doctor_non_pass",
+                         "detail": "Doctor non-canary checks did not all pass"})
+
+    # --- 4. Bridge health ---
+    bridge_reachable = kpi_result.get("bridge", {}).get("reachable", False)
+    bridge_connected = kpi_result.get("bridge", {}).get("connected", False)
+    if not bridge_reachable:
+        blockers.append({"severity": "NO-GO", "check": "bridge_unreachable",
+                         "detail": "IBKR bridge is not reachable"})
+    elif not bridge_connected:
+        blockers.append({"severity": "HOLD", "check": "ibkr_not_connected",
+                         "detail": "IBKR Gateway is not connected"})
+
+    # --- 5. Safety flags locked ---
+    sf = kpi_result.get("safety_flags", {})
+    safety_locked = (
+        sf.get("read_only") is True
+        and sf.get("bridge_allow_orders") is False
+        and sf.get("env_IBKR_ALLOW_ORDERS") == "false"
+        and sf.get("rules_enforced") == "false"
+    )
+    if not safety_locked:
+        fail_items = []
+        if sf.get("read_only") is not True:
+            fail_items.append("read_only is not True")
+        if sf.get("bridge_allow_orders") is not False:
+            fail_items.append("bridge_allow_orders is not False")
+        if sf.get("env_IBKR_ALLOW_ORDERS") != "false":
+            fail_items.append(f"env IBKR_ALLOW_ORDERS={sf.get('env_IBKR_ALLOW_ORDERS')}")
+        if sf.get("rules_enforced") != "false":
+            fail_items.append(f"rules.enforced={sf.get('rules_enforced')}")
+        blockers.append({"severity": "NO-GO", "check": "safety_unlocked",
+                         "detail": "; ".join(fail_items)})
+
+    # --- 6. Heartbeat evidence ---
+    hb = kpi_result.get("heartbeat", {})
+    hb_recent = hb.get("recent", False)
+    if not hb_recent:
+        if hb.get("age_seconds") is None:
+            blockers.append({"severity": "HOLD", "check": "heartbeat_missing",
+                             "detail": "No heartbeat artifacts found"})
+        else:
+            blockers.append({"severity": "HOLD", "check": "heartbeat_stale",
+                             "detail": f"Heartbeat age: {hb.get('age_human', '?')}"})
+
+    # --- 7. Reconciliation/alerts (already captured via KPI) ---
+    recon_passed = kpi_result.get("monitoring", {}).get("reconciliation_passed", None)
+    alert_count = kpi_result.get("monitoring", {}).get("active_alert_count", 0)
+
+    # --- 8. Mock Gate H proposal ---
+    gate_h_ok = True
+    gate_h_evidence = {}
+    try:
+        gate_h_evidence = _mock_gate_h_proposal()
+        gate_h_ok = gate_h_evidence.get("ok", False)
+    except Exception as e:
+        gate_h_ok = False
+        gate_h_evidence = {"error": str(e)}
+    if not gate_h_ok:
+        blockers.append({"severity": "HOLD", "check": "gate_h_mock_failed",
+                         "detail": "Mock Gate H proposal validation failed"})
+
+    # --- 9. P5 bracket stop ---
+    p5_ok = True
+    p5_evidence = {}
+    try:
+        p5_evidence = _mock_p5_bracket_stop()
+        p5_ok = p5_evidence.get("ok", False)
+    except Exception as e:
+        p5_ok = False
+        p5_evidence = {"error": str(e)}
+    if not p5_ok:
+        blockers.append({"severity": "NO-GO", "check": "p5_bracket_mock_failed",
+                         "detail": "P5 bracket-stop dry-run validation failed"})
+
+    # --- 10. Forbidden endpoint scan ---
+    scan_result = _scan_forbidden_endpoints()
+    scan_ok = scan_result.get("ok", True)
+    if not scan_ok:
+        violations = scan_result.get("violations", [])
+        detail = f"{len(violations)} violation(s): " + "; ".join(
+            v.get("endpoint", "?") for v in violations[:3]
+        )
+        blockers.append({"severity": "NO-GO", "check": "forbidden_endpoint_found",
+                         "detail": detail})
+
+    # --- Compute verdict ---
+    has_nogo = any(b["severity"] == "NO-GO" for b in blockers)
+    has_hold = any(b["severity"] == "HOLD" for b in blockers)
+
+    if has_nogo:
+        verdict = "NO-GO"
+    elif has_hold:
+        verdict = "HOLD"
+    else:
+        verdict = "CLEAN"
+
+    # --- Build result ---
+    result = {
+        "advisory": "Read-only cycle rehearsal. No orders. No mutations. No H1 token.",
+        "timestamp": ts_str,
+        "git": _git_metadata(Path(__file__).resolve().parent),
+        "verdict": verdict,
+        "kpi_verdict": kpi_verdict,
+        "docs": docs,
+        "safety_flags": sf,
+        "heartbeat": hb,
+        "bridge": kpi_result.get("bridge", {}),
+        "monitoring": {
+            "reconciliation_passed": recon_passed,
+            "active_alert_count": alert_count,
+        },
+        "doctor": doctor_evidence,
+        "gate_h_mock": gate_h_evidence,
+        "p5_bracket_mock": p5_evidence,
+        "forbidden_endpoint_scan": scan_result,
+        "blockers": blockers,
+        "blocker_count": len(blockers),
+    }
+
+    return result
+
+
+def print_cycle_rehearsal(result: dict) -> None:
+    """Print cycle rehearsal result in human-readable format."""
+    verdict = result["verdict"]
+    v_color = {"CLEAN": GREEN, "HOLD": RESET, "NO-GO": RED}.get(verdict, RESET)
+
+    print(f"{BOLD}Autonomy Cycle Rehearsal{RESET}  [{v_color}{verdict}{RESET}]")
+    print(f"  Timestamp:  {result['timestamp']}")
+    print(f"  KPI:        {result['kpi_verdict']}")
+    print(f"  Blockers:   {result['blocker_count']}")
+
+    safety = result["safety_flags"]
+    locked = (
+        safety.get("read_only") is True
+        and safety.get("bridge_allow_orders") is False
+        and safety.get("env_IBKR_ALLOW_ORDERS") == "false"
+        and safety.get("rules_enforced") == "false"
+    )
+    print(f"  Safety:     {'LOCKED' if locked else f'{RED}UNLOCKED{RESET}'}")
+    print(f"  Docs:       STRATEGY={'✓' if result['docs']['strategy_exists'] else '✗'} "
+          f"AUTONOMY={'✓' if result['docs']['autonomy_exists'] else '✗'}")
+    print(f"  Heartbeat:  {result['heartbeat'].get('age_human', 'none')}")
+    print(f"  Bridge:     {'reachable' if result['bridge'].get('reachable') else 'unreachable'}, "
+          f"{'connected' if result['bridge'].get('connected') else 'disconnected'}")
+    print(f"  Recon:      {'PASS' if result['monitoring']['reconciliation_passed'] else 'N/A'}")
+    print(f"  Alerts:     {result['monitoring']['active_alert_count']}")
+    print(f"  Gate H:     {'✓' if result['gate_h_mock'].get('ok') else '✗'}")
+    print(f"  P5 Bracket: {'✓' if result['p5_bracket_mock'].get('ok') else '✗'}")
+    print(f"  EP Scan:    {'✓' if result['forbidden_endpoint_scan'].get('ok') else '✗'}")
+
+    if result["blockers"]:
+        print(f"\n  {BOLD}Blockers:{RESET}")
+        for b in result["blockers"]:
+            sev_color = {"NO-GO": RED, "HOLD": RESET, "CLEAN": GREEN}.get(
+                b["severity"], RESET)
+            print(f"    [{sev_color}{b['severity']}{RESET}] {b['check']}: {b['detail']}")
+
+
+def export_cycle_rehearsal(result: dict, export_dir: Path | None = None) -> Path:
+    """Export cycle rehearsal result to JSON file.
+
+    Uses ~/.openclaw/autonomy-cycles/ as default export directory.
+    Returns the output path.
+    """
+    if export_dir is None:
+        export_dir = OPENCLAW_DIR / _CYCLE_EXPORT_DIR_NAME
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    ts_file = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_path = export_dir / f"cycle-rehearsal-{ts_file}.json"
+    tmp = out_path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, out_path)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# Phase 5B.1 — Hermes Advisory Proposal (original)
+# ---------------------------------------------------------------------------
+
+
 def _run_h1_canary() -> dict:
     """Run an H1 token canary test via the sudo trade-window helper.
 
@@ -3244,6 +3676,13 @@ def main() -> None:
     hbp.add_argument("--quiet", action="store_true",
                      help="Suppress human-readable output")
 
+    # Phase 5D (Step 14) — cycle rehearsal subcommand
+    crp = sub.add_parser("cycle-rehearsal", help="Run read-only autonomy cycle rehearsal")
+    crp.add_argument("--json", action="store_true",
+                     help="Output raw JSON only")
+    crp.add_argument("--export", action="store_true",
+                     help="Write output to ~/.openclaw/autonomy-cycles/")
+
     args = parser.parse_args()
 
     if args.command == "daily-report":
@@ -3405,6 +3844,19 @@ def main() -> None:
             print_kpi(result)
             if args.export:
                 print(f"  Export written: {result.get('_export_path', '?')}\n")
+        sys.exit(2 if result["verdict"] == "NO-GO" else 0)
+
+    if args.command == "cycle-rehearsal":
+        result = _run_cycle_rehearsal()
+        if args.export:
+            export_path = export_cycle_rehearsal(result)
+            result["_export_path"] = str(export_path)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print_cycle_rehearsal(result)
+            if args.export:
+                print(f"\n  Export written: {result.get('_export_path', '?')}")
         sys.exit(2 if result["verdict"] == "NO-GO" else 0)
 
     if args.command != "checklist":

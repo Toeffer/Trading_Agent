@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# ============================================================================
+# run-ci-local — IBKR Bridge local CI runner
+#
+# Runs the same compile + targeted pytest suite that CI would execute.
+# Uses .venv/bin/python when available.
+# No broker mutation. No sudo. No live IBKR.
+#
+# Usage:
+#   ./scripts/run-ci-local
+#   ./scripts/run-ci-local --verbose
+#   ./scripts/run-ci-local --integration   # opt-in integration tests
+# ============================================================================
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_DIR"
+
+# Determine Python
+if [ -f ".venv/bin/python" ]; then
+    PYTHON=".venv/bin/python"
+else
+    PYTHON="python3"
+fi
+
+echo "==> CI Runner: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+echo "==> Python: $($PYTHON --version)"
+echo "==> Project: $PROJECT_DIR"
+echo ""
+
+# Parse flags
+VERBOSE=""
+MARKER_FILTER="not integration and not live"
+for arg in "$@"; do
+    case "$arg" in
+        --verbose|-v) VERBOSE="-v" ;;
+        --integration) MARKER_FILTER="integration" ;;
+        --live) MARKER_FILTER="live" ;;
+    esac
+done
+
+PASS=0
+FAIL=0
+
+run_step() {
+    local desc="$1"
+    shift
+    echo "--- $desc ---"
+    if "$@"; then
+        echo "  ✅ PASS"
+        ((PASS++)) || true
+    else
+        echo "  ❌ FAIL"
+        ((FAIL++)) || true
+    fi
+    echo ""
+}
+
+# Step 1: Compile check (fail-fast)
+run_step "Compile check" $PYTHON -m py_compile bridge.py guard.py ibkr_operator.py
+
+# Step 2: Collection check (no import side effects)
+run_step "Collection check" $PYTHON -m pytest --collect-only -q tests/ -m "$MARKER_FILTER"
+
+# Step 3: Targeted test suite
+TARGET_TESTS=(
+    "tests/test_contextvar_h1_race.py"
+    "tests/test_h1_enforced_approval.py"
+    "tests/test_p2b_gate_e_close_only_exempt.py"
+    "tests/test_p3_gate_h_proposal_discipline.py"
+    "tests/test_p5_bracket_stops.py"
+    "tests/test_p7_heartbeat.py"
+    "tests/test_p8_systemd_hardening.py"
+    "tests/test_ci_collection_safety.py"
+    "tests/test_ci_invariant_assertions.py"
+)
+
+echo "--- Targeted test suite ---"
+$PYTHON -m pytest $VERBOSE -m "$MARKER_FILTER" "${TARGET_TESTS[@]}"
+TEST_EXIT=$?
+if [ $TEST_EXIT -eq 0 ]; then
+    echo "  ✅ PASS"
+    ((PASS++)) || true
+else
+    echo "  ❌ FAIL"
+    ((FAIL++)) || true
+fi
+echo ""
+
+# Summary
+echo "============================================"
+echo "  Results:  ✅ $PASS passed  ❌ $FAIL failed"
+echo "============================================"
+
+[ "$FAIL" -eq 0 ] || exit 1

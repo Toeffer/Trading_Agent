@@ -25,6 +25,7 @@ from guard import (
     SUBMITTED_APPROVALS_PATH,
     ALLOWED_EVENT_TYPES,
     load_guard_state,
+    save_guard_state_atomic,
     read_guard_events,
     append_guard_event,
 )
@@ -517,6 +518,26 @@ def reconcile_snapshot() -> dict:
             "guard_count": daily_trade_count,
             "unique_order_ids": sorted(confirmed_identities),
         })
+        # Auto-correct stale guard state when events give the authoritative count.
+        # Only correct downward (guard_state overcounts) — never upward (could
+        # hide a real missing order). Only during startup reconciliation
+        # (h1_startup_complete=False) when H1 guard is bypassed.
+        if daily_trade_count > event_trade_count:
+            try:
+                from guard import _h1_startup_complete
+                if not _h1_startup_complete:
+                    gs = load_guard_state()
+                    gs["daily_trade_count"] = event_trade_count
+                    gs["last_updated_utc"] = now_utc.isoformat()
+                    gs["trade_count_autocorrected"] = True
+                    save_guard_state_atomic(gs)
+                    # Update the local variable so downstream code sees the correction
+                    daily_trade_count = event_trade_count
+                    # Note in alerts that an auto-correction was applied
+                    alerts[-1]["autocorrected"] = True
+                    alerts[-1]["detail"] += " (auto-corrected guard_state to match events)"
+            except OSError:
+                pass
 
     # 3. Approval records
     records = load_approval_records()

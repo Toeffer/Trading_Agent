@@ -319,10 +319,11 @@ def _rollover_guard_state(state: dict) -> bool:
 
     # Restore count from confirmed events already on today's date
     # (e.g. order placed, bridge restarted, rollover triggered)
+    # Deduplicate by unique order_id to prevent event-replay inflation.
     try:
         events_path = Path.home() / ".openclaw" / "guard-events.jsonl"
         if events_path.exists():
-            today_confirmed_count = 0
+            seen_order_ids: set[str] = set()
             for line in events_path.read_text().splitlines():
                 if not line.strip():
                     continue
@@ -343,8 +344,10 @@ def _rollover_guard_state(state: dict) -> bool:
                 oid = str(evt.get("order_id", "")) if evt.get("order_id") is not None else ""
                 if oid in {"12345", "99999"}:
                     continue
-                today_confirmed_count += 1
-            state["daily_trade_count"] = today_confirmed_count
+                # Deduplicate: only count each unique order_id once
+                if oid and oid not in seen_order_ids:
+                    seen_order_ids.add(oid)
+            state["daily_trade_count"] = len(seen_order_ids)
     except Exception:
         pass
 
@@ -3696,16 +3699,20 @@ def submit_order(
         }
 
     # Mark as submitted (one-way)
+    already_marked = False
     try:
         mark_approval_submitted(approval_id)
     except ValueError:
-        pass  # already marked — safe to proceed
+        already_marked = True  # already marked — this is a retry
 
-    # Increment daily_trade_count
-    guard_state = load_guard_state()
-    guard_state["daily_trade_count"] += 1
-    guard_state["last_updated_utc"] = _now_utc_iso()
-    save_guard_state_atomic(guard_state)
+    # Increment daily_trade_count (only on first submission, not retries)
+    if not already_marked:
+        guard_state = load_guard_state()
+        guard_state["daily_trade_count"] += 1
+        guard_state["last_updated_utc"] = _now_utc_iso()
+        save_guard_state_atomic(guard_state)
+    else:
+        guard_state = load_guard_state()
 
     # Build ibkr_metadata from provider response
     ibkr_metadata = {

@@ -365,6 +365,10 @@ def test_repo_unit_matches_user_service():
     if not user_unit.exists():
         pytest.skip("User-level systemd service not installed")
 
+    # Masked unit → symlink to /dev/null; skip consistency check
+    if user_unit.is_symlink() and os.readlink(str(user_unit)) == "/dev/null":
+        pytest.skip("User-level systemd service is masked — system service is authoritative")
+
     repo_content = repo_unit.read_text()
     user_content = user_unit.read_text()
 

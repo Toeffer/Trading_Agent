@@ -418,68 +418,46 @@ class TestDoctorParsing:
       - doctor timeout/unparseable → HOLD blocker, not crash
     """
 
-    def _make_doctor_pass(self):
-        """Return a full-PASS doctor result (all 15 checks passing)."""
+    # -- Lightweight helpers --
+
+    def _make_lightweight_clean(self):
+        """Return clean lightweight evidence snapshot."""
         return {
-            "command": "ibkr-operator doctor",
-            "timestamp_utc": "2026-06-16T09:00:00Z",
-            "read_only": True,
-            "pass": True,
-            "checks": [
-                {"check": "runbook_exists", "ok": True, "detail": "ok"},
-                {"check": "operator_symlink", "ok": True, "detail": "/usr/local/bin/ibkr-operator"},
-                {"check": "required_files", "ok": True, "detail": "5/5"},
-                {"check": "bridge_health", "ok": True, "detail": "reachable"},
-                {"check": "checklist_parseable", "ok": True, "detail": "verdict=HOLD"},
-                {"check": "daily_report_parseable", "ok": True, "detail": "ok"},
-                {"check": "export_dir_writable", "ok": True, "detail": "/tmp"},
-                {"check": "maintenance_dryrun", "ok": True, "detail": "ok"},
-                {"check": "protected_files_safe", "ok": True, "detail": "ok"},
-                {"check": "hermes_policy_exists", "ok": True, "detail": "/home/chris/.openclaw/memory/hermes-advisory-guard-policy.md"},
-                {"check": "h1_token_canary", "ok": True, "detail": "H1 token valid"},
-                {"check": "bridge_listener_localhost", "ok": True, "detail": "1 listener(s)"},
-                {"check": "bridge_service_active", "ok": True, "detail": "active"},
-                {"check": "bridge_no_duplicate_processes", "ok": True, "detail": "1 uvicorn"},
-                {"check": "bridge_safety_flags", "ok": True, "detail": "read_only=True, allow_orders=false"},
-            ],
-            "passed": 15,
-            "total": 15,
+            "bridge": {
+                "reachable": True, "connected": True,
+                "mode": "paper", "allow_orders": False, "read_only": True,
+            },
+            "doctor": {
+                "pass": True, "total": 9, "passed": 9,
+                "checks": [
+                    {"check": "runbook_exists", "ok": True},
+                    {"check": "operator_symlink", "ok": True},
+                    {"check": "required_files", "ok": True},
+                    {"check": "bridge_health", "ok": True},
+                    {"check": "export_dir_writable", "ok": True},
+                    {"check": "hermes_policy_exists", "ok": True},
+                    {"check": "h1_token_canary", "ok": True, "detail": "skipped (lightweight)"},
+                    {"check": "bridge_port_listener", "ok": True, "detail": "1 listener(s)"},
+                    {"check": "bridge_safety_flags", "ok": True, "detail": "read_only=True, allow_orders=false"},
+                ],
+            },
+            "safety": {
+                "read_only": True, "bridge_allow_orders": False,
+                "env_IBKR_ALLOW_ORDERS": "false", "rules_enforced": "false",
+                "system_locked": True,
+            },
+            "strategy": {"strategy_exists": True, "autonomy_exists": True},
         }
-
-    def _make_doctor_h1_manual(self):
-        """Return doctor result where everything passes except H1 canary (MANUAL_REQUIRED)."""
-        result = self._make_doctor_pass()
-        # Replace h1_token_canary with MANUAL_REQUIRED status
-        for c in result["checks"]:
-            if c["check"] == "h1_token_canary":
-                c["ok"] = False
-                c["status"] = "MANUAL_REQUIRED"
-                c["detail"] = "sudo /usr/local/sbin/ibkr-trade-window approve aprv_canary"
-                break
-        result["passed"] = 14  # 14 of 15 passing
-        # pass stays True because run_doctor does NOT set all_pass=False for MANUAL_REQUIRED
-        return result
-
-    def _make_doctor_bridge_listener_fail(self):
-        """Return doctor result where bridge_listener_localhost fails."""
-        result = self._make_doctor_pass()
-        for c in result["checks"]:
-            if c["check"] == "bridge_listener_localhost":
-                c["ok"] = False
-                c["detail"] = "0 listener(s) on port 8790"
-                break
-        result["pass"] = False
-        result["passed"] = 14
-        return result
 
     # -- Test a: full PASS doctor → no doctor_non_pass --
 
     def test_full_pass_no_blocker(self):
-        """When doctor returns full PASS, rehearsal must NOT emit doctor_non_pass."""
+        """When doctor returns full PASS (lightweight), rehearsal must NOT emit doctor_non_pass."""
         from unittest.mock import patch
         from ibkr_operator import _run_cycle_rehearsal
 
-        with patch("ibkr_operator.run_doctor", return_value=self._make_doctor_pass()):
+        lw_clean = self._make_lightweight_clean()
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw_clean):
             result = _run_cycle_rehearsal()
 
         doctor_blockers = [
@@ -489,7 +467,6 @@ class TestDoctorParsing:
         assert len(doctor_blockers) == 0, (
             f"Expected no doctor blockers when doctor is PASS, got: {doctor_blockers}"
         )
-        # Doctor evidence should reflect the pass
         assert result["doctor"].get("pass") is True
 
     # -- Test b: PASS with H1 MANUAL only → no doctor_non_pass --
@@ -499,7 +476,17 @@ class TestDoctorParsing:
         from unittest.mock import patch
         from ibkr_operator import _run_cycle_rehearsal
 
-        with patch("ibkr_operator.run_doctor", return_value=self._make_doctor_h1_manual()):
+        lw = self._make_lightweight_clean()
+        # Set h1_token_canary to MANUAL (ok=False but non-canary still pass)
+        doc = dict(lw["doctor"])
+        for c in doc["checks"]:
+            if c["check"] == "h1_token_canary":
+                c["ok"] = False
+                c["status"] = "MANUAL_REQUIRED"
+                break
+        doc["passed"] = 8  # 9 checks total, 1 MANUAL (h1 canary)
+        lw["doctor"] = doc
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw):
             result = _run_cycle_rehearsal()
 
         doctor_blockers = [
@@ -510,67 +497,155 @@ class TestDoctorParsing:
             f"Expected no doctor blockers when only H1 is MANUAL, got: {doctor_blockers}"
         )
 
-    # -- Test c: bridge listener FAIL → doctor_non_pass --
+    # -- Test c: non-canary FAIL → doctor_non_pass --
 
     def test_bridge_listener_fail_blocker(self):
-        """When bridge_listener_localhost fails, rehearsal must emit doctor_non_pass."""
+        """When a non-canary check fails, rehearsal must emit doctor_non_pass."""
         from unittest.mock import patch
         from ibkr_operator import _run_cycle_rehearsal
 
-        with patch("ibkr_operator.run_doctor", return_value=self._make_doctor_bridge_listener_fail()):
+        lw = self._make_lightweight_clean()
+        doc = dict(lw["doctor"])
+        for c in doc["checks"]:
+            if c["check"] == "bridge_safety_flags":
+                c["ok"] = False
+                c["detail"] = "bridge unreachable — cannot verify safety"
+                break
+        doc["pass"] = False
+        doc["passed"] = 8  # 9 checks total, 1 fails
+        lw["doctor"] = doc
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw):
             result = _run_cycle_rehearsal()
 
         doctor_non_pass = [
             b for b in result["blockers"] if b["check"] == "doctor_non_pass"
         ]
         assert len(doctor_non_pass) >= 1, (
-            f"Expected doctor_non_pass blocker when bridge listener fails"
+            f"Expected doctor_non_pass blocker when non-canary check fails"
         )
-        assert "bridge_listener_localhost" in doctor_non_pass[0]["detail"], (
-            f"Blocker detail should mention bridge_listener_localhost: {doctor_non_pass[0]['detail']}"
+        assert "bridge_safety_flags" in doctor_non_pass[0]["detail"], (
+            f"Blocker detail should mention bridge_safety_flags: {doctor_non_pass[0]['detail']}"
         )
         assert result["doctor"].get("pass") is False
 
-    # -- Test d: doctor timeout → HOLD blocker, not crash --
+    # -- Test d: doctor unavailable → HOLD blocker, not crash --
 
     def test_doctor_timeout_hold_not_crash(self):
-        """When doctor times out, rehearsal must emit HOLD doctor_timeout, not crash."""
-        from unittest.mock import patch, MagicMock
-        from concurrent.futures import TimeoutError as FutTimeout
-        from ibkr_operator import _run_cycle_rehearsal
-
-        mock_future = MagicMock()
-        mock_future.result.side_effect = FutTimeout("timed out")
-
-        mock_executor = MagicMock()
-        mock_executor.__enter__.return_value = mock_executor
-        mock_executor.__exit__.return_value = None
-        mock_executor.submit.return_value = mock_future
-
-        with patch("concurrent.futures.ThreadPoolExecutor", return_value=mock_executor):
-            result = _run_cycle_rehearsal()
-
-        doctor_timeout = [
-            b for b in result["blockers"] if b["check"] == "doctor_timeout"
-        ]
-        assert len(doctor_timeout) >= 1, (
-            f"Expected doctor_timeout blocker on timeout, got blockers: {[b['check'] for b in result['blockers']]}"
-        )
-        assert result["verdict"] in ("HOLD", "NO-GO"), (
-            f"Verdict should be HOLD or NO-GO on timeout, got {result['verdict']}"
-        )
-        assert "timed out" in result["doctor"].get("error", ""), (
-            f"Doctor evidence should report timeout: {result['doctor']}"
-        )
-
-    # -- Test e: doctor exception → HOLD blocker, not crash --
-
-    def test_doctor_exception_hold_not_crash(self):
-        """When doctor raises an unexpected exception, rehearsal must emit HOLD, not crash."""
+        """When lightweight evidence collector fails, rehearsal must emit HOLD, not crash."""
         from unittest.mock import patch
         from ibkr_operator import _run_cycle_rehearsal
 
-        with patch("ibkr_operator.run_doctor", side_effect=RuntimeError("SIGKILL simulation")):
+        with patch("ibkr_operator._collect_lightweight_evidence",
+                   side_effect=TimeoutError("timed out")):
+            result = _run_cycle_rehearsal()
+
+        doctor_blockers = [
+            b for b in result["blockers"]
+            if b["check"] in ("doctor_unavailable", "doctor_timeout")
+        ]
+        assert len(doctor_blockers) >= 1, (
+            f"Expected doctor_unavailable blocker on failure, got: {[b['check'] for b in result['blockers']]}"
+        )
+        assert result["verdict"] in ("HOLD", "NO-GO"), (
+            f"Verdict should be HOLD or NO-GO on exception, got {result['verdict']}"
+        )
+
+    # -- Test e: bridge_safety_flags PASS → no doctor_non_pass --
+
+    def test_bridge_safety_flags_pass_no_blocker(self):
+        """When bridge_safety_flags is PASS in doctor, rehearsal must NOT emit doctor_non_pass."""
+        from unittest.mock import patch
+        from ibkr_operator import _run_cycle_rehearsal
+
+        lw = self._make_lightweight_clean()
+        # Ensure bridge_safety_flags is explicitly ok
+        for c in lw["doctor"]["checks"]:
+            if c["check"] == "bridge_safety_flags":
+                c["ok"] = True
+                c["detail"] = "read_only=True, allow_orders=False"
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw):
+            result = _run_cycle_rehearsal()
+
+        doctor_non_pass = [
+            b for b in result["blockers"] if b["check"] == "doctor_non_pass"
+        ]
+        assert len(doctor_non_pass) == 0, (
+            f"bridge_safety_flags PASS must not cause doctor_non_pass. "
+            f"Blockers: {[b['check'] for b in result['blockers']]}"
+        )
+        assert result["doctor"].get("pass") is True
+
+    # -- Test f: doctor timeout → doctor_timeout only, no bridge_safety_flags fabrication --
+
+    def test_doctor_timeout_no_fabricated_safety_flags_failure(self):
+        """Doctor timeout must produce doctor_unavailable HOLD, not fake bridge_safety_flags failure."""
+        from unittest.mock import patch
+        from ibkr_operator import _run_cycle_rehearsal
+
+        with patch("ibkr_operator._collect_lightweight_evidence",
+                   side_effect=TimeoutError("timed out")):
+            result = _run_cycle_rehearsal()
+
+        # Must NOT have doctor_non_pass
+        doctor_non_pass = [
+            b for b in result["blockers"] if b["check"] == "doctor_non_pass"
+        ]
+        assert len(doctor_non_pass) == 0, (
+            f"Doctor timeout must NOT produce doctor_non_pass. "
+            f"Got: {[b['check'] for b in result['blockers']]}"
+        )
+        # Must have doctor_unavailable instead
+        doctor_unavailable = [
+            b for b in result["blockers"] if b["check"] == "doctor_unavailable"
+        ]
+        assert len(doctor_unavailable) >= 1, (
+            f"Doctor timeout must produce doctor_unavailable HOLD. "
+            f"Blockers: {[b['check'] for b in result['blockers']]}"
+        )
+
+    # -- Test g: stale evidence ignored — current snapshot is authoritative --
+
+    def test_stale_bridge_failure_ignored_when_current_healthy(self):
+        """Current clean snapshot must override any stale state.
+
+        Verifies that when the lightweight collector returns clean bridge_safety_flags,
+        the rehearsal does not invent failures from a previous bad run.
+        """
+        from unittest.mock import patch
+        from ibkr_operator import _run_cycle_rehearsal
+
+        # Current evidence is clean
+        lw = self._make_lightweight_clean()
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw):
+            result = _run_cycle_rehearsal()
+
+        # Doctor must show all checks passing
+        assert result["doctor"].get("pass") is True, (
+            f"Doctor should PASS with clean evidence, got: {result['doctor']}"
+        )
+        # No doctor_non_pass blocker
+        doctor_blockers = [
+            b for b in result["blockers"] if "doctor" in b.get("check", "")
+        ]
+        assert len(doctor_blockers) == 0, (
+            f"Zero doctor blockers expected with clean evidence. Got: {doctor_blockers}"
+        )
+        # bridge_safety_flags must be ok
+        sf_checks = [c for c in result["doctor"].get("checks", [])
+                     if c["check"] == "bridge_safety_flags"]
+        assert len(sf_checks) == 1 and sf_checks[0].get("ok") is True, (
+            f"bridge_safety_flags must be ok in clean snapshot"
+        )
+
+    # -- Test h: doctor exception → HOLD blocker, not crash --
+
+    def test_doctor_exception_hold_not_crash(self):
+        """When lightweight evidence collector raises, rehearsal must emit HOLD, not crash."""
+        from unittest.mock import patch
+        from ibkr_operator import _run_cycle_rehearsal
+
+        with patch("ibkr_operator._collect_lightweight_evidence",
+                   side_effect=RuntimeError("SIGKILL simulation")):
             result = _run_cycle_rehearsal()
 
         doctor_unavailable = [
@@ -585,3 +660,34 @@ class TestDoctorParsing:
         assert "SIGKILL" in result["doctor"].get("error", ""), (
             f"Doctor evidence should report the exception: {result['doctor']}"
         )
+
+    # -- Lightweight helpers --
+
+    def _make_lightweight_clean(self):
+        """Return clean lightweight evidence snapshot."""
+        return {
+            "bridge": {
+                "reachable": True, "connected": True,
+                "mode": "paper", "allow_orders": False, "read_only": True,
+            },
+            "doctor": {
+                "pass": True, "total": 9, "passed": 9,
+                "checks": [
+                    {"check": "runbook_exists", "ok": True},
+                    {"check": "operator_symlink", "ok": True},
+                    {"check": "required_files", "ok": True},
+                    {"check": "bridge_health", "ok": True},
+                    {"check": "export_dir_writable", "ok": True},
+                    {"check": "hermes_policy_exists", "ok": True},
+                    {"check": "h1_token_canary", "ok": True, "detail": "skipped (lightweight)"},
+                    {"check": "bridge_port_listener", "ok": True, "detail": "1 listener(s)"},
+                    {"check": "bridge_safety_flags", "ok": True, "detail": "read_only=True, allow_orders=false"},
+                ],
+            },
+            "safety": {
+                "read_only": True, "bridge_allow_orders": False,
+                "env_IBKR_ALLOW_ORDERS": "false", "rules_enforced": "false",
+                "system_locked": True,
+            },
+            "strategy": {"strategy_exists": True, "autonomy_exists": True},
+        }

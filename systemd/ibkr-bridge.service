@@ -23,7 +23,10 @@ MemorySwapMax=0
 # ------------------------------------------------------------------ #
 # Hardening — Step 7 OS boundary / process hardening
 # ------------------------------------------------------------------ #
-NoNewPrivileges=true
+# Fix: NoNewPrivileges replaced by explicit CapabilityBoundingSet + AmbientCapabilities
+# to avoid systemd 255 status=218/CAPABILITIES crash loop with seccomp.
+CapabilityBoundingSet=
+AmbientCapabilities=
 PrivateTmp=true
 ProtectHome=false
 ReadWritePaths=/home/chris/.openclaw /tmp

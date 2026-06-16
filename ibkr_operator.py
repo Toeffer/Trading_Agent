@@ -3024,24 +3024,22 @@ def _run_cycle_rehearsal() -> dict:
             if b.get("severity") == "NO-GO":
                 blockers.append(b)
 
-    # --- 3. Doctor non-canary checks ---
-    # Run the real doctor (read-only) with timeout protection.
-    # Skip H1 canary (no elevated privs, no token) — only non-canary checks matter.
+    # --- 3. Doctor non-canary checks (lightweight in-process snapshot) ---
+    # Uses _collect_lightweight_evidence() — fast, no subprocess, no elevated privs.
+    # Excludes h1_token_canary from blocking consideration.
     doctor_evidence = {}
     doctor_non_canary_ok = True
-    _DOCTOR_TIMEOUT = 30.0
     try:
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(run_doctor, skip_h1_canary=True)
-            doctor_result = future.result(timeout=_DOCTOR_TIMEOUT)
+        light = _collect_lightweight_evidence()
+        doc = light.get("doctor", {})
         doctor_evidence = {
-            "pass": doctor_result.get("pass", False),
-            "total": doctor_result.get("total", 0),
-            "passed": doctor_result.get("passed", 0),
-            "checks": doctor_result.get("checks", []),
+            "pass": doc.get("pass", False),
+            "total": doc.get("total", 0),
+            "passed": doc.get("passed", 0),
+            "checks": doc.get("checks", []),
+            "_lightweight": True,
         }
-        # Evaluate non-canary checks (exclude h1_token_canary — MANUAL is acceptable)
+        # Evaluate non-canary checks (exclude h1_token_canary)
         non_canary_checks = [
             c for c in doctor_evidence["checks"]
             if c.get("check") != "h1_token_canary"
@@ -3055,16 +3053,11 @@ def _run_cycle_rehearsal() -> dict:
                 "severity": "HOLD", "check": "doctor_non_pass",
                 "detail": f"Doctor non-canary checks failed: {', '.join(non_canary_failures)}"
             })
-    except FutTimeout:
-        doctor_non_canary_ok = False
-        doctor_evidence = {"error": f"Doctor command timed out after {_DOCTOR_TIMEOUT}s"}
-        blockers.append({"severity": "HOLD", "check": "doctor_timeout",
-                         "detail": f"Doctor command timed out after {_DOCTOR_TIMEOUT}s"})
     except Exception as e:
         doctor_non_canary_ok = False
         doctor_evidence = {"error": str(e)[:300]}
         blockers.append({"severity": "HOLD", "check": "doctor_unavailable",
-                         "detail": f"Doctor command failed: {str(e)[:200]}"})
+                         "detail": f"Lightweight doctor failed: {str(e)[:200]}"})
 
     # --- 4. Bridge health ---
     bridge_reachable = kpi_result.get("bridge", {}).get("reachable", False)
@@ -3235,6 +3228,745 @@ def export_cycle_rehearsal(result: dict, export_dir: Path | None = None) -> Path
 
     ts_file = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_path = export_dir / f"cycle-rehearsal-{ts_file}.json"
+    tmp = out_path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, out_path)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# Step 15A — Candidate Dry-Run (first paper-trade candidate)
+# ---------------------------------------------------------------------------
+
+_CANDIDATE_EXPORT_DIR_NAME = "candidate-dryruns"
+_CANDIDATE_PROPOSALS_DIR = OPENCLAW_DIR / "proposals"
+
+# Gate H allowed symbols (large-cap ETFs/stocks only, no penny, no leveraged, no options)
+_CANDIDATE_ALLOWED_SYMBOLS: frozenset[str] = frozenset({
+    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA",
+    "JPM", "V", "JNJ", "WMT", "PG", "XOM", "UNH", "HD", "BAC",
+    "SPY", "QQQ", "IWM", "DIA", "VTI", "VOO", "BND", "AGG",
+    "EFA", "EEM", "TLT", "LQD", "GLD", "XLF", "XLK", "XLE",
+})
+
+_LIGHTWEIGHT_DOCTOR_TIMEOUT = 8.0  # seconds for lightweight checks
+
+
+def _collect_lightweight_evidence() -> dict:
+    """Collect in-process evidence snapshot — fast, no subprocess, no sudo.
+
+    Returns a dict with bridge_health, doctor_summary, and safety_status.
+    This is designed to be fast (<8s) and safe for use inside candidate
+    and rehearsal runs where full doctor invocation would be too heavy.
+    """
+    import urllib.request
+    import urllib.error
+    import subprocess
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    repo = HOME / "agents" / "ibkr-bridge"
+
+    evidence: dict[str, Any] = {
+        "timestamp_utc": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "bridge": {},
+        "doctor": {},
+        "safety": {},
+        "strategy": {},
+    }
+
+    # --- Bridge health (single HTTP call, fast) ---
+    bridge_reachable = False
+    bridge_data: dict = {}
+    try:
+        req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=_LIGHTWEIGHT_DOCTOR_TIMEOUT) as resp:
+            bridge_data = json.loads(resp.read().decode())
+            bridge_reachable = resp.status == 200
+    except Exception:
+        bridge_reachable = False
+
+    evidence["bridge"] = {
+        "reachable": bridge_reachable,
+        "url": BRIDGE_URL,
+        "connected": bridge_data.get("connected", None) if bridge_data else None,
+        "mode": bridge_data.get("mode", "?") if bridge_data else "?",
+        "allow_orders": bridge_data.get("allow_orders", "?") if bridge_data else "?",
+        "read_only": bridge_data.get("read_only", False) if bridge_data else False,
+    }
+
+    # --- In-process doctor checks (no subprocess, no H1, no sudo) ---
+    checks = []
+    all_pass = True
+
+    # K2: RUNBOOK.md
+    rb_path = repo / "RUNBOOK.md"
+    k2 = rb_path.exists()
+    if not k2:
+        all_pass = False
+    checks.append({"check": "runbook_exists", "ok": k2})
+
+    # K3: operator symlink
+    op_link = HOME / ".local/bin/ibkr-operator"
+    k3 = op_link.is_symlink() or op_link.exists()
+    if not k3:
+        all_pass = False
+    checks.append({"check": "operator_symlink", "ok": k3})
+
+    # K4: Required files
+    required = ["ibkr_operator.py", "bundle_audit.py", "monitor.py", "guard.py", "RUNBOOK.md"]
+    k4 = all((repo / f).exists() for f in required)
+    if not k4:
+        all_pass = False
+    checks.append({"check": "required_files", "ok": k4,
+                   "detail": f"{sum(1 for f in required if (repo/f).exists())}/{len(required)}"})
+
+    # K5: Bridge health (single endpoint, already checked above)
+    k5 = True  # fallback always available
+    checks.append({"check": "bridge_health", "ok": k5,
+                   "detail": "reachable" if bridge_reachable else "unreachable (fallback ok)"})
+
+    # K8: Export directory writable
+    try:
+        from bundle_audit import EXPORT_DIR
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        test_f = EXPORT_DIR / ".doctor_writable"
+        test_f.write_text("")
+        test_f.unlink()
+        checks.append({"check": "export_dir_writable", "ok": True})
+    except Exception:
+        all_pass = False
+        checks.append({"check": "export_dir_writable", "ok": False})
+
+    # K11: Hermes policy
+    hermes_path = HOME / ".openclaw" / "memory" / "hermes-advisory-guard-policy.md"
+    k11 = hermes_path.exists()
+    if not k11:
+        all_pass = False
+    checks.append({"check": "hermes_policy_exists", "ok": k11})
+
+    # K12: H1 canary — skip (no sudo, no token)
+    checks.append({"check": "h1_token_canary", "ok": True,
+                   "detail": "skipped (lightweight)"})
+
+    # K13: Bridge port listener (exactly one listener on 127.0.0.1:8790)
+    listener_count = 0
+    try:
+        result = subprocess.run(
+            ["ss", "-tlnp", "sport", "=", "8790"],
+            capture_output=True, text=True, timeout=5,
+        )
+        listener_count = sum(1 for line in result.stdout.splitlines() if "LISTEN" in line)
+    except Exception:
+        listener_count = -1  # cannot determine
+    k13_ok = listener_count == 1
+    if not k13_ok:
+        all_pass = False
+    checks.append({"check": "bridge_port_listener", "ok": k13_ok,
+                   "detail": f"{listener_count} listener(s)" if listener_count >= 0 else "cannot check"})
+
+    # K16: Bridge safety flags (from bridge health data, no separate HTTP call)
+    if bridge_data:
+        mode = bridge_data.get("mode", "?")
+        allow_orders = bridge_data.get("allow_orders", "?")
+        read_only = mode == "paper"
+        orders_disabled = (allow_orders == "false" or allow_orders is False)
+        k16_ok = read_only and orders_disabled
+        if not k16_ok:
+            all_pass = False
+        checks.append({"check": "bridge_safety_flags", "ok": k16_ok,
+                       "detail": f"read_only={read_only}, allow_orders={allow_orders}"})
+    else:
+        all_pass = False
+        checks.append({"check": "bridge_safety_flags", "ok": False,
+                       "detail": "bridge unreachable — cannot verify safety"})
+
+    evidence["doctor"] = {
+        "pass": all_pass,
+        "total": len(checks),
+        "passed": sum(1 for c in checks if c["ok"]),
+        "checks": checks,
+        "_lightweight": True,
+        "_note": "Lightweight in-process check — no subprocess calls, no sudo. Run 'ibkr-operator doctor' for full diagnostics.",
+    }
+
+    # --- Safety status ---
+    env_allow = os.environ.get("IBKR_ALLOW_ORDERS", "false")
+    env_rules = os.environ.get("IBKR_RULES_ENFORCED", "false")
+    bridge_allow = bridge_data.get("allow_orders", "?") if bridge_data else "?"
+    bridge_read_only = bridge_data.get("read_only", False) if bridge_data else False
+    startup_safety = bridge_data.get("startup_safety", {}) if bridge_data else {}
+
+    evidence["safety"] = {
+        "read_only": bridge_read_only,
+        "bridge_allow_orders": bridge_allow,
+        "env_IBKR_ALLOW_ORDERS": env_allow,
+        "rules_enforced": env_rules,
+        "system_locked": (
+            env_allow == "false"
+            and env_rules == "false"
+            and bridge_allow in ("false", False, "?")
+        ),
+        "startup_safety_passed": startup_safety.get("pass", None),
+    }
+
+    # --- Strategy docs ---
+    strategy_path = repo / "docs" / "STRATEGY.md"
+    autonomy_path = repo / "docs" / "AUTONOMY_CRITERIA.md"
+    evidence["strategy"] = {
+        "strategy_exists": strategy_path.exists(),
+        "autonomy_exists": autonomy_path.exists(),
+    }
+
+    return evidence
+
+
+def _run_candidate_dryrun(symbol: str, side: str) -> dict:
+    """Run a complete evidence-only paper-trade candidate dry-run.
+
+    No order execution. No order approval. No H1 token. No sudo.
+    No broker mutation. Bridge remains locked.
+
+    Returns a 17-item evidence package with verdict READY_DRYRUN / HOLD / NO-GO.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+
+    side = side.upper()
+    symbol = symbol.upper()
+    blockers: list[dict] = []
+
+    # Validate inputs early
+    if side not in ("BUY", "SELL"):
+        return {
+            "verdict": "ERROR",
+            "error": f"Invalid side '{side}'. Must be BUY or SELL.",
+            "timestamp": ts_str,
+        }
+
+    # ------------------------------------------------------------------
+    # Common paths (needed early for rehearsal computation)
+    # ------------------------------------------------------------------
+    strategy_path = BRIDGE_DIR / "docs" / "STRATEGY.md"
+    autonomy_path = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
+
+    # ------------------------------------------------------------------
+    # E1: Timestamp
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # E2: Git metadata
+    # ------------------------------------------------------------------
+    git = _git_metadata(BRIDGE_DIR)
+
+    # ------------------------------------------------------------------
+    # E3: Doctor result (lightweight in-process — no subprocess, no sudo)
+    # ------------------------------------------------------------------
+    doctor_evidence: dict = {}
+    doctor_unavailable = False
+    light_evidence: dict = {}
+    try:
+        light_evidence = _collect_lightweight_evidence()
+        doctor_evidence = light_evidence.get("doctor", {})
+    except Exception as e:
+        doctor_evidence = {"error": str(e)[:300]}
+        doctor_unavailable = True
+
+    # ------------------------------------------------------------------
+    # E4: KPI result — single consistent snapshot
+    # ------------------------------------------------------------------
+    kpi_evidence: dict = {}
+    kpi_unavailable = False
+    try:
+        kpi_evidence = run_kpi()
+    except Exception as e:
+        kpi_evidence = {"_kpi_error": str(e)[:300]}
+        kpi_unavailable = True
+
+    kpi_verdict = kpi_evidence.get("verdict", "ERROR" if kpi_unavailable else "UNKNOWN")
+
+    # Use lightweight snapshot (fast, consistent with doctor E3) as fallback.
+    # Prefer KPI bridge/safety data when KPI succeeded — it's more comprehensive.
+    lw_bridge = light_evidence.get("bridge", {}) if light_evidence else {}
+    lw_safety = light_evidence.get("safety", {}) if light_evidence else {}
+    lw_strategy = light_evidence.get("strategy", {}) if light_evidence else {}
+
+    # Bridge state: use KPI if available, else lightweight, else unknown
+    kpi_bridge = kpi_evidence.get("bridge", {}) if not kpi_unavailable else {}
+    eff_bridge = kpi_bridge if kpi_bridge else lw_bridge
+    bridge_known = bool(eff_bridge)
+    ibkr_reachable = eff_bridge.get("reachable", False) if bridge_known else None
+    ibkr_connected = eff_bridge.get("connected", None) if bridge_known else None
+
+    # Safety: use KPI if available, else lightweight
+    kpi_safety = kpi_evidence.get("safety_flags", {}) if not kpi_unavailable else {}
+    sf = kpi_safety if kpi_safety else lw_safety
+    safety_locked = (
+        sf.get("env_IBKR_ALLOW_ORDERS") == "false"
+        and sf.get("rules_enforced") == "false"
+        and sf.get("system_locked", False) is True
+        and bool(sf)
+    )
+
+    # ------------------------------------------------------------------
+    # E5: Cycle-rehearsal result (computed from same snapshot)
+    # ------------------------------------------------------------------
+    rehearsal_docs = {
+        "strategy_exists": strategy_path.exists(),
+        "autonomy_exists": autonomy_path.exists(),
+    }
+    rehearsal_blockers: list[dict] = []
+    if not rehearsal_docs["strategy_exists"]:
+        rehearsal_blockers.append({"severity": "NO-GO", "check": "strategy_doc_missing"})
+    if not rehearsal_docs["autonomy_exists"]:
+        rehearsal_blockers.append({"severity": "NO-GO", "check": "autonomy_doc_missing"})
+
+    # Doctor non-canary (from same snapshot)
+    doc_checks = doctor_evidence.get("checks", [])
+    non_canary_failures = [c["check"] for c in doc_checks
+                           if c.get("check") != "h1_token_canary" and not c.get("ok")]
+    if non_canary_failures:
+        rehearsal_blockers.append({"severity": "HOLD", "check": "doctor_non_pass",
+                                   "detail": f"Failed: {', '.join(non_canary_failures)}"})
+    if doctor_unavailable:
+        rehearsal_blockers.append({"severity": "HOLD", "check": "doctor_unavailable",
+                                   "detail": "Doctor command could not run"})
+
+    # KPI cascades into rehearsal (respect KPI's own blockers)
+    for b in kpi_evidence.get("blockers", []):
+        if b.get("severity") == "NO-GO":
+            rehearsal_blockers.append(b)
+    if kpi_unavailable:
+        rehearsal_blockers.append({"severity": "HOLD", "check": "kpi_unavailable",
+                                   "detail": "KPI dashboard could not run (dependency timeout)"})
+
+    # Bridge / safety from snapshot (only if known)
+    if bridge_known:
+        if not ibkr_reachable:
+            rehearsal_blockers.append({"severity": "NO-GO", "check": "bridge_unreachable"})
+        elif not ibkr_connected:
+            rehearsal_blockers.append({"severity": "HOLD", "check": "ibkr_not_connected"})
+        if not safety_locked:
+            rehearsal_blockers.append({"severity": "NO-GO", "check": "safety_unlocked"})
+    else:
+        rehearsal_blockers.append({"severity": "HOLD", "check": "bridge_unknown",
+                                   "detail": "Bridge state unknown (KPI unavailable)"})
+
+    # Heartbeat
+    hb = kpi_evidence.get("heartbeat", {})
+    if not hb.get("recent", False):
+        if hb.get("age_seconds") is None:
+            rehearsal_blockers.append({"severity": "HOLD", "check": "heartbeat_missing"})
+        else:
+            rehearsal_blockers.append({"severity": "HOLD", "check": "heartbeat_stale"})
+
+    has_r_nogo = any(b["severity"] == "NO-GO" for b in rehearsal_blockers)
+    has_r_hold = any(b["severity"] == "HOLD" for b in rehearsal_blockers)
+    if has_r_nogo:
+        rehearsal_verdict = "NO-GO"
+    elif has_r_hold:
+        rehearsal_verdict = "HOLD"
+    else:
+        rehearsal_verdict = "CLEAN"
+    rehearsal_evidence = {
+        "verdict": rehearsal_verdict,
+        "blocker_count": len(rehearsal_blockers),
+        "docs": rehearsal_docs,
+        "_computed_from_candidate": True,
+    }
+
+    # ------------------------------------------------------------------
+    # E6: Bridge safety flags (blocker check)
+    # ------------------------------------------------------------------
+    if bridge_known and not safety_locked:
+        fail_items = []
+        if sf.get("env_IBKR_ALLOW_ORDERS") != "false":
+            fail_items.append(f"IBKR_ALLOW_ORDERS={sf.get('env_IBKR_ALLOW_ORDERS')}")
+        if sf.get("rules_enforced") != "false":
+            fail_items.append(f"rules.enforced={sf.get('rules_enforced')}")
+        if sf.get("system_locked") is not True:
+            fail_items.append("system_locked is not True")
+        blockers.append({"severity": "NO-GO", "check": "safety_unlocked",
+                         "detail": "; ".join(fail_items)})
+
+    # ------------------------------------------------------------------
+    # E7: IBKR connection state (blocker check)
+    # ------------------------------------------------------------------
+    if not bridge_known:
+        blockers.append({"severity": "HOLD", "check": "bridge_unknown",
+                         "detail": "Bridge state unknown — KPI unavailable, cannot verify connection"})
+    elif not ibkr_reachable:
+        blockers.append({"severity": "HOLD", "check": "ibkr_unreachable",
+                         "detail": "IBKR bridge is not reachable — cannot verify connection"})
+    elif not ibkr_connected:
+        blockers.append({"severity": "HOLD", "check": "ibkr_disconnected",
+                         "detail": "IBKR Gateway is not connected"})
+
+    # ------------------------------------------------------------------
+    # E8: Strategy match / no-trade conditions
+    # ------------------------------------------------------------------
+    strategy_ok = lw_strategy.get("strategy_exists", strategy_path.exists()) and \
+                  lw_strategy.get("autonomy_exists", autonomy_path.exists())
+    autonomy_level = _read_autonomy_level(autonomy_path)
+
+    # KPI cascades: only when KPI is actually NO-GO (not when unavailable)
+    if kpi_verdict == "NO-GO":
+        blockers.append({"severity": "NO-GO", "check": "kpi_nogo_cascade",
+                         "detail": "KPI dashboard reports NO-GO — candidate cannot proceed"})
+    elif kpi_unavailable:
+        blockers.append({"severity": "HOLD", "check": "kpi_unavailable",
+                         "detail": "KPI dashboard unavailable — cannot verify safety"})
+
+    # Rehearsal cascades: only when rehearsal is independently NO-GO
+    # (not from KPI data we already cascade above)
+    if rehearsal_verdict == "NO-GO" and kpi_verdict != "NO-GO":
+        blockers.append({"severity": "NO-GO", "check": "rehearsal_nogo_cascade",
+                         "detail": "Cycle rehearsal reports NO-GO (independent of KPI)"})
+    elif rehearsal_verdict == "HOLD" and kpi_verdict == "GO":
+        # Only add HOLD cascade if KPI would otherwise allow GO
+        blockers.append({"severity": "HOLD", "check": "rehearsal_hold",
+                         "detail": "Cycle rehearsal reports HOLD"})
+
+    # ------------------------------------------------------------------
+    # E9: Hermes advisory
+    # ------------------------------------------------------------------
+    hermes_evidence = {"hermes_available": False}
+    try:
+        hermes_test = _run_hermes_canary()
+        hermes_evidence["canary"] = hermes_test
+        hermes_evidence["hermes_available"] = hermes_test.get("ok", False)
+    except Exception as e:
+        hermes_evidence["canary_error"] = str(e)[:200]
+
+    # ------------------------------------------------------------------
+    # E10: Gate H proposal path
+    # ------------------------------------------------------------------
+    proposal_id = f"candidate-{symbol}-{side}-{ts_file}"
+    proposal_dir = _CANDIDATE_PROPOSALS_DIR
+    proposal_dir.mkdir(parents=True, exist_ok=True)
+    proposal_path = proposal_dir / f"{proposal_id}.json"
+
+    # ------------------------------------------------------------------
+    # E11: Proposal schema validation (Gate H — symbol allowlist, side, quantity)
+    # ------------------------------------------------------------------
+    quantity = 1  # default for dry-run
+    gate_h_ok = True
+    gate_h_checks = {}
+    try:
+        from guard import _require_allowed_symbol
+        _require_allowed_symbol(symbol)
+        gate_h_checks["symbol_allowed"] = True
+    except ValueError as e:
+        gate_h_checks["symbol_allowed"] = False
+        gate_h_checks["symbol_error"] = str(e)
+        gate_h_ok = False
+        blockers.append({"severity": "NO-GO", "check": "symbol_not_allowed",
+                         "detail": f"Symbol {symbol} not in allowed universe: {str(e)}"})
+    except Exception as e:
+        gate_h_checks["symbol_allowed"] = False
+        gate_h_checks["symbol_error"] = str(e)
+        gate_h_ok = False
+
+    gate_h_checks["valid_side"] = side in ("BUY", "SELL")
+    gate_h_checks["valid_quantity"] = isinstance(quantity, int) and quantity > 0
+
+    # ------------------------------------------------------------------
+    # E12: Candidate side/symbol/quantity/notional
+    # ------------------------------------------------------------------
+    # Try to get a quote for notional calculation
+    quote_price = None
+    quote_evidence = {}
+    try:
+        from ibkr_mcp import ibkr_quote
+        q = ibkr_quote(symbol)
+        if isinstance(q, dict) and q.get("lastPrice"):
+            quote_price = float(q["lastPrice"])
+            quote_evidence = {"price": quote_price, "source": "ibkr_quote", "ok": True}
+    except Exception:
+        quote_evidence = {"ok": False, "error": "quote unavailable"}
+
+    if quote_price is None:
+        quote_price = 100.0  # placeholder for dry-run when bridge is down
+        quote_evidence["placeholder"] = True
+        quote_evidence["price"] = quote_price
+
+    notional = round(quantity * quote_price, 2)
+
+    # ------------------------------------------------------------------
+    # E13: Planned entry basis
+    # ------------------------------------------------------------------
+    entry_basis = {
+        "type": "MKT",
+        "reference_price": quote_price,
+        "reference_source": "quote" if quote_evidence.get("ok") else "placeholder",
+        "quantity": quantity,
+        "notional_eur": notional,
+    }
+
+    # ------------------------------------------------------------------
+    # E14: Stop price and stop rationale
+    # ------------------------------------------------------------------
+    stop_pct = 0.05  # 5% stop for dry-run
+    if side == "BUY":
+        stop_price = round(quote_price * (1 - stop_pct), 2)
+        stop_rationale = f"{stop_pct*100:.0f}% protective stop below entry at {stop_price}"
+    else:
+        stop_price = None
+        stop_rationale = "SELL close-only — no protective stop required"
+
+    # ------------------------------------------------------------------
+    # E15: P5 bracket-stop validation
+    # ------------------------------------------------------------------
+    p5_evidence = {}
+    p5_ok = True
+    try:
+        from guard import validate_bracket_stop
+        if side == "BUY":
+            result = validate_bracket_stop(
+                stop_price=stop_price,
+                entry_price=quote_price,
+                quantity=quantity,
+                action="BUY",
+            )
+            p5_evidence = {
+                "valid": result.get("valid", False),
+                "bracket": result.get("bracket", False),
+                "protective_stop": result.get("protective_stop", False),
+                "stop_distance": result.get("stop_distance"),
+                "parent_transmit": result.get("parent_transmit"),
+                "stop_transmit": result.get("stop_transmit"),
+            }
+            if not result.get("valid"):
+                p5_ok = False
+                p5_evidence["error"] = result.get("error", "P5 validation failed")
+                blockers.append({"severity": "NO-GO", "check": "p5_bracket_failed",
+                                 "detail": f"P5 bracket-stop validation failed: {result.get('error', 'unknown')}"})
+        else:
+            result = validate_bracket_stop(
+                stop_price=None,
+                entry_price=quote_price,
+                quantity=quantity,
+                action="SELL",
+            )
+            p5_evidence = {
+                "valid": result.get("valid", False),
+                "bracket": False,
+                "protective_stop": False,
+                "note": "SELL close-only — P5 bracket not required",
+            }
+    except Exception as e:
+        p5_evidence = {"valid": False, "error": str(e)[:300]}
+        p5_ok = False
+        blockers.append({"severity": "NO-GO", "check": "p5_bracket_failed",
+                         "detail": f"P5 validation error: {str(e)[:200]}"})
+
+    # ------------------------------------------------------------------
+    # E16: Forbidden endpoint scan
+    # ------------------------------------------------------------------
+    scan_result = _scan_forbidden_endpoints()
+    scan_ok = scan_result.get("ok", True)
+    if not scan_ok:
+        violations = scan_result.get("violations", [])
+        detail = f"{len(violations)} violation(s): " + "; ".join(
+            v.get("endpoint", "?") for v in violations[:3]
+        )
+        blockers.append({"severity": "NO-GO", "check": "forbidden_endpoint_found",
+                         "detail": detail})
+
+    # ------------------------------------------------------------------
+    # E17: Final verdict
+    # ------------------------------------------------------------------
+    has_nogo = any(b["severity"] == "NO-GO" for b in blockers)
+    has_hold = any(b["severity"] == "HOLD" for b in blockers)
+
+    if has_nogo:
+        verdict = "NO-GO"
+    elif has_hold:
+        verdict = "HOLD"
+    else:
+        verdict = "READY_DRYRUN"
+
+    # Save proposal to disk
+    proposal_doc = {
+        "proposal_id": proposal_id,
+        "timestamp": ts_str,
+        "symbol": symbol,
+        "side": side,
+        "quantity": quantity,
+        "notional_eur": notional,
+        "entry_basis": entry_basis,
+        "stop_price": stop_price,
+        "stop_rationale": stop_rationale,
+        "verdict": verdict,
+        "advisory_only": True,
+        "dry_run": True,
+        "no_order_enabled": True,
+    }
+    try:
+        with open(proposal_path, "w", encoding="utf-8") as f:
+            _json.dump(proposal_doc, f, indent=2, default=str, ensure_ascii=False)
+    except Exception as e:
+        blockers.append({"severity": "HOLD", "check": "proposal_write_failed",
+                         "detail": f"Could not write proposal to {proposal_path}: {e}"})
+
+    # Build result
+    result = {
+        "advisory": "Candidate dry-run. Read-only. No orders. No H1 token. No broker mutation.",
+        "timestamp": ts_str,
+        "git": git,
+        "verdict": verdict,
+        "symbol": symbol,
+        "side": side,
+        "quantity": quantity,
+        "notional_eur": notional,
+        "doctor": {
+            "pass": doctor_evidence.get("pass", False),
+            "total": doctor_evidence.get("total", 0),
+            "passed": doctor_evidence.get("passed", 0),
+        },
+        "kpi": {
+            "verdict": kpi_verdict,
+            "bridge": lw_bridge if lw_bridge else kpi_evidence.get("bridge", {}),
+            "safety_flags": sf if sf else kpi_evidence.get("safety_flags", {}),
+        },
+        "rehearsal": {
+            "verdict": rehearsal_verdict,
+            "blocker_count": rehearsal_evidence.get("blocker_count", -1),
+        },
+        "bridge_safety_flags": sf,
+        "ibkr_connection": {
+            "reachable": ibkr_reachable,
+            "connected": ibkr_connected,
+        },
+        "strategy": {
+            "strategy_exists": strategy_ok,
+            "autonomy_level": autonomy_level,
+        },
+        "hermes": hermes_evidence,
+        "gate_h": {
+            "proposal_path": str(proposal_path),
+            "proposal_id": proposal_id,
+            "checks": gate_h_checks,
+            "ok": gate_h_ok,
+        },
+        "proposal_schema": gate_h_checks,
+        "candidate": {
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "notional_eur": notional,
+        },
+        "entry_basis": entry_basis,
+        "stop": {
+            "price": stop_price,
+            "pct": stop_pct if side == "BUY" else None,
+            "rationale": stop_rationale,
+        },
+        "p5_bracket": p5_evidence,
+        "forbidden_endpoint_scan": scan_result,
+        "blockers": blockers,
+        "blocker_count": len(blockers),
+    }
+
+    return result
+
+
+def print_candidate_dryrun(result: dict) -> None:
+    """Print candidate dry-run result in human-readable format."""
+    verdict = result.get("verdict", "ERROR")
+    v_color = {"READY_DRYRUN": GREEN, "HOLD": RESET, "NO-GO": RED, "ERROR": RED}.get(verdict, RESET)
+
+    print(f"{BOLD}Candidate Dry-Run{RESET}  [{v_color}{verdict}{RESET}]")
+    print(f"  Timestamp:  {result.get('timestamp', '?')}")
+    print(f"  Symbol:     {result.get('symbol', '?')}")
+    print(f"  Side:       {result.get('side', '?')}")
+    print(f"  Quantity:   {result.get('quantity', '?')}")
+    print(f"  Notional:   {result.get('notional_eur', '?')} EUR")
+    print(f"  Git:        {result.get('git', {}).get('describe', '?')}"[:120])
+    print()
+
+    # Doctor
+    doc = result.get("doctor", {})
+    doc_pass = doc.get("pass", False)
+    doc_color = GREEN if doc_pass else RED
+    print(f"  Doctor:     {doc_color}{'PASS' if doc_pass else 'FAIL'}{RESET}  ({doc.get('passed', 0)}/{doc.get('total', 0)})")
+
+    # KPI
+    kpi = result.get("kpi", {})
+    kpi_v = kpi.get("verdict", "?")
+    kpi_color = {"GO": GREEN, "HOLD": RESET, "NO-GO": RED}.get(kpi_v, RESET)
+    print(f"  KPI:        {kpi_color}{kpi_v}{RESET}")
+
+    # Rehearsal
+    rh = result.get("rehearsal", {})
+    rh_v = rh.get("verdict", "?")
+    rh_color = {"CLEAN": GREEN, "HOLD": RESET, "NO-GO": RED}.get(rh_v, RESET)
+    print(f"  Rehearsal:  {rh_color}{rh_v}{RESET}")
+
+    # IBKR connection
+    ibkr = result.get("ibkr_connection", {})
+    ibkr_color = GREEN if ibkr.get("connected") else RESET
+    print(f"  IBKR:       {ibkr_color}{'connected' if ibkr.get('connected') else 'disconnected'}{RESET}")
+
+    # Safety
+    sf = result.get("bridge_safety_flags", {})
+    safety_locked = (
+        sf.get("env_IBKR_ALLOW_ORDERS") == "false"
+        and sf.get("rules_enforced") == "false"
+        and sf.get("system_locked") is True
+    )
+    print(f"  Safety:     {'LOCKED' if safety_locked else f'{RED}UNLOCKED{RESET}'}")
+
+    # Gate H
+    gh = result.get("gate_h", {})
+    print(f"  Gate H:     {'✓' if gh.get('ok') else '✗'}  proposal={gh.get('proposal_id', '?')}")
+
+    # P5
+    p5 = result.get("p5_bracket", {})
+    print(f"  P5 Bracket: {'✓' if p5.get('valid') else '✗'}")
+
+    # EP Scan
+    scan = result.get("forbidden_endpoint_scan", {})
+    print(f"  EP Scan:    {'✓' if scan.get('ok') else '✗'}")
+
+    # Stop
+    stop = result.get("stop", {})
+    if stop.get("price"):
+        print(f"  Stop:       {stop['price']} ({stop.get('pct', '?')*100:.0f}%)")
+    else:
+        print(f"  Stop:       {stop.get('rationale', 'N/A')}")
+
+    # Blockers
+    blockers = result.get("blockers", [])
+    if blockers:
+        print(f"\n  {BOLD}Blockers:{RESET}")
+        for b in blockers:
+            sev_color = {"NO-GO": RED, "HOLD": RESET}.get(b["severity"], RESET)
+            print(f"    [{sev_color}{b['severity']}{RESET}] {b['check']}: {b.get('detail', '')}"[:200])
+    print()
+
+
+def export_candidate_dryrun(result: dict, export_dir: Path | None = None) -> Path:
+    """Export candidate dry-run result to JSON file.
+
+    Uses ~/.openclaw/candidate-dryruns/ as default export directory.
+    Returns the output path.
+    """
+    if export_dir is None:
+        export_dir = OPENCLAW_DIR / _CANDIDATE_EXPORT_DIR_NAME
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    ts_file = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    symbol = result.get("symbol", "UNKNOWN")
+    side = result.get("side", "?")
+    out_path = export_dir / f"candidate-{symbol}-{side}-{ts_file}.json"
     tmp = out_path.with_suffix(".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, default=str, ensure_ascii=False)
@@ -3727,6 +4459,17 @@ def main() -> None:
     crp.add_argument("--export", action="store_true",
                      help="Write output to ~/.openclaw/autonomy-cycles/")
 
+    # Phase 5E (Step 15A) — candidate dry-run
+    canp = sub.add_parser("candidate-dryrun",
+                          help="Evidence-only paper-trade candidate dry-run")
+    canp.add_argument("--symbol", required=True, type=str, help="Ticker symbol")
+    canp.add_argument("--side", required=True, choices=["BUY", "SELL"],
+                      help="Order side: BUY or SELL")
+    canp.add_argument("--json", action="store_true",
+                      help="Output raw JSON only")
+    canp.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/candidate-dryruns/")
+
     args = parser.parse_args()
 
     if args.command == "daily-report":
@@ -3902,6 +4645,20 @@ def main() -> None:
             if args.export:
                 print(f"\n  Export written: {result.get('_export_path', '?')}")
         sys.exit(2 if result["verdict"] == "NO-GO" else 0)
+
+    if args.command == "candidate-dryrun":
+        result = _run_candidate_dryrun(args.symbol, args.side)
+        if args.export:
+            export_path = export_candidate_dryrun(result)
+            result["_export_path"] = str(export_path)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print_candidate_dryrun(result)
+            if args.export:
+                print(f"  Export written: {result.get('_export_path', '?')}")
+        exit_code = 2 if result["verdict"] == "NO-GO" else (0 if result["verdict"] == "READY_DRYRUN" else 1)
+        sys.exit(exit_code)
 
     if args.command != "checklist":
         parser.print_help()

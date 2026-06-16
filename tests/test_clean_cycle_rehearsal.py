@@ -550,7 +550,94 @@ class TestDoctorParsing:
             f"Verdict should be HOLD or NO-GO on exception, got {result['verdict']}"
         )
 
-    # -- Test e: doctor exception → HOLD blocker, not crash --
+    # -- Test e: bridge_safety_flags PASS → no doctor_non_pass --
+
+    def test_bridge_safety_flags_pass_no_blocker(self):
+        """When bridge_safety_flags is PASS in doctor, rehearsal must NOT emit doctor_non_pass."""
+        from unittest.mock import patch
+        from ibkr_operator import _run_cycle_rehearsal
+
+        lw = self._make_lightweight_clean()
+        # Ensure bridge_safety_flags is explicitly ok
+        for c in lw["doctor"]["checks"]:
+            if c["check"] == "bridge_safety_flags":
+                c["ok"] = True
+                c["detail"] = "read_only=True, allow_orders=False"
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw):
+            result = _run_cycle_rehearsal()
+
+        doctor_non_pass = [
+            b for b in result["blockers"] if b["check"] == "doctor_non_pass"
+        ]
+        assert len(doctor_non_pass) == 0, (
+            f"bridge_safety_flags PASS must not cause doctor_non_pass. "
+            f"Blockers: {[b['check'] for b in result['blockers']]}"
+        )
+        assert result["doctor"].get("pass") is True
+
+    # -- Test f: doctor timeout → doctor_timeout only, no bridge_safety_flags fabrication --
+
+    def test_doctor_timeout_no_fabricated_safety_flags_failure(self):
+        """Doctor timeout must produce doctor_unavailable HOLD, not fake bridge_safety_flags failure."""
+        from unittest.mock import patch
+        from ibkr_operator import _run_cycle_rehearsal
+
+        with patch("ibkr_operator._collect_lightweight_evidence",
+                   side_effect=TimeoutError("timed out")):
+            result = _run_cycle_rehearsal()
+
+        # Must NOT have doctor_non_pass
+        doctor_non_pass = [
+            b for b in result["blockers"] if b["check"] == "doctor_non_pass"
+        ]
+        assert len(doctor_non_pass) == 0, (
+            f"Doctor timeout must NOT produce doctor_non_pass. "
+            f"Got: {[b['check'] for b in result['blockers']]}"
+        )
+        # Must have doctor_unavailable instead
+        doctor_unavailable = [
+            b for b in result["blockers"] if b["check"] == "doctor_unavailable"
+        ]
+        assert len(doctor_unavailable) >= 1, (
+            f"Doctor timeout must produce doctor_unavailable HOLD. "
+            f"Blockers: {[b['check'] for b in result['blockers']]}"
+        )
+
+    # -- Test g: stale evidence ignored — current snapshot is authoritative --
+
+    def test_stale_bridge_failure_ignored_when_current_healthy(self):
+        """Current clean snapshot must override any stale state.
+
+        Verifies that when the lightweight collector returns clean bridge_safety_flags,
+        the rehearsal does not invent failures from a previous bad run.
+        """
+        from unittest.mock import patch
+        from ibkr_operator import _run_cycle_rehearsal
+
+        # Current evidence is clean
+        lw = self._make_lightweight_clean()
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw):
+            result = _run_cycle_rehearsal()
+
+        # Doctor must show all checks passing
+        assert result["doctor"].get("pass") is True, (
+            f"Doctor should PASS with clean evidence, got: {result['doctor']}"
+        )
+        # No doctor_non_pass blocker
+        doctor_blockers = [
+            b for b in result["blockers"] if "doctor" in b.get("check", "")
+        ]
+        assert len(doctor_blockers) == 0, (
+            f"Zero doctor blockers expected with clean evidence. Got: {doctor_blockers}"
+        )
+        # bridge_safety_flags must be ok
+        sf_checks = [c for c in result["doctor"].get("checks", [])
+                     if c["check"] == "bridge_safety_flags"]
+        assert len(sf_checks) == 1 and sf_checks[0].get("ok") is True, (
+            f"bridge_safety_flags must be ok in clean snapshot"
+        )
+
+    # -- Test h: doctor exception → HOLD blocker, not crash --
 
     def test_doctor_exception_hold_not_crash(self):
         """When lightweight evidence collector raises, rehearsal must emit HOLD, not crash."""

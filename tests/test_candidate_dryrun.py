@@ -851,3 +851,101 @@ class TestDoctorPassNoRehearsalBlocker:
         assert len(doctor_blockers) == 0, (
             f"Doctor with only H1 MANUAL must not produce doctor blockers. Got: {doctor_blockers}"
         )
+
+
+# ---------------------------------------------------------------------------
+# T20: Bridge safety flags regression — PASS does not fabricate failure
+# ---------------------------------------------------------------------------
+
+class TestBridgeSafetyFlagsNoFabrication:
+    """bridge_safety_flags PASS must not produce spurious doctor_non_pass."""
+
+    def test_bridge_safety_flags_pass_no_doctor_blocker(self):
+        """When bridge_safety_flags is ok, candidate must not have doctor_non_pass."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        lw = _make_lightweight_clean()
+        # Explicitly set bridge_safety_flags to PASS
+        for c in lw["doctor"]["checks"]:
+            if c["check"] == "bridge_safety_flags":
+                c["ok"] = True
+                c["detail"] = "read_only=True, allow_orders=False"
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        sf_blockers = [
+            b for b in result["blockers"]
+            if "bridge_safety" in b.get("check", "") or "bridge_safety" in b.get("detail", "")
+        ]
+        assert len(sf_blockers) == 0, (
+            f"bridge_safety_flags PASS must not produce blockers. Got: {sf_blockers}"
+        )
+        # Doctor PASS and no doctor_non_pass
+        assert result["doctor"]["pass"] is True
+        doctor_blockers = [b for b in result["blockers"] if "doctor" in b.get("check", "")]
+        assert len(doctor_blockers) == 0, (
+            f"No doctor blockers expected. Got: {doctor_blockers}"
+        )
+
+    def test_stale_safety_flags_failure_ignored_current_clean(self):
+        """Current clean bridge_safety_flags overrides any stale failure state."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        lw = _make_lightweight_clean()
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        # Doctor must show PASS (not FAIL from stale evidence)
+        assert result["doctor"]["pass"] is True, (
+            f"Doctor must PASS with clean evidence. Got: {result['doctor']}"
+        )
+        # No doctor_non_pass (from stale bridge_safety_flags)
+        dnps = [b for b in result["blockers"] if b["check"] == "doctor_non_pass"]
+        assert len(dnps) == 0, (
+            f"Current clean evidence must not produce doctor_non_pass. Blockers: {[b['check'] for b in result['blockers']]}"
+        )
+        # bridge_safety_flags in result should reflect clean state
+        bsf = result.get("bridge_safety_flags", {})
+        assert bsf.get("env_IBKR_ALLOW_ORDERS") == "false", (
+            f"bridge_safety_flags must show clean state. Got: {bsf}"
+        )
+
+    def test_current_bridge_health_overrides_previous_failure(self):
+        """When current /health says read_only=True + allow_orders=False, doctor must not fail bridge_safety_flags."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        # Construct lightweight evidence where bridge data explicitly shows safe state
+        lw = _make_lightweight_clean()
+        lw["bridge"] = {
+            "reachable": True, "connected": True,
+            "mode": "paper", "allow_orders": False, "read_only": True,
+        }
+        # Doctor check for bridge_safety_flags must derive ok from bridge data
+        for c in lw["doctor"]["checks"]:
+            if c["check"] == "bridge_safety_flags":
+                c["ok"] = True
+                c["detail"] = "read_only=True, allow_orders=False"
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        # Must NOT have doctor_non_pass
+        dnps = [b for b in result["blockers"] if b["check"] == "doctor_non_pass"]
+        assert len(dnps) == 0, (
+            f"Current bridge health PASS must not cause doctor_non_pass. "
+            f"Blockers: {[b['check'] for b in result['blockers']]}"
+        )
+        # bridge_safety_flags in result must reflect current state
+        bsf = result.get("bridge_safety_flags", {})
+        assert bsf.get("env_IBKR_ALLOW_ORDERS") == "false", (
+            f"bridge_safety_flags must show allow_orders=false. Got: {bsf}"
+        )

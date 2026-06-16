@@ -3245,6 +3245,530 @@ def export_cycle_rehearsal(result: dict, export_dir: Path | None = None) -> Path
 
 
 # ---------------------------------------------------------------------------
+# Step 15A — Candidate Dry-Run (first paper-trade candidate)
+# ---------------------------------------------------------------------------
+
+_CANDIDATE_EXPORT_DIR_NAME = "candidate-dryruns"
+_CANDIDATE_PROPOSALS_DIR = OPENCLAW_DIR / "proposals"
+
+# Gate H allowed symbols (large-cap ETFs/stocks only, no penny, no leveraged, no options)
+_CANDIDATE_ALLOWED_SYMBOLS: frozenset[str] = frozenset({
+    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA",
+    "JPM", "V", "JNJ", "WMT", "PG", "XOM", "UNH", "HD", "BAC",
+    "SPY", "QQQ", "IWM", "DIA", "VTI", "VOO", "BND", "AGG",
+    "EFA", "EEM", "TLT", "LQD", "GLD", "XLF", "XLK", "XLE",
+})
+
+
+def _run_candidate_dryrun(symbol: str, side: str) -> dict:
+    """Run a complete evidence-only paper-trade candidate dry-run.
+
+    No order execution. No order approval. No H1 token. No sudo.
+    No broker mutation. Bridge remains locked.
+
+    Returns a 17-item evidence package with verdict READY_DRYRUN / HOLD / NO-GO.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+
+    side = side.upper()
+    symbol = symbol.upper()
+    blockers: list[dict] = []
+
+    # Validate inputs early
+    if side not in ("BUY", "SELL"):
+        return {
+            "verdict": "ERROR",
+            "error": f"Invalid side '{side}'. Must be BUY or SELL.",
+            "timestamp": ts_str,
+        }
+
+    # ------------------------------------------------------------------
+    # Common paths (needed early for rehearsal computation)
+    # ------------------------------------------------------------------
+    strategy_path = BRIDGE_DIR / "docs" / "STRATEGY.md"
+    autonomy_path = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
+
+    # ------------------------------------------------------------------
+    # E1: Timestamp
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # E2: Git metadata
+    # ------------------------------------------------------------------
+    git = _git_metadata(BRIDGE_DIR)
+
+    # ------------------------------------------------------------------
+    # E3: Doctor result (skip H1 canary — no sudo, no token)
+    # ------------------------------------------------------------------
+    doctor_evidence = {}
+    try:
+        doctor_evidence = run_doctor(skip_h1_canary=True)
+    except Exception as e:
+        doctor_evidence = {"error": str(e)[:300]}
+        blockers.append({"severity": "HOLD", "check": "doctor_unavailable",
+                         "detail": f"Doctor failed: {str(e)[:200]}"})
+
+    # ------------------------------------------------------------------
+    # E4: KPI result
+    # ------------------------------------------------------------------
+    kpi_evidence = {}
+    try:
+        kpi_evidence = run_kpi()
+    except Exception as e:
+        kpi_evidence = {"error": str(e)[:300]}
+        blockers.append({"severity": "NO-GO", "check": "kpi_unavailable",
+                         "detail": f"KPI failed: {str(e)[:200]}"})
+
+    kpi_verdict = kpi_evidence.get("verdict", "ERROR")
+
+    # Extract safety flags, bridge state early (needed for rehearsal)
+    sf = kpi_evidence.get("safety_flags", {})
+    safety_locked = (
+        sf.get("env_IBKR_ALLOW_ORDERS") == "false"
+        and sf.get("rules_enforced") == "false"
+        and sf.get("system_locked") is True
+    )
+    bridge = kpi_evidence.get("bridge", {})
+    ibkr_connected = bridge.get("connected", False)
+    ibkr_reachable = bridge.get("reachable", False)
+
+    # ------------------------------------------------------------------
+    # E5: Cycle-rehearsal result (computed from already-gathered evidence
+    # to avoid redundant doctor/KPI calls)
+    # ------------------------------------------------------------------
+    rehearsal_docs = {
+        "strategy_exists": strategy_path.exists(),
+        "autonomy_exists": autonomy_path.exists(),
+    }
+    rehearsal_blockers = []
+    if not rehearsal_docs["strategy_exists"]:
+        rehearsal_blockers.append({"severity": "NO-GO", "check": "strategy_doc_missing"})
+    if not rehearsal_docs["autonomy_exists"]:
+        rehearsal_blockers.append({"severity": "NO-GO", "check": "autonomy_doc_missing"})
+    for b in kpi_evidence.get("blockers", []):
+        if b.get("severity") == "NO-GO":
+            rehearsal_blockers.append(b)
+    doc_checks = doctor_evidence.get("checks", [])
+    non_canary_failures = [c["check"] for c in doc_checks
+                           if c.get("check") != "h1_token_canary" and not c.get("ok")]
+    if non_canary_failures:
+        rehearsal_blockers.append({"severity": "HOLD", "check": "doctor_non_pass",
+                                   "detail": f"Failed: {', '.join(non_canary_failures)}"})
+    if not ibkr_reachable:
+        rehearsal_blockers.append({"severity": "NO-GO", "check": "bridge_unreachable"})
+    elif not ibkr_connected:
+        rehearsal_blockers.append({"severity": "HOLD", "check": "ibkr_not_connected"})
+    if not safety_locked:
+        rehearsal_blockers.append({"severity": "NO-GO", "check": "safety_unlocked"})
+    hb = kpi_evidence.get("heartbeat", {})
+    if not hb.get("recent", False):
+        if hb.get("age_seconds") is None:
+            rehearsal_blockers.append({"severity": "HOLD", "check": "heartbeat_missing"})
+        else:
+            rehearsal_blockers.append({"severity": "HOLD", "check": "heartbeat_stale"})
+    has_r_nogo = any(b["severity"] == "NO-GO" for b in rehearsal_blockers)
+    has_r_hold = any(b["severity"] == "HOLD" for b in rehearsal_blockers)
+    if has_r_nogo:
+        rehearsal_verdict = "NO-GO"
+    elif has_r_hold:
+        rehearsal_verdict = "HOLD"
+    else:
+        rehearsal_verdict = "CLEAN"
+    rehearsal_evidence = {
+        "verdict": rehearsal_verdict,
+        "blocker_count": len(rehearsal_blockers),
+        "docs": rehearsal_docs,
+        "_computed_from_candidate": True,
+    }
+
+    # ------------------------------------------------------------------
+    # E6: Bridge safety flags (blocker check)
+    # ------------------------------------------------------------------
+    if not safety_locked:
+        fail_items = []
+        if sf.get("env_IBKR_ALLOW_ORDERS") != "false":
+            fail_items.append(f"IBKR_ALLOW_ORDERS={sf.get('env_IBKR_ALLOW_ORDERS')}")
+        if sf.get("rules_enforced") != "false":
+            fail_items.append(f"rules.enforced={sf.get('rules_enforced')}")
+        if sf.get("system_locked") is not True:
+            fail_items.append("system_locked is not True")
+        blockers.append({"severity": "NO-GO", "check": "safety_unlocked",
+                         "detail": "; ".join(fail_items)})
+
+    # ------------------------------------------------------------------
+    # E7: IBKR connection state (blocker check)
+    # ------------------------------------------------------------------
+    if not ibkr_reachable:
+        blockers.append({"severity": "HOLD", "check": "ibkr_unreachable",
+                         "detail": "IBKR bridge is not reachable — cannot verify connection"})
+    elif not ibkr_connected:
+        blockers.append({"severity": "HOLD", "check": "ibkr_disconnected",
+                         "detail": "IBKR Gateway is not connected"})
+
+    # ------------------------------------------------------------------
+    # E8: Strategy match / no-trade conditions
+    # ------------------------------------------------------------------
+    strategy_ok = strategy_path.exists() and autonomy_path.exists()
+    autonomy_level = _read_autonomy_level(autonomy_path)
+
+    # KPI cascades: if KPI is NO-GO, candidate is NO-GO
+    if kpi_verdict == "NO-GO":
+        blockers.append({"severity": "NO-GO", "check": "kpi_nogo_cascade",
+                         "detail": "KPI dashboard reports NO-GO — candidate cannot proceed"})
+
+    # Rehearsal cascades
+    if rehearsal_verdict == "NO-GO":
+        blockers.append({"severity": "NO-GO", "check": "rehearsal_nogo_cascade",
+                         "detail": "Cycle rehearsal reports NO-GO"})
+
+    # ------------------------------------------------------------------
+    # E9: Hermes advisory
+    # ------------------------------------------------------------------
+    hermes_evidence = {"hermes_available": False}
+    try:
+        hermes_test = _run_hermes_canary()
+        hermes_evidence["canary"] = hermes_test
+        hermes_evidence["hermes_available"] = hermes_test.get("ok", False)
+    except Exception as e:
+        hermes_evidence["canary_error"] = str(e)[:200]
+
+    # ------------------------------------------------------------------
+    # E10: Gate H proposal path
+    # ------------------------------------------------------------------
+    proposal_id = f"candidate-{symbol}-{side}-{ts_file}"
+    proposal_dir = _CANDIDATE_PROPOSALS_DIR
+    proposal_dir.mkdir(parents=True, exist_ok=True)
+    proposal_path = proposal_dir / f"{proposal_id}.json"
+
+    # ------------------------------------------------------------------
+    # E11: Proposal schema validation (Gate H — symbol allowlist, side, quantity)
+    # ------------------------------------------------------------------
+    quantity = 1  # default for dry-run
+    gate_h_ok = True
+    gate_h_checks = {}
+    try:
+        from guard import _require_allowed_symbol
+        _require_allowed_symbol(symbol)
+        gate_h_checks["symbol_allowed"] = True
+    except ValueError as e:
+        gate_h_checks["symbol_allowed"] = False
+        gate_h_checks["symbol_error"] = str(e)
+        gate_h_ok = False
+        blockers.append({"severity": "NO-GO", "check": "symbol_not_allowed",
+                         "detail": f"Symbol {symbol} not in allowed universe: {str(e)}"})
+    except Exception as e:
+        gate_h_checks["symbol_allowed"] = False
+        gate_h_checks["symbol_error"] = str(e)
+        gate_h_ok = False
+
+    gate_h_checks["valid_side"] = side in ("BUY", "SELL")
+    gate_h_checks["valid_quantity"] = isinstance(quantity, int) and quantity > 0
+
+    # ------------------------------------------------------------------
+    # E12: Candidate side/symbol/quantity/notional
+    # ------------------------------------------------------------------
+    # Try to get a quote for notional calculation
+    quote_price = None
+    quote_evidence = {}
+    try:
+        from ibkr_mcp import ibkr_quote
+        q = ibkr_quote(symbol)
+        if isinstance(q, dict) and q.get("lastPrice"):
+            quote_price = float(q["lastPrice"])
+            quote_evidence = {"price": quote_price, "source": "ibkr_quote", "ok": True}
+    except Exception:
+        quote_evidence = {"ok": False, "error": "quote unavailable"}
+
+    if quote_price is None:
+        quote_price = 100.0  # placeholder for dry-run when bridge is down
+        quote_evidence["placeholder"] = True
+        quote_evidence["price"] = quote_price
+
+    notional = round(quantity * quote_price, 2)
+
+    # ------------------------------------------------------------------
+    # E13: Planned entry basis
+    # ------------------------------------------------------------------
+    entry_basis = {
+        "type": "MKT",
+        "reference_price": quote_price,
+        "reference_source": "quote" if quote_evidence.get("ok") else "placeholder",
+        "quantity": quantity,
+        "notional_eur": notional,
+    }
+
+    # ------------------------------------------------------------------
+    # E14: Stop price and stop rationale
+    # ------------------------------------------------------------------
+    stop_pct = 0.05  # 5% stop for dry-run
+    if side == "BUY":
+        stop_price = round(quote_price * (1 - stop_pct), 2)
+        stop_rationale = f"{stop_pct*100:.0f}% protective stop below entry at {stop_price}"
+    else:
+        stop_price = None
+        stop_rationale = "SELL close-only — no protective stop required"
+
+    # ------------------------------------------------------------------
+    # E15: P5 bracket-stop validation
+    # ------------------------------------------------------------------
+    p5_evidence = {}
+    p5_ok = True
+    try:
+        from guard import validate_bracket_stop
+        if side == "BUY":
+            result = validate_bracket_stop(
+                stop_price=stop_price,
+                entry_price=quote_price,
+                quantity=quantity,
+                action="BUY",
+            )
+            p5_evidence = {
+                "valid": result.get("valid", False),
+                "bracket": result.get("bracket", False),
+                "protective_stop": result.get("protective_stop", False),
+                "stop_distance": result.get("stop_distance"),
+                "parent_transmit": result.get("parent_transmit"),
+                "stop_transmit": result.get("stop_transmit"),
+            }
+            if not result.get("valid"):
+                p5_ok = False
+                p5_evidence["error"] = result.get("error", "P5 validation failed")
+                blockers.append({"severity": "NO-GO", "check": "p5_bracket_failed",
+                                 "detail": f"P5 bracket-stop validation failed: {result.get('error', 'unknown')}"})
+        else:
+            result = validate_bracket_stop(
+                stop_price=None,
+                entry_price=quote_price,
+                quantity=quantity,
+                action="SELL",
+            )
+            p5_evidence = {
+                "valid": result.get("valid", False),
+                "bracket": False,
+                "protective_stop": False,
+                "note": "SELL close-only — P5 bracket not required",
+            }
+    except Exception as e:
+        p5_evidence = {"valid": False, "error": str(e)[:300]}
+        p5_ok = False
+        blockers.append({"severity": "NO-GO", "check": "p5_bracket_failed",
+                         "detail": f"P5 validation error: {str(e)[:200]}"})
+
+    # ------------------------------------------------------------------
+    # E16: Forbidden endpoint scan
+    # ------------------------------------------------------------------
+    scan_result = _scan_forbidden_endpoints()
+    scan_ok = scan_result.get("ok", True)
+    if not scan_ok:
+        violations = scan_result.get("violations", [])
+        detail = f"{len(violations)} violation(s): " + "; ".join(
+            v.get("endpoint", "?") for v in violations[:3]
+        )
+        blockers.append({"severity": "NO-GO", "check": "forbidden_endpoint_found",
+                         "detail": detail})
+
+    # ------------------------------------------------------------------
+    # E17: Final verdict
+    # ------------------------------------------------------------------
+    has_nogo = any(b["severity"] == "NO-GO" for b in blockers)
+    has_hold = any(b["severity"] == "HOLD" for b in blockers)
+
+    if has_nogo:
+        verdict = "NO-GO"
+    elif has_hold:
+        verdict = "HOLD"
+    else:
+        verdict = "READY_DRYRUN"
+
+    # Save proposal to disk
+    proposal_doc = {
+        "proposal_id": proposal_id,
+        "timestamp": ts_str,
+        "symbol": symbol,
+        "side": side,
+        "quantity": quantity,
+        "notional_eur": notional,
+        "entry_basis": entry_basis,
+        "stop_price": stop_price,
+        "stop_rationale": stop_rationale,
+        "verdict": verdict,
+        "advisory_only": True,
+        "dry_run": True,
+        "no_order_enabled": True,
+    }
+    try:
+        with open(proposal_path, "w", encoding="utf-8") as f:
+            _json.dump(proposal_doc, f, indent=2, default=str, ensure_ascii=False)
+    except Exception as e:
+        blockers.append({"severity": "HOLD", "check": "proposal_write_failed",
+                         "detail": f"Could not write proposal to {proposal_path}: {e}"})
+
+    # Build result
+    result = {
+        "advisory": "Candidate dry-run. Read-only. No orders. No H1 token. No broker mutation.",
+        "timestamp": ts_str,
+        "git": git,
+        "verdict": verdict,
+        "symbol": symbol,
+        "side": side,
+        "quantity": quantity,
+        "notional_eur": notional,
+        "doctor": {
+            "pass": doctor_evidence.get("pass", False),
+            "total": doctor_evidence.get("total", 0),
+            "passed": doctor_evidence.get("passed", 0),
+        },
+        "kpi": {
+            "verdict": kpi_verdict,
+            "bridge": bridge,
+            "safety_flags": sf,
+        },
+        "rehearsal": {
+            "verdict": rehearsal_verdict,
+            "blocker_count": rehearsal_evidence.get("blocker_count", -1),
+        },
+        "bridge_safety_flags": sf,
+        "ibkr_connection": {
+            "reachable": ibkr_reachable,
+            "connected": ibkr_connected,
+        },
+        "strategy": {
+            "strategy_exists": strategy_ok,
+            "autonomy_level": autonomy_level,
+        },
+        "hermes": hermes_evidence,
+        "gate_h": {
+            "proposal_path": str(proposal_path),
+            "proposal_id": proposal_id,
+            "checks": gate_h_checks,
+            "ok": gate_h_ok,
+        },
+        "proposal_schema": gate_h_checks,
+        "candidate": {
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "notional_eur": notional,
+        },
+        "entry_basis": entry_basis,
+        "stop": {
+            "price": stop_price,
+            "pct": stop_pct if side == "BUY" else None,
+            "rationale": stop_rationale,
+        },
+        "p5_bracket": p5_evidence,
+        "forbidden_endpoint_scan": scan_result,
+        "blockers": blockers,
+        "blocker_count": len(blockers),
+    }
+
+    return result
+
+
+def print_candidate_dryrun(result: dict) -> None:
+    """Print candidate dry-run result in human-readable format."""
+    verdict = result.get("verdict", "ERROR")
+    v_color = {"READY_DRYRUN": GREEN, "HOLD": RESET, "NO-GO": RED, "ERROR": RED}.get(verdict, RESET)
+
+    print(f"{BOLD}Candidate Dry-Run{RESET}  [{v_color}{verdict}{RESET}]")
+    print(f"  Timestamp:  {result.get('timestamp', '?')}")
+    print(f"  Symbol:     {result.get('symbol', '?')}")
+    print(f"  Side:       {result.get('side', '?')}")
+    print(f"  Quantity:   {result.get('quantity', '?')}")
+    print(f"  Notional:   {result.get('notional_eur', '?')} EUR")
+    print(f"  Git:        {result.get('git', {}).get('describe', '?')}"[:120])
+    print()
+
+    # Doctor
+    doc = result.get("doctor", {})
+    doc_pass = doc.get("pass", False)
+    doc_color = GREEN if doc_pass else RED
+    print(f"  Doctor:     {doc_color}{'PASS' if doc_pass else 'FAIL'}{RESET}  ({doc.get('passed', 0)}/{doc.get('total', 0)})")
+
+    # KPI
+    kpi = result.get("kpi", {})
+    kpi_v = kpi.get("verdict", "?")
+    kpi_color = {"GO": GREEN, "HOLD": RESET, "NO-GO": RED}.get(kpi_v, RESET)
+    print(f"  KPI:        {kpi_color}{kpi_v}{RESET}")
+
+    # Rehearsal
+    rh = result.get("rehearsal", {})
+    rh_v = rh.get("verdict", "?")
+    rh_color = {"CLEAN": GREEN, "HOLD": RESET, "NO-GO": RED}.get(rh_v, RESET)
+    print(f"  Rehearsal:  {rh_color}{rh_v}{RESET}")
+
+    # IBKR connection
+    ibkr = result.get("ibkr_connection", {})
+    ibkr_color = GREEN if ibkr.get("connected") else RESET
+    print(f"  IBKR:       {ibkr_color}{'connected' if ibkr.get('connected') else 'disconnected'}{RESET}")
+
+    # Safety
+    sf = result.get("bridge_safety_flags", {})
+    safety_locked = (
+        sf.get("env_IBKR_ALLOW_ORDERS") == "false"
+        and sf.get("rules_enforced") == "false"
+        and sf.get("system_locked") is True
+    )
+    print(f"  Safety:     {'LOCKED' if safety_locked else f'{RED}UNLOCKED{RESET}'}")
+
+    # Gate H
+    gh = result.get("gate_h", {})
+    print(f"  Gate H:     {'✓' if gh.get('ok') else '✗'}  proposal={gh.get('proposal_id', '?')}")
+
+    # P5
+    p5 = result.get("p5_bracket", {})
+    print(f"  P5 Bracket: {'✓' if p5.get('valid') else '✗'}")
+
+    # EP Scan
+    scan = result.get("forbidden_endpoint_scan", {})
+    print(f"  EP Scan:    {'✓' if scan.get('ok') else '✗'}")
+
+    # Stop
+    stop = result.get("stop", {})
+    if stop.get("price"):
+        print(f"  Stop:       {stop['price']} ({stop.get('pct', '?')*100:.0f}%)")
+    else:
+        print(f"  Stop:       {stop.get('rationale', 'N/A')}")
+
+    # Blockers
+    blockers = result.get("blockers", [])
+    if blockers:
+        print(f"\n  {BOLD}Blockers:{RESET}")
+        for b in blockers:
+            sev_color = {"NO-GO": RED, "HOLD": RESET}.get(b["severity"], RESET)
+            print(f"    [{sev_color}{b['severity']}{RESET}] {b['check']}: {b.get('detail', '')}"[:200])
+    print()
+
+
+def export_candidate_dryrun(result: dict, export_dir: Path | None = None) -> Path:
+    """Export candidate dry-run result to JSON file.
+
+    Uses ~/.openclaw/candidate-dryruns/ as default export directory.
+    Returns the output path.
+    """
+    if export_dir is None:
+        export_dir = OPENCLAW_DIR / _CANDIDATE_EXPORT_DIR_NAME
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    ts_file = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    symbol = result.get("symbol", "UNKNOWN")
+    side = result.get("side", "?")
+    out_path = export_dir / f"candidate-{symbol}-{side}-{ts_file}.json"
+    tmp = out_path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, out_path)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # Phase 5B.1 — Hermes Advisory Proposal (original)
 # ---------------------------------------------------------------------------
 
@@ -3727,6 +4251,17 @@ def main() -> None:
     crp.add_argument("--export", action="store_true",
                      help="Write output to ~/.openclaw/autonomy-cycles/")
 
+    # Phase 5E (Step 15A) — candidate dry-run
+    canp = sub.add_parser("candidate-dryrun",
+                          help="Evidence-only paper-trade candidate dry-run")
+    canp.add_argument("--symbol", required=True, type=str, help="Ticker symbol")
+    canp.add_argument("--side", required=True, choices=["BUY", "SELL"],
+                      help="Order side: BUY or SELL")
+    canp.add_argument("--json", action="store_true",
+                      help="Output raw JSON only")
+    canp.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/candidate-dryruns/")
+
     args = parser.parse_args()
 
     if args.command == "daily-report":
@@ -3902,6 +4437,20 @@ def main() -> None:
             if args.export:
                 print(f"\n  Export written: {result.get('_export_path', '?')}")
         sys.exit(2 if result["verdict"] == "NO-GO" else 0)
+
+    if args.command == "candidate-dryrun":
+        result = _run_candidate_dryrun(args.symbol, args.side)
+        if args.export:
+            export_path = export_candidate_dryrun(result)
+            result["_export_path"] = str(export_path)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print_candidate_dryrun(result)
+            if args.export:
+                print(f"  Export written: {result.get('_export_path', '?')}")
+        exit_code = 2 if result["verdict"] == "NO-GO" else (0 if result["verdict"] == "READY_DRYRUN" else 1)
+        sys.exit(exit_code)
 
     if args.command != "checklist":
         parser.print_help()

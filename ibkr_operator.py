@@ -1236,8 +1236,11 @@ def write_export(export: dict) -> Path:
     return out_path
 
 
-def run_doctor() -> dict:
+def run_doctor(skip_h1_canary: bool = False) -> dict:
     """Run operator self-test / doctor diagnostics. Read-only.
+
+    Args:
+        skip_h1_canary: If True, skip the H1 token canary (avoids sudo, faster).
 
     Returns:
         dict with "pass" (bool), "checks" (list[dict]), and metadata.
@@ -1389,31 +1392,35 @@ def run_doctor() -> dict:
     # Uses a fake approval ID that should never exist; the expected
     # response is "Approval not found", proving the token was accepted.
     # Never prints, logs, or exports the raw H1 token.
-    try:
-        canary = _run_h1_canary()
-        canary_status = canary.get("status", "FAIL")
-        if canary_status == "MANUAL_REQUIRED":
-            # sudo needs password — show the exact command to run manually
-            canary_ok = False  # doesn't fail doctor, but flags as action needed
-            checks.append({
-                "check": "h1_token_canary", "ok": False,
-                "status": "MANUAL_REQUIRED",
-                "detail": canary.get("manual_command",
-                    "sudo /usr/local/sbin/ibkr-trade-window approve aprv_canary"),
-            })
-        elif canary_status == "PASS":
-            canary_ok = True
-            checks.append({"check": "h1_token_canary", "ok": True,
-                           "detail": canary.get("detail", "H1 token valid")})
-        else:
-            canary_ok = False
+    if not skip_h1_canary:
+        try:
+            canary = _run_h1_canary()
+            canary_status = canary.get("status", "FAIL")
+            if canary_status == "MANUAL_REQUIRED":
+                # sudo needs password — show the exact command to run manually
+                canary_ok = False  # doesn't fail doctor, but flags as action needed
+                checks.append({
+                    "check": "h1_token_canary", "ok": False,
+                    "status": "MANUAL_REQUIRED",
+                    "detail": canary.get("manual_command",
+                        "sudo /usr/local/sbin/ibkr-trade-window approve aprv_canary"),
+                })
+            elif canary_status == "PASS":
+                canary_ok = True
+                checks.append({"check": "h1_token_canary", "ok": True,
+                               "detail": canary.get("detail", "H1 token valid")})
+            else:
+                canary_ok = False
+                all_pass = False
+                checks.append({"check": "h1_token_canary", "ok": False,
+                               "detail": canary.get("detail", "H1 token canary failed")})
+        except Exception as e:
             all_pass = False
             checks.append({"check": "h1_token_canary", "ok": False,
-                           "detail": canary.get("detail", "H1 token canary failed")})
-    except Exception as e:
-        all_pass = False
-        checks.append({"check": "h1_token_canary", "ok": False,
-                       "detail": f"Canary error: {str(e)[:120]}"})
+                           "detail": f"Canary error: {str(e)[:120]}"})
+    else:
+        checks.append({"check": "h1_token_canary", "ok": True,
+                       "detail": "skipped (rehearsal mode)"})
 
     # ------------------------------------------------------------------
     # Step 7 — OS boundary / process hardening checks (K13-K16)
@@ -3018,18 +3025,46 @@ def _run_cycle_rehearsal() -> dict:
                 blockers.append(b)
 
     # --- 3. Doctor non-canary checks ---
-    doctor_ok = True
+    # Run the real doctor (read-only) with timeout protection.
+    # Skip H1 canary (no elevated privs, no token) — only non-canary checks matter.
     doctor_evidence = {}
+    doctor_non_canary_ok = True
+    _DOCTOR_TIMEOUT = 30.0
     try:
-        doctor_result = _run_doctor_non_sudo()
-        doctor_ok = doctor_result.get("pass", True)
-        doctor_evidence = doctor_result
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(run_doctor, skip_h1_canary=True)
+            doctor_result = future.result(timeout=_DOCTOR_TIMEOUT)
+        doctor_evidence = {
+            "pass": doctor_result.get("pass", False),
+            "total": doctor_result.get("total", 0),
+            "passed": doctor_result.get("passed", 0),
+            "checks": doctor_result.get("checks", []),
+        }
+        # Evaluate non-canary checks (exclude h1_token_canary — MANUAL is acceptable)
+        non_canary_checks = [
+            c for c in doctor_evidence["checks"]
+            if c.get("check") != "h1_token_canary"
+        ]
+        non_canary_failures = [
+            c["check"] for c in non_canary_checks if not c.get("ok")
+        ]
+        doctor_non_canary_ok = len(non_canary_failures) == 0
+        if not doctor_non_canary_ok:
+            blockers.append({
+                "severity": "HOLD", "check": "doctor_non_pass",
+                "detail": f"Doctor non-canary checks failed: {', '.join(non_canary_failures)}"
+            })
+    except FutTimeout:
+        doctor_non_canary_ok = False
+        doctor_evidence = {"error": f"Doctor command timed out after {_DOCTOR_TIMEOUT}s"}
+        blockers.append({"severity": "HOLD", "check": "doctor_timeout",
+                         "detail": f"Doctor command timed out after {_DOCTOR_TIMEOUT}s"})
     except Exception as e:
-        doctor_ok = False
-        doctor_evidence = {"error": str(e)}
-    if not doctor_ok:
-        blockers.append({"severity": "HOLD", "check": "doctor_non_pass",
-                         "detail": "Doctor non-canary checks did not all pass"})
+        doctor_non_canary_ok = False
+        doctor_evidence = {"error": str(e)[:300]}
+        blockers.append({"severity": "HOLD", "check": "doctor_unavailable",
+                         "detail": f"Doctor command failed: {str(e)[:200]}"})
 
     # --- 4. Bridge health ---
     bridge_reachable = kpi_result.get("bridge", {}).get("reachable", False)

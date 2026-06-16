@@ -402,3 +402,186 @@ class TestDoctorSanity:
             assert "pass" in result, "Doctor result missing 'pass' key"
         except Exception as e:
             assert False, f"Doctor raised unexpected exception: {e}"
+
+
+# ---------------------------------------------------------------------------
+# T11: Doctor result parsing in cycle-rehearsal (Step 14 follow-up)
+# ---------------------------------------------------------------------------
+
+class TestDoctorParsing:
+    """Verify cycle-rehearsal correctly parses doctor results.
+
+    Regression tests for Step 14 follow-up:
+      - full PASS doctor → no doctor_non_pass blocker
+      - PASS with H1 MANUAL only → no doctor_non_pass blocker
+      - bridge listener FAIL → doctor_non_pass blocker
+      - doctor timeout/unparseable → HOLD blocker, not crash
+    """
+
+    def _make_doctor_pass(self):
+        """Return a full-PASS doctor result (all 15 checks passing)."""
+        return {
+            "command": "ibkr-operator doctor",
+            "timestamp_utc": "2026-06-16T09:00:00Z",
+            "read_only": True,
+            "pass": True,
+            "checks": [
+                {"check": "runbook_exists", "ok": True, "detail": "ok"},
+                {"check": "operator_symlink", "ok": True, "detail": "/usr/local/bin/ibkr-operator"},
+                {"check": "required_files", "ok": True, "detail": "5/5"},
+                {"check": "bridge_health", "ok": True, "detail": "reachable"},
+                {"check": "checklist_parseable", "ok": True, "detail": "verdict=HOLD"},
+                {"check": "daily_report_parseable", "ok": True, "detail": "ok"},
+                {"check": "export_dir_writable", "ok": True, "detail": "/tmp"},
+                {"check": "maintenance_dryrun", "ok": True, "detail": "ok"},
+                {"check": "protected_files_safe", "ok": True, "detail": "ok"},
+                {"check": "hermes_policy_exists", "ok": True, "detail": "/home/chris/.openclaw/memory/hermes-advisory-guard-policy.md"},
+                {"check": "h1_token_canary", "ok": True, "detail": "H1 token valid"},
+                {"check": "bridge_listener_localhost", "ok": True, "detail": "1 listener(s)"},
+                {"check": "bridge_service_active", "ok": True, "detail": "active"},
+                {"check": "bridge_no_duplicate_processes", "ok": True, "detail": "1 uvicorn"},
+                {"check": "bridge_safety_flags", "ok": True, "detail": "read_only=True, allow_orders=false"},
+            ],
+            "passed": 15,
+            "total": 15,
+        }
+
+    def _make_doctor_h1_manual(self):
+        """Return doctor result where everything passes except H1 canary (MANUAL_REQUIRED)."""
+        result = self._make_doctor_pass()
+        # Replace h1_token_canary with MANUAL_REQUIRED status
+        for c in result["checks"]:
+            if c["check"] == "h1_token_canary":
+                c["ok"] = False
+                c["status"] = "MANUAL_REQUIRED"
+                c["detail"] = "sudo /usr/local/sbin/ibkr-trade-window approve aprv_canary"
+                break
+        result["passed"] = 14  # 14 of 15 passing
+        # pass stays True because run_doctor does NOT set all_pass=False for MANUAL_REQUIRED
+        return result
+
+    def _make_doctor_bridge_listener_fail(self):
+        """Return doctor result where bridge_listener_localhost fails."""
+        result = self._make_doctor_pass()
+        for c in result["checks"]:
+            if c["check"] == "bridge_listener_localhost":
+                c["ok"] = False
+                c["detail"] = "0 listener(s) on port 8790"
+                break
+        result["pass"] = False
+        result["passed"] = 14
+        return result
+
+    # -- Test a: full PASS doctor → no doctor_non_pass --
+
+    def test_full_pass_no_blocker(self):
+        """When doctor returns full PASS, rehearsal must NOT emit doctor_non_pass."""
+        from unittest.mock import patch
+        from ibkr_operator import _run_cycle_rehearsal
+
+        with patch("ibkr_operator.run_doctor", return_value=self._make_doctor_pass()):
+            result = _run_cycle_rehearsal()
+
+        doctor_blockers = [
+            b for b in result["blockers"]
+            if b["check"] in ("doctor_non_pass", "doctor_timeout", "doctor_unavailable")
+        ]
+        assert len(doctor_blockers) == 0, (
+            f"Expected no doctor blockers when doctor is PASS, got: {doctor_blockers}"
+        )
+        # Doctor evidence should reflect the pass
+        assert result["doctor"].get("pass") is True
+
+    # -- Test b: PASS with H1 MANUAL only → no doctor_non_pass --
+
+    def test_h1_manual_no_blocker(self):
+        """When only h1_token_canary is MANUAL_REQUIRED, rehearsal must NOT emit doctor_non_pass."""
+        from unittest.mock import patch
+        from ibkr_operator import _run_cycle_rehearsal
+
+        with patch("ibkr_operator.run_doctor", return_value=self._make_doctor_h1_manual()):
+            result = _run_cycle_rehearsal()
+
+        doctor_blockers = [
+            b for b in result["blockers"]
+            if b["check"] in ("doctor_non_pass", "doctor_timeout", "doctor_unavailable")
+        ]
+        assert len(doctor_blockers) == 0, (
+            f"Expected no doctor blockers when only H1 is MANUAL, got: {doctor_blockers}"
+        )
+
+    # -- Test c: bridge listener FAIL → doctor_non_pass --
+
+    def test_bridge_listener_fail_blocker(self):
+        """When bridge_listener_localhost fails, rehearsal must emit doctor_non_pass."""
+        from unittest.mock import patch
+        from ibkr_operator import _run_cycle_rehearsal
+
+        with patch("ibkr_operator.run_doctor", return_value=self._make_doctor_bridge_listener_fail()):
+            result = _run_cycle_rehearsal()
+
+        doctor_non_pass = [
+            b for b in result["blockers"] if b["check"] == "doctor_non_pass"
+        ]
+        assert len(doctor_non_pass) >= 1, (
+            f"Expected doctor_non_pass blocker when bridge listener fails"
+        )
+        assert "bridge_listener_localhost" in doctor_non_pass[0]["detail"], (
+            f"Blocker detail should mention bridge_listener_localhost: {doctor_non_pass[0]['detail']}"
+        )
+        assert result["doctor"].get("pass") is False
+
+    # -- Test d: doctor timeout → HOLD blocker, not crash --
+
+    def test_doctor_timeout_hold_not_crash(self):
+        """When doctor times out, rehearsal must emit HOLD doctor_timeout, not crash."""
+        from unittest.mock import patch, MagicMock
+        from concurrent.futures import TimeoutError as FutTimeout
+        from ibkr_operator import _run_cycle_rehearsal
+
+        mock_future = MagicMock()
+        mock_future.result.side_effect = FutTimeout("timed out")
+
+        mock_executor = MagicMock()
+        mock_executor.__enter__.return_value = mock_executor
+        mock_executor.__exit__.return_value = None
+        mock_executor.submit.return_value = mock_future
+
+        with patch("concurrent.futures.ThreadPoolExecutor", return_value=mock_executor):
+            result = _run_cycle_rehearsal()
+
+        doctor_timeout = [
+            b for b in result["blockers"] if b["check"] == "doctor_timeout"
+        ]
+        assert len(doctor_timeout) >= 1, (
+            f"Expected doctor_timeout blocker on timeout, got blockers: {[b['check'] for b in result['blockers']]}"
+        )
+        assert result["verdict"] in ("HOLD", "NO-GO"), (
+            f"Verdict should be HOLD or NO-GO on timeout, got {result['verdict']}"
+        )
+        assert "timed out" in result["doctor"].get("error", ""), (
+            f"Doctor evidence should report timeout: {result['doctor']}"
+        )
+
+    # -- Test e: doctor exception → HOLD blocker, not crash --
+
+    def test_doctor_exception_hold_not_crash(self):
+        """When doctor raises an unexpected exception, rehearsal must emit HOLD, not crash."""
+        from unittest.mock import patch
+        from ibkr_operator import _run_cycle_rehearsal
+
+        with patch("ibkr_operator.run_doctor", side_effect=RuntimeError("SIGKILL simulation")):
+            result = _run_cycle_rehearsal()
+
+        doctor_unavailable = [
+            b for b in result["blockers"] if b["check"] == "doctor_unavailable"
+        ]
+        assert len(doctor_unavailable) >= 1, (
+            f"Expected doctor_unavailable blocker on exception"
+        )
+        assert result["verdict"] in ("HOLD", "NO-GO"), (
+            f"Verdict should be HOLD or NO-GO on exception, got {result['verdict']}"
+        )
+        assert "SIGKILL" in result["doctor"].get("error", ""), (
+            f"Doctor evidence should report the exception: {result['doctor']}"
+        )

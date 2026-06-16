@@ -3264,6 +3264,7 @@ def _collect_lightweight_evidence() -> dict:
     """
     import urllib.request
     import urllib.error
+    import subprocess
     from datetime import datetime, timezone
 
     now_utc = datetime.now(timezone.utc)
@@ -3350,6 +3351,22 @@ def _collect_lightweight_evidence() -> dict:
     # K12: H1 canary — skip (no sudo, no token)
     checks.append({"check": "h1_token_canary", "ok": True,
                    "detail": "skipped (lightweight)"})
+
+    # K13: Bridge port listener (exactly one listener on 127.0.0.1:8790)
+    listener_count = 0
+    try:
+        result = subprocess.run(
+            ["ss", "-tlnp", "sport", "=", "8790"],
+            capture_output=True, text=True, timeout=5,
+        )
+        listener_count = sum(1 for line in result.stdout.splitlines() if "LISTEN" in line)
+    except Exception:
+        listener_count = -1  # cannot determine
+    k13_ok = listener_count == 1
+    if not k13_ok:
+        all_pass = False
+    checks.append({"check": "bridge_port_listener", "ok": k13_ok,
+                   "detail": f"{listener_count} listener(s)" if listener_count >= 0 else "cannot check"})
 
     # K16: Bridge safety flags (from bridge health data, no separate HTTP call)
     if bridge_data:

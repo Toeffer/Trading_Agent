@@ -79,7 +79,10 @@ def test_unit_no_h1_token_reference():
 # ---------------------------------------------------------------------------
 
 REQUIRED_HARDENING = [
-    "NoNewPrivileges=true",
+    # NoNewPrivileges replaced by explicit CapabilityBoundingSet + AmbientCapabilities
+    # to avoid systemd 255 status=218/CAPABILITIES crash loop with seccomp.
+    "CapabilityBoundingSet=",
+    "AmbientCapabilities=",
     "PrivateTmp=true",
     "ProtectHome=",
     "ReadWritePaths=",
@@ -366,6 +369,7 @@ def test_repo_unit_matches_user_service():
     user_content = user_unit.read_text()
 
     # Both must have hardening directives
-    for directive in ["NoNewPrivileges=true", "PrivateTmp=true", "127.0.0.1"]:
+    # NoNewPrivileges replaced by CapabilityBoundingSet + AmbientCapabilities
+    for directive in ["CapabilityBoundingSet=", "AmbientCapabilities=", "PrivateTmp=true", "127.0.0.1"]:
         assert directive in repo_content, f"Repo unit missing: {directive}"
         assert directive in user_content, f"User unit missing: {directive}"

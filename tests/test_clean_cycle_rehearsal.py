@@ -428,7 +428,7 @@ class TestDoctorParsing:
                 "mode": "paper", "allow_orders": False, "read_only": True,
             },
             "doctor": {
-                "pass": True, "total": 8, "passed": 8,
+                "pass": True, "total": 9, "passed": 9,
                 "checks": [
                     {"check": "runbook_exists", "ok": True},
                     {"check": "operator_symlink", "ok": True},
@@ -437,6 +437,7 @@ class TestDoctorParsing:
                     {"check": "export_dir_writable", "ok": True},
                     {"check": "hermes_policy_exists", "ok": True},
                     {"check": "h1_token_canary", "ok": True, "detail": "skipped (lightweight)"},
+                    {"check": "bridge_port_listener", "ok": True, "detail": "1 listener(s)"},
                     {"check": "bridge_safety_flags", "ok": True, "detail": "read_only=True, allow_orders=false"},
                 ],
             },
@@ -483,7 +484,7 @@ class TestDoctorParsing:
                 c["ok"] = False
                 c["status"] = "MANUAL_REQUIRED"
                 break
-        doc["passed"] = 7
+        doc["passed"] = 8  # 9 checks total, 1 MANUAL (h1 canary)
         lw["doctor"] = doc
         with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw):
             result = _run_cycle_rehearsal()
@@ -511,7 +512,7 @@ class TestDoctorParsing:
                 c["detail"] = "bridge unreachable — cannot verify safety"
                 break
         doc["pass"] = False
-        doc["passed"] = 7
+        doc["passed"] = 8  # 9 checks total, 1 fails
         lw["doctor"] = doc
         with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw):
             result = _run_cycle_rehearsal()
@@ -583,7 +584,7 @@ class TestDoctorParsing:
                 "mode": "paper", "allow_orders": False, "read_only": True,
             },
             "doctor": {
-                "pass": True, "total": 8, "passed": 8,
+                "pass": True, "total": 9, "passed": 9,
                 "checks": [
                     {"check": "runbook_exists", "ok": True},
                     {"check": "operator_symlink", "ok": True},
@@ -592,6 +593,7 @@ class TestDoctorParsing:
                     {"check": "export_dir_writable", "ok": True},
                     {"check": "hermes_policy_exists", "ok": True},
                     {"check": "h1_token_canary", "ok": True, "detail": "skipped (lightweight)"},
+                    {"check": "bridge_port_listener", "ok": True, "detail": "1 listener(s)"},
                     {"check": "bridge_safety_flags", "ok": True, "detail": "read_only=True, allow_orders=false"},
                 ],
             },

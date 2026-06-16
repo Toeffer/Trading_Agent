@@ -35,8 +35,8 @@ def _make_pass_doctor() -> dict:
     """Return a full-pass doctor result (lightweight checks)."""
     return {
         "pass": True,
-        "total": 8,
-        "passed": 8,
+        "total": 9,
+        "passed": 9,
         "checks": [
             {"check": "runbook_exists", "ok": True},
             {"check": "operator_symlink", "ok": True},
@@ -45,6 +45,7 @@ def _make_pass_doctor() -> dict:
             {"check": "export_dir_writable", "ok": True},
             {"check": "hermes_policy_exists", "ok": True},
             {"check": "h1_token_canary", "ok": True, "detail": "skipped (lightweight)"},
+            {"check": "bridge_port_listener", "ok": True, "detail": "1 listener(s)"},
             {"check": "bridge_safety_flags", "ok": True, "detail": "read_only=True, allow_orders=false"},
         ],
         "_lightweight": True,
@@ -690,7 +691,7 @@ class TestRehearsalHoldCascadeHold:
                 c["detail"] = "bridge unreachable — cannot verify safety"
                 break
         doc_fail["pass"] = False
-        doc_fail["passed"] = 7
+        doc_fail["passed"] = 8
         lw_fail["doctor"] = doc_fail
 
         with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw_fail), \
@@ -834,7 +835,7 @@ class TestDoctorPassNoRehearsalBlocker:
                 c["ok"] = False
                 c["status"] = "MANUAL_REQUIRED"
                 break
-        doc_hm["passed"] = 7
+        doc_hm["passed"] = 8
         lw_h1_manual["doctor"] = doc_hm
 
         with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw_h1_manual), \

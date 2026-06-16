@@ -32,29 +32,40 @@ sys.path.insert(0, str(BRIDGE_DIR))
 # ---------------------------------------------------------------------------
 
 def _make_pass_doctor() -> dict:
-    """Return a full-pass doctor result (15/15)."""
+    """Return a full-pass doctor result (lightweight checks)."""
     return {
         "pass": True,
-        "total": 15,
-        "passed": 15,
+        "total": 8,
+        "passed": 8,
         "checks": [
             {"check": "runbook_exists", "ok": True},
             {"check": "operator_symlink", "ok": True},
-            {"check": "required_files", "ok": True},
-            {"check": "bridge_health", "ok": True},
-            {"check": "checklist_parseable", "ok": True},
-            {"check": "daily_report_parseable", "ok": True},
+            {"check": "required_files", "ok": True, "detail": "5/5"},
+            {"check": "bridge_health", "ok": True, "detail": "reachable"},
             {"check": "export_dir_writable", "ok": True},
-            {"check": "maintenance_dryrun", "ok": True},
-            {"check": "protected_files_safe", "ok": True},
             {"check": "hermes_policy_exists", "ok": True},
-            {"check": "h1_token_canary", "ok": True, "detail": "skipped (rehearsal mode)"},
-            {"check": "bridge_listener_localhost", "ok": True},
-            {"check": "bridge_service_active", "ok": True},
-            {"check": "bridge_no_duplicate_processes", "ok": True},
-            {"check": "bridge_safety_flags", "ok": True},
+            {"check": "h1_token_canary", "ok": True, "detail": "skipped (lightweight)"},
+            {"check": "bridge_safety_flags", "ok": True, "detail": "read_only=True, allow_orders=false"},
         ],
+        "_lightweight": True,
     }
+
+
+def _make_lightweight_clean() -> dict:
+    """Return clean lightweight evidence snapshot (bridge connected, all pass)."""
+    return {
+        "bridge": {"reachable": True, "connected": True, "mode": "paper", "allow_orders": False, "read_only": True},
+        "doctor": _make_pass_doctor(),
+        "safety": {"read_only": True, "bridge_allow_orders": False, "env_IBKR_ALLOW_ORDERS": "false", "rules_enforced": "false", "system_locked": True},
+        "strategy": {"strategy_exists": True, "autonomy_exists": True},
+    }
+
+
+def _make_lightweight_disconnected() -> dict:
+    """Return lightweight evidence with bridge reachable but disconnected."""
+    lw = _make_lightweight_clean()
+    lw["bridge"] = dict(lw["bridge"], connected=False)
+    return lw
 
 
 def _make_clean_kpi() -> dict:
@@ -244,7 +255,7 @@ class TestJsonStructure:
         """Mock clean environment — all keys must be present."""
         from ibkr_operator import _run_candidate_dryrun
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -259,7 +270,7 @@ class TestJsonStructure:
         """Entire result must be JSON-serializable."""
         from ibkr_operator import _run_candidate_dryrun
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -338,7 +349,7 @@ class TestBuyWithStop:
         """Candidate dry-run for BUY must include P5 bracket evidence."""
         from ibkr_operator import _run_candidate_dryrun
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -375,7 +386,7 @@ class TestSellCloseOnly:
         """Candidate dry-run for SELL should not require stop price."""
         from ibkr_operator import _run_candidate_dryrun
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -415,7 +426,7 @@ class TestDisconnectedIBKR:
         """When bridge is unreachable, verdict must be HOLD or NO-GO."""
         from ibkr_operator import _run_candidate_dryrun
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_disconnected_kpi()), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -447,7 +458,7 @@ class TestKPINoGoCascade:
         """When KPI reports NO-GO, candidate must also be NO-GO."""
         from ibkr_operator import _run_candidate_dryrun
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_nogo_kpi()), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -471,7 +482,7 @@ class TestCleanReadyDryrun:
         """With clean doctor, KPI, and connected IBKR, verdict is READY_DRYRUN."""
         from ibkr_operator import _run_candidate_dryrun
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -497,7 +508,7 @@ class TestSymbolValidation:
         """AAPL is in the allowed symbols list."""
         from ibkr_operator import _run_candidate_dryrun
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -509,7 +520,7 @@ class TestSymbolValidation:
         """A symbol not in allowlist should produce NO-GO blocker."""
         from ibkr_operator import _run_candidate_dryrun
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -533,7 +544,7 @@ class TestExport:
         """Export to tmp dir creates a valid JSON file."""
         from ibkr_operator import _run_candidate_dryrun, export_candidate_dryrun
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -578,7 +589,7 @@ class TestInvalidInput:
         """Invalid side must return ERROR verdict."""
         from ibkr_operator import _run_candidate_dryrun
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()):
             result = _run_candidate_dryrun("AAPL", "HOLD")
 
@@ -613,7 +624,7 @@ class TestKPIHoldCascadeHold:
             "monitoring": {"active_alert_count": 0},
         }
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=kpi_hold), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -631,7 +642,7 @@ class TestKPIHoldCascadeHold:
         """When KPI is NO-GO, candidate must also be NO-GO."""
         from ibkr_operator import _run_candidate_dryrun
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_nogo_kpi()), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -671,22 +682,24 @@ class TestRehearsalHoldCascadeHold:
         }
 
         # Doctor with a non-canary failure to cause rehearsal HOLD
-        doctor_fail = _make_pass_doctor()
-        # Make one non-canary check fail
-        for c in doctor_fail["checks"]:
-            if c["check"] == "bridge_listener_localhost":
+        lw_fail = _make_lightweight_clean()
+        doc_fail = dict(lw_fail["doctor"])
+        for c in doc_fail["checks"]:
+            if c["check"] == "bridge_safety_flags":
                 c["ok"] = False
+                c["detail"] = "bridge unreachable — cannot verify safety"
                 break
-        doctor_fail["pass"] = False
-        doctor_fail["passed"] = 14
+        doc_fail["pass"] = False
+        doc_fail["passed"] = 7
+        lw_fail["doctor"] = doc_fail
 
-        with patch("ibkr_operator.run_doctor", return_value=doctor_fail), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw_fail), \
              patch("ibkr_operator.run_kpi", return_value=kpi_go), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
             result = _run_candidate_dryrun("AAPL", "BUY")
 
-        # Rehearsal should be HOLD (doctor_non_pass from bridge_listener_localhost)
+        # Rehearsal should be HOLD (doctor_non_pass from bridge_safety_flags)
         # Candidate should be HOLD (rehearsal HOLD cascades to candidate HOLD when KPI is GO)
         assert result["verdict"] == "HOLD", (
             f"Rehearsal HOLD should cascade to candidate HOLD, got {result['verdict']}. "
@@ -708,7 +721,7 @@ class TestDependencyTimeout:
         """When KPI raises an exception, report kpi_unavailable, not bridge_unreachable."""
         from ibkr_operator import _run_candidate_dryrun
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", side_effect=TimeoutError("KPI timed out")), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -733,10 +746,10 @@ class TestDependencyTimeout:
             f"KPI timeout should produce HOLD not {result['verdict']}"
         )
 
-        # ibkr_connection should show unknown state
+        # ibkr_connection falls back to lightweight evidence when KPI fails
         ibkr = result["ibkr_connection"]
-        assert ibkr["reachable"] is None, (
-            f"Bridge reachable should be None (unknown) on KPI timeout, got {ibkr['reachable']}"
+        assert ibkr["reachable"] is True, (
+            f"Bridge reachable should be True from lightweight evidence on KPI timeout, got {ibkr['reachable']}"
         )
 
 
@@ -766,7 +779,7 @@ class TestSingleConsistentSnapshot:
             "monitoring": {"active_alert_count": 0},
         }
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=kpi_data), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -792,7 +805,7 @@ class TestDoctorPassNoRehearsalBlocker:
         """Full doctor PASS must not cause doctor_non_pass in rehearsal or candidate."""
         from ibkr_operator import _run_candidate_dryrun
 
-        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
@@ -814,16 +827,17 @@ class TestDoctorPassNoRehearsalBlocker:
         """Doctor PASS with only H1 MANUAL must not produce doctor_non_pass."""
         from ibkr_operator import _run_candidate_dryrun
 
-        doctor_h1_manual = _make_pass_doctor()
-        for c in doctor_h1_manual["checks"]:
+        lw_h1_manual = _make_lightweight_clean()
+        doc_hm = dict(lw_h1_manual["doctor"])
+        for c in doc_hm["checks"]:
             if c["check"] == "h1_token_canary":
                 c["ok"] = False
                 c["status"] = "MANUAL_REQUIRED"
                 break
-        doctor_h1_manual["passed"] = 14
-        # pass stays True (H1 MANUAL doesn't fail doctor)
+        doc_hm["passed"] = 7
+        lw_h1_manual["doctor"] = doc_hm
 
-        with patch("ibkr_operator.run_doctor", return_value=doctor_h1_manual), \
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw_h1_manual), \
              patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):

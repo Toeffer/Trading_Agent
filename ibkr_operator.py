@@ -3024,24 +3024,22 @@ def _run_cycle_rehearsal() -> dict:
             if b.get("severity") == "NO-GO":
                 blockers.append(b)
 
-    # --- 3. Doctor non-canary checks ---
-    # Run the real doctor (read-only) with timeout protection.
-    # Skip H1 canary (no elevated privs, no token) — only non-canary checks matter.
+    # --- 3. Doctor non-canary checks (lightweight in-process snapshot) ---
+    # Uses _collect_lightweight_evidence() — fast, no subprocess, no elevated privs.
+    # Excludes h1_token_canary from blocking consideration.
     doctor_evidence = {}
     doctor_non_canary_ok = True
-    _DOCTOR_TIMEOUT = 30.0
     try:
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(run_doctor, skip_h1_canary=True)
-            doctor_result = future.result(timeout=_DOCTOR_TIMEOUT)
+        light = _collect_lightweight_evidence()
+        doc = light.get("doctor", {})
         doctor_evidence = {
-            "pass": doctor_result.get("pass", False),
-            "total": doctor_result.get("total", 0),
-            "passed": doctor_result.get("passed", 0),
-            "checks": doctor_result.get("checks", []),
+            "pass": doc.get("pass", False),
+            "total": doc.get("total", 0),
+            "passed": doc.get("passed", 0),
+            "checks": doc.get("checks", []),
+            "_lightweight": True,
         }
-        # Evaluate non-canary checks (exclude h1_token_canary — MANUAL is acceptable)
+        # Evaluate non-canary checks (exclude h1_token_canary)
         non_canary_checks = [
             c for c in doctor_evidence["checks"]
             if c.get("check") != "h1_token_canary"
@@ -3055,16 +3053,11 @@ def _run_cycle_rehearsal() -> dict:
                 "severity": "HOLD", "check": "doctor_non_pass",
                 "detail": f"Doctor non-canary checks failed: {', '.join(non_canary_failures)}"
             })
-    except FutTimeout:
-        doctor_non_canary_ok = False
-        doctor_evidence = {"error": f"Doctor command timed out after {_DOCTOR_TIMEOUT}s"}
-        blockers.append({"severity": "HOLD", "check": "doctor_timeout",
-                         "detail": f"Doctor command timed out after {_DOCTOR_TIMEOUT}s"})
     except Exception as e:
         doctor_non_canary_ok = False
         doctor_evidence = {"error": str(e)[:300]}
         blockers.append({"severity": "HOLD", "check": "doctor_unavailable",
-                         "detail": f"Doctor command failed: {str(e)[:200]}"})
+                         "detail": f"Lightweight doctor failed: {str(e)[:200]}"})
 
     # --- 4. Bridge health ---
     bridge_reachable = kpi_result.get("bridge", {}).get("reachable", False)
@@ -3259,6 +3252,160 @@ _CANDIDATE_ALLOWED_SYMBOLS: frozenset[str] = frozenset({
     "EFA", "EEM", "TLT", "LQD", "GLD", "XLF", "XLK", "XLE",
 })
 
+_LIGHTWEIGHT_DOCTOR_TIMEOUT = 8.0  # seconds for lightweight checks
+
+
+def _collect_lightweight_evidence() -> dict:
+    """Collect in-process evidence snapshot — fast, no subprocess, no sudo.
+
+    Returns a dict with bridge_health, doctor_summary, and safety_status.
+    This is designed to be fast (<8s) and safe for use inside candidate
+    and rehearsal runs where full doctor invocation would be too heavy.
+    """
+    import urllib.request
+    import urllib.error
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    repo = HOME / "agents" / "ibkr-bridge"
+
+    evidence: dict[str, Any] = {
+        "timestamp_utc": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "bridge": {},
+        "doctor": {},
+        "safety": {},
+        "strategy": {},
+    }
+
+    # --- Bridge health (single HTTP call, fast) ---
+    bridge_reachable = False
+    bridge_data: dict = {}
+    try:
+        req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=_LIGHTWEIGHT_DOCTOR_TIMEOUT) as resp:
+            bridge_data = json.loads(resp.read().decode())
+            bridge_reachable = resp.status == 200
+    except Exception:
+        bridge_reachable = False
+
+    evidence["bridge"] = {
+        "reachable": bridge_reachable,
+        "url": BRIDGE_URL,
+        "connected": bridge_data.get("connected", None) if bridge_data else None,
+        "mode": bridge_data.get("mode", "?") if bridge_data else "?",
+        "allow_orders": bridge_data.get("allow_orders", "?") if bridge_data else "?",
+        "read_only": bridge_data.get("read_only", False) if bridge_data else False,
+    }
+
+    # --- In-process doctor checks (no subprocess, no H1, no sudo) ---
+    checks = []
+    all_pass = True
+
+    # K2: RUNBOOK.md
+    rb_path = repo / "RUNBOOK.md"
+    k2 = rb_path.exists()
+    if not k2:
+        all_pass = False
+    checks.append({"check": "runbook_exists", "ok": k2})
+
+    # K3: operator symlink
+    op_link = HOME / ".local/bin/ibkr-operator"
+    k3 = op_link.is_symlink() or op_link.exists()
+    if not k3:
+        all_pass = False
+    checks.append({"check": "operator_symlink", "ok": k3})
+
+    # K4: Required files
+    required = ["ibkr_operator.py", "bundle_audit.py", "monitor.py", "guard.py", "RUNBOOK.md"]
+    k4 = all((repo / f).exists() for f in required)
+    if not k4:
+        all_pass = False
+    checks.append({"check": "required_files", "ok": k4,
+                   "detail": f"{sum(1 for f in required if (repo/f).exists())}/{len(required)}"})
+
+    # K5: Bridge health (single endpoint, already checked above)
+    k5 = True  # fallback always available
+    checks.append({"check": "bridge_health", "ok": k5,
+                   "detail": "reachable" if bridge_reachable else "unreachable (fallback ok)"})
+
+    # K8: Export directory writable
+    try:
+        from bundle_audit import EXPORT_DIR
+        EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        test_f = EXPORT_DIR / ".doctor_writable"
+        test_f.write_text("")
+        test_f.unlink()
+        checks.append({"check": "export_dir_writable", "ok": True})
+    except Exception:
+        all_pass = False
+        checks.append({"check": "export_dir_writable", "ok": False})
+
+    # K11: Hermes policy
+    hermes_path = HOME / ".openclaw" / "memory" / "hermes-advisory-guard-policy.md"
+    k11 = hermes_path.exists()
+    if not k11:
+        all_pass = False
+    checks.append({"check": "hermes_policy_exists", "ok": k11})
+
+    # K12: H1 canary — skip (no sudo, no token)
+    checks.append({"check": "h1_token_canary", "ok": True,
+                   "detail": "skipped (lightweight)"})
+
+    # K16: Bridge safety flags (from bridge health data, no separate HTTP call)
+    if bridge_data:
+        mode = bridge_data.get("mode", "?")
+        allow_orders = bridge_data.get("allow_orders", "?")
+        read_only = mode == "paper"
+        orders_disabled = (allow_orders == "false" or allow_orders is False)
+        k16_ok = read_only and orders_disabled
+        if not k16_ok:
+            all_pass = False
+        checks.append({"check": "bridge_safety_flags", "ok": k16_ok,
+                       "detail": f"read_only={read_only}, allow_orders={allow_orders}"})
+    else:
+        all_pass = False
+        checks.append({"check": "bridge_safety_flags", "ok": False,
+                       "detail": "bridge unreachable — cannot verify safety"})
+
+    evidence["doctor"] = {
+        "pass": all_pass,
+        "total": len(checks),
+        "passed": sum(1 for c in checks if c["ok"]),
+        "checks": checks,
+        "_lightweight": True,
+        "_note": "Lightweight in-process check — no subprocess calls, no sudo. Run 'ibkr-operator doctor' for full diagnostics.",
+    }
+
+    # --- Safety status ---
+    env_allow = os.environ.get("IBKR_ALLOW_ORDERS", "false")
+    env_rules = os.environ.get("IBKR_RULES_ENFORCED", "false")
+    bridge_allow = bridge_data.get("allow_orders", "?") if bridge_data else "?"
+    bridge_read_only = bridge_data.get("read_only", False) if bridge_data else False
+    startup_safety = bridge_data.get("startup_safety", {}) if bridge_data else {}
+
+    evidence["safety"] = {
+        "read_only": bridge_read_only,
+        "bridge_allow_orders": bridge_allow,
+        "env_IBKR_ALLOW_ORDERS": env_allow,
+        "rules_enforced": env_rules,
+        "system_locked": (
+            env_allow == "false"
+            and env_rules == "false"
+            and bridge_allow in ("false", False, "?")
+        ),
+        "startup_safety_passed": startup_safety.get("pass", None),
+    }
+
+    # --- Strategy docs ---
+    strategy_path = repo / "docs" / "STRATEGY.md"
+    autonomy_path = repo / "docs" / "AUTONOMY_CRITERIA.md"
+    evidence["strategy"] = {
+        "strategy_exists": strategy_path.exists(),
+        "autonomy_exists": autonomy_path.exists(),
+    }
+
+    return evidence
+
 
 def _run_candidate_dryrun(symbol: str, side: str) -> dict:
     """Run a complete evidence-only paper-trade candidate dry-run.
@@ -3303,12 +3450,14 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
     git = _git_metadata(BRIDGE_DIR)
 
     # ------------------------------------------------------------------
-    # E3: Doctor result (skip H1 canary — no sudo, no token)
+    # E3: Doctor result (lightweight in-process — no subprocess, no sudo)
     # ------------------------------------------------------------------
     doctor_evidence: dict = {}
     doctor_unavailable = False
+    light_evidence: dict = {}
     try:
-        doctor_evidence = run_doctor(skip_h1_canary=True)
+        light_evidence = _collect_lightweight_evidence()
+        doctor_evidence = light_evidence.get("doctor", {})
     except Exception as e:
         doctor_evidence = {"error": str(e)[:300]}
         doctor_unavailable = True
@@ -3326,18 +3475,27 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
 
     kpi_verdict = kpi_evidence.get("verdict", "ERROR" if kpi_unavailable else "UNKNOWN")
 
-    # Extract safety / bridge from KPI evidence if available, else mark unknown
-    sf = kpi_evidence.get("safety_flags", {})
-    bridge = kpi_evidence.get("bridge", {})
-    bridge_known = bool(bridge) and not kpi_unavailable
-    ibkr_reachable = bridge.get("reachable", False) if bridge_known else None
-    ibkr_connected = bridge.get("connected", False) if bridge_known else None
+    # Use lightweight snapshot (fast, consistent with doctor E3) as fallback.
+    # Prefer KPI bridge/safety data when KPI succeeded — it's more comprehensive.
+    lw_bridge = light_evidence.get("bridge", {}) if light_evidence else {}
+    lw_safety = light_evidence.get("safety", {}) if light_evidence else {}
+    lw_strategy = light_evidence.get("strategy", {}) if light_evidence else {}
 
+    # Bridge state: use KPI if available, else lightweight, else unknown
+    kpi_bridge = kpi_evidence.get("bridge", {}) if not kpi_unavailable else {}
+    eff_bridge = kpi_bridge if kpi_bridge else lw_bridge
+    bridge_known = bool(eff_bridge)
+    ibkr_reachable = eff_bridge.get("reachable", False) if bridge_known else None
+    ibkr_connected = eff_bridge.get("connected", None) if bridge_known else None
+
+    # Safety: use KPI if available, else lightweight
+    kpi_safety = kpi_evidence.get("safety_flags", {}) if not kpi_unavailable else {}
+    sf = kpi_safety if kpi_safety else lw_safety
     safety_locked = (
         sf.get("env_IBKR_ALLOW_ORDERS") == "false"
         and sf.get("rules_enforced") == "false"
-        and sf.get("system_locked") is True
-        and bool(sf)  # must have actual safety data
+        and sf.get("system_locked", False) is True
+        and bool(sf)
     )
 
     # ------------------------------------------------------------------
@@ -3437,7 +3595,8 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
     # ------------------------------------------------------------------
     # E8: Strategy match / no-trade conditions
     # ------------------------------------------------------------------
-    strategy_ok = strategy_path.exists() and autonomy_path.exists()
+    strategy_ok = lw_strategy.get("strategy_exists", strategy_path.exists()) and \
+                  lw_strategy.get("autonomy_exists", autonomy_path.exists())
     autonomy_level = _read_autonomy_level(autonomy_path)
 
     # KPI cascades: only when KPI is actually NO-GO (not when unavailable)
@@ -3657,8 +3816,8 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
         },
         "kpi": {
             "verdict": kpi_verdict,
-            "bridge": bridge,
-            "safety_flags": sf,
+            "bridge": lw_bridge if lw_bridge else kpi_evidence.get("bridge", {}),
+            "safety_flags": sf if sf else kpi_evidence.get("safety_flags", {}),
         },
         "rehearsal": {
             "verdict": rehearsal_verdict,

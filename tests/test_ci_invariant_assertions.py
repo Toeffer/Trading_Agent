@@ -221,6 +221,12 @@ class TestKillSwitchInvariants:
                         # Allow strategy/autonomy doc tests (safety assertions)
                         if fp.name == "test_strategy_autonomy_docs.py":
                             continue
+                        # Allow step13 remediation tests (safety assertions)
+                        if fp.name == "test_step13_remediation.py":
+                            continue
+                        # Allow clean cycle rehearsal tests (safety assertions)
+                        if fp.name == "test_clean_cycle_rehearsal.py":
+                            continue
                         # Allow quoted false values (safety references)
                         if '"IBKR_ALLOW_ORDERS=false"' in line or "'IBKR_ALLOW_ORDERS=false'" in line:
                             continue

@@ -22,6 +22,10 @@ def pytest_configure(config):
         "markers",
         "live: requires live IBKR connection (skipped by default)"
     )
+    config.addinivalue_line(
+        "markers",
+        "slow: slow tests (doctor, full rehearsal — skipped in fast CI)"
+    )
 
 
 def pytest_collection_modifyitems(config, items):

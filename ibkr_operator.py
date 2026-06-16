@@ -3305,72 +3305,93 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
     # ------------------------------------------------------------------
     # E3: Doctor result (skip H1 canary — no sudo, no token)
     # ------------------------------------------------------------------
-    doctor_evidence = {}
+    doctor_evidence: dict = {}
+    doctor_unavailable = False
     try:
         doctor_evidence = run_doctor(skip_h1_canary=True)
     except Exception as e:
         doctor_evidence = {"error": str(e)[:300]}
-        blockers.append({"severity": "HOLD", "check": "doctor_unavailable",
-                         "detail": f"Doctor failed: {str(e)[:200]}"})
+        doctor_unavailable = True
 
     # ------------------------------------------------------------------
-    # E4: KPI result
+    # E4: KPI result — single consistent snapshot
     # ------------------------------------------------------------------
-    kpi_evidence = {}
+    kpi_evidence: dict = {}
+    kpi_unavailable = False
     try:
         kpi_evidence = run_kpi()
     except Exception as e:
-        kpi_evidence = {"error": str(e)[:300]}
-        blockers.append({"severity": "NO-GO", "check": "kpi_unavailable",
-                         "detail": f"KPI failed: {str(e)[:200]}"})
+        kpi_evidence = {"_kpi_error": str(e)[:300]}
+        kpi_unavailable = True
 
-    kpi_verdict = kpi_evidence.get("verdict", "ERROR")
+    kpi_verdict = kpi_evidence.get("verdict", "ERROR" if kpi_unavailable else "UNKNOWN")
 
-    # Extract safety flags, bridge state early (needed for rehearsal)
+    # Extract safety / bridge from KPI evidence if available, else mark unknown
     sf = kpi_evidence.get("safety_flags", {})
+    bridge = kpi_evidence.get("bridge", {})
+    bridge_known = bool(bridge) and not kpi_unavailable
+    ibkr_reachable = bridge.get("reachable", False) if bridge_known else None
+    ibkr_connected = bridge.get("connected", False) if bridge_known else None
+
     safety_locked = (
         sf.get("env_IBKR_ALLOW_ORDERS") == "false"
         and sf.get("rules_enforced") == "false"
         and sf.get("system_locked") is True
+        and bool(sf)  # must have actual safety data
     )
-    bridge = kpi_evidence.get("bridge", {})
-    ibkr_connected = bridge.get("connected", False)
-    ibkr_reachable = bridge.get("reachable", False)
 
     # ------------------------------------------------------------------
-    # E5: Cycle-rehearsal result (computed from already-gathered evidence
-    # to avoid redundant doctor/KPI calls)
+    # E5: Cycle-rehearsal result (computed from same snapshot)
     # ------------------------------------------------------------------
     rehearsal_docs = {
         "strategy_exists": strategy_path.exists(),
         "autonomy_exists": autonomy_path.exists(),
     }
-    rehearsal_blockers = []
+    rehearsal_blockers: list[dict] = []
     if not rehearsal_docs["strategy_exists"]:
         rehearsal_blockers.append({"severity": "NO-GO", "check": "strategy_doc_missing"})
     if not rehearsal_docs["autonomy_exists"]:
         rehearsal_blockers.append({"severity": "NO-GO", "check": "autonomy_doc_missing"})
-    for b in kpi_evidence.get("blockers", []):
-        if b.get("severity") == "NO-GO":
-            rehearsal_blockers.append(b)
+
+    # Doctor non-canary (from same snapshot)
     doc_checks = doctor_evidence.get("checks", [])
     non_canary_failures = [c["check"] for c in doc_checks
                            if c.get("check") != "h1_token_canary" and not c.get("ok")]
     if non_canary_failures:
         rehearsal_blockers.append({"severity": "HOLD", "check": "doctor_non_pass",
                                    "detail": f"Failed: {', '.join(non_canary_failures)}"})
-    if not ibkr_reachable:
-        rehearsal_blockers.append({"severity": "NO-GO", "check": "bridge_unreachable"})
-    elif not ibkr_connected:
-        rehearsal_blockers.append({"severity": "HOLD", "check": "ibkr_not_connected"})
-    if not safety_locked:
-        rehearsal_blockers.append({"severity": "NO-GO", "check": "safety_unlocked"})
+    if doctor_unavailable:
+        rehearsal_blockers.append({"severity": "HOLD", "check": "doctor_unavailable",
+                                   "detail": "Doctor command could not run"})
+
+    # KPI cascades into rehearsal (respect KPI's own blockers)
+    for b in kpi_evidence.get("blockers", []):
+        if b.get("severity") == "NO-GO":
+            rehearsal_blockers.append(b)
+    if kpi_unavailable:
+        rehearsal_blockers.append({"severity": "HOLD", "check": "kpi_unavailable",
+                                   "detail": "KPI dashboard could not run (dependency timeout)"})
+
+    # Bridge / safety from snapshot (only if known)
+    if bridge_known:
+        if not ibkr_reachable:
+            rehearsal_blockers.append({"severity": "NO-GO", "check": "bridge_unreachable"})
+        elif not ibkr_connected:
+            rehearsal_blockers.append({"severity": "HOLD", "check": "ibkr_not_connected"})
+        if not safety_locked:
+            rehearsal_blockers.append({"severity": "NO-GO", "check": "safety_unlocked"})
+    else:
+        rehearsal_blockers.append({"severity": "HOLD", "check": "bridge_unknown",
+                                   "detail": "Bridge state unknown (KPI unavailable)"})
+
+    # Heartbeat
     hb = kpi_evidence.get("heartbeat", {})
     if not hb.get("recent", False):
         if hb.get("age_seconds") is None:
             rehearsal_blockers.append({"severity": "HOLD", "check": "heartbeat_missing"})
         else:
             rehearsal_blockers.append({"severity": "HOLD", "check": "heartbeat_stale"})
+
     has_r_nogo = any(b["severity"] == "NO-GO" for b in rehearsal_blockers)
     has_r_hold = any(b["severity"] == "HOLD" for b in rehearsal_blockers)
     if has_r_nogo:
@@ -3389,7 +3410,7 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
     # ------------------------------------------------------------------
     # E6: Bridge safety flags (blocker check)
     # ------------------------------------------------------------------
-    if not safety_locked:
+    if bridge_known and not safety_locked:
         fail_items = []
         if sf.get("env_IBKR_ALLOW_ORDERS") != "false":
             fail_items.append(f"IBKR_ALLOW_ORDERS={sf.get('env_IBKR_ALLOW_ORDERS')}")
@@ -3403,7 +3424,10 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
     # ------------------------------------------------------------------
     # E7: IBKR connection state (blocker check)
     # ------------------------------------------------------------------
-    if not ibkr_reachable:
+    if not bridge_known:
+        blockers.append({"severity": "HOLD", "check": "bridge_unknown",
+                         "detail": "Bridge state unknown — KPI unavailable, cannot verify connection"})
+    elif not ibkr_reachable:
         blockers.append({"severity": "HOLD", "check": "ibkr_unreachable",
                          "detail": "IBKR bridge is not reachable — cannot verify connection"})
     elif not ibkr_connected:
@@ -3416,15 +3440,23 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
     strategy_ok = strategy_path.exists() and autonomy_path.exists()
     autonomy_level = _read_autonomy_level(autonomy_path)
 
-    # KPI cascades: if KPI is NO-GO, candidate is NO-GO
+    # KPI cascades: only when KPI is actually NO-GO (not when unavailable)
     if kpi_verdict == "NO-GO":
         blockers.append({"severity": "NO-GO", "check": "kpi_nogo_cascade",
                          "detail": "KPI dashboard reports NO-GO — candidate cannot proceed"})
+    elif kpi_unavailable:
+        blockers.append({"severity": "HOLD", "check": "kpi_unavailable",
+                         "detail": "KPI dashboard unavailable — cannot verify safety"})
 
-    # Rehearsal cascades
-    if rehearsal_verdict == "NO-GO":
+    # Rehearsal cascades: only when rehearsal is independently NO-GO
+    # (not from KPI data we already cascade above)
+    if rehearsal_verdict == "NO-GO" and kpi_verdict != "NO-GO":
         blockers.append({"severity": "NO-GO", "check": "rehearsal_nogo_cascade",
-                         "detail": "Cycle rehearsal reports NO-GO"})
+                         "detail": "Cycle rehearsal reports NO-GO (independent of KPI)"})
+    elif rehearsal_verdict == "HOLD" and kpi_verdict == "GO":
+        # Only add HOLD cascade if KPI would otherwise allow GO
+        blockers.append({"severity": "HOLD", "check": "rehearsal_hold",
+                         "detail": "Cycle rehearsal reports HOLD"})
 
     # ------------------------------------------------------------------
     # E9: Hermes advisory

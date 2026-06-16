@@ -585,3 +585,254 @@ class TestInvalidInput:
         assert result["verdict"] == "ERROR", (
             f"Invalid side must be ERROR, got {result['verdict']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# T15: KPI HOLD → candidate HOLD (not NO-GO)
+# ---------------------------------------------------------------------------
+
+class TestKPIHoldCascadeHold:
+    """KPI HOLD must cascade candidate to HOLD, not NO-GO."""
+
+    def test_kpi_hold_cascades_hold(self):
+        """When KPI is HOLD (bridge reachable, IBKR disconnected), candidate is HOLD."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        kpi_hold = {
+            "verdict": "HOLD",
+            "blockers": [{"severity": "HOLD", "check": "ibkr_not_connected"}],
+            "bridge": {"reachable": True, "connected": False},
+            "safety_flags": {
+                "read_only": True,
+                "bridge_allow_orders": False,
+                "env_IBKR_ALLOW_ORDERS": "false",
+                "rules_enforced": "false",
+                "system_locked": True,
+            },
+            "heartbeat": {"recent": True, "age_seconds": 120},
+            "monitoring": {"active_alert_count": 0},
+        }
+
+        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+             patch("ibkr_operator.run_kpi", return_value=kpi_hold), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        assert result["verdict"] == "HOLD", (
+            f"KPI HOLD must cascade to candidate HOLD, got {result['verdict']}. "
+            f"Blockers: {[b['check'] for b in result['blockers']]}"
+        )
+        assert result["verdict"] != "NO-GO", (
+            "KPI HOLD must NOT cascade to candidate NO-GO"
+        )
+
+    def test_kpi_nogo_cascades_nogo(self):
+        """When KPI is NO-GO, candidate must also be NO-GO."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_nogo_kpi()), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        assert result["verdict"] == "NO-GO", (
+            f"KPI NO-GO must cascade to candidate NO-GO, got {result['verdict']}"
+        )
+        kpi_cascade = [b for b in result["blockers"] if b["check"] == "kpi_nogo_cascade"]
+        assert len(kpi_cascade) >= 1, "Expected kpi_nogo_cascade blocker"
+
+
+# ---------------------------------------------------------------------------
+# T16: Rehearsal HOLD → candidate HOLD (not NO-GO)
+# ---------------------------------------------------------------------------
+
+class TestRehearsalHoldCascadeHold:
+    """Rehearsal HOLD must cascade candidate to HOLD, not NO-GO."""
+
+    def test_rehearsal_hold_not_nogo(self):
+        """When rehearsal is HOLD and KPI is GO, candidate is HOLD."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        kpi_go = {
+            "verdict": "GO",
+            "blockers": [],
+            "bridge": {"reachable": True, "connected": True},
+            "safety_flags": {
+                "read_only": True,
+                "bridge_allow_orders": False,
+                "env_IBKR_ALLOW_ORDERS": "false",
+                "rules_enforced": "false",
+                "system_locked": True,
+            },
+            "heartbeat": {"recent": True, "age_seconds": 120},
+            "monitoring": {"active_alert_count": 0},
+        }
+
+        # Doctor with a non-canary failure to cause rehearsal HOLD
+        doctor_fail = _make_pass_doctor()
+        # Make one non-canary check fail
+        for c in doctor_fail["checks"]:
+            if c["check"] == "bridge_listener_localhost":
+                c["ok"] = False
+                break
+        doctor_fail["pass"] = False
+        doctor_fail["passed"] = 14
+
+        with patch("ibkr_operator.run_doctor", return_value=doctor_fail), \
+             patch("ibkr_operator.run_kpi", return_value=kpi_go), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        # Rehearsal should be HOLD (doctor_non_pass from bridge_listener_localhost)
+        # Candidate should be HOLD (rehearsal HOLD cascades to candidate HOLD when KPI is GO)
+        assert result["verdict"] == "HOLD", (
+            f"Rehearsal HOLD should cascade to candidate HOLD, got {result['verdict']}. "
+            f"Blockers: {[b['check'] for b in result['blockers']]}"
+        )
+        assert result["verdict"] != "NO-GO", (
+            "Rehearsal HOLD with KPI GO must NOT cascade to NO-GO"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T17: Dependency timeout → explicit evidence, not fake bridge-unreachable
+# ---------------------------------------------------------------------------
+
+class TestDependencyTimeout:
+    """Dependency timeouts must produce explicit evidence, not fake bridge state."""
+
+    def test_kpi_timeout_not_bridge_unreachable(self):
+        """When KPI raises an exception, report kpi_unavailable, not bridge_unreachable."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+             patch("ibkr_operator.run_kpi", side_effect=TimeoutError("KPI timed out")), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        # Must NOT have ibkr_unreachable (we didn't check bridge)
+        ibkr_blockers = [b for b in result["blockers"] if b["check"] == "ibkr_unreachable"]
+        assert len(ibkr_blockers) == 0, (
+            f"KPI timeout must not fabricate ibkr_unreachable. Blockers: {[b['check'] for b in result['blockers']]}"
+        )
+
+        # Must have kpi_unavailable (HOLD) or bridge_unknown (HOLD)
+        timeout_blockers = [b for b in result["blockers"]
+                           if b["check"] in ("kpi_unavailable", "bridge_unknown")]
+        assert len(timeout_blockers) > 0, (
+            f"Expected kpi_unavailable or bridge_unknown blocker on KPI timeout. "
+            f"Blockers: {[b['check'] for b in result['blockers']]}"
+        )
+
+        # Verdict should be HOLD (not NO-GO from fake bridge-unreachable)
+        assert result["verdict"] == "HOLD", (
+            f"KPI timeout should produce HOLD not {result['verdict']}"
+        )
+
+        # ibkr_connection should show unknown state
+        ibkr = result["ibkr_connection"]
+        assert ibkr["reachable"] is None, (
+            f"Bridge reachable should be None (unknown) on KPI timeout, got {ibkr['reachable']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T18: Single consistent snapshot
+# ---------------------------------------------------------------------------
+
+class TestSingleConsistentSnapshot:
+    """Candidate must use a single consistent evidence snapshot per run."""
+
+    def test_kpi_and_rehearsal_use_same_bridge_data(self):
+        """Rehearsal bridge data must match KPI bridge data (same snapshot)."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        kpi_data = {
+            "verdict": "HOLD",
+            "blockers": [{"severity": "HOLD", "check": "ibkr_not_connected"}],
+            "bridge": {"reachable": True, "connected": False},
+            "safety_flags": {
+                "read_only": True,
+                "bridge_allow_orders": False,
+                "env_IBKR_ALLOW_ORDERS": "false",
+                "rules_enforced": "false",
+                "system_locked": True,
+            },
+            "heartbeat": {"recent": True, "age_seconds": 120},
+            "monitoring": {"active_alert_count": 0},
+        }
+
+        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+             patch("ibkr_operator.run_kpi", return_value=kpi_data), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        # KPI section and ibkr_connection must agree
+        assert result["kpi"]["verdict"] == "HOLD"
+        assert result["ibkr_connection"]["reachable"] is True
+        assert result["ibkr_connection"]["connected"] is False
+
+        # Bridge safety flags must come from the same KPI snapshot
+        assert result["bridge_safety_flags"].get("env_IBKR_ALLOW_ORDERS") == "false"
+
+
+# ---------------------------------------------------------------------------
+# T19: Doctor PASS → rehearsal has no doctor_non_pass
+# ---------------------------------------------------------------------------
+
+class TestDoctorPassNoRehearsalBlocker:
+    """When doctor is full PASS, rehearsal must not emit doctor_non_pass."""
+
+    def test_doctor_pass_no_rehearsal_doctor_non_pass(self):
+        """Full doctor PASS must not cause doctor_non_pass in rehearsal or candidate."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator.run_doctor", return_value=_make_pass_doctor()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        doctor_blockers = [
+            b for b in result["blockers"]
+            if b["check"] in ("doctor_non_pass", "doctor_timeout", "doctor_unavailable")
+        ]
+        assert len(doctor_blockers) == 0, (
+            f"Full-PASS doctor must not produce doctor blockers. Got: {doctor_blockers}"
+        )
+        # Doctor section in result should show pass
+        assert result["doctor"]["pass"] is True, (
+            f"Doctor section should show pass=True, got: {result['doctor']}"
+        )
+
+    def test_doctor_h1_manual_no_rehearsal_blocker(self):
+        """Doctor PASS with only H1 MANUAL must not produce doctor_non_pass."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        doctor_h1_manual = _make_pass_doctor()
+        for c in doctor_h1_manual["checks"]:
+            if c["check"] == "h1_token_canary":
+                c["ok"] = False
+                c["status"] = "MANUAL_REQUIRED"
+                break
+        doctor_h1_manual["passed"] = 14
+        # pass stays True (H1 MANUAL doesn't fail doctor)
+
+        with patch("ibkr_operator.run_doctor", return_value=doctor_h1_manual), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        doctor_blockers = [
+            b for b in result["blockers"]
+            if b["check"] in ("doctor_non_pass", "doctor_timeout", "doctor_unavailable")
+        ]
+        assert len(doctor_blockers) == 0, (
+            f"Doctor with only H1 MANUAL must not produce doctor blockers. Got: {doctor_blockers}"
+        )

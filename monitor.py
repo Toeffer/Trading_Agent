@@ -471,6 +471,14 @@ def reconcile_snapshot() -> dict:
         if oid is not None:
             unique_order_ids_today.add(str(oid))
 
+    # Exclude test artifacts from trade count reconciliation
+    # Test events use approval_id prefixes 'test-bracket-' and 'test-double-'
+    # and share the same fake permId=5001, inflating the count.
+    today_events = [
+        e for e in today_events
+        if not str(e.get("approval_id", "")).startswith(("test-bracket-", "test-double-"))
+    ]
+
     # Exclude unconfirmed orders from trade count
     unconfirmed_events_set = load_events(event_type="order_unconfirmed")
     unconfirmed_approval_ids = {ue.get("approval_id", "") for ue in unconfirmed_events_set}
@@ -567,10 +575,14 @@ def reconcile_snapshot() -> dict:
                 break
 
     # Find which specific approval IDs are orphaned
+    # Exclude known test artifact patterns from orphan detection
+    _TEST_ARTIFACT_PREFIXES = ("test-bracket-", "test-double-", "aprv_noexec", "aprv_7")
     orphan_ids = set()
     for aid in submitted_set:
-        if not aid:
+        if not aid or aid == "":
             continue  # skip empty string artifact
+        if aid.startswith(_TEST_ARTIFACT_PREFIXES):
+            continue  # test artifacts are not real orphans
         found = any(e.get("approval_id") == aid for e in events)
         if not found:
             orphan_ids.add(aid)

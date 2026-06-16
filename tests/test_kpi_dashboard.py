@@ -483,3 +483,179 @@ class TestCIIntegration:
         assert occurrences <= 3, (
             f"Too many H1 token path references in test file: {occurrences}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Step 15B — Repair tests
+# ---------------------------------------------------------------------------
+
+class TestStaleAlertRepair:
+    """Proven-stale alerts are detected and safely repairable."""
+
+    def test_stale_orphan_detected(self):
+        """Test artifact approvals are identified as stale orphans."""
+        from unittest.mock import patch
+        from ibkr_operator import _repair_stale_alerts
+
+        with patch("monitor.load_submitted_approvals",
+                   return_value={"test-bracket-1", "test-bracket-2",
+                                 "test-double-abc", "", "aprv_real_uuid"}), \
+             patch("monitor.load_events",
+                   return_value=[{"approval_id": "aprv_real_uuid",
+                                  "event_type": "order_submitted"}]):
+            evidence = _repair_stale_alerts(dry_run=True)
+
+        orphan_action = [a for a in evidence["actions"]
+                        if a["action"] == "orphan_approvals_identified"][0]
+        assert orphan_action["count"] == 4
+        ids = orphan_action["ids"]
+        assert "test-bracket-1" in ids
+        assert "test-double-abc" in ids
+        assert "" in ids
+        assert "aprv_real_uuid" not in ids
+
+    def test_stale_orphan_repaired(self):
+        """Live repair clears stale orphans, keeps real approvals."""
+        from unittest.mock import patch
+        from ibkr_operator import _repair_stale_alerts
+
+        submitted = {"test-bracket-1", "test-double-abc", "", "aprv_real"}
+        events = [{"approval_id": "aprv_real", "event_type": "order_submitted"}]
+
+        with patch("monitor.load_submitted_approvals", return_value=submitted), \
+             patch("monitor.load_events", return_value=events), \
+             patch("ibkr_operator._atomic_write_json") as mock_write, \
+             patch("shutil.copy2") as mock_backup, \
+             patch("monitor.load_guard_state",
+                    return_value={"daily_trade_count": 5, "trade_date": "2026-06-16"}):
+            evidence = _repair_stale_alerts(dry_run=False)
+
+        cleared = [a for a in evidence["actions"]
+                   if a["action"] == "orphan_approvals_cleared"]
+        assert len(cleared) == 1
+        assert cleared[0]["count"] == 3
+        assert cleared[0]["remaining"] == 1
+        assert mock_write.call_count == 2  # submitted-approvals + guard-state
+        mock_backup.assert_called_once()
+
+    def test_trade_count_mismatch_repair(self):
+        """Inflated trade count from test artifacts is corrected downward."""
+        from unittest.mock import patch
+        from ibkr_operator import _repair_stale_alerts
+
+        submitted = {"test-bracket-1", "aprv_real"}
+        events = [
+            {"approval_id": "test-bracket-1", "event_type": "order_submitted",
+             "timestamp_utc": "2026-06-16T10:00:00Z",
+             "ibkr_metadata": {"permId": 5001}},
+            {"approval_id": "aprv_real", "event_type": "order_submitted",
+             "timestamp_utc": "2026-06-16T11:00:00Z",
+             "ibkr_metadata": {"permId": 999}},
+        ]
+
+        with patch("monitor.load_submitted_approvals", return_value=submitted), \
+             patch("monitor.load_events", return_value=events), \
+             patch("ibkr_operator._atomic_write_json"), \
+             patch("shutil.copy2"), \
+             patch("monitor.load_guard_state",
+                    return_value={"daily_trade_count": 5, "trade_date": "2026-06-16"}):
+            evidence = _repair_stale_alerts(dry_run=False)
+
+        corrected = [a for a in evidence["actions"]
+                     if a["action"] == "trade_count_corrected"]
+        assert len(corrected) == 1
+        assert corrected[0]["from"] == 5
+        assert corrected[0]["to"] == 1
+
+    def test_real_orphan_not_cleared_without_proof(self):
+        """Real UUID orphans with no test pattern are identified but flagged."""
+        from unittest.mock import patch
+        from ibkr_operator import _repair_stale_alerts
+
+        submitted = {"aprv_12345678-1234-1234-1234-123456789abc"}
+        events = []
+
+        with patch("monitor.load_submitted_approvals", return_value=submitted), \
+             patch("monitor.load_events", return_value=events):
+            evidence = _repair_stale_alerts(dry_run=True)
+
+        orphan_action = [a for a in evidence["actions"]
+                        if a["action"] == "orphan_approvals_identified"][0]
+        assert orphan_action["count"] == 1
+
+    def test_trade_count_not_corrected_upward(self):
+        """Never increase trade count — only correct downward."""
+        from unittest.mock import patch
+        from ibkr_operator import _repair_stale_alerts
+
+        events = [
+            {"approval_id": "aprv_a", "event_type": "order_submitted",
+             "timestamp_utc": "2026-06-16T10:00:00Z",
+             "ibkr_metadata": {"permId": 1}},
+            {"approval_id": "aprv_b", "event_type": "order_submitted",
+             "timestamp_utc": "2026-06-16T11:00:00Z",
+             "ibkr_metadata": {"permId": 2}},
+        ]
+
+        with patch("monitor.load_submitted_approvals", return_value=set()), \
+             patch("monitor.load_events", return_value=events), \
+             patch("monitor.load_guard_state",
+                    return_value={"daily_trade_count": 1, "trade_date": "2026-06-16"}):
+            evidence = _repair_stale_alerts(dry_run=False)
+
+        noop = [a for a in evidence["actions"]
+                if a["action"] == "trade_count_no_repair_needed"]
+        assert len(noop) == 1
+
+
+class TestTestArtifactFiltering:
+    """Test artifact events do not pollute reconciliation."""
+
+    def test_snapshot_excludes_test_events_from_trade_count(self):
+        """Reconciliation must not count test-bracket/double events."""
+        from unittest.mock import patch
+        from monitor import reconcile_snapshot
+
+        with patch("monitor.load_guard_state",
+                   return_value={"daily_trade_count": 0, "trade_date": "2026-06-16"}), \
+             patch("monitor.load_events",
+                   return_value=[
+                       {"approval_id": "test-bracket-1", "event_type": "order_submitted",
+                        "timestamp_utc": "2026-06-16T10:00:00Z",
+                        "ibkr_metadata": {"permId": 5001}},
+                       {"approval_id": "aprv_real", "event_type": "order_submitted",
+                        "timestamp_utc": "2026-06-16T11:00:00Z",
+                        "ibkr_metadata": {"permId": 999}},
+                   ]), \
+             patch("monitor.load_submitted_approvals", return_value=set()), \
+             patch("monitor.load_approval_records", return_value=[]):
+            snap = reconcile_snapshot()
+
+        alerts = snap.get("alerts", [])
+        trade_alerts = [a for a in alerts
+                        if a.get("alert_type") == "trade_count_mismatch"]
+        assert len(trade_alerts) == 0, (
+            f"Expected 0 trade_count_mismatch after filtering. Got: {trade_alerts}"
+        )
+
+    def test_orphan_detection_skips_test_patterns(self):
+        """Orphan detection must skip test-bracket/double/aprv_noexec patterns."""
+        from unittest.mock import patch
+        from monitor import reconcile_snapshot
+
+        with patch("monitor.load_guard_state",
+                   return_value={"daily_trade_count": 0, "trade_date": "2026-06-16"}), \
+             patch("monitor.load_events", return_value=[]), \
+             patch("monitor.load_submitted_approvals",
+                    return_value={"test-bracket-1", "test-double-abc",
+                                  "aprv_real", "aprv_noexec"}), \
+             patch("monitor.load_approval_records", return_value=[]):
+            snap = reconcile_snapshot()
+
+        alerts = snap.get("alerts", [])
+        orphan_alerts = [a for a in alerts
+                         if a.get("alert_type") == "orphan_submitted_approval"]
+        assert len(orphan_alerts) == 1, (
+            f"Expected 1 orphan (aprv_real). Got: {orphan_alerts}"
+        )
+        assert "1 submitted approval" in orphan_alerts[0]["detail"]

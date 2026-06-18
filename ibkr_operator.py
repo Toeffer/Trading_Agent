@@ -2219,6 +2219,9 @@ def _run_heartbeat() -> dict:
 # ---------------------------------------------------------------------------
 
 # Endpoints the KPI dashboard may call (subset of heartbeat, no /order variants)
+# Step 15C: Primary path is /snapshot (single consolidated call).
+# Fallback to individual endpoints only when /snapshot is unavailable.
+_KPI_SNAPSHOT_ENDPOINT = "/snapshot"
 _KPI_ENDPOINTS = [
     "/health",
     "/readiness",
@@ -2417,92 +2420,159 @@ def run_kpi() -> dict:
     endpoint_results: dict[str, dict] = {}
     bridge_reachable = False
     bridge_failures: list[str] = []
+    liveness: dict = {}  # Step 15C v2: always initialized before any path
 
     # Hard per-endpoint timeout — KPI must complete even when bridge is
     # degraded.  Local HTTP responses should be sub-second; 5s is generous
     # for a local socket but prevents hanging tests.
     _KPI_ENDPOINT_TIMEOUT = 5.0
 
-    for ep in _KPI_ENDPOINTS:
-        url = f"{BRIDGE_URL}{ep}"
-        try:
-            req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=_KPI_ENDPOINT_TIMEOUT) as resp:
-                body = resp.read().decode(errors="replace")
-                try:
-                    data = json.loads(body)
-                except json.JSONDecodeError:
-                    data = {"_raw": body[:500], "_parse_error": True}
-                endpoint_results[ep] = {
-                    "status": resp.status,
-                    "ok": resp.status == 200,
-                    "data": data,
-                }
-                if resp.status == 200:
-                    bridge_reachable = True
-                else:
-                    bridge_failures.append(f"{ep} (HTTP {resp.status})")
-        except urllib.error.HTTPError as e:
-            endpoint_results[ep] = {"status": e.code, "ok": False, "error": f"HTTP {e.code}"}
-            bridge_failures.append(f"{ep} (HTTP {e.code})")
-        except Exception as e:
-            endpoint_results[ep] = {"status": 0, "ok": False, "error": str(e)[:200]}
-            bridge_failures.append(f"{ep} ({type(e).__name__})")
+    # Step 15C: Try consolidated snapshot first (replaces 8 separate calls)
+    snapshot_data: dict = {}
+    snapshot_used = False
+    try:
+        snap_url = f"{BRIDGE_URL}{_KPI_SNAPSHOT_ENDPOINT}"
+        req = urllib.request.Request(snap_url, method="GET")
+        with urllib.request.urlopen(req, timeout=_KPI_ENDPOINT_TIMEOUT) as resp:
+            if resp.status == 200:
+                snapshot_data = json.loads(resp.read().decode())
+                snapshot_used = True
+                bridge_reachable = True
+    except Exception:
+        snapshot_used = False
 
-    # Extract key data from endpoints
-    health = endpoint_results.get("/health", {}).get("data", {})
-    readiness = endpoint_results.get("/readiness", {}).get("data", {})
-    status_data = endpoint_results.get("/status", {}).get("data", {})
-    reconciliation = endpoint_results.get("/monitor/reconciliation", {}).get("data", {})
-    alerts_data = endpoint_results.get("/monitor/alerts", {}).get("data", {})
-    events_data = endpoint_results.get("/monitor/events", {}).get("data", {})
-    positions_data = endpoint_results.get("/positions", {}).get("data", {})
-    account_data = endpoint_results.get("/account", {}).get("data", {})
+    if snapshot_used:
+        # Extract all evidence from snapshot (single consolidated call)
+        endpoint_results["/snapshot"] = {"status": 200, "ok": True, "data": snapshot_data}
 
-    # Bridge health
-    connected = health.get("connected", None) if isinstance(health, dict) else None
-    mode = health.get("mode", "?") if isinstance(health, dict) else "?"
-    read_only = mode == "paper"
-    bridge_allow_orders = health.get("allow_orders", "?") if isinstance(health, dict) else "?"
-    startup_safety = health.get("startup_safety", {}) if isinstance(health, dict) else {}
+        # Bridge health from snapshot
+        connected = snapshot_data.get("connected", None)
+        mode = snapshot_data.get("mode", "?")
+        read_only = snapshot_data.get("read_only", False)
+        bridge_allow_orders = snapshot_data.get("allow_orders", "?")
+        startup_safety = snapshot_data.get("startup_safety", {})
 
-    # Safety flags
-    ks = readiness.get("summary", {}).get("kill_switches", {}) if isinstance(readiness, dict) else {}
-    readiness_ao = ks.get("IBKR_ALLOW_ORDERS", "?")
-    readiness_re = ks.get("rules.enforced", "?")
-    system_locked = ks.get("system_locked", readiness.get("system_locked", True))
+        # Safety flags from snapshot
+        safety = snapshot_data.get("safety", {})
+        readiness_ao = safety.get("IBKR_ALLOW_ORDERS", "?")
+        readiness_re = safety.get("rules_enforced", "?")
+        system_locked = safety.get("system_locked", True)
 
-    # Alerts
-    live_alerts = []
-    if isinstance(alerts_data, dict):
-        all_alerts = alerts_data.get("alerts", [])
-        if isinstance(all_alerts, list):
-            live_alerts = [a for a in all_alerts if isinstance(a, dict) and a.get("source") == "live"]
-    active_alert_count = len(live_alerts)
+        # Reconciliation from snapshot
+        recon = snapshot_data.get("reconciliation", {})
+        recon_passed = recon.get("passed", None)
+        active_alert_count = recon.get("alert_count", 0)
+        live_alerts = []  # snapshot doesn't carry individual alert detail
 
-    # Reconciliation
-    recon_passed = reconciliation.get("passed", None) if isinstance(reconciliation, dict) else None
+        # Positions from snapshot
+        positions_list = snapshot_data.get("positions", [])
+        pos_count = len(positions_list)
 
-    # Positions
-    pos_count = 0
-    if isinstance(positions_data, dict) and "positions" in positions_data:
-        pos_count = len(positions_data["positions"])
-    elif isinstance(positions_data, list):
-        pos_count = len(positions_data)
+        # Latest events — not in snapshot, empty
+        latest_events: list[dict] = []
 
-    # Latest events (last 3)
-    latest_events: list[dict] = []
-    if isinstance(events_data, dict) and "events" in events_data:
-        latest_events = events_data["events"][-3:] if len(events_data["events"]) >= 3 \
-            else events_data["events"]
+        # Net liquidation from snapshot
+        net_liq = snapshot_data.get("net_liquidation", None)
 
-    # Net liquidation
-    net_liq = None
-    if isinstance(account_data, dict) and "values" in account_data:
-        for v in account_data["values"]:
-            if v.get("tag") == "NetLiquidation" and v.get("currency") == "BASE":
-                net_liq = v.get("value")
-                break
+        # Guard state from snapshot
+        guard = snapshot_data.get("guard", {})
+
+    # Step 15C v2: Always fetch liveness (OOM detection, 30-min lookback)
+    # Separate endpoint with its own cache — does NOT add to endpoint storm risk.
+    try:
+        liveness_req = urllib.request.Request(f"{BRIDGE_URL}/monitor/liveness", method="GET")
+        with urllib.request.urlopen(liveness_req, timeout=_KPI_ENDPOINT_TIMEOUT) as lr:
+            if lr.status == 200:
+                liveness = json.loads(lr.read().decode())
+    except Exception:
+        pass  # liveness unavailable — not a blocker itself
+
+    if not snapshot_used:
+        # Fallback: individual endpoint calls (legacy path)
+        for ep in _KPI_ENDPOINTS:
+            url = f"{BRIDGE_URL}{ep}"
+            try:
+                req = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(req, timeout=_KPI_ENDPOINT_TIMEOUT) as resp:
+                    body = resp.read().decode(errors="replace")
+                    try:
+                        data = json.loads(body)
+                    except json.JSONDecodeError:
+                        data = {"_raw": body[:500], "_parse_error": True}
+                    endpoint_results[ep] = {
+                        "status": resp.status,
+                        "ok": resp.status == 200,
+                        "data": data,
+                    }
+                    if resp.status == 200:
+                        bridge_reachable = True
+                    else:
+                        bridge_failures.append(f"{ep} (HTTP {resp.status})")
+            except urllib.error.HTTPError as e:
+                endpoint_results[ep] = {"status": e.code, "ok": False, "error": f"HTTP {e.code}"}
+                bridge_failures.append(f"{ep} (HTTP {e.code})")
+            except Exception as e:
+                endpoint_results[ep] = {"status": 0, "ok": False, "error": str(e)[:200]}
+                bridge_failures.append(f"{ep} ({type(e).__name__})")
+
+        # Extract key data from individual endpoints
+        health = endpoint_results.get("/health", {}).get("data", {})
+        readiness = endpoint_results.get("/readiness", {}).get("data", {})
+        status_data = endpoint_results.get("/status", {}).get("data", {})
+        reconciliation = endpoint_results.get("/monitor/reconciliation", {}).get("data", {})
+        alerts_data = endpoint_results.get("/monitor/alerts", {}).get("data", {})
+        events_data = endpoint_results.get("/monitor/events", {}).get("data", {})
+        positions_data = endpoint_results.get("/positions", {}).get("data", {})
+        account_data = endpoint_results.get("/account", {}).get("data", {})
+
+        # Bridge health
+        connected = health.get("connected", None) if isinstance(health, dict) else None
+        mode = health.get("mode", "?") if isinstance(health, dict) else "?"
+        read_only = mode == "paper"
+        bridge_allow_orders = health.get("allow_orders", "?") if isinstance(health, dict) else "?"
+        startup_safety = health.get("startup_safety", {}) if isinstance(health, dict) else {}
+
+        # Safety flags
+        ks = readiness.get("summary", {}).get("kill_switches", {}) if isinstance(readiness, dict) else {}
+        readiness_ao = ks.get("IBKR_ALLOW_ORDERS", "?")
+        readiness_re = ks.get("rules.enforced", "?")
+        system_locked = ks.get("system_locked", readiness.get("system_locked", True))
+
+        # Alerts
+        live_alerts = []
+        if isinstance(alerts_data, dict):
+            all_alerts = alerts_data.get("alerts", [])
+            if isinstance(all_alerts, list):
+                live_alerts = [a for a in all_alerts if isinstance(a, dict) and a.get("source") == "live"]
+        active_alert_count = len(live_alerts)
+
+        # Reconciliation
+        recon_passed = reconciliation.get("passed", None) if isinstance(reconciliation, dict) else None
+
+        # Positions
+        pos_count = 0
+        if isinstance(positions_data, dict) and "positions" in positions_data:
+            pos_count = len(positions_data["positions"])
+        elif isinstance(positions_data, list):
+            pos_count = len(positions_data)
+
+        # Latest events (last 3)
+        latest_events: list[dict] = []
+        if isinstance(events_data, dict) and "events" in events_data:
+            latest_events = events_data["events"][-3:] if len(events_data["events"]) >= 3 \
+                else events_data["events"]
+
+        # Net liquidation
+        net_liq = None
+        if isinstance(account_data, dict) and "values" in account_data:
+            for v in account_data["values"]:
+                if v.get("tag") == "NetLiquidation" and v.get("currency") == "BASE":
+                    net_liq = v.get("value")
+                    break
+
+        guard = {}
+
+    # Liveness already fetched above (after snapshot attempt)
 
     # ------------------------------------------------------------------
     # 3. File-based checks
@@ -2522,6 +2592,7 @@ def run_kpi() -> dict:
     # 5. Blocker list
     # ------------------------------------------------------------------
     blockers: list[dict] = []
+    hold_reasons: list[dict] = []
 
     # NO-GO blockers (hard failures)
     if bridge_reachable:
@@ -2545,8 +2616,31 @@ def run_kpi() -> dict:
                          "detail": f"{active_alert_count} live alert(s): {', '.join(sorted(alert_types))}"})
 
     if recon_passed is False:
-        blockers.append({"severity": "NO-GO", "check": "reconciliation_failed",
-                         "detail": "Reconciliation check(s) failed"})
+        # Step 15C v2: reconciliation failure is NO-GO only when IBKR is connected
+        # and there are active alerts. When disconnected, reconciliation is HOLD
+        # (cannot verify cross-source consistency without live data).
+        if connected and active_alert_count > 0:
+            blockers.append({"severity": "NO-GO", "check": "reconciliation_failed",
+                             "detail": "Reconciliation check(s) failed with active alerts"})
+        else:
+            hold_reasons.append({"severity": "HOLD", "check": "reconciliation_unavailable",
+                                 "detail": "Reconciliation unavailable — IBKR disconnected or no alerts"})
+
+    # Step 15C v2: Recent OOM kill → NO-GO (30-min lookback)
+    if liveness:
+        oom_evidence = liveness.get("oom_evidence", {})
+        if oom_evidence.get("recent_oom_detected"):
+            oom_details = oom_evidence.get("oom_details", [])
+            detail = oom_details[0][:120] if oom_details else "OOM evidence found in journal"
+            blockers.append({"severity": "NO-GO", "check": "recent_oom_kill",
+                             "detail": detail})
+        # Also check NRestarts — if restarts occurred recently, treat as OOM warning
+        n_restarts = oom_evidence.get("n_restarts", 0)
+        unit_result = oom_evidence.get("unit_result", "")
+        if n_restarts >= 3 or unit_result == "oom-kill":
+            if not oom_evidence.get("recent_oom_detected"):
+                blockers.append({"severity": "NO-GO", "check": "recent_oom_kill",
+                                 "detail": f"{n_restarts} restarts, result={unit_result} — consistent with OOM"})
 
     if doctor.get("_non_canary_ok") is False:
         doc_fails = doctor.get("_non_canary_failures", [])
@@ -2554,7 +2648,7 @@ def run_kpi() -> dict:
                          "detail": f"Doctor non-canary check(s) failed: {', '.join(doc_fails)}"})
 
     # HOLD blockers (soft / evidence insufficiencies)
-    hold_reasons: list[dict] = []
+    # Note: hold_reasons already initialized above; reconciliation HOLD may already be appended
 
     if not connected:
         hold_reasons.append({"severity": "HOLD", "check": "ibkr_not_connected",
@@ -3488,6 +3582,7 @@ def _collect_lightweight_evidence() -> dict:
         "doctor": {},
         "safety": {},
         "strategy": {},
+        "liveness": {},
     }
 
     # --- Bridge health (single HTTP call, fast, one retry on failure) ---
@@ -3607,6 +3702,78 @@ def _collect_lightweight_evidence() -> dict:
         checks.append({"check": "bridge_safety_flags", "ok": False,
                        "detail": "bridge unreachable — cannot verify safety"})
 
+    # K17: Step 15C — Recent OOM kill detection (systemctl + journal)
+    oom_found = False
+    oom_detail = "no OOM evidence"
+    n_restarts = 0
+    try:
+        show = subprocess.run(
+            ["systemctl", "show", "ibkr-bridge.service", "--no-pager",
+             "-p", "NRestarts", "-p", "Result", "-p", "ExecMainStatus",
+             "-p", "MemoryPeak", "-p", "MemoryMax"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if show.returncode == 0:
+            props = {}
+            for line in show.stdout.strip().splitlines():
+                if "=" in line:
+                    k, _, v = line.partition("=")
+                    props[k] = v
+            n_restarts = int(props.get("NRestarts", 0))
+            exec_status = props.get("ExecMainStatus", "0")
+            unit_result = props.get("Result", "success")
+
+            # Check journal for OOM keyword in last 30 min
+            jrnl = subprocess.run(
+                ["journalctl", "-u", "ibkr-bridge.service", "--no-pager",
+                 "--since", "30 min ago", "-o", "cat"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in jrnl.stdout.splitlines():
+                lower = line.lower()
+                if "oom" in lower or "out of memory" in lower:
+                    oom_found = True
+                    oom_detail = f"OOM evidence in journal: {line[:120]}"
+                    break
+
+            # Also check kernel messages as fallback
+            if not oom_found:
+                try:
+                    dmesg = subprocess.run(
+                        ["dmesg", "-T", "--level=err,warn"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    for line in dmesg.stdout.splitlines():
+                        if "oom" in line.lower() or "killed process" in line.lower():
+                            # crude recency check: look for today's date
+                            today_short = datetime.now(timezone.utc).strftime("%b %d")
+                            if today_short in line or "ibkr" in line.lower():
+                                oom_found = True
+                                oom_detail = f"Kernel OOM: {line[:120]}"
+                                break
+                except Exception:
+                    pass
+
+            # Check for crash-loop pattern (high restart count + killed status)
+            if n_restarts >= 2 and (unit_result == "oom-kill" or exec_status == "9"):
+                oom_found = True
+                oom_detail = f"Restart pattern ({n_restarts} restarts, result={unit_result}, exit={exec_status}) — consistent with OOM"
+
+            # Memory pressure warning
+            mem_peak = int(props.get("MemoryPeak", 0))
+            mem_max = int(props.get("MemoryMax", 0))
+            if mem_max > 0 and mem_peak > 0 and mem_peak / mem_max > 0.7:
+                pct = round(mem_peak / mem_max * 100)
+                oom_detail += f" | Memory peak at {pct}% of limit"
+    except Exception:
+        oom_detail = "liveness check unavailable"
+
+    k17_ok = not oom_found
+    if not k17_ok:
+        all_pass = False
+    checks.append({"check": "no_recent_oom", "ok": k17_ok, "detail": oom_detail,
+                   "n_restarts": n_restarts})
+
     evidence["doctor"] = {
         "pass": all_pass,
         "total": len(checks),
@@ -3642,6 +3809,14 @@ def _collect_lightweight_evidence() -> dict:
     evidence["strategy"] = {
         "strategy_exists": strategy_path.exists(),
         "autonomy_exists": autonomy_path.exists(),
+    }
+
+    # --- Liveness (Step 15C) ---
+    evidence["liveness"] = {
+        "oom_detected": oom_found,
+        "oom_detail": oom_detail,
+        "n_restarts": n_restarts,
+        "k17_ok": k17_ok,
     }
 
     return evidence

@@ -20,6 +20,10 @@ TimeoutStopSec=10
 MemoryMax=2500M
 OOMPolicy=stop
 MemorySwapMax=0
+# Step 15C: MemoryMax kept at 2500M (safe envelope for host with ~6GB available).
+# OOM protection is load-shed based — /snapshot replaces 8-endpoint storms,
+# and /positions + /account fast-fail when IBKR is disconnected.
+# Monitor with: curl http://127.0.0.1:8790/monitor/liveness
 # ------------------------------------------------------------------ #
 # Hardening — Step 7 OS boundary / process hardening
 # ------------------------------------------------------------------ #

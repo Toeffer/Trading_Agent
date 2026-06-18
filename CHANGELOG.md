@@ -9,6 +9,62 @@ a fact there changes, its old form lands here with a date. Append-only.
 
 ---
 
+## 2026-06-18 — Step 15C: Bridge Liveness / Load-Shed Hardening (v1→v2→v3)
+
+### Pre-fix OOM timeline (failure evidence)
+
+All OOM kills were systemd-managed events where the bridge process was selected by
+the kernel OOM killer:
+
+| Timestamp (UTC) | Trigger | Root cause |
+|---|---|---|
+| 07:39:08 | Endpoint storm (8 HTTP calls × concurrent gates) | No snapshot cache; each call was independent |
+| 09:35:33 | Runtime gate loop | Snapshot `_build_snapshot()` called `reconcile_snapshot()` (5 large JSON files) + `_check_liveness()` (subprocess forks) |
+| 09:46:30 | Runtime gate loop | Same — snapshot amplified load, reconciliation allocated per-call |
+| 10:01:31 | Runtime gate loop | v2 didn't fix it: `_build_snapshot` was declared lightweight but still spawned subprocesses |
+| 10:52:18 | Live stress `test_08` | v2 `_check_liveness()` spawned `systemctl show` + `journalctl` — fork under memory pressure → OOM |
+| 12:34:58 | Runtime gate loop | v2 code still had subprocess forks in liveness; gates 2/3 failed because bridge was gone |
+
+Each kill: `Main process exited, code=killed, status=9/KILL`, `Failed with result 'oom-kill'`.
+
+### v1 (initial)
+
+Added snapshot cache with 5s TTL, `/snapshot` endpoint, `/monitor/liveness` endpoint,
+fast-fail `/positions` and `/account`. Snapshot used `_build_snapshot()` which called
+`reconcile_snapshot()` (5 large JSON reads) and `_check_liveness()` (systemctl/journalctl
+subprocesses). This **amplified** memory load under concurrent calls rather than reducing it.
+
+### v2 (lightweight snapshot + cached liveness)
+
+Rewrote `_build_snapshot_lightweight()` to remove reconciliation and subprocess calls.
+Added separate `_liveness_cache` with 60s TTL. Increased snapshot cache to 30s TTL.
+Made `/positions`/`/account` immediate fast-fail (HTTP 200, `ok=False`).
+Reconciliation downgraded to HOLD when IBKR disconnected.
+
+**v2 still OOM'd** because `_check_liveness()` spawned `systemctl show` and `journalctl`
+subprocesses — each a `fork()` of the Python process. Under memory pressure, fork
+duplicates page tables and triggers OOM. The 30-min journal scan was especially expensive.
+
+### v3 (zero-fork liveness + variable fixes) — ACCEPTED
+
+- `_check_liveness()` rewritten to read `/proc/self/status` directly — zero subprocess forks.
+- `/monitor/liveness` reads VmRSS/VmPeak/VmSize from proc; skips all systemctl/journalctl calls.
+- Systemd-level OOM detection delegated to K17 check in `_collect_lightweight_evidence()`.
+- Fixed `hold_reasons` double-initialization bug (line 2596 init wiped by line 2652 re-init).
+- Fixed stray `liveness = None` before docstring (moved to proper scope).
+- Added snapshot instrumentation: `cache_hit`, `build_ms`, `cache_age_seconds`, `in_flight_collapsed`.
+- `test_08` asserts 4+ cache hits across 5 repeated calls.
+- `test_09` verifies `run_kpi()` returns structured NO-GO/HOLD when bridge is dead.
+
+**Acceptance** (from systemd restart 2026-06-18 18:14:04):
+- 3 full runtime gates: Doctor PASS(10/10), KPI HOLD, Rehearsal HOLD, Candidate HOLD
+- Journal: 0 OOM/killed/Failed with result/address already in use since restart
+- Bridge RSS: 151MB stable, MemoryPeak 257MB (well under 2500M limit)
+- 32 CI tests pass, 9 live stress tests pass
+- `IBKR_ALLOW_ORDERS=false`, `rules.enforced=false`
+
+---
+
 ## 2026-06-17 — Step 15B: OOM + trade_count_mismatch repair
 
 **OOM fix:** Raised `MemoryMax` from 2000M → 2500M in `systemd/ibkr-bridge.service`

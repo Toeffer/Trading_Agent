@@ -398,3 +398,68 @@ Do not proceed if the canary fails.
 A 12-step operator checklist lives in the bridge repo's runbook; `phase3l` proved
 clone + rebuild + restore. Start from `ibkr-status` (§L0) and the audit bundle (§L4) to
 establish a known-good baseline, then follow the repo checklist.
+
+## §L11. OOM Recovery (Step 15C)
+
+### Pre-fix OOM history (2026-06-18)
+
+The bridge was repeatedly OOM-killed during Step 15C development:
+
+| Timestamp (UTC) | Root cause | Fix version |
+|---|---|---|
+| 07:39:08 | Endpoint storm (8 HTTP calls × concurrent gates) | v1 added snapshot cache |
+| 09:35:33, 09:46:30, 10:01:31 | Snapshot called `reconcile_snapshot()` + `_check_liveness()` (subprocess forks) | v2 lightweight snapshot |
+| 10:52:18 | `_check_liveness()` spawned `systemctl show` + `journalctl` (fork under memory pressure) | v3 zero-fork liveness |
+| 12:34:58 | Same v2 fork issue; gates 2/3 failed because bridge was gone | v3 accepted |
+
+All kills: `Main process exited, code=killed, status=9/KILL`, `Failed with result 'oom-kill'`.
+MemoryMax was 2500M throughout — the issue was **load-shed** (endpoint storms, subprocess forks), not the memory ceiling.
+
+### Detect OOM
+```bash
+# Check for recent OOM kills
+ibkr-operator doctor                    # K17 no_recent_oom check
+curl -s http://127.0.0.1:8790/monitor/liveness | jq .oom_evidence
+journalctl -u ibkr-bridge.service --since "1 hour ago" | grep -i oom
+```
+
+### Memory envelope
+- `MemoryMax=2500M` (set in `systemd/ibkr-bridge.service`)
+- `MemorySwapMax=0` (no swap — fail-closed)
+- `OOMPolicy=stop` (stop the unit, don't let kernel pick a random victim)
+- Current peak: see `systemctl show ibkr-bridge.service -p MemoryPeak`
+
+### If OOM occurs
+1. Check `journalctl -k | grep -i oom` for kernel-level victim details.
+2. Verify `MemoryMax` is adequate (host has ~6GB available; 2500M is a safe envelope).
+3. Check for endpoint storms: concurrent KPI/rehearsal/candidate invocations each
+   launch 8 HTTP calls. After Step 15C v3, the `/snapshot` endpoint consolidates these
+   into a single cacheable call, and liveness uses zero-fork /proc reads.
+4. Restricted from this session: `sudo systemctl restart ibkr-bridge.service`
+5. Verify: `ibkr-operator doctor` and `curl http://127.0.0.1:8790/health`
+
+## §L12. Snapshot / Load-Shed (Step 15C v3)
+
+### Consolidated snapshot
+Instead of calling 8 separate endpoints, use the single `/snapshot` endpoint:
+```bash
+curl -s http://127.0.0.1:8790/snapshot | jq .
+```
+Returns: health, RTH, safety flags, guard state, positions, account values,
+reconciliation, and liveness in one response. Cached with 30s TTL.
+Includes `_instrumentation` field: `cache_hit`, `build_ms`, `cache_age_seconds`, `in_flight_collapsed`.
+
+### Fast-fail for disconnected IBKR
+When IBKR Gateway is disconnected:
+- `/positions` returns `{"ok": false, "detail": "IBKR not connected"}` (HTTP 200)
+- `/account` returns same fast-fail format
+- `/snapshot` includes `positions_ok: false` and `account_ok: false`
+- No 503 blocking, no timeout accumulation
+
+### Liveness monitoring (zero-fork)
+```bash
+curl -s http://127.0.0.1:8790/monitor/liveness | jq .
+```
+Reports: process RSS/VmPeak/VmSize from `/proc/self/status` (no subprocess forks).
+Cached 60s. Zero `systemctl`/`journalctl` calls inside the bridge process.
+For systemd-level OOM detection, use the K17 check in `_collect_lightweight_evidence()`

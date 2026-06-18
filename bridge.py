@@ -1,6 +1,7 @@
 import os
 import socket
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict
 
@@ -56,6 +57,158 @@ def _verify_h1_token(token: str | None) -> bool:
 
 
 ib = IB() if IB else None
+
+# ---------------------------------------------------------------------------
+# Step 15C v2 — Snapshot Cache (lightweight, bounded, no subprocess storms)
+# ---------------------------------------------------------------------------
+# Caches bridge-level evidence so KPI/rehearsal/candidate can fetch one
+# consolidated snapshot instead of hammering 8+ endpoints.
+# TTL is 30s — long enough to cover a full runtime-gate sequence.
+# Lock prevents concurrent snapshot builds from stacking memory under load.
+# NO reconciliation, NO subprocess calls in the hot path — those are in
+# /monitor/reconciliation and /monitor/liveness respectively.
+_snapshot_cache: dict | None = None
+_snapshot_cache_ts: float = 0.0
+_SNAPSHOT_CACHE_TTL = 30.0  # seconds — covers a full gate sequence
+import threading as _threading
+_snapshot_build_lock = _threading.Lock()
+
+# Separate liveness cache — lightweight /proc reads only (no subprocess forks)
+# Cached independently with 60s TTL. OOM detection at systemd level is done by
+# the operator-side K17 check, not inside the bridge process.
+_liveness_cache: dict | None = None
+_liveness_cache_ts: float = 0.0
+_LIVENESS_CACHE_TTL = 60.0  # seconds — memory/RSS doesn't change sub-second
+
+
+def _snapshot_ibkr_disconnected_response() -> dict:
+    """Return a minimal disconnected-evidence payload for fast-fail.
+
+    When IBKR is not connected, endpoints like /positions and /account
+    return this instead of blocking on a 503. The snapshot cache detects
+    disconnected state and short-circuits.
+    """
+    return {
+        "ok": False,
+        "connected": False,
+        "mode": IBKR_MODE,
+        "read_only": IBKR_READ_ONLY,
+        "allow_orders": IBKR_ALLOW_ORDERS,
+        "detail": "IBKR not connected — no live data available",
+    }
+
+
+def _build_snapshot_lightweight() -> dict:
+    """Build a lightweight evidence snapshot — no heavy I/O, no subprocesses.
+
+    Step 15C v2: This MUST be fast and low-memory. No reconciliation,
+    no subprocess calls (systemctl/journalctl/dmesg/ss), no large file reads.
+    Those belong in dedicated endpoints (/monitor/reconciliation, /monitor/liveness).
+
+    Returns: health, connected, safety, RTH, guard summary, positions count,
+    account net-liq only. All fast, all bounded.
+    """
+    now_utc = datetime.now(timezone.utc)
+    connected = is_connected()
+
+    # RTH (in-memory computation, no I/O)
+    from monitor import rth_check as _rth_check
+    rth = _rth_check()
+
+    # Guard state summary (single small JSON file, cached in memory by guard module)
+    try:
+        from guard import load_guard_state
+        gs = load_guard_state()
+    except Exception:
+        gs = {}
+
+    # Rules (small YAML file, read once)
+    try:
+        rules = load_rules()
+    except Exception:
+        rules = {}
+
+    result = {
+        "timestamp_utc": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "connected": connected,
+        "mode": IBKR_MODE,
+        "read_only": IBKR_READ_ONLY,
+        "allow_orders": IBKR_ALLOW_ORDERS,
+        "ib_insync_available": IB is not None,
+        "rth": {
+            "in_rth": rth.get("in_rth", False),
+            "is_tradable_day": rth.get("is_tradable_day", False),
+            "reason": rth.get("reason", ""),
+            "market_date_et": rth.get("market_date_et", ""),
+        },
+        "safety": {
+            "IBKR_ALLOW_ORDERS": IBKR_ALLOW_ORDERS,
+            "rules_enforced": rules.get("enforced", False),
+            "system_locked": not (IBKR_ALLOW_ORDERS and rules.get("enforced", False)),
+        },
+        "guard": {
+            "trade_date": gs.get("trade_date", ""),
+            "daily_trade_count": gs.get("daily_trade_count", 0),
+            "daily_halt_active": gs.get("daily_halt_active", False),
+            "weekly_halt_active": gs.get("weekly_halt_active", False),
+        },
+        "startup_safety": _startup_safety if _startup_safety else {},
+    }
+
+    # IBKR-dependent — only if connected, fast-fail otherwise
+    if connected:
+        try:
+            pos = ib.positions()
+            result["positions_ok"] = True
+            result["position_count"] = len(pos)
+            result["positions"] = [
+                {"symbol": getattr(p.contract, "symbol", None),
+                 "position": p.position, "avgCost": p.avgCost}
+                for p in pos[:50]  # bounded: max 50 positions
+            ]
+        except Exception:
+            result["positions_ok"] = False
+            result["position_count"] = 0
+            result["positions"] = []
+
+        try:
+            values = ib.accountValues()
+            result["account_ok"] = True
+            net_liq = None
+            for v in values:
+                if v.tag == "NetLiquidation" and v.currency == "BASE":
+                    net_liq = v.value
+                    break
+            result["net_liquidation"] = net_liq
+            result["account_tag_count"] = len(values)
+        except Exception:
+            result["account_ok"] = False
+            result["net_liquidation"] = None
+            result["account_tag_count"] = 0
+    else:
+        result["positions_ok"] = False
+        result["position_count"] = 0
+        result["positions"] = []
+        result["account_ok"] = False
+        result["net_liquidation"] = None
+        result["account_tag_count"] = 0
+
+    # Reconciliation: lightweight status only (no heavy file scan)
+    # Returns cached pass/fail from guard state; full scan is at /monitor/reconciliation
+    try:
+        from monitor import health_summary
+        hs = health_summary()
+        result["reconciliation"] = {
+            "passed": hs.get("passed", None),
+            "alert_count": hs.get("alert_count", 0),
+        }
+    except Exception:
+        result["reconciliation"] = {"passed": None, "alert_count": 0}
+
+    return result
+
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Phase 3G — Startup Safety Gate (module-level, populated on module import)
@@ -908,7 +1061,8 @@ def account() -> Dict[str, Any]:
     ensure_loop()
 
     if not ib or not ib.isConnected():
-        raise HTTPException(status_code=503, detail="IBKR not connected")
+        # Step 15C: fast-fail with disconnected evidence instead of 503
+        return _snapshot_ibkr_disconnected_response()
 
     try:
         accounts = ib.managedAccounts()
@@ -1003,7 +1157,8 @@ def positions() -> Dict[str, Any]:
     ensure_loop()
 
     if not ib or not ib.isConnected():
-        raise HTTPException(status_code=503, detail="IBKR not connected")
+        # Step 15C: fast-fail with disconnected evidence instead of 503
+        return _snapshot_ibkr_disconnected_response()
 
     try:
         pos = ib.positions()
@@ -2343,6 +2498,9 @@ def readiness() -> Dict[str, Any]:
 
     Returns a GO / NO-GO verdict with detailed reasons.
     No auto-submit. No auto-approve. Operator advisory only.
+
+    Step 15C: When IBKR is disconnected, returns cached/disconnected
+    evidence immediately instead of blocking on IBKR calls.
     """
     global _startup_safety
     verdict = "GO"
@@ -2580,6 +2738,166 @@ def readiness() -> Dict[str, Any]:
         },
         "note": "Read-only advisory. No auto-submit. No auto-approve. Manual operator review required.",
     }
+
+
+@app.get("/snapshot")
+def snapshot() -> Dict[str, Any]:
+    """Consolidated lightweight evidence snapshot for KPI/rehearsal/candidate.
+
+    Step 15C v2: Strictly lightweight — no reconciliation, no subprocess calls.
+    Uses 30s cache with double-checked locking to prevent concurrent builds.
+    Liveness data served separately via /monitor/liveness.
+
+    Returns HTTP 200 always. Read-only advisory.
+    """
+    global _snapshot_cache, _snapshot_cache_ts, _SNAPSHOT_CACHE_TTL, _snapshot_build_lock
+
+    # Fast path: return cached if fresh (no lock needed for read)
+    now_ms = time.time()
+    if _snapshot_cache is not None and (now_ms - _snapshot_cache_ts) < _SNAPSHOT_CACHE_TTL:
+        result = dict(_snapshot_cache)  # shallow copy so we can add instrumentation
+        result["_instrumentation"] = {
+            "cache_hit": True,
+            "cache_age_seconds": round(now_ms - _snapshot_cache_ts, 3),
+            "build_ms": 0,
+            "in_flight_collapsed": False,
+        }
+        return result
+
+    # Slow path: acquire lock, re-check, build
+    t_build_start = time.time()
+    in_flight_collapsed = False
+    with _snapshot_build_lock:
+        now_ms = time.time()
+        if _snapshot_cache is not None and (now_ms - _snapshot_cache_ts) < _SNAPSHOT_CACHE_TTL:
+            in_flight_collapsed = True
+            result = dict(_snapshot_cache)
+            result["_instrumentation"] = {
+                "cache_hit": True,
+                "cache_age_seconds": round(now_ms - _snapshot_cache_ts, 3),
+                "build_ms": round((time.time() - t_build_start) * 1000, 1),
+                "in_flight_collapsed": True,
+            }
+            return result
+        snap = _build_snapshot_lightweight()
+        build_ms = round((time.time() - t_build_start) * 1000, 1)
+        snap["_instrumentation"] = {
+            "cache_hit": False,
+            "cache_age_seconds": 0,
+            "build_ms": build_ms,
+            "in_flight_collapsed": False,
+        }
+        _snapshot_cache = snap
+        _snapshot_cache_ts = time.time()
+        return snap
+
+
+# ---------------------------------------------------------------------------
+# Step 15C — Liveness / OOM Detection
+# ---------------------------------------------------------------------------
+
+def _check_liveness() -> dict:
+    """Check process liveness — ZERO subprocess forks.
+
+    Step 15C v3: Reads /proc/self/status for memory, avoids all subprocess
+    calls (systemctl, journalctl) that fork under memory pressure and can
+    themselves trigger OOM. For systemd-level OOM evidence, use the K17
+    check in ibkr_operator's _collect_lightweight_evidence() which runs
+    outside the bridge process.
+
+    Returns memory stats and process state without spawning anything.
+    """
+    import os as _os
+
+    result = {
+        "ok": True,
+        "service_active": True,
+        "warnings": [],
+        "memory": {},
+        "oom_evidence": {
+            "recent_oom_detected": False,
+            "oom_details": [],
+            "_note": "No subprocess checks — use K17 lightweight evidence for systemd OOM detection",
+        },
+    }
+
+    # Read process memory from /proc/self/status (no fork)
+    try:
+        rss_bytes = 0
+        vm_peak = 0
+        vm_size = 0
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    rss_bytes = int(line.split()[1]) * 1024  # kB → bytes
+                elif line.startswith("VmPeak:"):
+                    vm_peak = int(line.split()[1]) * 1024
+                elif line.startswith("VmSize:"):
+                    vm_size = int(line.split()[1]) * 1024
+
+        # Also check cgroup memory limit if available
+        mem_max = 0
+        try:
+            with open("/sys/fs/cgroup/memory.max", "r") as f:
+                val = f.read().strip()
+                if val != "max":
+                    mem_max = int(val)
+        except Exception:
+            pass
+
+        result["memory"] = {
+            "rss_bytes": rss_bytes,
+            "rss_mb": round(rss_bytes / (1024 * 1024), 1),
+            "vm_peak_mb": round(vm_peak / (1024 * 1024), 1),
+            "vm_size_mb": round(vm_size / (1024 * 1024), 1),
+            "max_bytes": mem_max,
+            "max_mb": round(mem_max / (1024 * 1024), 1) if mem_max else None,
+        }
+
+        # Memory pressure warnings
+        if mem_max > 0 and rss_bytes > 0:
+            ratio = rss_bytes / mem_max
+            if ratio > 0.7:
+                pct = round(ratio * 100)
+                result["warnings"].append(
+                    f"Memory at {pct}% of cgroup limit ({result['memory']['rss_mb']}MB / {result['memory']['max_mb']}MB)"
+                )
+
+        # Check /proc/vmstat for system OOM kills (no fork, just file read)
+        try:
+            with open("/proc/vmstat", "r") as f:
+                for line in f:
+                    if line.startswith("oom_kill"):
+                        count = int(line.split()[1])
+                        if count > 0:
+                            result["oom_evidence"]["system_oom_kill_count"] = count
+                            # Don't set recent_oom_detected — this is system-wide, not necessarily us
+                        break
+        except Exception:
+            pass
+
+    except Exception as e:
+        result["warnings"].append(f"Cannot read /proc/self/status: {str(e)[:100]}")
+
+    return result
+
+
+@app.get("/monitor/liveness")
+def monitor_liveness() -> Dict[str, Any]:
+    """Step 15C v3: Liveness check — ZERO subprocess forks.
+
+    Reads /proc/self/status directly — no systemctl, no journalctl.
+    Uses a separate 60s cache. Always returns HTTP 200.
+    For systemd-level OOM detection, see K17 in lightweight evidence.
+    """
+    global _liveness_cache, _liveness_cache_ts, _LIVENESS_CACHE_TTL
+    now_ms = time.time()
+    if _liveness_cache is not None and (now_ms - _liveness_cache_ts) < _LIVENESS_CACHE_TTL:
+        return _liveness_cache
+    result = _check_liveness()
+    _liveness_cache = result
+    _liveness_cache_ts = time.time()
+    return result
 
 
 @app.get("/audit/bundle")

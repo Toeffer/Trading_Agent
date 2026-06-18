@@ -340,9 +340,18 @@ def _rollover_guard_state(state: dict) -> bool:
                 ibkr = evt.get("ibkr_metadata")
                 if ibkr is None and evt.get("action") == "SELL":
                     continue
-                # Skip known test artifacts
+                # Skip known test artifacts:
+                #   - order_id 1001: test-bracket shared fake order_id
+                #   - permId 5001: test-bracket shared fake IBKR permId
+                #   - approval_id starting with test-* (test-bracket, test-double,
+                #     test-killswitch, test-failclosed)
                 oid = str(evt.get("order_id", "")) if evt.get("order_id") is not None else ""
-                if oid in {"12345", "99999"}:
+                if oid in {"12345", "99999", "1001"}:
+                    continue
+                if ibkr and ibkr.get("permId") == 5001:
+                    continue
+                aid = str(evt.get("approval_id", ""))
+                if aid.startswith("test-"):
                     continue
                 # Deduplicate: only count each unique order_id once
                 if oid and oid not in seen_order_ids:

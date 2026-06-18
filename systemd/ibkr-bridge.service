@@ -17,7 +17,7 @@ KillMode=control-group
 KillSignal=SIGTERM
 TimeoutStopSec=10
 
-MemoryMax=2000M
+MemoryMax=2500M
 OOMPolicy=stop
 MemorySwapMax=0
 # ------------------------------------------------------------------ #

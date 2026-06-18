@@ -9,6 +9,31 @@ a fact there changes, its old form lands here with a date. Append-only.
 
 ---
 
+## 2026-06-17 — Step 15B: OOM + trade_count_mismatch repair
+
+**OOM fix:** Raised `MemoryMax` from 2000M → 2500M in `systemd/ibkr-bridge.service`
+and `/etc/systemd/system/ibkr-bridge.service`. The bridge was intermittently OOM-killed
+under memory pressure from uvicorn worker respawns. Host has 7872MB total / ~6GB available;
+2500M is a safe envelope. `MemorySwapMax=0` and `OOMPolicy=stop` retained (fail-closed).
+No `MemoryHigh` (throttling previously caused active-but-unresponsive behavior).
+
+**trade_count_mismatch fix:** `guard.py:_rollover_guard_state()` excluded only
+`order_id ∈ {12345, 99999}` from daily trade count restoration. The bridge's startup
+self-test writes events with `order_id=1001`, `permId=5001`, and `approval_id=test-*`.
+These test artifacts were NOT excluded, inflating `daily_trade_count` to 2-3 on every
+bridge restart, triggering a persistent `trade_count_mismatch` alert → KPI NO-GO.
+
+Added exclusions for:
+- `order_id` 1001 (test-bracket shared fake order_id)
+- `permId` 5001 (test-bracket shared fake IBKR permId)
+- Any `approval_id` starting with `"test-"` (test-bracket, test-double, test-killswitch, test-failclosed)
+
+**Repair:** `ibkr-operator kpi-repair --live` corrected `daily_trade_count` 3→0 and
+cleared 58 orphan approvals. Requires bridge restart (`sudo systemctl restart`) for
+new `guard.py` to take effect in the running process.
+
+---
+
 ## Order history (paper account DUQ542875) — Phase H3 authoritative ledger
 
 > **H3 reconstructed 2026-06-10** from `guard-events.jsonl` `order_submitted` events

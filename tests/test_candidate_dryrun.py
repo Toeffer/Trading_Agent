@@ -719,7 +719,7 @@ class TestDependencyTimeout:
     """Dependency timeouts must produce explicit evidence, not fake bridge state."""
 
     def test_kpi_timeout_not_bridge_unreachable(self):
-        """When KPI raises an exception, report kpi_unavailable, not bridge_unreachable."""
+        """When KPI raises an exception, report dependency_timeout, not bridge_unreachable."""
         from ibkr_operator import _run_candidate_dryrun
 
         with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
@@ -734,11 +734,11 @@ class TestDependencyTimeout:
             f"KPI timeout must not fabricate ibkr_unreachable. Blockers: {[b['check'] for b in result['blockers']]}"
         )
 
-        # Must have kpi_unavailable (HOLD) or bridge_unknown (HOLD)
+        # Must have dependency_timeout (HOLD) or bridge_unknown (HOLD)
         timeout_blockers = [b for b in result["blockers"]
-                           if b["check"] in ("kpi_unavailable", "bridge_unknown")]
+                           if b["check"] in ("dependency_timeout", "bridge_unknown")]
         assert len(timeout_blockers) > 0, (
-            f"Expected kpi_unavailable or bridge_unknown blocker on KPI timeout. "
+            f"Expected dependency_timeout or bridge_unknown blocker on KPI timeout. "
             f"Blockers: {[b['check'] for b in result['blockers']]}"
         )
 
@@ -948,4 +948,147 @@ class TestBridgeSafetyFlagsNoFabrication:
         bsf = result.get("bridge_safety_flags", {})
         assert bsf.get("env_IBKR_ALLOW_ORDERS") == "false", (
             f"bridge_safety_flags must show allow_orders=false. Got: {bsf}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T20: Integration acceptance — safe disconnected state → HOLD (not NO-GO)
+# ---------------------------------------------------------------------------
+
+class TestIntegrationSafeDisconnectedHOLD:
+    """Full integration test: safe disconnected state must produce HOLD, not NO-GO.
+
+    This is the acceptance case from Step 15A:
+    - doctor PASS 9/9
+    - KPI HOLD (ibkr_not_connected only)
+    - bridge reachable, disconnected
+    - safety locked
+    => candidate verdict HOLD, no kpi_nogo_cascade, no bridge_unreachable, no doctor_non_pass
+    """
+
+    def test_safe_disconnected_produces_hold(self):
+        """Safe + disconnected = HOLD, not NO-GO. No fabricated failures."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        # Lightweight evidence: doctor PASS, bridge reachable+disconnected, safety locked
+        lw = _make_lightweight_disconnected()
+
+        # KPI: HOLD with only ibkr_not_connected (bridge reachable but disconnected)
+        kpi_hold_disconnected = {
+            "verdict": "HOLD",
+            "blockers": [
+                {"severity": "HOLD", "check": "ibkr_not_connected",
+                 "detail": "IBKR Gateway is not connected"},
+            ],
+            "bridge": {
+                "reachable": True,
+                "connected": False,
+                "url": "http://127.0.0.1:8790",
+                "mode": "paper",
+                "read_only": True,
+                "allow_orders": "false",
+            },
+            "safety_flags": {
+                "read_only": True,
+                "bridge_allow_orders": False,
+                "env_IBKR_ALLOW_ORDERS": "false",
+                "rules_enforced": "false",
+                "system_locked": True,
+            },
+            "heartbeat": {"recent": True, "age_seconds": 120, "age_human": "2m"},
+            "monitoring": {
+                "reconciliation_passed": True,
+                "active_alert_count": 0,
+            },
+        }
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=lw), \
+             patch("ibkr_operator.run_kpi", return_value=kpi_hold_disconnected), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        # 1. Verdict must be HOLD
+        assert result["verdict"] == "HOLD", (
+            f"Safe disconnected state must produce HOLD, got {result['verdict']}. "
+            f"Blockers: {[(b['severity'], b['check']) for b in result['blockers']]}"
+        )
+        assert result["verdict"] != "NO-GO", (
+            "Safe disconnected state must NOT cascade to NO-GO"
+        )
+
+        # 2. Doctor must PASS
+        assert result["doctor"]["pass"] is True, (
+            f"Doctor must PASS in safe state. Got: {result['doctor']}"
+        )
+
+        # 3. No doctor_non_pass blocker
+        doctor_fail_blockers = [b for b in result["blockers"] if b["check"] == "doctor_non_pass"]
+        assert len(doctor_fail_blockers) == 0, (
+            f"Safe state must not produce doctor_non_pass. Got: {doctor_fail_blockers}"
+        )
+
+        # 4. KPI must be HOLD
+        assert result["kpi"]["verdict"] == "HOLD", (
+            f"KPI must be HOLD in safe disconnected state. Got: {result['kpi']['verdict']}"
+        )
+
+        # 5. No kpi_nogo_cascade
+        nogo_cascade = [b for b in result["blockers"] if b["check"] == "kpi_nogo_cascade"]
+        assert len(nogo_cascade) == 0, (
+            f"KPI HOLD must not produce kpi_nogo_cascade. Got: {nogo_cascade}"
+        )
+
+        # 6. Rehearsal must be HOLD (not NO-GO)
+        assert result["rehearsal"]["verdict"] == "HOLD", (
+            f"Rehearsal must be HOLD in safe disconnected state. Got: {result['rehearsal']['verdict']}"
+        )
+
+        # 7. Bridge must be reachable (not unreachable)
+        assert result["ibkr_connection"]["reachable"] is True, (
+            "Bridge must be reachable in safe disconnected state"
+        )
+        assert result["ibkr_connection"]["connected"] is False, (
+            "IBKR must be disconnected in this test state"
+        )
+
+        # 8. No bridge_unreachable or bridge_unknown blocker fabricated
+        bridge_false_blockers = [
+            b for b in result["blockers"]
+            if b["check"] in ("bridge_unreachable", "bridge_unknown")
+        ]
+        assert len(bridge_false_blockers) == 0, (
+            f"Reachable bridge must not produce bridge_unreachable/bridge_unknown. "
+            f"Got: {bridge_false_blockers}"
+        )
+
+        # 9. Safety must be locked
+        bsf = result["bridge_safety_flags"]
+        assert bsf.get("system_locked") is True, (
+            f"Safety must be locked. Got system_locked={bsf.get('system_locked')}"
+        )
+        assert bsf.get("env_IBKR_ALLOW_ORDERS") == "false", (
+            f"IBKR_ALLOW_ORDERS must be false. Got: {bsf.get('env_IBKR_ALLOW_ORDERS')}"
+        )
+        assert bsf.get("rules_enforced") == "false", (
+            f"rules_enforced must be false. Got: {bsf.get('rules_enforced')}"
+        )
+
+        # 10. No safety_unlocked blocker
+        safety_blockers = [b for b in result["blockers"] if b["check"] == "safety_unlocked"]
+        assert len(safety_blockers) == 0, (
+            f"Locked safety must not produce safety_unlocked. Got: {safety_blockers}"
+        )
+
+        # 11. Only expected blockers: ibkr_disconnected (and possibly autonomy/clean_cycles)
+        unexpected_blockers = [
+            b for b in result["blockers"]
+            if b["check"] not in (
+                "ibkr_disconnected", "autonomy_level_zero", "no_clean_cycles",
+                "system_locked", "strategy_unavailable",
+            )
+        ]
+        assert len(unexpected_blockers) == 0, (
+            f"Unexpected blockers in safe disconnected state: "
+            f"{[(b['severity'], b['check']) for b in unexpected_blockers]}"
         )

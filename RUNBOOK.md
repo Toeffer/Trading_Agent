@@ -190,6 +190,38 @@ ibkr-operator maintenance --prune-exports --keep-exports 20
 - `ibkr-operator maintenance --prune-releases --keep-releases N`
 - `ibkr-operator maintenance --prune-exports --keep-exports N`
 
+## OOM Recovery — ibkr-bridge.service
+
+**Symptom:** `systemctl status ibkr-bridge` shows `code=killed, status=9/KILL`
+or `Failed with result 'oom-kill'`.
+
+**Root cause:** Memory spike from uvicorn worker respawns exceeded `MemoryMax`.
+
+**Current envelope (2026-06-17):**
+```ini
+MemoryMax=2500M          # raised from 2000M; host has ~6GB available
+MemorySwapMax=0          # never swap — fail-closed
+OOMPolicy=stop           # stop the unit, don't restart-loop
+# No MemoryHigh          # throttling caused unresponsive-but-alive state
+Restart=on-failure
+RestartSec=30
+```
+
+**Procedure:**
+```bash
+sudo systemctl restart ibkr-bridge.service
+sleep 10
+# Verify
+systemctl show ibkr-bridge.service -p MemoryCurrent -p Result -p ActiveState
+ss -tlnp sport = :8790      # must show exactly one LISTEN on 127.0.0.1:8790
+curl -s http://127.0.0.1:8790/health  # must return ok=true
+cd ~/agents/ibkr-bridge
+.venv/bin/python ibkr_operator.py doctor   # should PASS or PASS with H1 MANUAL only
+.venv/bin/python ibkr_operator.py kpi      # should be HOLD when only disconnected
+# If trade_count_mismatch alert persists after restart:
+.venv/bin/python ibkr_operator.py kpi-repair --live
+```
+
 ## Hermes Advisory Guard (Phase 5B.0) & Invocation Adapter (Phase 5B.1)
 
 Policy: `~/.openclaw/memory/hermes-advisory-guard-policy.md`

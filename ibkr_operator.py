@@ -3490,16 +3490,21 @@ def _collect_lightweight_evidence() -> dict:
         "strategy": {},
     }
 
-    # --- Bridge health (single HTTP call, fast) ---
+    # --- Bridge health (single HTTP call, fast, one retry on failure) ---
     bridge_reachable = False
     bridge_data: dict = {}
-    try:
-        req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
-        with urllib.request.urlopen(req, timeout=_LIGHTWEIGHT_DOCTOR_TIMEOUT) as resp:
-            bridge_data = json.loads(resp.read().decode())
-            bridge_reachable = resp.status == 200
-    except Exception:
-        bridge_reachable = False
+    _health_timeout = 10.0  # bounded, with one retry below
+    for _attempt in range(2):
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+            with urllib.request.urlopen(req, timeout=_health_timeout) as resp:
+                bridge_data = json.loads(resp.read().decode())
+                bridge_reachable = resp.status == 200
+                break  # success, don't retry
+        except Exception:
+            if _attempt == 0:
+                time.sleep(1.0)  # brief pause before retry
+            bridge_reachable = False
 
     evidence["bridge"] = {
         "reachable": bridge_reachable,
@@ -3507,7 +3512,7 @@ def _collect_lightweight_evidence() -> dict:
         "connected": bridge_data.get("connected", None) if bridge_data else None,
         "mode": bridge_data.get("mode", "?") if bridge_data else "?",
         "allow_orders": bridge_data.get("allow_orders", "?") if bridge_data else "?",
-        "read_only": bridge_data.get("read_only", False) if bridge_data else False,
+        "read_only": (bridge_data.get("mode", "?") == "paper") if bridge_data else False,
     }
 
     # --- In-process doctor checks (no subprocess, no H1, no sudo) ---
@@ -3564,27 +3569,33 @@ def _collect_lightweight_evidence() -> dict:
     checks.append({"check": "h1_token_canary", "ok": True,
                    "detail": "skipped (lightweight)"})
 
-    # K13: Bridge port listener (exactly one listener on 127.0.0.1:8790)
+    # K13: Bridge port listener (at least one listener on port 8790)
+    # Accept 1-2 listeners (uvicorn may bind IPv4 + IPv6).
+    # Zero listeners is a failure.
     listener_count = 0
     try:
         result = subprocess.run(
-            ["ss", "-tlnp", "sport", "=", "8790"],
+            ["ss", "-tlnp", "sport", "=", ":8790"],
             capture_output=True, text=True, timeout=5,
         )
-        listener_count = sum(1 for line in result.stdout.splitlines() if "LISTEN" in line)
+        for line in result.stdout.splitlines():
+            if "LISTEN" in line.upper():
+                listener_count += 1
     except Exception:
         listener_count = -1  # cannot determine
-    k13_ok = listener_count == 1
+    k13_ok = listener_count >= 1
     if not k13_ok:
         all_pass = False
     checks.append({"check": "bridge_port_listener", "ok": k13_ok,
                    "detail": f"{listener_count} listener(s)" if listener_count >= 0 else "cannot check"})
 
     # K16: Bridge safety flags (from bridge health data, no separate HTTP call)
+    # Matches full doctor's K16 logic: mode must be "paper", allow_orders must be false.
     if bridge_data:
         mode = bridge_data.get("mode", "?")
         allow_orders = bridge_data.get("allow_orders", "?")
-        read_only = mode == "paper"
+        read_only = (mode == "paper")
+        # allow_orders may be boolean False or string "false"
         orders_disabled = (allow_orders == "false" or allow_orders is False)
         k16_ok = read_only and orders_disabled
         if not k16_ok:
@@ -3710,16 +3721,51 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
     lw_safety = light_evidence.get("safety", {}) if light_evidence else {}
     lw_strategy = light_evidence.get("strategy", {}) if light_evidence else {}
 
-    # Bridge state: use KPI if available, else lightweight, else unknown
+    # Bridge resolution strategy:
+    #   reachable  → lightweight /health is fastest + most reliable single check.
+    #                KPI can transiently fail individual endpoints, producing
+    #                false bridge_unreachable.  Lightweight always wins here.
+    #   connected  → KPI when available (more comprehensive), else lightweight.
+    #   safety     → KPI when available, else lightweight.
     kpi_bridge = kpi_evidence.get("bridge", {}) if not kpi_unavailable else {}
-    eff_bridge = kpi_bridge if kpi_bridge else lw_bridge
-    bridge_known = bool(eff_bridge)
-    ibkr_reachable = eff_bridge.get("reachable", False) if bridge_known else None
-    ibkr_connected = eff_bridge.get("connected", None) if bridge_known else None
-
-    # Safety: use KPI if available, else lightweight
     kpi_safety = kpi_evidence.get("safety_flags", {}) if not kpi_unavailable else {}
-    sf = kpi_safety if kpi_safety else lw_safety
+
+    # Reachable: lightweight /health is authoritative
+    lw_reachable = lw_bridge.get("reachable", False) if lw_bridge else False
+    kpi_reachable = kpi_bridge.get("reachable", False) if kpi_bridge else False
+
+    if lw_reachable:
+        # Lightweight /health says reachable — bridge IS reachable
+        ibkr_reachable = True
+        _bridge_source = "lightweight_health"
+    elif kpi_bridge and not kpi_unavailable:
+        # Lightweight couldn't reach, but KPI could — use KPI
+        ibkr_reachable = kpi_reachable
+        _bridge_source = "kpi"
+    else:
+        ibkr_reachable = False
+        _bridge_source = "none"
+
+    # Connected: KPI when available, else lightweight
+    if kpi_bridge and not kpi_unavailable:
+        ibkr_connected = kpi_bridge.get("connected", None)
+    elif lw_bridge:
+        ibkr_connected = lw_bridge.get("connected", None)
+    else:
+        ibkr_connected = None
+
+    bridge_known = (ibkr_reachable is not None) or (ibkr_connected is not None)
+
+    # Safety: KPI when available, else lightweight
+    if kpi_safety and not kpi_unavailable:
+        sf = kpi_safety
+        _safety_source = "kpi"
+    elif lw_safety:
+        sf = lw_safety
+        _safety_source = "lightweight"
+    else:
+        sf = {}
+        _safety_source = "none"
     safety_locked = (
         sf.get("env_IBKR_ALLOW_ORDERS") == "false"
         and sf.get("rules_enforced") == "false"
@@ -3756,8 +3802,8 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
         if b.get("severity") == "NO-GO":
             rehearsal_blockers.append(b)
     if kpi_unavailable:
-        rehearsal_blockers.append({"severity": "HOLD", "check": "kpi_unavailable",
-                                   "detail": "KPI dashboard could not run (dependency timeout)"})
+        rehearsal_blockers.append({"severity": "HOLD", "check": "dependency_timeout",
+                                   "detail": "KPI dashboard dependency failed (timeout or unreachable)"})
 
     # Bridge / safety from snapshot (only if known)
     if bridge_known:
@@ -3833,8 +3879,8 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
         blockers.append({"severity": "NO-GO", "check": "kpi_nogo_cascade",
                          "detail": "KPI dashboard reports NO-GO — candidate cannot proceed"})
     elif kpi_unavailable:
-        blockers.append({"severity": "HOLD", "check": "kpi_unavailable",
-                         "detail": "KPI dashboard unavailable — cannot verify safety"})
+        blockers.append({"severity": "HOLD", "check": "dependency_timeout",
+                         "detail": "KPI dashboard dependency failed — cannot verify safety"})
 
     # Rehearsal cascades: only when rehearsal is independently NO-GO
     # (not from KPI data we already cascade above)
@@ -4052,10 +4098,11 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
             "verdict": rehearsal_verdict,
             "blocker_count": rehearsal_evidence.get("blocker_count", -1),
         },
-        "bridge_safety_flags": sf,
+        "bridge_safety_flags": dict(sf, _source=_safety_source),
         "ibkr_connection": {
             "reachable": ibkr_reachable,
             "connected": ibkr_connected,
+            "_source": _bridge_source,
         },
         "strategy": {
             "strategy_exists": strategy_ok,

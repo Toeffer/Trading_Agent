@@ -4049,13 +4049,28 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
                   lw_strategy.get("autonomy_exists", autonomy_path.exists())
     autonomy_level = _read_autonomy_level(autonomy_path)
 
+    # E8a: Autonomy level check — Level 0 is always HOLD
+    if int(autonomy_level) == 0:
+        blockers.append({"severity": "HOLD", "check": "autonomy_level_zero",
+                         "detail": "Autonomy level 0 — manual approval required for all orders"})
+
+    # E8b: Clean cycle count check — zero clean cycles is HOLD
+    home_oc = HOME / ".openclaw"
+    clean_cycles = _count_clean_cycles(home_oc)
+    if clean_cycles == 0:
+        blockers.append({"severity": "HOLD", "check": "no_clean_cycles",
+                         "detail": "Zero clean autonomous cycles logged — insufficient evidence for dry-run readiness"})
+
     # KPI cascades: only when KPI is actually NO-GO (not when unavailable)
-    if kpi_verdict == "NO-GO":
-        blockers.append({"severity": "NO-GO", "check": "kpi_nogo_cascade",
-                         "detail": "KPI dashboard reports NO-GO — candidate cannot proceed"})
-    elif kpi_unavailable:
-        blockers.append({"severity": "HOLD", "check": "dependency_timeout",
-                         "detail": "KPI dashboard dependency failed — cannot verify safety"})
+    # KPI cascade: HOLD stays HOLD; only explicit KPI NO-GO blockers create candidate NO-GO.
+    kpi_blockers = kpi_evidence.get("blockers", []) if isinstance(kpi_evidence, dict) else []
+    kpi_has_nogo = any(isinstance(b, dict) and b.get("severity") == "NO-GO" for b in kpi_blockers)
+    if kpi_verdict == "NO-GO" and not kpi_has_nogo:
+        kpi_verdict = "HOLD"
+    if kpi_verdict == "NO-GO" and kpi_has_nogo:
+        blockers.append({"severity":"NO-GO","check":"kpi_nogo_cascade","detail":"KPI dashboard reports NO-GO — candidate cannot proceed"})
+    elif kpi_verdict == "ERROR":
+        blockers.append({"severity":"HOLD","check":"dependency_timeout","detail":"KPI dashboard unavailable or timed out — candidate remains HOLD"})
 
     # Rehearsal cascades: only when rehearsal is independently NO-GO
     # (not from KPI data we already cascade above)
@@ -4340,6 +4355,7 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
         "strategy": {
             "strategy_exists": strategy_ok,
             "autonomy_level": autonomy_level,
+            "clean_cycles": clean_cycles,
         },
         "hermes": hermes_evidence,
         "gate_h": {

@@ -539,14 +539,20 @@ class TestCleanReadyDryrun:
     """When all checks pass, verdict must be READY_DRYRUN."""
 
     def test_clean_ready_dryrun(self):
-        """With clean doctor, KPI, and connected IBKR, verdict is READY_DRYRUN."""
+        """With clean doctor, KPI, connected IBKR, autonomy>0, and clean cycles, verdict is READY_DRYRUN.
+
+        Step 15E: READY_DRYRUN requires autonomy_level > 0 and at least one clean cycle.
+        These are mocked here for the explicit clean test scenario.
+        """
         from ibkr_operator import _run_candidate_dryrun
 
         with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
              _patch_market_data(fresh=True), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
-             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5):
             result = _run_candidate_dryrun("AAPL", "BUY")
 
         assert result["verdict"] == "READY_DRYRUN", (
@@ -1256,3 +1262,278 @@ class TestStep15DMarketData:
             nogo_checks = [b["check"] for b in r["blockers"] if b["severity"] == "NO-GO"]
             assert "kpi_nogo_cascade" not in nogo_checks, \
                 f"KPI HOLD should not cascade to candidate NO-GO. NO-GO blockers: {nogo_checks}"
+
+
+# ---------------------------------------------------------------------------
+# Step 15E: Connected read-only market-data validation
+# ---------------------------------------------------------------------------
+
+class TestStep15EStaleMarketData:
+    """Step 15E: Stale market data must produce HOLD, never READY."""
+
+    def test_stale_market_data_produces_HOLD(self):
+        """When market data snapshot is stale (>60s), candidate is HOLD."""
+        from ibkr_operator import _run_candidate_dryrun
+        import json as _json
+        from unittest.mock import patch, MagicMock
+
+        stale_md = {
+            "ok": True, "symbol": "AAPL", "market_data_available": True,
+            "snapshot_timestamp": "2026-06-18T18:00:00Z", "snapshot_epoch": 0,
+            "bid": 149.50, "ask": 150.50, "last": 150.00, "close": 149.80,
+            "midpoint": 150.00, "currency": "USD", "exchange": "SMART",
+            "delayed": True, "stale": True, "market_data_age_seconds": 120.0,
+        }
+        md_bytes = _json.dumps(stale_md).encode()
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = md_bytes
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = None
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             patch("urllib.request.urlopen", return_value=mock_resp), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        assert result["verdict"] == "HOLD", (
+            f"Stale market data must produce HOLD, got {result['verdict']}. "
+            f"Blockers: {[b['check'] for b in result['blockers']]}"
+        )
+        checks = {b["check"] for b in result["blockers"]}
+        assert "market_data_stale" in checks, f"Expected market_data_stale blocker, got {checks}"
+
+
+class TestStep15EMissingBidAsk:
+    """Step 15E: Missing bid/ask/last must produce HOLD."""
+
+    def test_missing_bid_ask_last_produces_HOLD(self):
+        """When bid/ask/last are all None, candidate has no valid reference price → HOLD."""
+        from ibkr_operator import _run_candidate_dryrun
+        import json as _json
+        from unittest.mock import patch, MagicMock
+
+        no_price_md = {
+            "ok": True, "symbol": "AAPL", "market_data_available": True,
+            "snapshot_timestamp": "2026-06-18T18:00:00Z", "snapshot_epoch": 0,
+            "bid": None, "ask": None, "last": None, "close": None,
+            "midpoint": None, "currency": "USD", "exchange": "SMART",
+            "delayed": True, "stale": False, "market_data_age_seconds": 2.0,
+        }
+        md_bytes = _json.dumps(no_price_md).encode()
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = md_bytes
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = None
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             patch("urllib.request.urlopen", return_value=mock_resp), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        assert result["verdict"] == "HOLD", (
+            f"Missing bid/ask/last must produce HOLD, got {result['verdict']}"
+        )
+        checks = {b["check"] for b in result["blockers"]}
+        assert "market_data_missing" in checks, f"Expected market_data_missing blocker, got {checks}"
+        assert result["pricing"]["price_valid"] is False
+        assert result["pricing"]["reference_price"] is None
+
+    def test_only_bid_no_ask_last_produces_HOLD(self):
+        """When only bid is available but ask and last are None, still no valid price."""
+        from ibkr_operator import _run_candidate_dryrun
+        import json as _json
+        from unittest.mock import patch, MagicMock
+
+        bid_only_md = {
+            "ok": True, "symbol": "AAPL", "market_data_available": True,
+            "snapshot_timestamp": "2026-06-18T18:00:00Z", "snapshot_epoch": 0,
+            "bid": 149.50, "ask": None, "last": None, "close": None,
+            "midpoint": None, "currency": "USD", "exchange": "SMART",
+            "delayed": True, "stale": False, "market_data_age_seconds": 2.0,
+        }
+        md_bytes = _json.dumps(bid_only_md).encode()
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = md_bytes
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = None
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             patch("urllib.request.urlopen", return_value=mock_resp), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        # bid alone doesn't give midpoint; last is None; so no valid reference price
+        assert result["verdict"] != "READY_DRYRUN", (
+            f"Bid-only data must not produce READY_DRYRUN, got {result['verdict']}"
+        )
+        assert result["pricing"]["price_valid"] is False
+
+
+class TestStep15EMissingFxAccount:
+    """Step 15E: Missing FX/account evidence must produce HOLD when otherwise clean."""
+
+    def test_missing_account_evidence_fx_produces_HOLD(self):
+        """When KPI has no net_liquidation (no FX/account data), candidate gets fx_missing blocker."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        kpi_no_account = dict(_make_clean_kpi())
+        # Remove account evidence from KPI bridge data
+        kpi_no_account["bridge"] = dict(kpi_no_account["bridge"])
+        del kpi_no_account["bridge"]["net_liquidation"]
+        del kpi_no_account["bridge"]["cash_balance"]
+        del kpi_no_account["bridge"]["base_currency"]
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=kpi_no_account), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        # With clean market data and everything else passing but no account data,
+        # should get fx_missing blocker (or remain HOLD)
+        assert result["verdict"] != "READY_DRYRUN", (
+            f"Missing account evidence must not produce READY_DRYRUN, got {result['verdict']}"
+        )
+        checks = {b["check"] for b in result["blockers"]}
+        assert "fx_missing" in checks or result["verdict"] == "HOLD", (
+            f"Expected fx_missing blocker or HOLD verdict, got {result['verdict']} blockers={checks}"
+        )
+        assert result["account_evidence"]["fx_available"] is False
+
+
+class TestStep15EAutonomyAndCleanCycles:
+    """Step 15E: Autonomy level 0 and zero clean cycles must produce HOLD."""
+
+    def test_autonomy_level_zero_produces_HOLD(self):
+        """When autonomy level is 0, candidate must HOLD regardless of other checks."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="0"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        checks = {b["check"] for b in result["blockers"]}
+        assert "autonomy_level_zero" in checks, (
+            f"Expected autonomy_level_zero blocker, got {checks}"
+        )
+        assert result["verdict"] == "HOLD", (
+            f"Autonomy level 0 must produce HOLD, got {result['verdict']}"
+        )
+        assert result["strategy"]["autonomy_level"] == "0"
+
+    def test_no_clean_cycles_produces_HOLD(self):
+        """When zero clean cycles exist, candidate must HOLD."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=0):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        checks = {b["check"] for b in result["blockers"]}
+        assert "no_clean_cycles" in checks, (
+            f"Expected no_clean_cycles blocker, got {checks}"
+        )
+        assert result["verdict"] == "HOLD", (
+            f"Zero clean cycles must produce HOLD, got {result['verdict']}"
+        )
+        assert result["strategy"]["clean_cycles"] == 0
+
+    def test_both_autonomy_zero_and_no_clean_cycles_produces_HOLD(self):
+        """With both autonomy=0 and zero clean cycles, candidate is HOLD (realistic state)."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="0"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=0):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        checks = {b["check"] for b in result["blockers"]}
+        assert "autonomy_level_zero" in checks
+        assert "no_clean_cycles" in checks
+        assert result["verdict"] == "HOLD"
+        assert result["strategy"]["autonomy_level"] == "0"
+        assert result["strategy"]["clean_cycles"] == 0
+
+
+class TestStep15EFreshMarketDataPricing:
+    """Step 15E: Connected fresh market data produces valid pricing evidence."""
+
+    def test_fresh_market_data_produces_valid_pricing(self):
+        """Fresh connected market data must populate all pricing fields correctly."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        p = result["pricing"]
+        assert p["price_valid"] is True, f"Fresh data should have valid pricing, got {p}"
+        assert p["reference_price"] == 150.00  # last price from mock
+        assert p["price_source"] == "last"
+        assert p["bid"] == 149.50
+        assert p["ask"] == 150.50
+        assert p["last"] == 150.00
+        assert p["midpoint"] == 150.00
+        assert p["currency"] == "USD"
+        assert p["staleness_seconds"] == 2.1
+        assert p["snapshot_timestamp"] is not None
+
+    def test_fresh_market_data_calculates_real_stop_and_notional(self):
+        """Fresh data must derive stop_price and notional from real reference price, not placeholders."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        # Notional = quantity * reference_price = 1 * 150.00 = 150.00
+        assert result["notional_eur"] == 150.00
+        # Stop = reference_price * (1 - 0.05) = 150.00 * 0.95 = 142.50
+        assert result["stop"]["price"] == 142.50
+        # Stop must not be the placeholder 100.0
+        assert result["stop"]["price"] != 100.0, "Stop price must not be placeholder 100.0"
+        assert result["notional_eur"] != 100.0, "Notional must not be placeholder 100.0"
+        # Verify the reference_price is not 100.0
+        assert result["pricing"]["reference_price"] != 100.0, "Reference price must not be 100.0"

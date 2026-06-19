@@ -3822,6 +3822,89 @@ def _collect_lightweight_evidence() -> dict:
     return evidence
 
 
+def _fetch_fx_evidence(base_currency: str, instrument_currency: str) -> dict:
+    """Step 15G: Fetch FX exchange rate from bridge /account endpoint.
+
+    Returns a dict with fx_rate, fx_pair, fx_source, fx_timestamp,
+    fx_staleness_seconds, and fx_available. If instrument currency equals
+    base currency, fx_rate=1.0 with no HTTP call.
+    """
+    import urllib.request
+    from datetime import datetime, timezone
+
+    now_epoch = time.time()
+    result = {
+        "fx_available": False,
+        "fx_required": True,
+        "fx_rate": None,
+        "fx_pair": f"{instrument_currency}/{base_currency}",
+        "fx_source": None,
+        "fx_timestamp": None,
+        "fx_staleness_seconds": None,
+    }
+
+    if not base_currency or not instrument_currency:
+        return result
+
+    # Same currency — no FX needed
+    if base_currency.upper() == instrument_currency.upper():
+        result["fx_available"] = True
+        result["fx_required"] = False
+        result["fx_rate"] = 1.0
+        result["fx_source"] = "identity"
+        result["fx_timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        result["fx_staleness_seconds"] = 0.0
+        return result
+
+    # Cross-currency — query /account for ExchangeRate
+    try:
+        req = urllib.request.Request(
+            f"{BRIDGE_URL}/account", method="GET")
+        with urllib.request.urlopen(req, timeout=10.0) as resp:
+            account_data = json.loads(resp.read().decode())
+    except Exception as e:
+        result["fx_source"] = f"error: {str(e)[:100]}"
+        return result
+
+    if not isinstance(account_data, dict):
+        return result
+
+    values = account_data.get("values", [])
+
+    # Extract ExchangeRate for instrument currency
+    inst_rate = None
+    base_rate = None
+    for v in values:
+        tag = v.get("tag", "")
+        cur = v.get("currency", "")
+        if tag == "ExchangeRate":
+            if cur == instrument_currency:
+                try:
+                    inst_rate = float(v.get("value", ""))
+                except (ValueError, TypeError):
+                    pass
+            elif cur == base_currency:
+                try:
+                    base_rate = float(v.get("value", ""))
+                except (ValueError, TypeError):
+                    pass
+
+    if inst_rate is None:
+        result["fx_source"] = f"no ExchangeRate for {instrument_currency}"
+        return result
+
+    # ExchangeRate in IBKR = value of 1 unit of 'currency' in BASE terms.
+    # If base is EUR and instrument is USD, ExchangeRate USD=0.87 means
+    # 1 USD = 0.87 EUR, so notional_EUR = notional_USD * 0.87.
+    result["fx_available"] = True
+    result["fx_rate"] = round(inst_rate, 8)
+    result["fx_source"] = "ibkr_account_exchange_rate"
+    result["fx_timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    result["fx_staleness_seconds"] = 0.0  # account data is fresh on each fetch
+
+    return result
+
+
 def _run_candidate_dryrun(symbol: str, side: str) -> dict:
     """Run a complete evidence-only paper-trade candidate dry-run.
 
@@ -4191,19 +4274,51 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
         blockers.append({"severity": "HOLD", "check": "market_data_missing",
                          "detail": f"No valid reference price for {symbol} — placeholder pricing rejected"})
 
-    # Notional (use real price only)
-    notional = round(quantity * reference_price, 2) if price_valid else None
+    # Notional — instrument currency (un-normalized)
+    notional_instrument = round(quantity * reference_price, 2) if price_valid else None
 
     # ------------------------------------------------------------------
-    # E13: Planned entry basis
+    # E13: Planned entry basis + Step 15G FX-normalized notional
     # ------------------------------------------------------------------
+    instrument_currency = market_data.get("currency", "USD") if market_available else None
+
+    # Determine base currency from KPI snapshot or lightweight evidence
+    base_currency = None
+    kpi_bridge_pre = kpi_evidence.get("bridge", {}) if not kpi_unavailable else {}
+    base_currency = kpi_bridge_pre.get("base_currency")
+    if not base_currency and lw_bridge:
+        base_currency = lw_bridge.get("base_currency")
+    if not base_currency:
+        base_currency = "EUR"  # default assumption for this account
+
+    # Step 15G: Fetch FX evidence
+    fx_evidence = {}
+    fx_valid = False
+    if price_valid and instrument_currency and base_currency:
+        fx_evidence = _fetch_fx_evidence(base_currency, instrument_currency)
+        fx_valid = fx_evidence.get("fx_available", False)
+
+    # Compute normalized notional
+    fx_rate = fx_evidence.get("fx_rate") if fx_valid else None
+    notional_base = round(notional_instrument * fx_rate, 2) if (notional_instrument is not None and fx_rate is not None) else None
+
+    # FX blockers
+    if price_valid and instrument_currency and base_currency:
+        if instrument_currency.upper() != base_currency.upper() and not fx_valid:
+            blockers.append({"severity": "HOLD", "check": "fx_missing",
+                             "detail": f"FX rate {instrument_currency}/{base_currency} unavailable — cannot normalize notional"})
+
     entry_basis = {
         "type": "MKT",
         "reference_price": reference_price,
         "reference_source": price_source,
         "quantity": quantity,
-        "notional_eur": notional,
-        "currency": market_data.get("currency", "USD") if market_available else None,
+        "notional_instrument_currency": notional_instrument,
+        "notional_base_currency": notional_base,
+        "instrument_currency": instrument_currency,
+        "base_currency": base_currency,
+        "notional_eur": notional_base,  # backward compat
+        "currency": instrument_currency,
     }
 
     # ------------------------------------------------------------------
@@ -4306,7 +4421,7 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
         "symbol": symbol,
         "side": side,
         "quantity": quantity,
-        "notional_eur": notional,
+        "notional_eur": notional_base,
         "entry_basis": entry_basis,
         "stop_price": stop_price,
         "stop_rationale": stop_rationale,
@@ -4331,7 +4446,7 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
         "symbol": symbol,
         "side": side,
         "quantity": quantity,
-        "notional_eur": notional,
+        "notional_eur": notional_base,
         "doctor": {
             "pass": doctor_evidence.get("pass", False),
             "total": doctor_evidence.get("total", 0),
@@ -4369,7 +4484,7 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
             "symbol": symbol,
             "side": side,
             "quantity": quantity,
-            "notional_eur": notional,
+            "notional_eur": notional_base,
         },
         "market_data": market_data,  # Step 15D: full market snapshot
         "pricing": {
@@ -4386,11 +4501,20 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
             "staleness_seconds": market_data.get("market_data_age_seconds") if market_available else None,
             "snapshot_timestamp": market_data.get("snapshot_timestamp") if market_available else None,
         },
-        "account_evidence": {  # Step 15D: from snapshot
+        "account_evidence": {
             "net_liquidation": None,
             "cash_balance": None,
-            "base_currency": None,
-            "fx_available": False,
+            "base_currency": base_currency,
+            "instrument_currency": instrument_currency,
+            "fx_available": fx_valid,
+            "fx_required": fx_evidence.get("fx_required", instrument_currency.upper() != base_currency.upper() if instrument_currency and base_currency else None),
+            "fx_rate": fx_rate,
+            "fx_pair": fx_evidence.get("fx_pair"),
+            "fx_source": fx_evidence.get("fx_source"),
+            "fx_timestamp": fx_evidence.get("fx_timestamp"),
+            "fx_staleness_seconds": fx_evidence.get("fx_staleness_seconds"),
+            "notional_instrument_currency": notional_instrument,
+            "notional_base_currency": notional_base,
         },
         "entry_basis": entry_basis,
         "stop": {
@@ -4404,29 +4528,22 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
         "blocker_count": len(blockers),
     }
 
-    # Enrich account evidence from KPI snapshot if available
+    # Enrich account evidence from KPI snapshot if available (metadata only)
+    # Step 15G: fx_available and related fields are set above from real FX evidence;
+    # do NOT override them here.
     kpi_bridge_data = kpi_evidence.get("bridge", {}) if not kpi_unavailable else {}
     net_liq_snap = kpi_bridge_data.get("net_liquidation")
     if net_liq_snap is not None:
         result["account_evidence"]["net_liquidation"] = net_liq_snap
-        result["account_evidence"]["fx_available"] = True
     cash_snap = kpi_bridge_data.get("cash_balance")
     if cash_snap is not None:
         result["account_evidence"]["cash_balance"] = cash_snap
     base_cur = kpi_bridge_data.get("base_currency")
-    if base_cur:
+    if base_cur and not result["account_evidence"].get("base_currency"):
         result["account_evidence"]["base_currency"] = base_cur
 
-    # If EUR sizing needed but no FX available, add blocker
-    if not result["account_evidence"]["fx_available"] and price_valid:
-        # Only block if we'd otherwise be close to READY
-        has_nogo_final = any(b["severity"] == "NO-GO" for b in blockers)
-        has_hold_final = any(b["severity"] == "HOLD" for b in blockers)
-        if not has_nogo_final and not has_hold_final:
-            blockers.append({"severity": "HOLD", "check": "fx_missing",
-                             "detail": "EUR account sizing requires FX data — unavailable"})
-            result["blockers"] = blockers
-            result["blocker_count"] = len(blockers)
+    # Step 15G: fx_missing blocker is already added above in E13 if cross-currency
+    # and FX unavailable. Do not duplicate.
 
     # Final verdict after all enrichments
     has_nogo_v = any(b["severity"] == "NO-GO" for b in blockers)
@@ -4463,7 +4580,8 @@ def print_candidate_dryrun(result: dict) -> None:
     print(f"  Symbol:     {result.get('symbol', '?')}")
     print(f"  Side:       {result.get('side', '?')}")
     print(f"  Quantity:   {result.get('quantity', '?')}")
-    print(f"  Notional:   {result.get('notional_eur', '?')} EUR")
+    base_cur = result.get('account_evidence', {}).get('base_currency', 'EUR')
+    print(f"  Notional:   {result.get('notional_eur', '?')} {base_cur}")
     print(f"  Git:        {result.get('git', {}).get('describe', '?')}"[:120])
     print()
 

@@ -126,6 +126,45 @@ def _make_market_data_clean(symbol: str = "AAPL") -> dict:
     }
 
 
+def _make_fx_evidence_clean(instrument: str = "USD", base: str = "EUR") -> dict:
+    """Step 15G: Return valid cross-currency FX evidence for testing."""
+    return {
+        "fx_available": True,
+        "fx_required": True,
+        "fx_rate": 0.8744,
+        "fx_pair": f"{instrument}/{base}",
+        "fx_source": "ibkr_account_exchange_rate",
+        "fx_timestamp": "2026-06-19T12:00:00Z",
+        "fx_staleness_seconds": 0.0,
+    }
+
+
+def _make_fx_evidence_missing(instrument: str = "USD", base: str = "EUR") -> dict:
+    """Step 15G: Return missing FX evidence for testing."""
+    return {
+        "fx_available": False,
+        "fx_required": True,
+        "fx_rate": None,
+        "fx_pair": f"{instrument}/{base}",
+        "fx_source": "no ExchangeRate for USD",
+        "fx_timestamp": None,
+        "fx_staleness_seconds": None,
+    }
+
+
+def _make_fx_evidence_same_currency() -> dict:
+    """Step 15G: Return same-currency FX evidence (EUR/EUR)."""
+    return {
+        "fx_available": True,
+        "fx_required": False,
+        "fx_rate": 1.0,
+        "fx_pair": "EUR/EUR",
+        "fx_source": "identity",
+        "fx_timestamp": "2026-06-19T12:00:00Z",
+        "fx_staleness_seconds": 0.0,
+    }
+
+
 def _patch_market_data(fresh: bool = True, symbol: str = "AAPL"):
     """Step 15D: Patch urllib.request.urlopen for market/snapshot endpoint.
 
@@ -552,7 +591,8 @@ class TestCleanReadyDryrun:
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
              patch("ibkr_operator._read_autonomy_level", return_value="1"), \
-             patch("ibkr_operator._count_clean_cycles", return_value=5):
+             patch("ibkr_operator._count_clean_cycles", return_value=5), \
+             patch("ibkr_operator._fetch_fx_evidence", return_value=_make_fx_evidence_clean()):
             result = _run_candidate_dryrun("AAPL", "BUY")
 
         assert result["verdict"] == "READY_DRYRUN", (
@@ -1508,7 +1548,8 @@ class TestStep15EFreshMarketDataPricing:
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
              patch("ibkr_operator._read_autonomy_level", return_value="1"), \
-             patch("ibkr_operator._count_clean_cycles", return_value=5):
+             patch("ibkr_operator._count_clean_cycles", return_value=5), \
+             patch("ibkr_operator._fetch_fx_evidence", return_value=_make_fx_evidence_clean()):
             result = _run_candidate_dryrun("AAPL", "BUY")
 
         p = result["pricing"]
@@ -1524,7 +1565,10 @@ class TestStep15EFreshMarketDataPricing:
         assert p["snapshot_timestamp"] is not None
 
     def test_fresh_market_data_calculates_real_stop_and_notional(self):
-        """Fresh data must derive stop_price and notional from real reference price, not placeholders."""
+        """Fresh data must derive stop_price and notional from real reference price, not placeholders.
+
+        Step 15G: notional_eur is now notional_base_currency (USD→EUR via FX).
+        """
         from ibkr_operator import _run_candidate_dryrun
 
         with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
@@ -1533,11 +1577,16 @@ class TestStep15EFreshMarketDataPricing:
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
              patch("ibkr_operator._read_autonomy_level", return_value="1"), \
-             patch("ibkr_operator._count_clean_cycles", return_value=5):
+             patch("ibkr_operator._count_clean_cycles", return_value=5), \
+             patch("ibkr_operator._fetch_fx_evidence", return_value=_make_fx_evidence_clean()):
             result = _run_candidate_dryrun("AAPL", "BUY")
 
-        # Notional = quantity * reference_price = 1 * 150.00 = 150.00
-        assert result["notional_eur"] == 150.00
+        # Notional instrument (USD) = 1 * 150.00 = 150.00
+        ae = result["account_evidence"]
+        assert ae["notional_instrument_currency"] == 150.00
+        # Notional base (EUR) = 150.00 * 0.8744 = 131.16
+        assert ae["notional_base_currency"] == 131.16
+        assert result["notional_eur"] == 131.16  # backward compat
         # Stop = reference_price * (1 - 0.05) = 150.00 * 0.95 = 142.50
         assert result["stop"]["price"] == 142.50
         # Stop must not be the placeholder 100.0
@@ -1545,3 +1594,167 @@ class TestStep15EFreshMarketDataPricing:
         assert result["notional_eur"] != 100.0, "Notional must not be placeholder 100.0"
         # Verify the reference_price is not 100.0
         assert result["pricing"]["reference_price"] != 100.0, "Reference price must not be 100.0"
+
+
+# ---------------------------------------------------------------------------
+# Step 15G: FX-normalized notional evidence
+# ---------------------------------------------------------------------------
+
+class TestStep15GFxSameCurrency:
+    """Step 15G: Same-currency instrument/base uses fx_rate=1.0, fx_required=false."""
+
+    def test_same_currency_fx_identity(self):
+        """When instrument and base are both EUR, fx_rate=1.0 and no FX call needed."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5), \
+             patch("ibkr_operator._fetch_fx_evidence", return_value=_make_fx_evidence_same_currency()):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        ae = result["account_evidence"]
+        assert ae["fx_available"] is True
+        assert ae["fx_required"] is False
+        assert ae["fx_rate"] == 1.0
+        assert ae["fx_source"] == "identity"
+        # With fx_rate=1.0, instrument and base notional are equal
+        assert ae["notional_base_currency"] == ae["notional_instrument_currency"]
+
+
+class TestStep15GCrossCurrency:
+    """Step 15G: USD instrument with EUR base requires FX."""
+
+    def test_cross_currency_notional_normalized(self):
+        """AAPL in USD with EUR base must compute notional_base = notional_instrument * fx_rate."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5), \
+             patch("ibkr_operator._fetch_fx_evidence", return_value=_make_fx_evidence_clean()):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        ae = result["account_evidence"]
+        assert ae["fx_available"] is True
+        assert ae["fx_required"] is True
+        assert ae["fx_rate"] == 0.8744
+        assert ae["fx_pair"] == "USD/EUR"
+        assert ae["fx_source"] == "ibkr_account_exchange_rate"
+        assert ae["instrument_currency"] == "USD"
+        assert ae["base_currency"] == "EUR"
+        # 150.00 USD * 0.8744 = 131.16 EUR
+        assert ae["notional_instrument_currency"] == 150.00
+        assert ae["notional_base_currency"] == 131.16
+
+
+class TestStep15GMissingFx:
+    """Step 15G: Missing FX evidence must produce HOLD with fx_missing blocker."""
+
+    def test_missing_fx_produces_HOLD(self):
+        """When FX is unavailable for cross-currency, candidate must HOLD."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5), \
+             patch("ibkr_operator._fetch_fx_evidence", return_value=_make_fx_evidence_missing()):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        checks = {b["check"] for b in result["blockers"]}
+        assert "fx_missing" in checks, f"Expected fx_missing blocker, got {checks}"
+        assert result["verdict"] == "HOLD"
+        assert result["account_evidence"]["fx_available"] is False
+        assert result["account_evidence"]["notional_base_currency"] is None
+
+    def test_missing_fx_never_READY(self):
+        """Placeholder FX (missing rate) cannot produce READY_DRYRUN."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5), \
+             patch("ibkr_operator._fetch_fx_evidence", return_value=_make_fx_evidence_missing()):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        assert result["verdict"] != "READY_DRYRUN", (
+            f"READY_DRYRUN must never be returned with missing FX. Got {result['verdict']}"
+        )
+
+
+class TestStep15GFxExportFields:
+    """Step 15G: Export must include all FX-normalized fields."""
+
+    def test_export_has_fx_fields(self):
+        """Candidate export must include instrument_currency, fx_rate, notional_base_currency, etc."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5), \
+             patch("ibkr_operator._fetch_fx_evidence", return_value=_make_fx_evidence_clean()):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        ae = result["account_evidence"]
+        required_fields = [
+            "instrument_currency", "base_currency", "fx_rate", "fx_pair",
+            "fx_source", "fx_timestamp", "fx_staleness_seconds",
+            "notional_instrument_currency", "notional_base_currency",
+            "fx_available", "fx_required",
+        ]
+        for field in required_fields:
+            assert field in ae, f"account_evidence missing required field '{field}'"
+
+    def test_entry_basis_has_fx_fields(self):
+        """Entry basis must include instrument_currency, base_currency, both notionals."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5), \
+             patch("ibkr_operator._fetch_fx_evidence", return_value=_make_fx_evidence_clean()):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        eb = result["entry_basis"]
+        assert eb["instrument_currency"] == "USD"
+        assert eb["base_currency"] == "EUR"
+        assert eb["notional_instrument_currency"] == 150.00
+        assert eb["notional_base_currency"] == 131.16
+        assert "notional_eur" in eb  # backward compat
+
+
+class TestStep15GNoForbidden:
+    """Step 15G: No forbidden endpoints, no H1 tokens, no broker mutation."""
+
+    def test_fx_fetch_uses_only_account_endpoint(self):
+        """_fetch_fx_evidence must only call /account, never order endpoints."""
+        import inspect
+        from ibkr_operator import _fetch_fx_evidence
+        src = inspect.getsource(_fetch_fx_evidence)
+        forbidden = ["/order", "/order/", "placeOrder", "cancelOrder", "h1_token", "H1_APPROVAL"]
+        for f in forbidden:
+            assert f not in src, f"_fetch_fx_evidence references forbidden: {f}"

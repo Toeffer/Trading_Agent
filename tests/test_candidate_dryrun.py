@@ -1747,6 +1747,77 @@ class TestStep15GFxExportFields:
         assert "notional_eur" in eb  # backward compat
 
 
+class TestStep15GFxStale:
+    """Step 15G: Stale FX evidence must produce HOLD with fx_stale."""
+
+    def test_stale_fx_produces_HOLD(self):
+        """When FX staleness exceeds threshold, candidate must HOLD."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        stale_fx = _make_fx_evidence_clean()
+        stale_fx["fx_staleness_seconds"] = 600.0  # 10 minutes > 5 min threshold
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5), \
+             patch("ibkr_operator._fetch_fx_evidence", return_value=stale_fx):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        checks = {b["check"] for b in result["blockers"]}
+        assert "fx_stale" in checks, f"Expected fx_stale blocker, got {checks}"
+        assert result["verdict"] == "HOLD"
+
+
+class TestStep15GFxInvalid:
+    """Step 15G: Invalid FX rate (zero or negative) must produce HOLD."""
+
+    def test_zero_fx_rate_produces_HOLD(self):
+        """FX rate of 0 is invalid and must produce fx_invalid blocker."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        zero_fx = _make_fx_evidence_clean()
+        zero_fx["fx_rate"] = 0.0
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5), \
+             patch("ibkr_operator._fetch_fx_evidence", return_value=zero_fx):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        checks = {b["check"] for b in result["blockers"]}
+        assert "fx_invalid" in checks, f"Expected fx_invalid blocker, got {checks}"
+        assert result["verdict"] == "HOLD"
+
+    def test_negative_fx_rate_produces_HOLD(self):
+        """Negative FX rate is invalid and must produce fx_invalid blocker."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        neg_fx = _make_fx_evidence_clean()
+        neg_fx["fx_rate"] = -0.5
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5), \
+             patch("ibkr_operator._fetch_fx_evidence", return_value=neg_fx):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        checks = {b["check"] for b in result["blockers"]}
+        assert "fx_invalid" in checks, f"Expected fx_invalid blocker, got {checks}"
+        assert result["verdict"] == "HOLD"
+
+
 class TestStep15GNoForbidden:
     """Step 15G: No forbidden endpoints, no H1 tokens, no broker mutation."""
 

@@ -4302,11 +4302,22 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
     fx_rate = fx_evidence.get("fx_rate") if fx_valid else None
     notional_base = round(notional_instrument * fx_rate, 2) if (notional_instrument is not None and fx_rate is not None) else None
 
-    # FX blockers
+    # Step 15G: FX blockers
     if price_valid and instrument_currency and base_currency:
-        if instrument_currency.upper() != base_currency.upper() and not fx_valid:
-            blockers.append({"severity": "HOLD", "check": "fx_missing",
-                             "detail": f"FX rate {instrument_currency}/{base_currency} unavailable — cannot normalize notional"})
+        is_cross = instrument_currency.upper() != base_currency.upper()
+        if is_cross:
+            if not fx_valid:
+                blockers.append({"severity": "HOLD", "check": "fx_missing",
+                                 "detail": f"FX rate {instrument_currency}/{base_currency} unavailable — cannot normalize notional"})
+            elif fx_rate is not None and fx_rate <= 0:
+                blockers.append({"severity": "HOLD", "check": "fx_invalid",
+                                 "detail": f"FX rate {instrument_currency}/{base_currency}={fx_rate} is invalid (<=0)"})
+            else:
+                fx_age = fx_evidence.get("fx_staleness_seconds", 0) if fx_evidence else 0
+                _FX_MAX_STALENESS = 300.0
+                if fx_age is not None and fx_age > _FX_MAX_STALENESS:
+                    blockers.append({"severity": "HOLD", "check": "fx_stale",
+                                     "detail": f"FX rate {instrument_currency}/{base_currency} stale ({fx_age:.0f}s > {_FX_MAX_STALENESS:.0f}s)"})
 
     entry_basis = {
         "type": "MKT",
@@ -4513,6 +4524,7 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
             "fx_source": fx_evidence.get("fx_source"),
             "fx_timestamp": fx_evidence.get("fx_timestamp"),
             "fx_staleness_seconds": fx_evidence.get("fx_staleness_seconds"),
+            "reference_price_currency": instrument_currency,
             "notional_instrument_currency": notional_instrument,
             "notional_base_currency": notional_base,
         },

@@ -4,6 +4,8 @@ import asyncio
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict
+import logging
+from fastapi import Request
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Header
@@ -20,6 +22,32 @@ except Exception:
 APP_NAME = "ibkr-openclaw-bridge"
 app = FastAPI(title=APP_NAME)
 
+
+
+# OOM_TRACE_MIN
+import logging as _mlog
+_M=_mlog.getLogger("ibkr-bridge.mem")
+def _m():
+    d={}
+    try:
+        for l in open(f"/proc/{os.getpid()}/status"):
+            if l.startswith(("VmRSS:","VmPeak:","VmSize:","Threads:")):
+                k,v=l.split(":",1); d[k]=v.strip()
+    except Exception as e: d["err"]=repr(e)
+    return d
+async def _ms():
+    while True:
+        _M.warning("MEM %s",_m()); await asyncio.sleep(1)
+@app.on_event("startup")
+async def _mst(): asyncio.create_task(_ms())
+@app.middleware("http")
+async def _mt(req, call_next):
+    _M.warning("REQ_START %s %s %s",req.method,req.url.path,_m())
+    try: return await call_next(req)
+    finally: _M.warning("REQ_END %s %s %s",req.method,req.url.path,_m())
+# /OOM_TRACE_MIN
+
+
 IBKR_MODE = os.getenv("IBKR_MODE", "paper")
 IBKR_HOST = os.getenv("IBKR_HOST", "127.0.0.1")
 IBKR_PORT = int(os.getenv("IBKR_PORT", "4002"))
@@ -27,6 +55,8 @@ IBKR_CLIENT_ID = int(os.getenv("IBKR_CLIENT_ID", "101"))
 IBKR_ACCOUNT = os.getenv("IBKR_ACCOUNT", "")
 IBKR_READ_ONLY = os.getenv("IBKR_READ_ONLY", "true").lower() == "true"
 IBKR_ALLOW_ORDERS = os.getenv("IBKR_ALLOW_ORDERS", "false").lower() == "true"
+
+logger= logging.getLogger("ibkr-bridge.mem")
 
 # ---------------------------------------------------------------------------
 # Phase H1 — Enforced Approval Token
@@ -175,15 +205,27 @@ def _build_snapshot_lightweight() -> dict:
             values = ib.accountValues()
             result["account_ok"] = True
             net_liq = None
+            cash_balance = None
+            base_currency = None
             for v in values:
                 if v.tag == "NetLiquidation" and v.currency == "BASE":
                     net_liq = v.value
-                    break
+                if v.tag == "TotalCashBalance" and v.currency == "BASE":
+                    cash_balance = v.value
+                # Infer base currency from any non-BASE NetLiquidation entry
+                if v.tag == "NetLiquidation" and v.currency != "BASE" and base_currency is None:
+                    base_currency = v.currency
+            if base_currency is None:
+                base_currency = "EUR"  # default assumption for this account
             result["net_liquidation"] = net_liq
+            result["cash_balance"] = cash_balance
+            result["base_currency"] = base_currency
             result["account_tag_count"] = len(values)
         except Exception:
             result["account_ok"] = False
             result["net_liquidation"] = None
+            result["cash_balance"] = None
+            result["base_currency"] = None
             result["account_tag_count"] = 0
     else:
         result["positions_ok"] = False
@@ -191,6 +233,8 @@ def _build_snapshot_lightweight() -> dict:
         result["positions"] = []
         result["account_ok"] = False
         result["net_liquidation"] = None
+        result["cash_balance"] = None
+        result["base_currency"] = None
         result["account_tag_count"] = 0
 
     # Reconciliation: lightweight status only (no heavy file scan)
@@ -500,6 +544,7 @@ def _internal_fetch_quote(symbol: str) -> dict:
         "currency": contract.currency,
         "exchange": contract.exchange,
         "delayed": True,
+        "_fetch_epoch": time.time(),  # Step 15D: for staleness calculation
     }
 
     try:
@@ -2199,6 +2244,43 @@ def market_bars(req: BarsRequest):
         "bars": out,
     }
 
+def _proc_mem_kb() -> dict:
+    out = {}
+    try:
+        with open(f"/proc/{os.getpid()}/status", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith(("VmRSS:", "VmPeak:", "VmSize:")):
+                    key, value = line.split(":", 1)
+                    out[key] = value.strip()
+    except OSError as exc:
+        out["error"] = str(exc)
+    return out
+
+
+@app.middleware("http")
+async def memory_trace_middleware(request: Request, call_next):
+    start = time.monotonic()
+    before = _proc_mem_kb()
+    logger.warning(
+        "REQ_START path=%s method=%s mem=%s",
+        request.url.path,
+        request.method,
+        before,
+    )
+
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        after = _proc_mem_kb()
+        logger.warning(
+            "REQ_END path=%s method=%s elapsed_ms=%s mem=%s",
+            request.url.path,
+            request.method,
+            elapsed_ms,
+            after,
+        )
 
 # ===========================================================================
 # Phase 2F — Read-Only Monitoring Endpoints
@@ -2900,6 +2982,92 @@ def monitor_liveness() -> Dict[str, Any]:
     return result
 
 
+@app.get("/market/snapshot/{symbol}")
+def market_snapshot(symbol: str) -> Dict[str, Any]:
+    """Step 15D: Market data snapshot — read-only, fast-fail when disconnected.
+
+    Returns bid/ask/last/close with snapshot timestamp and age.
+    When IBKR is disconnected: HTTP 200 with ok=False, market_data_available=False.
+    Staleness: >60s since snapshot marks stale=True (candidate must HOLD).
+    No cache — market data is time-sensitive. No subprocess forks.
+    """
+    symbol = symbol.upper().strip()
+    now_epoch = time.time()
+
+    if not is_connected():
+        return {
+            "ok": False,
+            "symbol": symbol,
+            "market_data_available": False,
+            "detail": "IBKR not connected",
+            "snapshot_timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "snapshot_epoch": now_epoch,
+            "bid": None,
+            "ask": None,
+            "last": None,
+            "close": None,
+            "midpoint": None,
+            "currency": None,
+            "exchange": None,
+            "delayed": True,
+            "stale": True,
+            "market_data_age_seconds": None,
+        }
+
+    try:
+        q = _internal_fetch_quote(symbol)
+        bid = q.get("bid")
+        ask = q.get("ask")
+        last = q.get("last")
+        close = q.get("close")
+
+        # Compute midpoint if bid and ask available
+        midpoint = None
+        if bid is not None and ask is not None:
+            midpoint = round((bid + ask) / 2, 4)
+
+        # Staleness: if snapshot > 60s old (ib.reqMktData takes ~3s, so 60s is generous)
+        age_s = round(now_epoch - (q.get("_fetch_epoch", now_epoch)), 1)
+        stale = age_s > 60.0
+
+        return {
+            "ok": True,
+            "symbol": q.get("symbol", symbol),
+            "market_data_available": True,
+            "snapshot_timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "snapshot_epoch": now_epoch,
+            "bid": bid,
+            "ask": ask,
+            "last": last,
+            "close": close,
+            "midpoint": midpoint,
+            "currency": q.get("currency", "USD"),
+            "exchange": q.get("exchange", "SMART"),
+            "delayed": q.get("delayed", True),
+            "stale": stale,
+            "market_data_age_seconds": age_s,
+        }
+    except RuntimeError as e:
+        return {
+            "ok": False,
+            "symbol": symbol,
+            "market_data_available": False,
+            "detail": str(e)[:200],
+            "snapshot_timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "snapshot_epoch": now_epoch,
+            "bid": None,
+            "ask": None,
+            "last": None,
+            "close": None,
+            "midpoint": None,
+            "currency": None,
+            "exchange": None,
+            "delayed": True,
+            "stale": True,
+            "market_data_age_seconds": None,
+        }
+
+
 @app.get("/audit/bundle")
 def audit_bundle() -> Dict[str, Any]:
     """Create an immutable audit bundle (Phase 3H).
@@ -3226,3 +3394,50 @@ def status_dashboard() -> Dict[str, Any]:
             "positions": pos_sec,
         },
     }
+
+
+# OOM_BACKPRESSURE_HARD
+from fastapi.responses import JSONResponse as _BPJR
+import threading as _BPTH
+import logging as _BPLOG
+_BP_LOG=_BPLOG.getLogger("ibkr-bridge.backpressure")
+_BP_LOCK=_BPTH.Lock()
+_BP_ACTIVE=0
+_BP_MAX_ACTIVE=4
+_BP_MAX_RSS_KB=1800000
+
+def _bp_rss_kb():
+    try:
+        for l in open(f"/proc/{os.getpid()}/status"):
+            if l.startswith("VmRSS:"):
+                return int(l.split()[1])
+    except Exception:
+        return 0
+    return 0
+
+@app.middleware("http")
+async def _oom_backpressure_hard(req, call_next):
+    global _BP_ACTIVE
+    if req.url.path in ("/health", "/monitor/liveness"):
+        return await call_next(req)
+    rss=_bp_rss_kb()
+    with _BP_LOCK:
+        active=_BP_ACTIVE
+        if active >= _BP_MAX_ACTIVE or rss >= _BP_MAX_RSS_KB:
+            _BP_LOG.error("BP_REJECT path=%s active=%s rss_kb=%s", req.url.path, active, rss)
+            return _BPJR({
+                "ok": False,
+                "error": "bridge_backpressure",
+                "path": req.url.path,
+                "active": active,
+                "rss_kb": rss,
+                "max_active": _BP_MAX_ACTIVE,
+                "max_rss_kb": _BP_MAX_RSS_KB,
+            }, status_code=503)
+        _BP_ACTIVE += 1
+    try:
+        return await call_next(req)
+    finally:
+        with _BP_LOCK:
+            _BP_ACTIVE -= 1
+# /OOM_BACKPRESSURE_HARD

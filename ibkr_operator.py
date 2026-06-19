@@ -4111,94 +4111,152 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
     gate_h_checks["valid_quantity"] = isinstance(quantity, int) and quantity > 0
 
     # ------------------------------------------------------------------
-    # E12: Candidate side/symbol/quantity/notional
+    # E12: Market data — real pricing from bridge (Step 15D)
     # ------------------------------------------------------------------
-    # Try to get a quote for notional calculation
-    quote_price = None
-    quote_evidence = {}
+    market_data: dict = {}
+    market_available = False
+    market_stale = True
+    reference_price = None
+    price_source = "unknown"
+    price_valid = False
     try:
-        from ibkr_mcp import ibkr_quote
-        q = ibkr_quote(symbol)
-        if isinstance(q, dict) and q.get("lastPrice"):
-            quote_price = float(q["lastPrice"])
-            quote_evidence = {"price": quote_price, "source": "ibkr_quote", "ok": True}
-    except Exception:
-        quote_evidence = {"ok": False, "error": "quote unavailable"}
+        md_req = urllib.request.Request(
+            f"{BRIDGE_URL}/market/snapshot/{symbol}", method="GET")
+        with urllib.request.urlopen(md_req, timeout=10.0) as md_resp:
+            if md_resp.status == 200:
+                market_data = json.loads(md_resp.read().decode())
+    except Exception as e:
+        market_data = {
+            "ok": False,
+            "market_data_available": False,
+            "symbol": symbol,
+            "source": "bridge_market_data",
+            "error": str(e)[:200],
+            "bid": None,
+            "ask": None,
+            "last": None,
+            "midpoint": None,
+            "currency": None,
+            "timestamp": None,
+            "staleness_seconds": None,
+        }
 
-    if quote_price is None:
-        quote_price = 100.0  # placeholder for dry-run when bridge is down
-        quote_evidence["placeholder"] = True
-        quote_evidence["price"] = quote_price
+    market_available = market_data.get("market_data_available", False)
+    market_stale = market_data.get("stale", True)
 
-    notional = round(quantity * quote_price, 2)
+    # Select reference price: prefer last, then midpoint, then close
+    if market_available and not market_stale:
+        ref_candidates = [
+            ("last", market_data.get("last")),
+            ("midpoint", market_data.get("midpoint")),
+            ("close", market_data.get("close")),
+        ]
+        for src, val in ref_candidates:
+            if val is not None and isinstance(val, (int, float)) and val > 0:
+                reference_price = float(val)
+                price_source = src
+                break
+
+    price_valid = reference_price is not None and reference_price > 0
+
+    # Blockers for market data issues
+    if not ibkr_connected and not market_available:
+        blockers.append({"severity": "HOLD", "check": "ibkr_disconnected",
+                         "detail": "IBKR disconnected — market data unavailable"})
+    elif not market_available:
+        blockers.append({"severity": "HOLD", "check": "market_data_missing",
+                         "detail": "Market data unavailable for " + symbol})
+    elif market_stale:
+        age_s = market_data.get("market_data_age_seconds", 0)
+        blockers.append({"severity": "HOLD", "check": "market_data_stale",
+                         "detail": f"Market data stale ({age_s}s old) for {symbol}"})
+
+    # If no valid price, this is a placeholder situation → must HOLD, never READY
+    if not price_valid:
+        blockers.append({"severity": "HOLD", "check": "market_data_missing",
+                         "detail": f"No valid reference price for {symbol} — placeholder pricing rejected"})
+
+    # Notional (use real price only)
+    notional = round(quantity * reference_price, 2) if price_valid else None
 
     # ------------------------------------------------------------------
     # E13: Planned entry basis
     # ------------------------------------------------------------------
     entry_basis = {
         "type": "MKT",
-        "reference_price": quote_price,
-        "reference_source": "quote" if quote_evidence.get("ok") else "placeholder",
+        "reference_price": reference_price,
+        "reference_source": price_source,
         "quantity": quantity,
         "notional_eur": notional,
+        "currency": market_data.get("currency", "USD") if market_available else None,
     }
 
     # ------------------------------------------------------------------
-    # E14: Stop price and stop rationale
+    # E14: Stop price derived from real reference price
     # ------------------------------------------------------------------
     stop_pct = 0.05  # 5% stop for dry-run
-    if side == "BUY":
-        stop_price = round(quote_price * (1 - stop_pct), 2)
-        stop_rationale = f"{stop_pct*100:.0f}% protective stop below entry at {stop_price}"
-    else:
+    if side == "BUY" and price_valid:
+        stop_price = round(reference_price * (1 - stop_pct), 2)
+        stop_rationale = f"{stop_pct*100:.0f}% protective stop below entry at {reference_price}"
+    elif side == "SELL":
         stop_price = None
         stop_rationale = "SELL close-only — no protective stop required"
+    else:
+        stop_price = None
+        stop_rationale = "Stop price unavailable — no valid reference price"
 
     # ------------------------------------------------------------------
-    # E15: P5 bracket-stop validation
+    # E15: P5 bracket-stop validation (only when pricing is valid)
     # ------------------------------------------------------------------
     p5_evidence = {}
     p5_ok = True
-    try:
-        from guard import validate_bracket_stop
-        if side == "BUY":
-            result = validate_bracket_stop(
-                stop_price=stop_price,
-                entry_price=quote_price,
-                quantity=quantity,
-                action="BUY",
-            )
-            p5_evidence = {
-                "valid": result.get("valid", False),
-                "bracket": result.get("bracket", False),
-                "protective_stop": result.get("protective_stop", False),
-                "stop_distance": result.get("stop_distance"),
-                "parent_transmit": result.get("parent_transmit"),
-                "stop_transmit": result.get("stop_transmit"),
-            }
-            if not result.get("valid"):
-                p5_ok = False
-                p5_evidence["error"] = result.get("error", "P5 validation failed")
-                blockers.append({"severity": "NO-GO", "check": "p5_bracket_failed",
-                                 "detail": f"P5 bracket-stop validation failed: {result.get('error', 'unknown')}"})
-        else:
-            result = validate_bracket_stop(
-                stop_price=None,
-                entry_price=quote_price,
-                quantity=quantity,
-                action="SELL",
-            )
-            p5_evidence = {
-                "valid": result.get("valid", False),
-                "bracket": False,
-                "protective_stop": False,
-                "note": "SELL close-only — P5 bracket not required",
-            }
-    except Exception as e:
-        p5_evidence = {"valid": False, "error": str(e)[:300]}
-        p5_ok = False
-        blockers.append({"severity": "NO-GO", "check": "p5_bracket_failed",
-                         "detail": f"P5 validation error: {str(e)[:200]}"})
+    if price_valid:
+        try:
+            from guard import validate_bracket_stop
+            if side == "BUY":
+                result = validate_bracket_stop(
+                    stop_price=stop_price,
+                    entry_price=reference_price,
+                    quantity=quantity,
+                    action="BUY",
+                )
+                p5_evidence = {
+                    "valid": result.get("valid", False),
+                    "bracket": result.get("bracket", False),
+                    "protective_stop": result.get("protective_stop", False),
+                    "stop_distance": result.get("stop_distance"),
+                    "parent_transmit": result.get("parent_transmit"),
+                    "stop_transmit": result.get("stop_transmit"),
+                }
+                if not result.get("valid"):
+                    p5_ok = False
+                    p5_evidence["error"] = result.get("error", "P5 validation failed")
+                    blockers.append({"severity": "NO-GO", "check": "p5_bracket_failed",
+                                     "detail": f"P5 bracket-stop validation failed: {result.get('error', 'unknown')}"})
+            else:
+                result = validate_bracket_stop(
+                    stop_price=None,
+                    entry_price=reference_price,
+                    quantity=quantity,
+                    action="SELL",
+                )
+                p5_evidence = {
+                    "valid": result.get("valid", False),
+                    "bracket": False,
+                    "protective_stop": False,
+                    "note": "SELL close-only — P5 bracket not required",
+                }
+        except Exception as e:
+            p5_evidence = {"valid": False, "error": str(e)[:300]}
+            p5_ok = False
+            blockers.append({"severity": "NO-GO", "check": "p5_bracket_failed",
+                             "detail": f"P5 validation error: {str(e)[:200]}"})
+    else:
+        p5_evidence = {
+            "valid": False,
+            "skipped": True,
+            "note": "P5 bracket validation skipped — no valid reference price",
+        }
 
     # ------------------------------------------------------------------
     # E16: Forbidden endpoint scan
@@ -4297,6 +4355,27 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
             "quantity": quantity,
             "notional_eur": notional,
         },
+        "market_data": market_data,  # Step 15D: full market snapshot
+        "pricing": {
+            "reference_price": reference_price,
+            "price_source": price_source,
+            "price_valid": price_valid,
+            "stop_price": stop_price,
+            "stop_pct": stop_pct if side == "BUY" else None,
+            "currency": market_data.get("currency") if market_available else None,
+            "bid": market_data.get("bid") if market_available else None,
+            "ask": market_data.get("ask") if market_available else None,
+            "last": market_data.get("last") if market_available else None,
+            "midpoint": market_data.get("midpoint") if market_available else None,
+            "staleness_seconds": market_data.get("market_data_age_seconds") if market_available else None,
+            "snapshot_timestamp": market_data.get("snapshot_timestamp") if market_available else None,
+        },
+        "account_evidence": {  # Step 15D: from snapshot
+            "net_liquidation": None,
+            "cash_balance": None,
+            "base_currency": None,
+            "fx_available": False,
+        },
         "entry_basis": entry_basis,
         "stop": {
             "price": stop_price,
@@ -4308,6 +4387,52 @@ def _run_candidate_dryrun(symbol: str, side: str) -> dict:
         "blockers": blockers,
         "blocker_count": len(blockers),
     }
+
+    # Enrich account evidence from KPI snapshot if available
+    kpi_bridge_data = kpi_evidence.get("bridge", {}) if not kpi_unavailable else {}
+    net_liq_snap = kpi_bridge_data.get("net_liquidation")
+    if net_liq_snap is not None:
+        result["account_evidence"]["net_liquidation"] = net_liq_snap
+        result["account_evidence"]["fx_available"] = True
+    cash_snap = kpi_bridge_data.get("cash_balance")
+    if cash_snap is not None:
+        result["account_evidence"]["cash_balance"] = cash_snap
+    base_cur = kpi_bridge_data.get("base_currency")
+    if base_cur:
+        result["account_evidence"]["base_currency"] = base_cur
+
+    # If EUR sizing needed but no FX available, add blocker
+    if not result["account_evidence"]["fx_available"] and price_valid:
+        # Only block if we'd otherwise be close to READY
+        has_nogo_final = any(b["severity"] == "NO-GO" for b in blockers)
+        has_hold_final = any(b["severity"] == "HOLD" for b in blockers)
+        if not has_nogo_final and not has_hold_final:
+            blockers.append({"severity": "HOLD", "check": "fx_missing",
+                             "detail": "EUR account sizing requires FX data — unavailable"})
+            result["blockers"] = blockers
+            result["blocker_count"] = len(blockers)
+
+    # Final verdict after all enrichments
+    has_nogo_v = any(b["severity"] == "NO-GO" for b in blockers)
+    has_hold_v = any(b["severity"] == "HOLD" for b in blockers)
+    if has_nogo_v:
+        result["verdict"] = "NO-GO"
+    elif has_hold_v:
+        result["verdict"] = "HOLD"
+    else:
+        result["verdict"] = "READY_DRYRUN"
+
+    # Update proposal doc with new fields
+    proposal_doc["market_data"] = market_data
+    proposal_doc["pricing"] = result["pricing"]
+    proposal_doc["account_evidence"] = result["account_evidence"]
+    proposal_doc["verdict"] = result["verdict"]
+    proposal_doc["blockers"] = blockers
+    try:
+        with open(proposal_path, "w", encoding="utf-8") as f:
+            _json.dump(proposal_doc, f, indent=2, default=str, ensure_ascii=False)
+    except Exception:
+        pass  # already logged above
 
     return result
 

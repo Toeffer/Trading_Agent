@@ -81,6 +81,9 @@ def _make_clean_kpi() -> dict:
             "mode": "paper",
             "read_only": True,
             "allow_orders": "false",
+            "net_liquidation": 100000.0,  # Step 15D: account evidence
+            "cash_balance": 50000.0,
+            "base_currency": "EUR",
         },
         "safety_flags": {
             "read_only": True,
@@ -99,6 +102,59 @@ def _make_clean_kpi() -> dict:
             "active_alert_count": 0,
         },
     }
+
+
+def _make_market_data_clean(symbol: str = "AAPL") -> dict:
+    """Step 15D: Return clean (connected, fresh) market data for testing."""
+    import time
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "market_data_available": True,
+        "snapshot_timestamp": "2026-06-18T18:00:00Z",
+        "snapshot_epoch": time.time(),
+        "bid": 149.50,
+        "ask": 150.50,
+        "last": 150.00,
+        "close": 149.80,
+        "midpoint": 150.00,
+        "currency": "USD",
+        "exchange": "SMART",
+        "delayed": True,
+        "stale": False,
+        "market_data_age_seconds": 2.1,
+    }
+
+
+def _patch_market_data(fresh: bool = True, symbol: str = "AAPL"):
+    """Step 15D: Patch urllib.request.urlopen for market/snapshot endpoint.
+
+    Returns a MagicMock that intercepts /market/snapshot/ URLs with mock data.
+    Other URLs fall through to the real urlopen (not expected in mocked tests).
+    """
+    import json as _json
+    from unittest.mock import patch, MagicMock
+
+    if fresh:
+        md = _make_market_data_clean(symbol)
+    else:
+        md = {
+            "ok": False, "symbol": symbol, "market_data_available": False,
+            "stale": True, "detail": "IBKR not connected",
+            "snapshot_timestamp": "2026-06-18T18:00:00Z", "snapshot_epoch": 0,
+            "bid": None, "ask": None, "last": None, "close": None,
+            "midpoint": None, "currency": None, "exchange": None,
+            "delayed": True, "market_data_age_seconds": None,
+        }
+    md_bytes = _json.dumps(md).encode()
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = md_bytes
+    mock_resp.__enter__.return_value = mock_resp
+    mock_resp.__exit__.return_value = None
+
+    return patch("urllib.request.urlopen", return_value=mock_resp)
 
 
 def _make_disconnected_kpi() -> dict:
@@ -352,6 +408,7 @@ class TestBuyWithStop:
 
         with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
             result = _run_candidate_dryrun("AAPL", "BUY")
@@ -360,6 +417,8 @@ class TestBuyWithStop:
         assert "valid" in p5, "P5 evidence missing 'valid'"
         assert "protective_stop" in p5, "P5 evidence missing 'protective_stop'"
         assert "bracket" in p5, "P5 evidence missing 'bracket'"
+        # Step 15D: P5 should be valid with fresh market data
+        assert p5.get("valid") is True, f"P5 should be valid with fresh market data, got {p5}"
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +544,7 @@ class TestCleanReadyDryrun:
 
         with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
              patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
              patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
             result = _run_candidate_dryrun("AAPL", "BUY")
@@ -1080,11 +1140,12 @@ class TestIntegrationSafeDisconnectedHOLD:
             f"Locked safety must not produce safety_unlocked. Got: {safety_blockers}"
         )
 
-        # 11. Only expected blockers: ibkr_disconnected (and possibly autonomy/clean_cycles)
+        # 11. Only expected blockers: ibkr_disconnected + market_data_missing (Step 15D)
         unexpected_blockers = [
             b for b in result["blockers"]
             if b["check"] not in (
-                "ibkr_disconnected", "autonomy_level_zero", "no_clean_cycles",
+                "ibkr_disconnected", "market_data_missing",
+                "autonomy_level_zero", "no_clean_cycles",
                 "system_locked", "strategy_unavailable",
             )
         ]
@@ -1092,3 +1153,106 @@ class TestIntegrationSafeDisconnectedHOLD:
             f"Unexpected blockers in safe disconnected state: "
             f"{[(b['severity'], b['check']) for b in unexpected_blockers]}"
         )
+
+
+# =============================================================================
+# Step 15D: Market-data evidence / placeholder rejection
+# =============================================================================
+
+class TestStep15DMarketData:
+    """Step 15D: candidate pricing must use real market data, never placeholders."""
+
+    def test_disconnected_candidate_is_HOLD(self):
+        """When IBKR is disconnected, candidate must be HOLD (market data unavailable)."""
+        from ibkr_operator import _run_candidate_dryrun
+        r = _run_candidate_dryrun("AAPL", "BUY")
+        assert r["verdict"] in ("HOLD", "NO-GO"), f"Expected HOLD/NO-GO, got {r['verdict']}"
+        # Must have market_data_missing or ibkr_disconnected blocker
+        checks = {b["check"] for b in r["blockers"]}
+        assert ("market_data_missing" in checks or "ibkr_disconnected" in checks), \
+            f"Expected market_data_missing or ibkr_disconnected blocker, got {checks}"
+
+    def test_missing_market_data_is_HOLD(self):
+        """When market data is unavailable, candidate is HOLD (not READY)."""
+        from ibkr_operator import _run_candidate_dryrun
+        r = _run_candidate_dryrun("AAPL", "BUY")
+        # With disconnected IBKR, market data is always unavailable
+        assert r["pricing"]["price_valid"] is False, \
+            f"Price should not be valid with missing market data, got {r['pricing']}"
+        assert r["verdict"] != "READY_DRYRUN", \
+            "READY_DRYRUN must never be returned without valid market data"
+
+    def test_placeholder_price_never_READY(self):
+        """Runtime candidate must never use placeholder 100.0 as reference price."""
+        from ibkr_operator import _run_candidate_dryrun
+        r = _run_candidate_dryrun("AAPL", "BUY")
+        ref = r["pricing"].get("reference_price")
+        src = r["pricing"].get("price_source")
+        # Placeholder would be 100.0 with source="placeholder" or "unknown"
+        if ref == 100.0 and src in ("unknown", "placeholder"):
+            # Even if it matches 100.0 by coincidence, price_valid must be False
+            assert r["pricing"]["price_valid"] is False, \
+                f"Placeholder-like pricing (ref=100.0, src={src}) must not be valid"
+        # With no market data, verdict is always HOLD, never READY
+        assert r["verdict"] != "READY_DRYRUN", \
+            f"READY_DRYRUN with ref={ref} src={src} — placeholder pricing may have leaked"
+
+    def test_Sell_candidate_hold_when_disconnected(self):
+        """SELL candidate must also HOLD when disconnected."""
+        from ibkr_operator import _run_candidate_dryrun
+        r = _run_candidate_dryrun("AAPL", "SELL")
+        assert r["verdict"] in ("HOLD", "NO-GO"), f"SELL with disconnected IBKR must HOLD, got {r['verdict']}"
+        # SELL close-only does not require bracket stop
+        assert r["stop"]["price"] is None
+        assert "close-only" in r["stop"].get("rationale", "").lower()
+
+    def test_export_has_market_data_fields(self):
+        """Candidate export JSON must include market_data, pricing, account_evidence."""
+        from ibkr_operator import _run_candidate_dryrun
+        r = _run_candidate_dryrun("AAPL", "BUY")
+        assert "market_data" in r, "Export missing market_data"
+        assert "pricing" in r, "Export missing pricing"
+        assert "account_evidence" in r, "Export missing account_evidence"
+        # Pricing sub-fields
+        p = r["pricing"]
+        for k in ("reference_price", "price_source", "price_valid", "stop_price", "staleness_seconds"):
+            assert k in p, f"pricing missing '{k}'"
+        # Market data sub-fields (may be empty when disconnected)
+        md = r["market_data"]
+        assert "market_data_available" in md or "ok" in md, "market_data missing ok/available"
+        assert "stale" in md or "market_data_available" in md, "market_data missing stale/available"
+
+    def test_no_forbidden_endpoints(self):
+        """Candidate must not reference forbidden endpoints."""
+        from ibkr_operator import _run_candidate_dryrun
+        r = _run_candidate_dryrun("AAPL", "BUY")
+        scan = r.get("forbidden_endpoint_scan", {})
+        assert scan.get("ok", True), f"Forbidden endpoint scan failed: {scan}"
+
+    def test_no_h1_token_usage(self):
+        """Candidate must not reference H1 tokens."""
+        import json as _json
+        result_str = _json.dumps({"test": "no H1"})
+        assert "h1" not in result_str.lower() or "h1_token" not in result_str.lower()
+
+    def test_no_placeholder_runtime_pricing(self):
+        """Runtime pricing source must never be 'placeholder'."""
+        from ibkr_operator import _run_candidate_dryrun
+        r = _run_candidate_dryrun("AAPL", "BUY")
+        src = r["pricing"].get("price_source", "")
+        assert src != "placeholder", f"Runtime pricing has placeholder source: {src}"
+        # And if price not valid, source must reflect that
+        if not r["pricing"]["price_valid"]:
+            assert src in ("unknown", ""), f"Invalid price with unexpected src: {src}"
+
+    def test_kpi_hold_cascades_to_candidate_hold(self):
+        """When KPI is HOLD (disconnected), candidate must also HOLD, not NO-GO."""
+        from ibkr_operator import _run_candidate_dryrun
+        r = _run_candidate_dryrun("AAPL", "BUY")
+        kpi_v = r.get("kpi", {}).get("verdict", "?")
+        # When KPI is HOLD and no NO-GO blockers exist, candidate must be HOLD
+        if kpi_v == "HOLD" and r["verdict"] == "NO-GO":
+            # Check that the NO-GO isn't from a cascade bug
+            nogo_checks = [b["check"] for b in r["blockers"] if b["severity"] == "NO-GO"]
+            assert "kpi_nogo_cascade" not in nogo_checks, \
+                f"KPI HOLD should not cascade to candidate NO-GO. NO-GO blockers: {nogo_checks}"

@@ -1169,9 +1169,13 @@ class TestStep15DMarketData:
     """Step 15D: candidate pricing must use real market data, never placeholders."""
 
     def test_disconnected_candidate_is_HOLD(self):
-        """When IBKR is disconnected, candidate must be HOLD (market data unavailable)."""
+        """When IBKR is disconnected, candidate must be HOLD (market data unavailable).
+
+        Uses mocked disconnected market data to avoid dependency on live bridge state.
+        """
         from ibkr_operator import _run_candidate_dryrun
-        r = _run_candidate_dryrun("AAPL", "BUY")
+        with _patch_market_data(fresh=False):
+            r = _run_candidate_dryrun("AAPL", "BUY")
         assert r["verdict"] in ("HOLD", "NO-GO"), f"Expected HOLD/NO-GO, got {r['verdict']}"
         # Must have market_data_missing or ibkr_disconnected blocker
         checks = {b["check"] for b in r["blockers"]}
@@ -1179,9 +1183,13 @@ class TestStep15DMarketData:
             f"Expected market_data_missing or ibkr_disconnected blocker, got {checks}"
 
     def test_missing_market_data_is_HOLD(self):
-        """When market data is unavailable, candidate is HOLD (not READY)."""
+        """When market data is unavailable, candidate is HOLD (not READY).
+
+        Uses mocked disconnected market data to avoid dependency on live bridge state.
+        """
         from ibkr_operator import _run_candidate_dryrun
-        r = _run_candidate_dryrun("AAPL", "BUY")
+        with _patch_market_data(fresh=False):
+            r = _run_candidate_dryrun("AAPL", "BUY")
         # With disconnected IBKR, market data is always unavailable
         assert r["pricing"]["price_valid"] is False, \
             f"Price should not be valid with missing market data, got {r['pricing']}"

@@ -216,15 +216,138 @@ class TestVerdictLockedBaseline:
     """Verify locked safe baseline (current state) returns HOLD or NO-GO,
     never CLEAN or GO."""
 
-    def test_current_state_not_clean(self):
-        """With real orphan alerts and disconnected IBKR, verdict must not be CLEAN."""
+    # -- Lightweight helpers --
+
+    @staticmethod
+    def _make_lightweight_clean():
+        """Return clean lightweight evidence snapshot."""
+        return {
+            "bridge": {
+                "reachable": True, "connected": True,
+                "mode": "paper", "allow_orders": False, "read_only": True,
+            },
+            "doctor": {
+                "pass": True, "total": 9, "passed": 9,
+                "checks": [
+                    {"check": "runbook_exists", "ok": True},
+                    {"check": "operator_symlink", "ok": True},
+                    {"check": "required_files", "ok": True},
+                    {"check": "bridge_health", "ok": True},
+                    {"check": "export_dir_writable", "ok": True},
+                    {"check": "hermes_policy_exists", "ok": True},
+                    {"check": "h1_token_canary", "ok": True, "detail": "skipped (lightweight)"},
+                    {"check": "bridge_port_listener", "ok": True, "detail": "1 listener(s)"},
+                    {"check": "bridge_safety_flags", "ok": True, "detail": "read_only=True, allow_orders=false"},
+                ],
+            },
+            "safety": {
+                "read_only": True, "bridge_allow_orders": False,
+                "env_IBKR_ALLOW_ORDERS": "false", "rules_enforced": "false",
+                "system_locked": True,
+            },
+            "strategy": {"strategy_exists": True, "autonomy_exists": True},
+        }
+
+    def test_mocked_dirty_state_not_clean(self):
+        """Deterministic dirty-state test: simulated disconnected IBKR → not CLEAN.
+
+        Uses mocked KPI + lightweight evidence to simulate a known-dirty state:
+          - Bridge unreachable (simulates disconnected IBKR)
+          - Active orphan alerts
+        Does NOT depend on live workstation state — this test must pass even
+        on a clean, connected machine.
+        """
+        from unittest.mock import patch
         from ibkr_operator import _run_cycle_rehearsal
 
-        result = _run_cycle_rehearsal()
+        # Simulate a dirty KPI: bridge unreachable, active alerts
+        dirty_kpi = {
+            "verdict": "NO-GO",
+            "blockers": [
+                {"severity": "NO-GO", "check": "bridge_unreachable",
+                 "detail": "IBKR bridge is not reachable"},
+                {"severity": "NO-GO", "check": "active_alerts",
+                 "detail": "3 active alert(s)"},
+            ],
+            "bridge": {"reachable": False, "connected": False},
+            "safety_flags": {
+                "read_only": True,
+                "bridge_allow_orders": False,
+                "env_IBKR_ALLOW_ORDERS": "false",
+                "rules_enforced": "false",
+            },
+            "heartbeat": {"recent": True, "age_seconds": 120},
+            "monitoring": {
+                "reconciliation_passed": False,
+                "active_alert_count": 3,
+            },
+        }
+
+        # Lightweight evidence: bridge reachable (doctor sees it, but KPI is authoritative)
+        lw = self._make_lightweight_clean()
+        lw["bridge"] = {"reachable": True, "connected": False}
+
+        with patch("ibkr_operator.run_kpi", return_value=dirty_kpi), \
+             patch("ibkr_operator._collect_lightweight_evidence", return_value=lw), \
+             patch("ibkr_operator._scan_forbidden_endpoints",
+                    return_value={"ok": True, "violations": []}):
+            result = _run_cycle_rehearsal()
+
         assert result["verdict"] != "CLEAN", (
-            f"Should not be CLEAN with active blockers. "
+            f"Should not be CLEAN with simulated disconnected IBKR. "
             f"Verdict: {result['verdict']}, blockers: {[b['check'] for b in result['blockers']]}"
         )
+        assert len(result["blockers"]) > 0, \
+            "Should have at least one blocker with simulated dirty state"
+
+        blocker_checks = {b["check"] for b in result["blockers"]}
+        # The dirty KPI has bridge_unreachable and active_alerts as NO-GO
+        assert "bridge_unreachable" in blocker_checks or "active_alerts" in blocker_checks, \
+            f"Expected bridge_unreachable or active_alerts in blockers, got {blocker_checks}"
+
+    def test_mocked_clean_state_allows_clean(self):
+        """Deterministic clean-state test: no blockers + locked safety → CLEAN is valid.
+
+        When all systems are healthy and safety is locked, CLEAN is a legitimate
+        verdict. This test ensures the rehearsal logic doesn't have a permanently-
+        broken assertion that CLEAN is impossible.
+        """
+        from unittest.mock import patch
+        from ibkr_operator import _run_cycle_rehearsal
+
+        # Clean KPI: GO, bridge reachable + connected, no alerts
+        clean_kpi = {
+            "verdict": "GO",
+            "blockers": [],
+            "bridge": {"reachable": True, "connected": True},
+            "safety_flags": {
+                "read_only": True,
+                "bridge_allow_orders": False,
+                "env_IBKR_ALLOW_ORDERS": "false",
+                "rules_enforced": "false",
+            },
+            "heartbeat": {"recent": True, "age_seconds": 60},
+            "monitoring": {
+                "reconciliation_passed": True,
+                "active_alert_count": 0,
+            },
+        }
+
+        lw = self._make_lightweight_clean()
+
+        with patch("ibkr_operator.run_kpi", return_value=clean_kpi), \
+             patch("ibkr_operator._collect_lightweight_evidence", return_value=lw), \
+             patch("ibkr_operator._scan_forbidden_endpoints",
+                    return_value={"ok": True, "violations": []}):
+            result = _run_cycle_rehearsal()
+
+        # In a fully clean state, CLEAN is valid (and expected)
+        assert result["verdict"] in ("CLEAN", "HOLD"), \
+            f"Expected CLEAN or HOLD with clean state, got {result['verdict']}"
+        # If there are any blockers in clean state, they should be documented
+        if result["verdict"] == "CLEAN":
+            assert result["blocker_count"] == 0, \
+                f"CLEAN verdict must have zero blockers, got {result['blocker_count']}"
 
     def test_safety_locked_asserted(self):
         """Safety flags must show locked in rehearsal output.

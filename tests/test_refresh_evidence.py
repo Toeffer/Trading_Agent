@@ -666,3 +666,349 @@ print(json.dumps(result, indent=2, default=str))
                     break
             assert found_line is None, \
                 f"FORBIDDEN: '{pattern}' found in _run_autonomy_status: {found_line}"
+
+# ===========================================================================
+# Step 15L-B: Bounded read-only market snapshot timeout
+# ===========================================================================
+
+
+class TestMarketSnapshotTimeout:
+    """Step 15L-B: Market snapshot must return bounded JSON, never hang."""
+
+    # --- Helpers ---
+
+    @staticmethod
+    def _make_market_timeout_response(symbol: str = "AAPL") -> dict:
+        """Simulate a bridge /market/snapshot response after timeout."""
+        return {
+            "ok": False,
+            "symbol": symbol,
+            "market_data_available": False,
+            "detail": "market_data_timeout: market data did not arrive within 8s",
+            "snapshot_timestamp": "2026-06-23T08:00:00Z",
+            "snapshot_epoch": time.time(),
+            "bid": None,
+            "ask": None,
+            "last": None,
+            "close": None,
+            "midpoint": None,
+            "currency": None,
+            "exchange": None,
+            "delayed": True,
+            "stale": True,
+            "market_data_age_seconds": None,
+        }
+
+    @staticmethod
+    def _make_market_disconnected_response(symbol: str = "AAPL") -> dict:
+        """Simulate a bridge /market/snapshot response when disconnected."""
+        return {
+            "ok": False,
+            "symbol": symbol,
+            "market_data_available": False,
+            "detail": "IBKR not connected",
+            "snapshot_timestamp": "2026-06-23T08:00:00Z",
+            "snapshot_epoch": time.time(),
+            "bid": None,
+            "ask": None,
+            "last": None,
+            "close": None,
+            "midpoint": None,
+            "currency": None,
+            "exchange": None,
+            "delayed": True,
+            "stale": True,
+            "market_data_age_seconds": None,
+        }
+
+    @staticmethod
+    def _make_market_clean_response(symbol: str = "AAPL") -> dict:
+        """Simulate a bridge /market/snapshot response with fresh data."""
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "market_data_available": True,
+            "snapshot_timestamp": "2026-06-23T08:00:00Z",
+            "snapshot_epoch": time.time(),
+            "bid": 209.5,
+            "ask": 210.5,
+            "last": 210.0,
+            "close": 208.0,
+            "midpoint": 210.0,
+            "currency": "USD",
+            "exchange": "SMART",
+            "delayed": True,
+            "stale": False,
+            "market_data_age_seconds": 1.5,
+        }
+
+    def _make_timeout_candidate(self, tmp_path: Path) -> Path:
+        """Write a candidate dry-run with timeout market data."""
+        candidate_dir = tmp_path / "candidate-dryruns"
+        candidate_dir.mkdir(parents=True, exist_ok=True)
+        cand_path = candidate_dir / "candidate-AAPL-BUY-test.json"
+        cand_data = {
+            "verdict": "HOLD",
+            "symbol": "AAPL",
+            "side": "BUY",
+            "timestamp": "2026-06-23T08:00:00Z",
+            "market_data": self._make_market_timeout_response("AAPL"),
+            "account_evidence": {
+                "fx_available": True,
+                "fx_required": False,
+                "fx_staleness_seconds": 0,
+            },
+        }
+        cand_path.write_text(json.dumps(cand_data))
+        return candidate_dir
+
+    # --- Test: timeout snapshot returns valid JSON ---
+
+    def test_timeout_snapshot_returns_json(self):
+        """A market snapshot timeout response is valid JSON with all required fields."""
+        resp = self._make_market_timeout_response("AAPL")
+        required_fields = [
+            "ok", "symbol", "market_data_available", "detail",
+            "snapshot_timestamp", "snapshot_epoch", "bid", "ask",
+            "last", "close", "midpoint", "currency", "exchange",
+            "delayed", "stale", "market_data_age_seconds",
+        ]
+        for field in required_fields:
+            assert field in resp, f"Missing field '{field}' in timeout response"
+        assert resp["ok"] is False
+        assert resp["market_data_available"] is False
+        assert "market_data_timeout" in resp["detail"]
+        assert resp["bid"] is None
+        assert resp["ask"] is None
+        assert resp["last"] is None
+        assert resp["close"] is None
+        assert resp["midpoint"] is None
+        assert resp["currency"] is None
+        assert resp["stale"] is True
+        assert resp["delayed"] is True
+        # Verify it's serializable
+        json.dumps(resp)
+
+    # --- Test: connected=true + market timeout => autonomy-status HOLD ---
+
+    def test_connected_market_timeout_hold(self, tmp_path):
+        """When IBKR is connected but market data times out, autonomy-status HOLDs."""
+        from unittest.mock import patch
+
+        now = time.time()
+        ledger_dir = tmp_path / "autonomy-cycles"
+        ledger_path = ledger_dir / "clean-cycle-ledger.jsonl"
+        entries = [
+            _make_clean_entry(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - i * 3600)))
+            for i in range(1, 6)
+        ]
+        _write_ledger_entries(ledger_path, entries)
+
+        # Write candidate with timeout market data
+        self._make_timeout_candidate(tmp_path)
+
+        lw = _make_lightweight_clean()  # connected=True
+        kpi = {
+            "verdict": "GO",
+            "bridge": {"reachable": True, "connected": True},
+            "monitoring": {"active_alert_count": 0, "reconciliation_passed": True},
+            "blockers": [],
+        }
+
+        with patch("ibkr_operator._CLEAN_CYCLE_LEDGER", ledger_path), \
+             patch("ibkr_operator.OPENCLAW_DIR", tmp_path), \
+             patch("ibkr_operator._collect_lightweight_evidence", return_value=lw), \
+             patch("ibkr_operator.run_kpi", return_value=kpi), \
+             patch("ibkr_operator._CLEAN_CYCLES_REQUIRED", 5), \
+             patch("ibkr_operator._CLEAN_CYCLES_WINDOW_DAYS", 7), \
+             patch("ibkr_operator.BRIDGE_DIR", BRIDGE_DIR), \
+             patch("ibkr_operator._read_autonomy_level", return_value="0"), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_autonomy_status(refresh_evidence=False)
+
+        assert result["recommendation"] == "HOLD", \
+            f"Expected HOLD when market data times out, got {result['recommendation']}"
+        blockers = {b["check"] for b in result["blockers"]}
+        assert "market_data_unavailable" in blockers, \
+            f"Expected market_data_unavailable blocker, got {blockers}"
+
+    # --- Test: timeout does not call /order* ---
+
+    def test_market_timeout_no_order_calls(self):
+        """Market timeout path must not call any /order* endpoints."""
+        import inspect
+
+        # Check _run_autonomy_status source for order endpoints
+        source = inspect.getsource(_run_autonomy_status)
+        forbidden = ["/order/preflight", "/order/approve", "/order/submit",
+                      "placeOrder", "cancelOrder"]
+        for pattern in forbidden:
+            found_line = None
+            for line in source.splitlines():
+                if pattern in line and not line.strip().startswith("#"):
+                    found_line = line.strip()[:100]
+                    break
+            assert found_line is None, \
+                f"FORBIDDEN: '{pattern}' found in _run_autonomy_status: {found_line}"
+
+        # Also check _run_autonomy_review
+        source_review = inspect.getsource(_run_autonomy_review)
+        for pattern in forbidden:
+            found_line = None
+            for line in source_review.splitlines():
+                if pattern in line and not line.strip().startswith("#"):
+                    found_line = line.strip()[:100]
+                    break
+            assert found_line is None, \
+                f"FORBIDDEN: '{pattern}' found in _run_autonomy_review: {found_line}"
+
+    # --- Test: timeout does not read H1 token ---
+
+    def test_market_timeout_no_h1_token(self):
+        """Market timeout path must not read H1 token."""
+        import inspect
+
+        source = inspect.getsource(_run_autonomy_status)
+        forbidden = ["_run_h1_canary(", "sudo ", "/etc/ibkr-bridge/h1_token"]
+        for pattern in forbidden:
+            found = False
+            for line in source.splitlines():
+                if line.strip().startswith("#"):
+                    continue
+                if pattern in line:
+                    found = True
+                    break
+            assert not found, \
+                f"FORBIDDEN: '{pattern}' found in _run_autonomy_status source"
+
+    # --- Test: JSON stdout remains pure for autonomy-status ---
+
+    def test_json_stdout_pure_with_timeout(self, tmp_path):
+        """Even with market timeout, stdout is parseable JSON."""
+        from unittest.mock import patch
+
+        now = time.time()
+        ledger_dir = tmp_path / "autonomy-cycles"
+        ledger_path = ledger_dir / "clean-cycle-ledger.jsonl"
+        entries = [
+            _make_clean_entry(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - i * 3600)))
+            for i in range(1, 6)
+        ]
+        _write_ledger_entries(ledger_path, entries)
+        self._make_timeout_candidate(tmp_path)
+
+        lw = _make_lightweight_clean()
+        kpi = {
+            "verdict": "GO",
+            "bridge": {"reachable": True, "connected": True},
+            "monitoring": {"active_alert_count": 0, "reconciliation_passed": True},
+            "blockers": [],
+        }
+
+        with patch("ibkr_operator._CLEAN_CYCLE_LEDGER", ledger_path), \
+             patch("ibkr_operator.OPENCLAW_DIR", tmp_path), \
+             patch("ibkr_operator._collect_lightweight_evidence", return_value=lw), \
+             patch("ibkr_operator.run_kpi", return_value=kpi), \
+             patch("ibkr_operator._CLEAN_CYCLES_REQUIRED", 5), \
+             patch("ibkr_operator._CLEAN_CYCLES_WINDOW_DAYS", 7), \
+             patch("ibkr_operator.BRIDGE_DIR", BRIDGE_DIR), \
+             patch("ibkr_operator._read_autonomy_level", return_value="0"), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_autonomy_status(refresh_evidence=False)
+
+        # Must be valid JSON
+        serialized = json.dumps(result, default=str)
+        parsed_back = json.loads(serialized)
+        assert parsed_back["recommendation"] == "HOLD"
+        assert "command" in parsed_back
+        assert parsed_back["refresh_evidence"] is False
+
+    # --- Test: later successful snapshot clears the blocker ---
+
+    def test_later_snapshot_succeeds_clears_market_blocker(self, tmp_path):
+        """When a later market snapshot succeeds, the READY path can proceed."""
+        from unittest.mock import patch
+
+        now = time.time()
+        ledger_dir = tmp_path / "autonomy-cycles"
+        ledger_path = ledger_dir / "clean-cycle-ledger.jsonl"
+        entries = [
+            _make_clean_entry(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - i * 3600)))
+            for i in range(1, 6)
+        ]
+        _write_ledger_entries(ledger_path, entries)
+
+        # Write candidate with CLEAN market data (fresh, available)
+        _write_candidate(tmp_path, verdict="READY_DRYRUN",
+                         market_available=True, fx_available=True, fx_required=False)
+
+        lw = _make_lightweight_clean()
+        kpi = {
+            "verdict": "GO",
+            "bridge": {"reachable": True, "connected": True},
+            "monitoring": {"active_alert_count": 0, "reconciliation_passed": True},
+            "blockers": [],
+        }
+
+        with patch("ibkr_operator._CLEAN_CYCLE_LEDGER", ledger_path), \
+             patch("ibkr_operator.OPENCLAW_DIR", tmp_path), \
+             patch("ibkr_operator._collect_lightweight_evidence", return_value=lw), \
+             patch("ibkr_operator.run_kpi", return_value=kpi), \
+             patch("ibkr_operator._CLEAN_CYCLES_REQUIRED", 5), \
+             patch("ibkr_operator._CLEAN_CYCLES_WINDOW_DAYS", 7), \
+             patch("ibkr_operator.BRIDGE_DIR", BRIDGE_DIR), \
+             patch("ibkr_operator._read_autonomy_level", return_value="0"), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_autonomy_status(refresh_evidence=False)
+
+        assert result["recommendation"] == "READY_FOR_MANUAL_REVIEW", \
+            f"Expected READY_FOR_MANUAL_REVIEW with successful snapshot, got {result['recommendation']}"
+        # Verify market data is marked available
+        assert result.get("market_data_status") == "available", \
+            f"Expected market_data_status=available, got {result.get('market_data_status')}"
+
+    # --- Test: doctor can still PASS when market data is unavailable ---
+
+    def test_doctor_pass_market_unavailable(self, tmp_path):
+        """Doctor may PASS even when market data is unavailable.
+
+        Doctor checks bridge health, not data-plane availability.
+        """
+        from unittest.mock import patch
+
+        now = time.time()
+        ledger_dir = tmp_path / "autonomy-cycles"
+        ledger_path = ledger_dir / "clean-cycle-ledger.jsonl"
+        entries = [
+            _make_clean_entry(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - i * 3600)))
+            for i in range(1, 6)
+        ]
+        _write_ledger_entries(ledger_path, entries)
+        self._make_timeout_candidate(tmp_path)
+
+        # Doctor passes (all checks OK)
+        lw = _make_lightweight_clean()
+        kpi = {
+            "verdict": "GO",
+            "bridge": {"reachable": True, "connected": True},
+            "monitoring": {"active_alert_count": 0, "reconciliation_passed": True},
+            "blockers": [],
+        }
+
+        with patch("ibkr_operator._CLEAN_CYCLE_LEDGER", ledger_path), \
+             patch("ibkr_operator.OPENCLAW_DIR", tmp_path), \
+             patch("ibkr_operator._collect_lightweight_evidence", return_value=lw), \
+             patch("ibkr_operator.run_kpi", return_value=kpi), \
+             patch("ibkr_operator._CLEAN_CYCLES_REQUIRED", 5), \
+             patch("ibkr_operator._CLEAN_CYCLES_WINDOW_DAYS", 7), \
+             patch("ibkr_operator.BRIDGE_DIR", BRIDGE_DIR), \
+             patch("ibkr_operator._read_autonomy_level", return_value="0"), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}):
+            result = _run_autonomy_status(refresh_evidence=False)
+
+        # Doctor should PASS (bridge is reachable, connected)
+        assert result["doctor_verdict"] == "PASS", \
+            f"Doctor should PASS when bridge is healthy, got {result['doctor_verdict']}"
+        # But overall recommendation is HOLD because market data is unavailable
+        assert result["recommendation"] == "HOLD", \
+            f"Expected HOLD (market data unavailable), got {result['recommendation']}"

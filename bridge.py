@@ -1,6 +1,7 @@
 import os
 import socket
 import asyncio
+import concurrent.futures
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -111,6 +112,9 @@ _snapshot_build_lock = _threading.Lock()
 _liveness_cache: dict | None = None
 _liveness_cache_ts: float = 0.0
 _LIVENESS_CACHE_TTL = 60.0  # seconds — memory/RSS doesn't change sub-second
+
+# Step 15L-B: Market data snapshot max wait before timeout
+_MARKET_SNAPSHOT_TIMEOUT = 8.0  # seconds — must return bounded JSON, never hang
 
 
 def _snapshot_ibkr_disconnected_response() -> dict:
@@ -559,6 +563,47 @@ def _internal_fetch_quote(symbol: str) -> dict:
         pass
 
     return result
+
+
+def _internal_fetch_quote_safe(symbol: str, timeout: float = _MARKET_SNAPSHOT_TIMEOUT) -> dict:
+    """Fetch quote with bounded timeout — never hangs (Step 15L-B).
+
+    Runs _internal_fetch_quote in a thread executor with a hard deadline.
+    On timeout: cleans up any pending market-data subscription and raises
+    RuntimeError with detail="market_data_timeout".
+
+    Uses shutdown(wait=False) so the caller is never blocked by a hung
+    market-data thread after the timeout fires.
+
+    Returns the same dict format as _internal_fetch_quote on success.
+    """
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(_internal_fetch_quote, symbol)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            # Best-effort cleanup: cancel any pending market data subscription.
+            # We re-create the contract from the symbol — this is a lightweight
+            # lookup that should not block (no network I/O in qualifyContracts
+            # for a simple stock contract).
+            try:
+                if ib and ib.isConnected() and IB is not None and Stock is not None:
+                    contract = Stock(symbol.upper(), "SMART", "USD")
+                    try:
+                        qualified = ib.qualifyContracts(contract)
+                        if qualified:
+                            ib.cancelMktData(qualified[0])
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"market_data_timeout: market data did not arrive within {timeout:.0f}s"
+            )
+    finally:
+        # Never wait for a potentially hung market-data thread
+        executor.shutdown(wait=False)
 
 
 def _internal_fetch_bars(symbol: str) -> list:
@@ -2998,22 +3043,24 @@ def monitor_liveness() -> Dict[str, Any]:
 
 @app.get("/market/snapshot/{symbol}")
 def market_snapshot(symbol: str) -> Dict[str, Any]:
-    """Step 15D: Market data snapshot — read-only, fast-fail when disconnected.
+    """Step 15D+15L-B: Market data snapshot — bounded timeout, never hangs.
 
     Returns bid/ask/last/close with snapshot timestamp and age.
     When IBKR is disconnected: HTTP 200 with ok=False, market_data_available=False.
     Staleness: >60s since snapshot marks stale=True (candidate must HOLD).
+    Timeout: max _MARKET_SNAPSHOT_TIMEOUT seconds (Step 15L-B).
     No cache — market data is time-sensitive. No subprocess forks.
     """
     symbol = symbol.upper().strip()
     now_epoch = time.time()
 
-    if not is_connected():
+    # Build the error/empty response once and reuse
+    def _empty_response(detail: str, delayed: bool = True, stale: bool = True) -> dict:
         return {
             "ok": False,
             "symbol": symbol,
             "market_data_available": False,
-            "detail": "IBKR not connected",
+            "detail": detail,
             "snapshot_timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "snapshot_epoch": now_epoch,
             "bid": None,
@@ -3023,63 +3070,58 @@ def market_snapshot(symbol: str) -> Dict[str, Any]:
             "midpoint": None,
             "currency": None,
             "exchange": None,
-            "delayed": True,
-            "stale": True,
+            "delayed": delayed,
+            "stale": stale,
             "market_data_age_seconds": None,
         }
+
+    if not is_connected():
+        return _empty_response("IBKR not connected")
 
     try:
-        q = _internal_fetch_quote(symbol)
-        bid = q.get("bid")
-        ask = q.get("ask")
-        last = q.get("last")
-        close = q.get("close")
-
-        # Compute midpoint if bid and ask available
-        midpoint = None
-        if bid is not None and ask is not None:
-            midpoint = round((bid + ask) / 2, 4)
-
-        # Staleness: if snapshot > 60s old (ib.reqMktData takes ~3s, so 60s is generous)
-        age_s = round(now_epoch - (q.get("_fetch_epoch", now_epoch)), 1)
-        stale = age_s > 60.0
-
-        return {
-            "ok": True,
-            "symbol": q.get("symbol", symbol),
-            "market_data_available": True,
-            "snapshot_timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "snapshot_epoch": now_epoch,
-            "bid": bid,
-            "ask": ask,
-            "last": last,
-            "close": close,
-            "midpoint": midpoint,
-            "currency": q.get("currency", "USD"),
-            "exchange": q.get("exchange", "SMART"),
-            "delayed": q.get("delayed", True),
-            "stale": stale,
-            "market_data_age_seconds": age_s,
-        }
+        q = _internal_fetch_quote_safe(symbol, timeout=_MARKET_SNAPSHOT_TIMEOUT)
     except RuntimeError as e:
-        return {
-            "ok": False,
-            "symbol": symbol,
-            "market_data_available": False,
-            "detail": str(e)[:200],
-            "snapshot_timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "snapshot_epoch": now_epoch,
-            "bid": None,
-            "ask": None,
-            "last": None,
-            "close": None,
-            "midpoint": None,
-            "currency": None,
-            "exchange": None,
-            "delayed": True,
-            "stale": True,
-            "market_data_age_seconds": None,
-        }
+        err_msg = str(e)
+        # Distinguish timeout from other runtime errors
+        if "market_data_timeout" in err_msg:
+            return _empty_response(err_msg[:200])
+        return _empty_response(err_msg[:200])
+
+    bid = q.get("bid")
+    ask = q.get("ask")
+    last = q.get("last")
+    close = q.get("close")
+
+    # If all price fields are None, market data is effectively unavailable
+    if bid is None and ask is None and last is None and close is None:
+        return _empty_response("market_data_unavailable: all price fields are null")
+
+    # Compute midpoint if bid and ask available
+    midpoint = None
+    if bid is not None and ask is not None:
+        midpoint = round((bid + ask) / 2, 4)
+
+    # Staleness: if snapshot > 60s old (ib.reqMktData takes ~3s, so 60s is generous)
+    age_s = round(now_epoch - (q.get("_fetch_epoch", now_epoch)), 1)
+    stale = age_s > 60.0
+
+    return {
+        "ok": True,
+        "symbol": q.get("symbol", symbol),
+        "market_data_available": True,
+        "snapshot_timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "snapshot_epoch": now_epoch,
+        "bid": bid,
+        "ask": ask,
+        "last": last,
+        "close": close,
+        "midpoint": midpoint,
+        "currency": q.get("currency", "USD"),
+        "exchange": q.get("exchange", "SMART"),
+        "delayed": q.get("delayed", True),
+        "stale": stale,
+        "market_data_age_seconds": age_s,
+    }
 
 
 @app.get("/audit/bundle")

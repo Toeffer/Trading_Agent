@@ -6122,6 +6122,555 @@ _MANUAL_REVIEW_CHECKLIST: list[str] = [
     "Confirm no live orders will be enabled by this review package.",
 ]
 
+# Step 15M — Manual Level-1 Promotion Plan (advisory/procedural only)
+# ---------------------------------------------------------------------------
+
+_AUTONOMY_PROMOTION_PLANS_DIR = OPENCLAW_DIR / "autonomy-promotion-plans"
+
+_MANUAL_PROMOTION_PRECONDITIONS: list[str] = [
+    "Confirm operator is intentionally reviewing autonomy level 0 -> 1.",
+    "Confirm no order window is open (IBKR_ALLOW_ORDERS=false, rules.enforced=false).",
+    "Confirm safety flags remain locked throughout.",
+    "Confirm fresh connected evidence from autonomy-status --refresh-evidence is READY.",
+    "Confirm clean cycles are strict-valid and within the required time window.",
+    "Confirm this promotion plan does not itself change any config.",
+    "Confirm rollback procedure is understood before any manual change.",
+]
+
+_MANUAL_PROMOTION_STEPS: list[str] = [
+    "1. Locate the autonomy-level definition in docs/AUTONOMY_CRITERIA.md.",
+    "2. Record the current autonomy level value (expected: 0).",
+    "3. Apply the manual change from level 0 to level 1 ONLY after operator approval.",
+    "4. Do NOT enable IBKR_ALLOW_ORDERS — keep it false.",
+    "5. Do NOT enable rules.enforced — keep it false.",
+    "6. If the local control component requires restart/reload, perform it now.",
+    "7. Immediately run post-promotion validation (see validation steps below).",
+]
+
+_MANUAL_ROLLBACK_STEPS: list[str] = [
+    "1. Revert autonomy level back to 0 in docs/AUTONOMY_CRITERIA.md.",
+    "2. Keep IBKR_ALLOW_ORDERS=false — do not enable.",
+    "3. Keep rules.enforced=false — do not enable.",
+    "4. Restart/reload the local control component if changed.",
+    "5. Run ibkr-operator doctor.",
+    "6. Run ibkr-operator kpi.",
+    "7. Run ibkr-operator autonomy-status --refresh-evidence.",
+    "8. Run ibkr-operator autonomy-review.",
+    "9. Export rollback evidence using ibkr-operator autonomy-promotion-plan --export.",
+]
+
+_POST_PROMOTION_VALIDATION_STEPS: list[str] = [
+    "1. Run ibkr-operator doctor — must PASS.",
+    "2. Run ibkr-operator kpi — must be HOLD or better, never NO-GO.",
+    "3. Run ibkr-operator autonomy-status — must show current level 1.",
+    "4. Verify safety flags are still locked.",
+    "5. Verify no order window was opened.",
+    "6. Verify no positions changed (compare to pre-promotion snapshot).",
+    "7. Verify no active alerts.",
+    "8. Verify no broker mutation evidence in guard-state.json.",
+]
+
+_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not open an order window.",
+    "This command did not call any no-order endpoints (no /order calls).",
+    "This command did not read H1 token.",
+    "This command did not place, modify, cancel, or transmit any order.",
+    "This command did not enable IBKR_ALLOW_ORDERS.",
+    "This command did not enable rules.enforced.",
+]
+
+
+def _run_autonomy_promotion_plan(target_level: str = "1") -> dict:
+    """Build a manual autonomy-promotion plan (Step 15M).
+
+    Read-only advisory/procedural artifact. Never changes config or enables trading.
+    Always runs fresh connected evidence (refresh_evidence=True).
+
+    Args:
+        target_level: Target autonomy level (default "1").
+
+    Returns:
+        Dict with plan_status (HOLD | READY_FOR_MANUAL_DECISION | NO_GO),
+        all backing evidence, manual steps, and explicit non-actions.
+    """
+    import hashlib
+    import json as _json
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    plan_id = f"promotion-plan-{ts_file}"
+
+    # ------------------------------------------------------------------
+    # 1. Git metadata
+    # ------------------------------------------------------------------
+    git = _git_metadata(BRIDGE_DIR)
+
+    # ------------------------------------------------------------------
+    # 2. Fresh readiness evidence (always refresh)
+    # ------------------------------------------------------------------
+    autonomy_status: dict = {}
+    autonomy_review: dict = {}
+    status_error = None
+    review_error = None
+
+    try:
+        autonomy_status = _run_autonomy_status(refresh_evidence=True)
+    except Exception as e:
+        autonomy_status = {"_error": str(e)[:200], "recommendation": "ERROR"}
+        status_error = str(e)[:200]
+
+    try:
+        autonomy_review = _run_autonomy_review(target_level=target_level, refresh_evidence=True)
+    except Exception as e:
+        autonomy_review = {"_error": str(e)[:200], "review_status": "ERROR"}
+        review_error = str(e)[:200]
+
+    # ------------------------------------------------------------------
+    # 3. Extract evidence from autonomy-status
+    # ------------------------------------------------------------------
+    as_recommendation = autonomy_status.get("recommendation", "ERROR")
+    current_level = autonomy_status.get("current_autonomy_level", "0")
+    clean_cycles_observed = autonomy_status.get("clean_cycles_observed", 0)
+    clean_cycles_required = autonomy_status.get("clean_cycles_required", _CLEAN_CYCLES_REQUIRED)
+    latest_clean_ts = autonomy_status.get("latest_clean_cycle_timestamp")
+    doctor_verdict = autonomy_status.get("doctor_verdict", "UNKNOWN")
+    kpi_verdict = autonomy_status.get("kpi_verdict", "UNKNOWN")
+    bridge_connected = autonomy_status.get("ibkr_connected", None)
+    bridge_reachable = autonomy_status.get("bridge_reachable", False)
+    market_data_status = autonomy_status.get("market_data_status", "unknown")
+    fx_status = autonomy_status.get("fx_status", "unknown")
+    safety_locked = autonomy_status.get("safety_locked", False)
+    active_alert_count = autonomy_status.get("active_alert_count", 0)
+    reconciliation_passed = autonomy_status.get("reconciliation_passed", None)
+    env_allow_orders = autonomy_status.get("env_IBKR_ALLOW_ORDERS", "?")
+    rules_enforced = autonomy_status.get("rules_enforced", "?")
+    system_locked = autonomy_status.get("system_locked", None)
+
+    readiness_export_path = None
+    as_exports = autonomy_status.get("evidence_exports", [])
+    if as_exports:
+        readiness_export_path = as_exports[0]
+
+    # ------------------------------------------------------------------
+    # 4. Extract evidence from autonomy-review
+    # ------------------------------------------------------------------
+    review_status = autonomy_review.get("review_status", "ERROR")
+    review_export_path = autonomy_review.get("_export_path")
+
+    # ------------------------------------------------------------------
+    # 5. Forbidden endpoint scan
+    # ------------------------------------------------------------------
+    scan_result = _scan_forbidden_endpoints()
+    scan_ok = scan_result.get("ok", True)
+    scan_violations = scan_result.get("violations", [])
+
+    # ------------------------------------------------------------------
+    # 6. Compute plan_status
+    # ------------------------------------------------------------------
+    blockers: list[dict] = []
+
+    # --- NO-GO conditions ---
+    if not safety_locked:
+        blockers.append({"severity": "NO-GO", "check": "safety_unlocked",
+                         "detail": "Safety flags are not locked"})
+
+    if env_allow_orders == "true":
+        blockers.append({"severity": "NO-GO", "check": "orders_enabled",
+                         "detail": "IBKR_ALLOW_ORDERS is true — must be false"})
+
+    if rules_enforced == "true":
+        blockers.append({"severity": "NO-GO", "check": "rules_enforced",
+                         "detail": "rules.enforced is true — must be false"})
+
+    if not bridge_reachable and bridge_connected is not True:
+        blockers.append({"severity": "NO-GO", "check": "bridge_unreachable",
+                         "detail": "IBKR bridge is unreachable"})
+
+    if doctor_verdict == "FAIL":
+        # Only NO-GO if non-H1 failures exist
+        blockers.append({"severity": "NO-GO", "check": "doctor_fail",
+                         "detail": "Doctor non-H1 checks failed"})
+
+    if kpi_verdict == "NO-GO":
+        blockers.append({"severity": "NO-GO", "check": "kpi_nogo",
+                         "detail": "KPI dashboard reports NO-GO"})
+
+    if active_alert_count > 0:
+        blockers.append({"severity": "NO-GO", "check": "active_alerts",
+                         "detail": f"{active_alert_count} active alert(s)"})
+
+    if reconciliation_passed is False:
+        blockers.append({"severity": "NO-GO", "check": "reconciliation_failed",
+                         "detail": "Reconciliation check(s) failed"})
+
+    if not scan_ok:
+        blockers.append({"severity": "NO-GO", "check": "forbidden_endpoint_violation",
+                         "detail": f"{len(scan_violations)} forbidden endpoint(s) in source"})
+
+    # Check for order endpoint usage in autonomy-status / review source
+    _source_checks = _scan_source_for_order_usage()
+    if not _source_checks.get("ok", True):
+        blockers.append({"severity": "NO-GO", "check": "source_order_usage",
+                         "detail": "Order endpoint references found in operator source"})
+
+    # Check for H1 token reads
+    _h1_checks = _scan_source_for_h1_usage()
+    if not _h1_checks.get("ok", True):
+        blockers.append({"severity": "NO-GO", "check": "h1_token_read",
+                         "detail": "H1 token read evidence detected"})
+
+    # --- HOLD conditions (only if no NO-GO) ---
+    hold_reasons: list[dict] = []
+
+    if current_level != "0":
+        hold_reasons.append({"severity": "HOLD", "check": "autonomy_not_level_zero",
+                             "detail": f"Current level is {current_level}, promotion only from level 0"})
+
+    if target_level != "1":
+        hold_reasons.append({"severity": "HOLD", "check": "invalid_target_level",
+                             "detail": f"Target level {target_level} is not '1'"})
+
+    if as_recommendation == "HOLD":
+        hold_reasons.append({"severity": "HOLD", "check": "autonomy_status_hold",
+                             "detail": "Autonomy-status recommendation is HOLD"})
+
+    if as_recommendation == "ERROR":
+        hold_reasons.append({"severity": "HOLD", "check": "autonomy_status_error",
+                             "detail": f"Autonomy-status failed: {status_error or 'unknown'}"})
+
+    if review_status == "HOLD":
+        hold_reasons.append({"severity": "HOLD", "check": "autonomy_review_hold",
+                             "detail": "Autonomy-review status is HOLD"})
+
+    if review_status == "ERROR":
+        hold_reasons.append({"severity": "HOLD", "check": "autonomy_review_error",
+                             "detail": f"Autonomy-review failed: {review_error or 'unknown'}"})
+
+    if clean_cycles_observed < clean_cycles_required:
+        hold_reasons.append({"severity": "HOLD", "check": "insufficient_clean_cycles",
+                             "detail": f"{clean_cycles_observed}/{clean_cycles_required} clean cycles"})
+
+    if bridge_connected is False:
+        hold_reasons.append({"severity": "HOLD", "check": "ibkr_disconnected",
+                             "detail": "IBKR Gateway is not connected"})
+
+    if market_data_status == "unavailable":
+        hold_reasons.append({"severity": "HOLD", "check": "market_data_unavailable",
+                             "detail": "Market data unavailable"})
+    elif market_data_status == "stale":
+        hold_reasons.append({"severity": "HOLD", "check": "market_data_stale",
+                             "detail": "Market data is stale"})
+
+    if fx_status == "unavailable":
+        hold_reasons.append({"severity": "HOLD", "check": "fx_unavailable",
+                             "detail": "FX rate unavailable when required"})
+    elif fx_status == "stale":
+        hold_reasons.append({"severity": "HOLD", "check": "fx_stale",
+                             "detail": "FX rate is stale"})
+
+    if doctor_verdict not in ("PASS", "UNKNOWN", "ERROR"):
+        hold_reasons.append({"severity": "HOLD", "check": "doctor_not_pass",
+                             "detail": f"Doctor verdict is {doctor_verdict}"})
+
+    # --- Compute final plan_status ---
+    has_nogo = any(b["severity"] == "NO-GO" for b in blockers)
+    has_hold = any(r["severity"] == "HOLD" for r in hold_reasons)
+
+    if has_nogo:
+        plan_status = "NO_GO"
+    elif has_hold:
+        plan_status = "HOLD"
+    elif (as_recommendation == "READY_FOR_MANUAL_REVIEW"
+          and review_status == "READY_FOR_OPERATOR_REVIEW"
+          and current_level == "0"
+          and target_level == "1"
+          and clean_cycles_observed >= clean_cycles_required
+          and doctor_verdict == "PASS"
+          and kpi_verdict not in ("NO-GO", "ERROR")
+          and bridge_connected is True
+          and market_data_status == "available"
+          and fx_status in ("available", "not_required")
+          and active_alert_count == 0
+          and reconciliation_passed is True
+          and safety_locked
+          and env_allow_orders == "false"
+          and rules_enforced == "false"
+          and scan_ok):
+        plan_status = "READY_FOR_MANUAL_DECISION"
+    else:
+        plan_status = "HOLD"
+
+    all_blockers = blockers + hold_reasons
+
+    # ------------------------------------------------------------------
+    # 7. Evidence hash (tamper-evident)
+    # ------------------------------------------------------------------
+    hashable = {
+        "current_autonomy_level": current_level,
+        "target_autonomy_level": target_level,
+        "plan_status": plan_status,
+        "clean_cycles_observed": clean_cycles_observed,
+        "clean_cycles_required": clean_cycles_required,
+        "safety_locked": safety_locked,
+        "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+        "rules_enforced": rules_enforced,
+        "bridge_connected": bridge_connected,
+        "bridge_reachable": bridge_reachable,
+        "active_alert_count": active_alert_count,
+        "reconciliation_passed": reconciliation_passed,
+        "autonomy_status_recommendation": as_recommendation,
+        "autonomy_review_status": review_status,
+        "doctor_verdict": doctor_verdict,
+        "kpi_verdict": kpi_verdict,
+        "market_data_status": market_data_status,
+        "fx_status": fx_status,
+        "forbidden_endpoint_scan_ok": scan_ok,
+        "blocker_count": len(all_blockers),
+        "blocker_checks": sorted(b["check"] for b in all_blockers),
+        "git_commit": git.get("commit", "?"),
+        "auto_promotion_performed": False,
+        "no_broker_mutation": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 8. Export to disk
+    # ------------------------------------------------------------------
+    _AUTONOMY_PROMOTION_PLANS_DIR.mkdir(parents=True, exist_ok=True)
+    export_path = _AUTONOMY_PROMOTION_PLANS_DIR / f"{plan_id}.json"
+
+    # ------------------------------------------------------------------
+    # 9. Build result
+    # ------------------------------------------------------------------
+    result = {
+        "command": "ibkr-operator autonomy-promotion-plan",
+        "advisory": (
+            "Read-only manual promotion procedure specification (Step 15M). "
+            "This artifact is advisory/procedural only. It does NOT change "
+            "autonomy level, enable trading, or mutate broker state. "
+            "All actions must be performed manually by the operator."
+        ),
+        "timestamp": ts_str,
+        "plan_id": plan_id,
+        "git": {
+            "branch": git.get("branch", "?"),
+            "commit": git.get("commit", "?"),
+            "tag": git.get("tag", "?"),
+        },
+        "current_autonomy_level": current_level,
+        "target_autonomy_level": target_level,
+        "plan_status": plan_status,
+        "operator_decision_required": True,
+        "auto_promotion_performed": False,
+        "config_changed": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "readiness_export_path": readiness_export_path,
+        "review_export_path": review_export_path,
+        "clean_cycles_observed": clean_cycles_observed,
+        "clean_cycles_required": clean_cycles_required,
+        "latest_clean_cycle_timestamp": latest_clean_ts,
+        "doctor_verdict": doctor_verdict,
+        "kpi_verdict": kpi_verdict,
+        "autonomy_status_recommendation": as_recommendation,
+        "autonomy_review_status": review_status,
+        "bridge_connected": bridge_connected,
+        "bridge_reachable": bridge_reachable,
+        "market_data_status": market_data_status,
+        "fx_status": fx_status,
+        "safety_flags": {
+            "safety_locked": safety_locked,
+            "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+            "rules_enforced": rules_enforced,
+            "system_locked": system_locked,
+        },
+        "active_alert_count": active_alert_count,
+        "reconciliation_passed": reconciliation_passed,
+        "forbidden_endpoint_scan": {
+            "ok": scan_ok,
+            "violations": scan_violations,
+        },
+        "blockers": all_blockers,
+        "manual_preconditions": [
+            {"step": idx + 1, "precondition": p}
+            for idx, p in enumerate(_MANUAL_PROMOTION_PRECONDITIONS)
+        ],
+        "manual_promotion_steps": [
+            {"step": idx + 1, "action": s}
+            for idx, s in enumerate(_MANUAL_PROMOTION_STEPS)
+        ],
+        "manual_rollback_steps": [
+            {"step": idx + 1, "action": s}
+            for idx, s in enumerate(_MANUAL_ROLLBACK_STEPS)
+        ],
+        "post_promotion_validation_steps": [
+            {"step": idx + 1, "action": s}
+            for idx, s in enumerate(_POST_PROMOTION_VALIDATION_STEPS)
+        ],
+        "explicit_non_actions": _EXPLICIT_NON_ACTIONS,
+        "evidence_hash": evidence_hash,
+        "_export_path": str(export_path),
+    }
+
+    # Write export
+    try:
+        with open(export_path, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        pass
+
+    return result
+
+
+def _scan_source_for_order_usage() -> dict:
+    """Scan _run_autonomy_promotion_plan source for order endpoint usage."""
+    import inspect
+    forbidden = ["/order/preflight", "/order/approve", "/order/submit",
+                 "placeOrder", "cancelOrder"]
+    found = []
+    try:
+        src = inspect.getsource(_run_autonomy_promotion_plan)
+        for line in src.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            for pattern in forbidden:
+                if pattern in stripped:
+                    found.append({"pattern": pattern, "line": stripped[:100]})
+    except Exception:
+        pass
+    return {"ok": len(found) == 0, "found": found}
+
+
+def _scan_source_for_h1_usage() -> dict:
+    """Scan _run_autonomy_promotion_plan source for H1 token references."""
+    import inspect
+    forbidden = ["_run_h1_canary(", "sudo ", "/etc/ibkr-bridge/h1_token",
+                 "H1_APPROVAL_TOKEN"]
+    found = []
+    try:
+        src = inspect.getsource(_run_autonomy_promotion_plan)
+        for line in src.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            for pattern in forbidden:
+                if pattern in stripped:
+                    found.append({"pattern": pattern, "line": stripped[:100]})
+    except Exception:
+        pass
+    return {"ok": len(found) == 0, "found": found}
+
+
+def _print_promotion_plan(result: dict) -> None:
+    """Print autonomy promotion plan in human-readable format."""
+    ps = result.get("plan_status", "HOLD")
+    if ps == "READY_FOR_MANUAL_DECISION":
+        ps_color = GREEN
+        ps_text = f"{GREEN}READY_FOR_MANUAL_DECISION{RESET}"
+    elif ps == "NO_GO":
+        ps_color = RED
+        ps_text = f"{RED}NO_GO{RESET}"
+    else:
+        ps_color = RESET
+        ps_text = f"{RESET}HOLD{RESET}"
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Autonomy Level 0 → 1 Promotion Plan (Step 15M){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+
+    print(f"  Plan ID:           {result.get('plan_id', '?')}")
+    print(f"  Timestamp:         {result.get('timestamp', '?')}")
+    print(f"  Git:               {result['git'].get('branch', '?')} @ "
+          f"{result['git'].get('commit', '?')}")
+    print()
+
+    print(f"  {BOLD}Plan Status: {ps_text}{RESET}\n")
+
+    print(f"  {BOLD}Autonomy Levels{RESET}")
+    print(f"    Current:          {result.get('current_autonomy_level', '?')}")
+    print(f"    Target:           {result.get('target_autonomy_level', '?')}")
+    print()
+
+    print(f"  {BOLD}Evidence{RESET}")
+    print(f"    Clean Cycles:     {result.get('clean_cycles_observed', 0)}/"
+          f"{result.get('clean_cycles_required', 5)}")
+    print(f"    Doctor:           {result.get('doctor_verdict', '?')}")
+    print(f"    KPI:              {result.get('kpi_verdict', '?')}")
+    print(f"    Autonomy-Status:  {result.get('autonomy_status_recommendation', '?')}")
+    print(f"    Autonomy-Review:  {result.get('autonomy_review_status', '?')}")
+    print()
+
+    sf = result.get("safety_flags", {})
+    print(f"  {BOLD}Safety{RESET}")
+    print(f"    Locked:           {sf.get('safety_locked', '?')}")
+    print(f"    IBKR_ALLOW_ORDERS:{sf.get('env_IBKR_ALLOW_ORDERS', '?')}")
+    print(f"    rules.enforced:   {sf.get('rules_enforced', '?')}")
+    print()
+
+    print(f"  {BOLD}Connection{RESET}")
+    print(f"    Bridge Connected: {result.get('bridge_connected', '?')}")
+    print(f"    Market Data:      {result.get('market_data_status', '?')}")
+    print(f"    FX:               {result.get('fx_status', '?')}")
+    print()
+
+    print(f"  {BOLD}Alerts{RESET}")
+    print(f"    Active:           {result.get('active_alert_count', 0)}")
+    print(f"    Reconciliation:   {result.get('reconciliation_passed', '?')}")
+    print()
+
+    blockers = result.get("blockers", [])
+    if blockers:
+        print(f"  {BOLD}Blockers ({len(blockers)}){RESET}")
+        for b in blockers:
+            sev = b["severity"]
+            sev_color = RED if sev == "NO-GO" else RESET
+            print(f"    {sev_color}{sev:<6}{RESET} {b['check']}: {b.get('detail', '?')}")
+        print()
+
+    print(f"  {BOLD}Operator Decision Required: YES{RESET}")
+    print(f"  Auto-Promotion:    {result.get('auto_promotion_performed', False)}")
+    print(f"  Config Changed:    {result.get('config_changed', False)}")
+    print(f"  Broker Mutation:   {not result.get('no_broker_mutation', True)}")
+    print()
+
+    pre = result.get("manual_preconditions", [])
+    if pre:
+        print(f"  {BOLD}Manual Preconditions{RESET}")
+        for p in pre:
+            print(f"    [{p['step']}]  {p['precondition']}")
+        print()
+
+    steps = result.get("manual_promotion_steps", [])
+    if steps:
+        print(f"  {BOLD}Manual Promotion Steps{RESET}")
+        for s in steps:
+            print(f"    {s['action']}")
+        print()
+
+    rb = result.get("manual_rollback_steps", [])
+    if rb:
+        print(f"  {BOLD}Manual Rollback Steps{RESET}")
+        for s in rb:
+            print(f"    {s['action']}")
+        print()
+
+    na = result.get("explicit_non_actions", [])
+    if na:
+        print(f"  {BOLD}Explicit Non-Actions{RESET}")
+        for a in na:
+            print(f"    ✗  {a}")
+        print()
+
+    print(f"  Evidence Hash:     {result.get('evidence_hash', '?')[:16]}...")
+    print()
+    print(f"  {BOLD}══════════════════════════════════════════════════{RESET}")
+
 
 def _compute_evidence_hash(data: object) -> str:
     """Compute a SHA-256 hash of canonicalised review evidence.
@@ -6778,6 +7327,34 @@ def main() -> None:
     pvp.add_argument("--export", action="store_true",
                       help="Write output to ~/.openclaw/autonomy-review/")
 
+    # Step 15M — Manual level-1 promotion plan (advisory/procedural only)
+    app = sub.add_parser("autonomy-promotion-plan",
+                         help="Manual level-1 promotion procedure/spec (Step 15M)")
+    app.add_argument("--target-level", type=str, default="1",
+                      help="Target autonomy level (default: 1)")
+    app.add_argument("--json", action="store_true",
+                      help="Output raw JSON only")
+    app.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/autonomy-promotion-plans/")
+    # Alias
+    ppp = sub.add_parser("promotion-plan",
+                         help="Alias for autonomy-promotion-plan")
+    ppp.add_argument("--target-level", type=str, default="1",
+                      help="Target autonomy level (default: 1)")
+    ppp.add_argument("--json", action="store_true",
+                      help="Output raw JSON only")
+    ppp.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/autonomy-promotion-plans/")
+    # Alias
+    l1p = sub.add_parser("level1-promotion-plan",
+                         help="Alias for autonomy-promotion-plan")
+    l1p.add_argument("--target-level", type=str, default="1",
+                      help="Target autonomy level (default: 1)")
+    l1p.add_argument("--json", action="store_true",
+                      help="Output raw JSON only")
+    l1p.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/autonomy-promotion-plans/")
+
     args = parser.parse_args()
 
     if args.command == "daily-report":
@@ -7013,6 +7590,19 @@ def main() -> None:
             if ep:
                 print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result["review_status"] == "READY_FOR_OPERATOR_REVIEW" else 1
+        sys.exit(exit_code)
+
+    if args.command in ("autonomy-promotion-plan", "promotion-plan", "level1-promotion-plan"):
+        result = _run_autonomy_promotion_plan(target_level=args.target_level)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_promotion_plan(result)
+        if args.export:
+            ep = result.get("_export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result["plan_status"] == "READY_FOR_MANUAL_DECISION" else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

@@ -129,6 +129,9 @@ def _make_lightweight_clean() -> dict:
         },
         "strategy": {"strategy_exists": True, "autonomy_exists": True},
         "liveness": {"oom_detected": False, "oom_detail": "no OOM", "n_restarts": 0, "k17_ok": True},
+        # Step 15P: session-aware fields
+        "market_session_status": {"session": "rth", "data_availability": "available", "reason": "Inside RTH", "is_tradable_day": True, "in_rth": True, "market_date_et": "2026-06-23"},
+        "market_data_runtime_ok": True,
     }
 
 
@@ -829,8 +832,10 @@ class TestMarketSnapshotTimeout:
         assert result["recommendation"] == "HOLD", \
             f"Expected HOLD when market data times out, got {result['recommendation']}"
         blockers = {b["check"] for b in result["blockers"]}
-        assert "market_data_unavailable" in blockers, \
-            f"Expected market_data_unavailable blocker, got {blockers}"
+        # Step 15P: timeout blocker is now session-aware
+        timeout_checks = blockers & {"market_data_not_ready_for_session", "market_data_unavailable"}
+        assert len(timeout_checks) >= 1, \
+            f"Expected session-aware timeout blocker, got {blockers}"
 
     # --- Test: timeout does not call /order* ---
 

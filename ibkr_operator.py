@@ -4049,6 +4049,282 @@ _CANDIDATE_ALLOWED_SYMBOLS: frozenset[str] = frozenset({
 _LIGHTWEIGHT_DOCTOR_TIMEOUT = 8.0  # seconds for lightweight checks
 
 
+# ---------------------------------------------------------------------------
+# Step 15P — Session-aware readiness helpers
+# ---------------------------------------------------------------------------
+
+def _determine_market_session_status() -> dict:
+    """Determine current market session status (Step 15P).
+
+    Wraps monitor.rth_check() with normalized output fields:
+      - session: rth | pre_market | post_market | closed | unknown
+      - data_availability: available | unavailable | unknown
+      - reason: human-readable explanation
+      - is_tradable_day: bool
+      - in_rth: bool
+      - market_date_et: str
+    """
+    result: dict[str, Any] = {
+        "session": "unknown",
+        "data_availability": "unknown",
+        "reason": "session check unavailable",
+        "is_tradable_day": False,
+        "in_rth": False,
+        "market_date_et": "",
+    }
+    try:
+        from monitor import rth_check as _rth_check
+        rt_info = _rth_check()
+        result["is_tradable_day"] = rt_info.get("is_tradable_day", False)
+        result["in_rth"] = rt_info.get("in_rth", False)
+        result["reason"] = rt_info.get("reason", "?")
+        result["market_date_et"] = rt_info.get("market_date_et", "")
+
+        if rt_info.get("in_rth"):
+            result["session"] = "rth"
+        elif rt_info.get("is_tradable_day"):
+            # Pre-market or post-market
+            now_et_str = rt_info.get("reason", "")
+            if "Pre-market" in now_et_str:
+                result["session"] = "pre_market"
+            else:
+                result["session"] = "post_market"
+        else:
+            result["session"] = "closed"
+
+        # Data availability: RTH = data expected, pre/post/closed = may be thin
+        if result["session"] == "rth":
+            result["data_availability"] = "available"
+        else:
+            result["data_availability"] = "unavailable"
+    except Exception as e:
+        result["reason"] = f"rth_check error: {str(e)[:120]}"
+
+    return result
+
+
+def _classify_market_data_unavailability(
+    snapshot: dict,
+    session_info: dict | None = None,
+) -> str:
+    """Classify why market data is unavailable (Step 15P).
+
+    Returns one of:
+      market_closed — session is closed (weekend/holiday)
+      pre_market_no_data — pre-market, thin/no data expected
+      post_market_no_data — after hours, thin/no data expected
+      market_data_timeout — bounded timeout returned
+      ibkr_disconnected — bridge not connected
+      stale_data — data is stale (>60s)
+      unknown — cannot determine
+
+    The returned string is used as market_data_unavailable_reason.
+    """
+    detail = snapshot.get("detail", "")
+    ok = snapshot.get("ok", False)
+    available = snapshot.get("market_data_available", False)
+    stale = snapshot.get("stale", True)
+
+    # Check for timeout
+    if not ok and "market_data_timeout" in (detail or ""):
+        return "market_data_timeout"
+
+    # Check for IBKR disconnected
+    if not ok and ("not connected" in (detail or "").lower() or "disconnected" in (detail or "").lower()):
+        return "ibkr_disconnected"
+
+    # Check for stale data
+    if available and stale:
+        return "stale_data"
+
+    # If market data is missing and we have session info, classify by session
+    if not available and session_info:
+        session = session_info.get("session", "unknown")
+        if session == "closed":
+            return "market_closed"
+        elif session == "pre_market":
+            return "pre_market_no_data"
+        elif session == "post_market":
+            return "post_market_no_data"
+
+    # Fallback: check detail string
+    if not ok:
+        detail_lower = (detail or "").lower()
+        if "all price fields are null" in detail_lower:
+            if session_info and session_info.get("session") in ("pre_market", "post_market"):
+                return "pre_market_no_data" if session_info["session"] == "pre_market" else "post_market_no_data"
+            return "unknown"
+
+    # If data is available and not stale, there's no unavailability
+    if available and not stale:
+        return "none"
+
+    return "unknown"
+
+
+def _build_session_aware_market_blocker(
+    market_data_status: str,
+    snapshot_detail: str,
+    session_info: dict,
+    ibkr_connected: bool | None,
+    market_data_runtime_ok: bool,
+) -> dict | None:
+    """Build the correct session-aware market data blocker (Step 15P).
+
+    Returns a blocker dict with appropriate severity and check name,
+    or None if no blocker is needed.
+
+    Rules:
+      - Disconnected bridge -> HOLD ibkr_disconnected
+      - Closed/pre-market with bounded timeout -> HOLD market_data_not_ready_for_session
+      - Runtime error (not bounded timeout) -> HOLD market_data_runtime_error
+      - Unavailable during RTH -> HOLD market_data_unavailable
+      - Stale data -> HOLD market_data_stale
+    """
+    if ibkr_connected is False:
+        return {"severity": "HOLD", "check": "ibkr_disconnected",
+                 "detail": "IBKR Gateway is not connected"}
+    if ibkr_connected is None:
+        return {"severity": "HOLD", "check": "ibkr_disconnected",
+                 "detail": "Cannot determine IBKR connection state"}
+
+    if not market_data_runtime_ok:
+        return {"severity": "HOLD", "check": "market_data_runtime_error",
+                 "detail": f"Market data fetch runtime error: {snapshot_detail[:120]}"}
+
+    # Market data available -> no blocker
+    if market_data_status == "available":
+        return None
+
+    # Market data stale
+    if market_data_status == "stale":
+        return {"severity": "HOLD", "check": "market_data_stale",
+                 "detail": "Market data is stale (>60s)"}
+
+    # Market data unavailable -> check session
+    session = session_info.get("session", "unknown")
+    if session in ("closed", "pre_market", "post_market"):
+        unreason = _classify_market_data_unavailability(
+            {"ok": False, "market_data_available": False, "detail": snapshot_detail},
+            session_info,
+        )
+        return {
+            "severity": "HOLD",
+            "check": "market_data_not_ready_for_session",
+            "detail": (
+                f"Market data unavailable — {session} "
+                f"({session_info.get('reason', '?')}). "
+                f"Data availability: {unreason}. "
+                f"This is a HOLD, not a runtime defect."
+            ),
+        }
+
+    # Market data unavailable during RTH — classify the reason
+    if market_data_status == "unknown":
+        # Non-refresh path: no market data was fetched; don't flag as blocker
+        return None
+
+    # Classify why the data is unavailable during RTH
+    unreason = _classify_market_data_unavailability(
+        {"ok": False, "market_data_available": False, "detail": snapshot_detail},
+        session_info,
+    )
+    return {"severity": "HOLD", "check": "market_data_unavailable",
+             "detail": f"Market data unavailable during trading session: {unreason} — {snapshot_detail[:120]}"}
+
+
+def _fetch_market_snapshot_with_session(symbol: str = "AAPL") -> dict:
+    """Fetch market snapshot with session-aware classification (Step 15P).
+
+    Returns a dict with snapshot data plus session-aware fields:
+      - market_session_status: session info dict from rth_check()
+      - market_data_unavailable_reason: classification string
+      - market_data_runtime_ok: True if bounded timeout returned cleanly
+      - market_data_required_for_readiness: True
+      - market_data_blocks_promotion: True if data unavailable during RTH
+    """
+    import urllib.request
+    import json as _json
+
+    session_info = _determine_market_session_status()
+    result: dict[str, Any] = {
+        "market_session_status": session_info,
+        "market_data_unavailable_reason": "unknown",
+        "market_data_runtime_ok": True,
+        "market_data_required_for_readiness": True,
+        "market_data_blocks_promotion": False,
+        "snapshot": {},
+    }
+
+    try:
+        md_req = urllib.request.Request(
+            f"{BRIDGE_URL}/market/snapshot/{symbol}", method="GET")
+        with urllib.request.urlopen(md_req, timeout=10.0) as md_resp:
+            if md_resp.status == 200:
+                snapshot = _json.loads(md_resp.read().decode())
+            else:
+                snapshot = {"ok": False, "market_data_available": False,
+                            "detail": f"HTTP {md_resp.status}"}
+    except urllib.error.URLError as e:
+        # Connection refused / timeout -> runtime issue
+        result["market_data_runtime_ok"] = False
+        snapshot = {"ok": False, "market_data_available": False,
+                     "detail": f"bridge unreachable: {str(e)[:200]}"}
+    except Exception as e:
+        result["market_data_runtime_ok"] = False
+        snapshot = {"ok": False, "market_data_available": False,
+                     "detail": f"snapshot error: {str(e)[:200]}"}
+
+    result["snapshot"] = snapshot
+
+    # Classify unavailability
+    available = snapshot.get("market_data_available", False)
+    stale = snapshot.get("stale", True)
+
+    if available and not stale:
+        result["market_data_unavailable_reason"] = "none"
+        result["market_data_blocks_promotion"] = False
+    else:
+        unreason = _classify_market_data_unavailability(snapshot, session_info)
+        result["market_data_unavailable_reason"] = unreason
+
+        # Does it block promotion?
+        if unreason == "ibkr_disconnected":
+            result["market_data_blocks_promotion"] = True
+        elif unreason == "market_data_timeout":
+            # Bounded timeout during RTH = runtime issue -> blocks
+            # Bounded timeout outside RTH = expected -> doesn't block
+            if session_info.get("session") == "rth":
+                result["market_data_blocks_promotion"] = True
+            else:
+                result["market_data_blocks_promotion"] = False
+        elif unreason in ("market_closed", "pre_market_no_data", "post_market_no_data"):
+            result["market_data_blocks_promotion"] = False  # session expected
+        elif unreason == "stale_data":
+            result["market_data_blocks_promotion"] = True
+        else:
+            result["market_data_blocks_promotion"] = True
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+
+
+def _compute_unavailable_reason(
+    market_data_status: str,
+    snapshot_detail: str,
+    session_info: dict,
+) -> str:
+    """Compute market_data_unavailable_reason for result dict."""
+    if market_data_status == "available":
+        return "none"
+    return _classify_market_data_unavailability(
+        {"ok": False, "market_data_available": False, "detail": snapshot_detail},
+        session_info,
+    )
+
+
 def _collect_lightweight_evidence() -> dict:
     """Collect in-process evidence snapshot — fast, no subprocess, no sudo.
 
@@ -4306,6 +4582,13 @@ def _collect_lightweight_evidence() -> dict:
         "n_restarts": n_restarts,
         "k17_ok": k17_ok,
     }
+
+    # --- Step 15P: Session-aware readiness ---
+    session_info = _determine_market_session_status()
+    evidence["market_session_status"] = session_info
+    evidence["market_data_runtime_ok"] = None  # filled by heavier checks
+    evidence["market_data_required_for_readiness"] = True
+    evidence["market_data_blocks_promotion"] = None  # filled by heavier checks
 
     return evidence
 
@@ -6304,16 +6587,22 @@ def _run_autonomy_status(refresh_evidence: bool = False) -> dict:
         hold_reasons.append({"severity": "HOLD", "check": "insufficient_clean_cycles",
                              "detail": f"{clean_cycles_observed}/{clean_cycles_required} clean cycles in {_CLEAN_CYCLES_WINDOW_DAYS}-day window"})
 
-    if ibkr_connected is False:
-        hold_reasons.append({"severity": "HOLD", "check": "ibkr_disconnected",
-                             "detail": "IBKR Gateway is not connected"})
+    # --- Step 15P: Session-aware market data blocker ---
+    session_info = light_evidence.get("market_session_status", {})
+    if not session_info:
+        session_info = _determine_market_session_status()
+    snapshot_detail = str(latest_cand_data.get("market_data", {}).get("detail", ""))
+    market_runtime_ok = light_evidence.get("market_data_runtime_ok", True)
 
-    if market_data_status == "unavailable":
-        hold_reasons.append({"severity": "HOLD", "check": "market_data_unavailable",
-                             "detail": "Market data is unavailable"})
-    elif market_data_status == "stale":
-        hold_reasons.append({"severity": "HOLD", "check": "market_data_stale",
-                             "detail": "Market data is stale"})
+    md_blocker = _build_session_aware_market_blocker(
+        market_data_status=market_data_status,
+        snapshot_detail=snapshot_detail,
+        session_info=session_info,
+        ibkr_connected=ibkr_connected,
+        market_data_runtime_ok=market_runtime_ok is not False,
+    )
+    if md_blocker:
+        hold_reasons.append(md_blocker)
 
     if fx_status == "unavailable":
         hold_reasons.append({"severity": "HOLD", "check": "fx_unavailable",
@@ -6392,6 +6681,14 @@ def _run_autonomy_status(refresh_evidence: bool = False) -> dict:
         "fx_status": fx_status,
         "refresh_evidence": refresh_evidence,
         "candidate_evidence_age_seconds": round(candidate_evidence_age_seconds, 2) if candidate_evidence_age_seconds is not None else None,
+        # Step 15P: Session-aware fields
+        "market_session_status": session_info,
+        "market_data_unavailable_reason": _compute_unavailable_reason(
+            market_data_status, snapshot_detail, session_info
+        ),
+        "market_data_runtime_ok": market_runtime_ok is not False,
+        "market_data_required_for_readiness": True,
+        "market_data_blocks_promotion": md_blocker.get("check", "") not in ("market_data_not_ready_for_session", "") if md_blocker else False,
         **refreshed_fields,
         "blockers": all_blockers,
         "blocker_count": len(all_blockers),
@@ -6744,12 +7041,20 @@ def _run_autonomy_promotion_plan(target_level: str = "1") -> dict:
         hold_reasons.append({"severity": "HOLD", "check": "ibkr_disconnected",
                              "detail": "IBKR Gateway is not connected"})
 
-    if market_data_status == "unavailable":
-        hold_reasons.append({"severity": "HOLD", "check": "market_data_unavailable",
-                             "detail": "Market data unavailable"})
-    elif market_data_status == "stale":
-        hold_reasons.append({"severity": "HOLD", "check": "market_data_stale",
-                             "detail": "Market data is stale"})
+    # Step 15P: Session-aware market data blocker (instead of ad-hoc checks)
+    session_info_p = autonomy_status.get("market_session_status", {})
+    snapshot_detail_p = autonomy_status.get("market_data_unavailable_reason", "unknown")
+    market_runtime_ok_p = autonomy_status.get("market_data_runtime_ok", True)
+
+    md_blocker_p = _build_session_aware_market_blocker(
+        market_data_status=market_data_status,
+        snapshot_detail=snapshot_detail_p,
+        session_info=session_info_p,
+        ibkr_connected=bridge_connected,
+        market_data_runtime_ok=market_runtime_ok_p is not False,
+    )
+    if md_blocker_p:
+        hold_reasons.append(md_blocker_p)
 
     if fx_status == "unavailable":
         hold_reasons.append({"severity": "HOLD", "check": "fx_unavailable",
@@ -6868,6 +7173,12 @@ def _run_autonomy_promotion_plan(target_level: str = "1") -> dict:
         "bridge_reachable": bridge_reachable,
         "market_data_status": market_data_status,
         "fx_status": fx_status,
+        # Step 15P: Session-aware market data fields
+        "market_session_status": session_info_p,
+        "market_data_unavailable_reason": snapshot_detail_p,
+        "market_data_runtime_ok": market_runtime_ok_p,
+        "market_data_required_for_readiness": True,
+        "market_data_blocks_promotion": md_blocker_p.get("check", "") not in ("market_data_not_ready_for_session", "") if md_blocker_p else False,
         "safety_flags": {
             "safety_locked": safety_locked,
             "env_IBKR_ALLOW_ORDERS": env_allow_orders,
@@ -7324,9 +7635,20 @@ def _run_autonomy_review(target_level: str = "1", refresh_evidence: bool = False
         hold_reasons.append({"severity": "HOLD", "check": "ibkr_disconnected",
                              "detail": "IBKR Gateway is not connected"})
 
-    if market_data_status == "unavailable":
-        hold_reasons.append({"severity": "HOLD", "check": "market_data_unavailable",
-                             "detail": "Market data unavailable"})
+    # Step 15P: Session-aware market data blocker
+    session_info_r = autonomy_status.get("market_session_status", {})
+    snapshot_detail_r = autonomy_status.get("market_data_unavailable_reason", "unknown")
+    market_runtime_ok_r = autonomy_status.get("market_data_runtime_ok", True)
+
+    md_blocker_r = _build_session_aware_market_blocker(
+        market_data_status=market_data_status,
+        snapshot_detail=snapshot_detail_r,
+        session_info=session_info_r,
+        ibkr_connected=ibkr_connected,
+        market_data_runtime_ok=market_runtime_ok_r is not False,
+    )
+    if md_blocker_r:
+        hold_reasons.append(md_blocker_r)
 
     if fx_status == "unavailable":
         hold_reasons.append({"severity": "HOLD", "check": "fx_unavailable",
@@ -7411,6 +7733,10 @@ def _run_autonomy_review(target_level: str = "1", refresh_evidence: bool = False
             "kpi_verdict": autonomy_status.get("kpi_verdict", "?"),
             "latest_candidate_verdict": autonomy_status.get("latest_candidate_verdict", "?"),
             "market_data_status": autonomy_status.get("market_data_status", "?"),
+            "market_session_status": autonomy_status.get("market_session_status", {}),
+            "market_data_unavailable_reason": autonomy_status.get("market_data_unavailable_reason", "unknown"),
+            "market_data_runtime_ok": autonomy_status.get("market_data_runtime_ok", True),
+            "market_data_blocks_promotion": autonomy_status.get("market_data_blocks_promotion", False),
             "fx_status": autonomy_status.get("fx_status", "?"),
             "active_alert_count": autonomy_status.get("active_alert_count", 0),
             "reconciliation_passed": autonomy_status.get("reconciliation_passed"),
@@ -7433,6 +7759,12 @@ def _run_autonomy_review(target_level: str = "1", refresh_evidence: bool = False
         "ibkr_connected": ibkr_connected,
         "market_data_status": market_data_status,
         "fx_status": fx_status,
+        # Step 15P: Session-aware market data fields
+        "market_session_status": session_info_r,
+        "market_data_unavailable_reason": snapshot_detail_r,
+        "market_data_runtime_ok": market_runtime_ok_r,
+        "market_data_required_for_readiness": True,
+        "market_data_blocks_promotion": md_blocker_r.get("check", "") not in ("market_data_not_ready_for_session", "") if md_blocker_r else False,
         "active_alert_count": active_alert_count,
         "reconciliation_passed": reconciliation_passed,
         "blockers": all_blockers,

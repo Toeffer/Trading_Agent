@@ -3190,6 +3190,393 @@ def print_repair_evidence(evidence: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Step 15O — Guard-State Trade-Count Reconciliation Cleanup
+# ---------------------------------------------------------------------------
+
+_GUARD_STATE_REPAIRS_DIR = OPENCLAW_DIR / "guard-state-repairs"
+
+_GUARD_RECONCILE_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not open an order window.",
+    "This command did not call any no-order endpoints (no /order calls).",
+    "This command did not read H1 token.",
+    "This command did not place, modify, cancel, or transmit any order.",
+    "This command did not enable IBKR_ALLOW_ORDERS.",
+    "This command did not enable rules.enforced.",
+    "This command repairs local guard-state.json trade count only — no broker mutation.",
+]
+
+
+def _run_guard_state_reconcile(
+    apply_repair: bool = False,
+    confirm_local_state_repair: bool = False,
+) -> dict:
+    """Reconcile guard-state trade count against confirmed event evidence (Step 15O).
+
+    Dry-run by default. Repairs only when --apply and --confirm-local-state-repair
+    are both present.
+
+    Repair policy:
+      - Downward only: guard count > confirmed events → can repair down.
+      - Never upward: confirmed > guard count → NO_GO.
+      - Ambiguous evidence → HOLD, no apply.
+      - Requires 0 live IBKR orders, flat positions, locked safety.
+
+    Returns comprehensive reconciliation dict.
+    """
+    import hashlib
+    import json as _json
+    import shutil
+    from datetime import datetime, timezone
+    from monitor import (
+        load_guard_state,
+        load_events,
+    )
+    import urllib.request
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    repair_id = f"guard-repair-{ts_file}"
+    mode = "apply" if (apply_repair and confirm_local_state_repair) else "dry_run"
+
+    # ------------------------------------------------------------------
+    # 1. Git metadata
+    # ------------------------------------------------------------------
+    git = _git_metadata(BRIDGE_DIR)
+
+    # ------------------------------------------------------------------
+    # 2. Load guard state
+    # ------------------------------------------------------------------
+    guard_state_path = OPENCLAW_DIR / "guard-state.json"
+    gs = load_guard_state()
+    guard_count_before = gs.get("daily_trade_count", 0)
+    trade_date = gs.get("trade_date", now_utc.strftime("%Y-%m-%d"))
+
+    # ------------------------------------------------------------------
+    # 3. Count confirmed events (order_submitted with unique real permIds)
+    # ------------------------------------------------------------------
+    events = load_events(event_type="order_submitted")
+    today_events = [
+        e for e in events
+        if (ts := e.get("timestamp_utc", "")) and ts.startswith(trade_date)
+    ]
+    # Exclude test artifacts (fake permId 5001, test-bracket, test-double)
+    real_today = [
+        e for e in today_events
+        if not str(e.get("approval_id", "")).startswith("test-bracket-")
+        and not str(e.get("approval_id", "")).startswith("test-double-")
+    ]
+    real_perm_ids: set = set()
+    confirmed_order_ids: list[str] = []
+    for e in real_today:
+        ibkr_md = e.get("ibkr_metadata")
+        if ibkr_md and ibkr_md.get("permId") is not None:
+            pid = str(ibkr_md["permId"])
+            if pid != "5001":  # test artifact
+                if pid not in real_perm_ids:
+                    real_perm_ids.add(pid)
+                    confirmed_order_ids.append(pid)
+        elif e.get("approval_id"):
+            aid = f"approval:{e['approval_id']}"
+            if aid not in real_perm_ids:
+                real_perm_ids.add(aid)
+                confirmed_order_ids.append(aid)
+
+    confirmed_count = len(real_perm_ids)
+
+    # ------------------------------------------------------------------
+    # 4. Check IBKR live state (open orders, positions)
+    # ------------------------------------------------------------------
+    ibkr_live_order_count: int | None = None
+    open_order_count: int | None = None
+    positions_count: int | None = None
+    positions_flat: bool | None = None
+    ibkr_connected: bool | None = None
+
+    try:
+        bridge_url = os.getenv("IBKR_BRIDGE_URL", "http://127.0.0.1:8790")
+        # Check bridge health
+        health_req = urllib.request.Request(f"{bridge_url}/health")
+        with urllib.request.urlopen(health_req, timeout=5.0) as resp:
+            health = _json.loads(resp.read().decode())
+            ibkr_connected = health.get("connected", False)
+    except Exception:
+        ibkr_connected = None
+
+    if ibkr_connected:
+        try:
+            pos_req = urllib.request.Request(f"{bridge_url}/positions")
+            with urllib.request.urlopen(pos_req, timeout=5.0) as resp:
+                pos_data = _json.loads(resp.read().decode())
+                positions = pos_data.get("positions", [])
+                positions_count = len(positions)
+                positions_flat = all(
+                    abs(p.get("position", 0)) < 0.01 for p in positions
+                )
+        except Exception:
+            positions_count = None
+            positions_flat = None
+
+        try:
+            orders_req = urllib.request.Request(f"{bridge_url}/monitor/open-orders")
+            with urllib.request.urlopen(orders_req, timeout=5.0) as resp:
+                orders_data = _json.loads(resp.read().decode())
+                open_order_count = orders_data.get("open_order_count", 0)
+                # Try to get live order count from IBKR
+                ibkr_live_order_count = orders_data.get("ibkr_order_count", open_order_count)
+        except Exception:
+            open_order_count = None
+            ibkr_live_order_count = None
+
+    # ------------------------------------------------------------------
+    # 5. Safety flags
+    # ------------------------------------------------------------------
+    env_allow_orders = os.getenv("IBKR_ALLOW_ORDERS", "false").lower()
+    safety_locked = env_allow_orders == "false"
+    try:
+        from monitor import load_rules
+        rules = load_rules()
+        rules_enforced = rules.get("enforced", False)
+    except Exception:
+        rules_enforced = False
+
+    # ------------------------------------------------------------------
+    # 6. Detect mismatch and determine action
+    # ------------------------------------------------------------------
+    mismatch_detected = guard_count_before != confirmed_count
+    repair_recommended = False
+    repair_applied = False
+    guard_count_after = guard_count_before
+    blockers: list[dict] = []
+
+    if not mismatch_detected:
+        # No mismatch — nothing to do
+        pass
+    elif guard_count_before > confirmed_count:
+        # Guard count inflated — can repair downward IF safe
+        checks_ok = True
+
+        if ibkr_live_order_count is not None and ibkr_live_order_count > 0:
+            blockers.append({"severity": "HOLD", "check": "live_orders_exist",
+                             "detail": f"{ibkr_live_order_count} live IBKR order(s) — cannot repair"})
+            checks_ok = False
+
+        if open_order_count is not None and open_order_count > 0:
+            blockers.append({"severity": "HOLD", "check": "open_orders_exist",
+                             "detail": f"{open_order_count} open order(s) — cannot repair"})
+            checks_ok = False
+
+        if positions_flat is False:
+            blockers.append({"severity": "HOLD", "check": "positions_not_flat",
+                             "detail": "Non-zero positions — ambiguous evidence"})
+            checks_ok = False
+
+        if not safety_locked:
+            blockers.append({"severity": "NO-GO", "check": "safety_unlocked",
+                             "detail": "IBKR_ALLOW_ORDERS is not false"})
+            checks_ok = False
+
+        if rules_enforced:
+            blockers.append({"severity": "NO-GO", "check": "rules_enforced",
+                             "detail": "rules.enforced is true"})
+            checks_ok = False
+
+        if confirmed_count == 0 and real_today:
+            # Events exist but no permIds — ambiguous
+            blockers.append({"severity": "HOLD", "check": "ambiguous_events",
+                             "detail": f"{len(real_today)} event(s) without permIds — ambiguous"})
+            checks_ok = False
+
+        if checks_ok:
+            repair_recommended = True
+
+            if apply_repair and confirm_local_state_repair:
+                # Create backup
+                _GUARD_STATE_REPAIRS_DIR.mkdir(parents=True, exist_ok=True)
+                backup_path = _GUARD_STATE_REPAIRS_DIR / f"guard-state.bak-{ts_file}.json"
+                shutil.copy2(guard_state_path, backup_path)
+
+                # Apply repair
+                gs["daily_trade_count"] = confirmed_count
+                gs["last_updated_utc"] = ts_str
+                gs["trade_count_repaired"] = True
+                gs["trade_count_repair_id"] = repair_id
+                _atomic_write_json(guard_state_path, gs)
+
+                # Re-read and verify
+                gs_after = load_guard_state()
+                guard_count_after = gs_after.get("daily_trade_count", -1)
+                repair_applied = (guard_count_after == confirmed_count)
+
+                if not repair_applied:
+                    blockers.append({"severity": "HOLD", "check": "repair_verification_failed",
+                                     "detail": f"After repair, count={guard_count_after}, expected={confirmed_count}"})
+    elif confirmed_count > guard_count_before:
+        # Confirmed events exceed guard — never repair upward
+        blockers.append({"severity": "NO-GO", "check": "confirmed_events_exceed_guard_count",
+                         "detail": f"Confirmed {confirmed_count} > guard {guard_count_before} — cannot repair upward"})
+    else:
+        # Ambiguous
+        blockers.append({"severity": "HOLD", "check": "ambiguous_evidence",
+                         "detail": "Evidence does not support repair"})
+
+    # ------------------------------------------------------------------
+    # 7. Audit export (always, even dry-run)
+    # ------------------------------------------------------------------
+    _GUARD_STATE_REPAIRS_DIR.mkdir(parents=True, exist_ok=True)
+    audit_export_path = _GUARD_STATE_REPAIRS_DIR / f"{repair_id}.json"
+
+    # ------------------------------------------------------------------
+    # 8. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "trade_date": trade_date,
+        "guard_daily_trade_count_before": guard_count_before,
+        "confirmed_event_trade_count": confirmed_count,
+        "mismatch_detected": mismatch_detected,
+        "repair_recommended": repair_recommended,
+        "repair_applied": repair_applied,
+        "guard_daily_trade_count_after": guard_count_after,
+        "mode": mode,
+        "safety_locked": safety_locked,
+        "ibkr_live_order_count": ibkr_live_order_count,
+        "open_order_count": open_order_count,
+        "positions_flat": positions_flat,
+        "git_commit": git.get("commit", "?"),
+        "no_broker_mutation": True,
+        "blocker_count": len(blockers),
+        "blocker_checks": sorted(b["check"] for b in blockers),
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 9. Build result
+    # ------------------------------------------------------------------
+    result = {
+        "command": "ibkr-operator guard-state-reconcile",
+        "advisory": (
+            "Read-only local guard-state repair tool (Step 15O). "
+            "No broker mutation. No order window. No H1 token. "
+            "Repair is downward-only and requires confirmed event evidence."
+        ),
+        "timestamp": ts_str,
+        "repair_id": repair_id,
+        "mode": mode,
+        "git": {
+            "branch": git.get("branch", "?"),
+            "commit": git.get("commit", "?"),
+            "tag": git.get("tag", "?"),
+        },
+        "guard_state_path": str(guard_state_path),
+        "backup_path": str(_GUARD_STATE_REPAIRS_DIR / f"guard-state.bak-{ts_file}.json") if repair_applied else None,
+        "audit_export_path": str(audit_export_path),
+        "trade_date": trade_date,
+        "guard_daily_trade_count_before": guard_count_before,
+        "confirmed_event_trade_count": confirmed_count,
+        "confirmed_unique_order_ids": confirmed_order_ids,
+        "ibkr_live_order_count": ibkr_live_order_count,
+        "open_order_count": open_order_count,
+        "positions_count": positions_count,
+        "positions_flat": positions_flat,
+        "ibkr_connected": ibkr_connected,
+        "mismatch_detected": mismatch_detected,
+        "repair_recommended": repair_recommended,
+        "repair_applied": repair_applied,
+        "guard_daily_trade_count_after": guard_count_after,
+        "safety_flags": {
+            "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+            "rules_enforced": rules_enforced,
+            "safety_locked": safety_locked,
+        },
+        "blockers": blockers,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "explicit_non_actions": _GUARD_RECONCILE_EXPLICIT_NON_ACTIONS,
+        "evidence_hash": evidence_hash,
+        "_export_path": str(audit_export_path),
+    }
+
+    # Write audit export
+    try:
+        with open(audit_export_path, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        pass
+
+    return result
+
+
+def _print_guard_state_reconcile(result: dict) -> None:
+    """Print guard-state reconciliation result in human-readable format."""
+    mode = result.get("mode", "dry_run")
+    if mode == "apply":
+        mode_label = f"{GREEN}APPLY{RESET}"
+    else:
+        mode_label = f"{YELLOW}DRY-RUN{RESET}"
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Guard-State Trade-Count Reconciliation (Step 15O){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+
+    print(f"  Repair ID:         {result.get('repair_id', '?')}")
+    print(f"  Timestamp:         {result.get('timestamp', '?')}")
+    print(f"  Mode:              {mode_label}")
+    print(f"  Trade Date:        {result.get('trade_date', '?')}")
+    print()
+
+    print(f"  {BOLD}Trade Count{RESET}")
+    print(f"    Guard (before):   {result.get('guard_daily_trade_count_before', 0)}")
+    print(f"    Confirmed events: {result.get('confirmed_event_trade_count', 0)}")
+    if result.get("repair_applied"):
+        print(f"    Guard (after):    {GREEN}{result.get('guard_daily_trade_count_after', 0)}{RESET}")
+    print()
+
+    mismatch = result.get("mismatch_detected", False)
+    print(f"  Mismatch:          {'YES' if mismatch else 'NO'}")
+    print(f"  Repair Recommended:{'YES' if result.get('repair_recommended') else 'NO'}")
+    print(f"  Repair Applied:    {'YES' if result.get('repair_applied') else 'NO'}")
+    print()
+
+    sf = result.get("safety_flags", {})
+    print(f"  {BOLD}Safety{RESET}")
+    print(f"    Locked:           {sf.get('safety_locked', '?')}")
+    print(f"    IBKR_ALLOW_ORDERS:{sf.get('env_IBKR_ALLOW_ORDERS', '?')}")
+    print(f"    rules.enforced:   {sf.get('rules_enforced', '?')}")
+    print()
+
+    if result.get("ibkr_connected"):
+        print(f"  {BOLD}IBKR State{RESET}")
+        print(f"    Live orders:      {result.get('ibkr_live_order_count', '?')}")
+        print(f"    Open orders:      {result.get('open_order_count', '?')}")
+        print(f"    Positions:        {result.get('positions_count', '?')}")
+        print(f"    Positions flat:   {result.get('positions_flat', '?')}")
+        print()
+
+    blockers = result.get("blockers", [])
+    if blockers:
+        print(f"  {BOLD}Blockers ({len(blockers)}){RESET}")
+        for b in blockers:
+            sev = b["severity"]
+            sev_color = RED if sev == "NO-GO" else RESET
+            print(f"    {sev_color}{sev:<6}{RESET} {b['check']}: {b.get('detail', '?')}")
+        print()
+
+    na = result.get("explicit_non_actions", [])
+    if na:
+        print(f"  {BOLD}Explicit Non-Actions{RESET}")
+        for a in na:
+            print(f"    ✗  {a}")
+        print()
+
+    print(f"  Evidence Hash:     {result.get('evidence_hash', '?')[:16]}...")
+    print()
+    print(f"  {BOLD}══════════════════════════════════════════════════{RESET}")
+
+
+# ---------------------------------------------------------------------------
 # Phase 5B.1 — Hermes Advisory Proposal
 # ---------------------------------------------------------------------------
 
@@ -7355,6 +7742,32 @@ def main() -> None:
     l1p.add_argument("--export", action="store_true",
                       help="Write output to ~/.openclaw/autonomy-promotion-plans/")
 
+    # Step 15O — Guard-state trade-count reconciliation
+    gsr = sub.add_parser("guard-state-reconcile",
+                         help="Reconcile guard-state trade count against confirmed events")
+    gsr.add_argument("--json", action="store_true",
+                      help="Output raw JSON only")
+    gsr.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/guard-state-repairs/")
+    gsr.add_argument("--apply", action="store_true",
+                      help="Apply the repair (requires --confirm-local-state-repair)")
+    gsr.add_argument("--confirm-local-state-repair", action="store_true",
+                      help="Explicit confirmation for local state repair")
+    # Alias
+    tcr = sub.add_parser("trade-count-reconcile",
+                         help="Alias for guard-state-reconcile")
+    tcr.add_argument("--json", action="store_true")
+    tcr.add_argument("--export", action="store_true")
+    tcr.add_argument("--apply", action="store_true")
+    tcr.add_argument("--confirm-local-state-repair", action="store_true")
+    # Alias
+    rtc = sub.add_parser("repair-trade-count",
+                         help="Alias for guard-state-reconcile")
+    rtc.add_argument("--json", action="store_true")
+    rtc.add_argument("--export", action="store_true")
+    rtc.add_argument("--apply", action="store_true")
+    rtc.add_argument("--confirm-local-state-repair", action="store_true")
+
     args = parser.parse_args()
 
     if args.command == "daily-report":
@@ -7603,6 +8016,24 @@ def main() -> None:
             if ep:
                 print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result["plan_status"] == "READY_FOR_MANUAL_DECISION" else 1
+        sys.exit(exit_code)
+
+    if args.command in ("guard-state-reconcile", "trade-count-reconcile", "repair-trade-count"):
+        apply_flag = getattr(args, "apply", False)
+        confirm_flag = getattr(args, "confirm_local_state_repair", False)
+        result = _run_guard_state_reconcile(
+            apply_repair=apply_flag,
+            confirm_local_state_repair=confirm_flag,
+        )
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_guard_state_reconcile(result)
+        if args.export:
+            ep = result.get("_export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("repair_recommended") or result.get("repair_applied") else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

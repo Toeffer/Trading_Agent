@@ -566,11 +566,15 @@ def _internal_fetch_quote(symbol: str) -> dict:
 
 
 def _internal_fetch_quote_safe(symbol: str, timeout: float = _MARKET_SNAPSHOT_TIMEOUT) -> dict:
-    """Fetch quote with bounded timeout — never hangs (Step 15L-B).
+    """Fetch quote with bounded timeout — never hangs (Step 15L-B + 15N fix).
 
     Runs _internal_fetch_quote in a thread executor with a hard deadline.
-    On timeout: cleans up any pending market-data subscription and raises
-    RuntimeError with detail="market_data_timeout".
+    On timeout: raises RuntimeError with detail="market_data_timeout".
+
+    Step 15N: cleanup code removed from timeout path — ib.qualifyContracts
+    can block if the global ib object is in a bad state (e.g. a leaked
+    market-data thread is still running). The leaked thread cleans up its
+    own subscription when _internal_fetch_quote eventually completes.
 
     Uses shutdown(wait=False) so the caller is never blocked by a hung
     market-data thread after the timeout fires.
@@ -583,21 +587,12 @@ def _internal_fetch_quote_safe(symbol: str, timeout: float = _MARKET_SNAPSHOT_TI
         try:
             return future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
-            # Best-effort cleanup: cancel any pending market data subscription.
-            # We re-create the contract from the symbol — this is a lightweight
-            # lookup that should not block (no network I/O in qualifyContracts
-            # for a simple stock contract).
-            try:
-                if ib and ib.isConnected() and IB is not None and Stock is not None:
-                    contract = Stock(symbol.upper(), "SMART", "USD")
-                    try:
-                        qualified = ib.qualifyContracts(contract)
-                        if qualified:
-                            ib.cancelMktData(qualified[0])
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            # Step 15N: Do NOT attempt ib.qualifyContracts / ib.cancelMktData
+            # here — those calls can block indefinitely if the global ib
+            # object is in a bad state due to a leaked market-data thread.
+            # The inner _internal_fetch_quote thread will eventually finish
+            # and call ib.cancelMktData on its own contract.  Simply raise
+            # the timeout error so the endpoint returns promptly.
             raise RuntimeError(
                 f"market_data_timeout: market data did not arrive within {timeout:.0f}s"
             )
@@ -3452,7 +3447,7 @@ def status_dashboard() -> Dict[str, Any]:
     }
 
 
-# OOM_BACKPRESSURE_HARD — Step 15H: priority-tiered load shedding
+# OOM_BACKPRESSURE_HARD — Step 15H + 15N fix: priority-tiered load shedding
 from fastapi.responses import JSONResponse as _BPJR
 import threading as _BPTH
 import logging as _BPLOG
@@ -3461,9 +3456,12 @@ _BP_LOCK=_BPTH.Lock()
 _BP_ACTIVE=0
 _BP_MAX_ACTIVE=4
 _BP_MAX_RSS_KB=1800000
+# Step 15N: cumulative counters for introspection (never reset, wrap-safe at 2^63)
+_BP_TOTAL_ACCEPTED = 0
+_BP_TOTAL_REJECTED = 0
 
 # Step 15H: Priority tiers — lower number = higher priority
-_BP_TIER0 = ("/health", "/monitor/liveness")
+_BP_TIER0 = ("/health", "/monitor/liveness", "/monitor/backpressure")
 _BP_TIER1 = ("/market/", "/snapshot")
 _BP_TIER3 = ("/audit/", "/monitor/reconciliation", "/monitor/positions/drift")
 
@@ -3489,7 +3487,19 @@ def _bp_rss_kb():
 
 @app.middleware("http")
 async def _oom_backpressure_hard(req, call_next):
-    global _BP_ACTIVE
+    """Step 15H+15N: Priority-tiered backpressure with leak-proof accounting.
+
+    Tier 0: exempt (health, liveness, backpressure introspection).
+    Tier 1: market/snapshot — full capacity.
+    Tier 2 (default): account, positions, readiness — full capacity.
+    Tier 3: audit, reconciliation — load-shed at half capacity.
+
+    Step 15N fixes:
+      - Active count guarded against going negative in finally.
+      - Rejected requests explicitly do not increment.
+      - Cumulative accept/reject counters for diagnostics.
+    """
+    global _BP_ACTIVE, _BP_TOTAL_ACCEPTED, _BP_TOTAL_REJECTED
     tier = _bp_path_tier(req.url.path)
     if tier == 0:
         return await call_next(req)
@@ -3498,15 +3508,52 @@ async def _oom_backpressure_hard(req, call_next):
         active=_BP_ACTIVE
         # Tier 3 (audit) load-shed at half capacity
         if tier == 3 and active >= _BP_MAX_ACTIVE // 2:
+            _BP_TOTAL_REJECTED += 1
             _BP_LOG.error("BP_REJECT_AUDIT path=%s active=%s rss_kb=%s tier=%s", req.url.path, active, rss, tier)
             return _BPJR({"ok":False,"error":"bridge_backpressure","path":req.url.path,"active":active,"rss_kb":rss,"max_active":_BP_MAX_ACTIVE,"max_rss_kb":_BP_MAX_RSS_KB,"tier":tier,"detail":"Audit load-shed — retry when idle"}, status_code=503)
         if active >= _BP_MAX_ACTIVE or rss >= _BP_MAX_RSS_KB:
+            _BP_TOTAL_REJECTED += 1
             _BP_LOG.error("BP_REJECT path=%s active=%s rss_kb=%s tier=%s", req.url.path, active, rss, tier)
             return _BPJR({"ok":False,"error":"bridge_backpressure","path":req.url.path,"active":active,"rss_kb":rss,"max_active":_BP_MAX_ACTIVE,"max_rss_kb":_BP_MAX_RSS_KB,"tier":tier}, status_code=503)
+        # Accepted — increment under lock (Step 15N: always paired with finally decrement)
         _BP_ACTIVE += 1
+        _BP_TOTAL_ACCEPTED += 1
     try:
         return await call_next(req)
     finally:
+        # Step 15N: decrement under lock, guarded against negative
         with _BP_LOCK:
-            _BP_ACTIVE -= 1
+            if _BP_ACTIVE > 0:
+                _BP_ACTIVE -= 1
+            else:
+                _BP_LOG.warning("BP_UNDERFLOW active was already 0 on decrement")
 # /OOM_BACKPRESSURE_HARD
+
+
+@app.get("/monitor/backpressure")
+def monitor_backpressure() -> Dict[str, Any]:
+    """Step 15N: Read-only backpressure introspection.
+
+    Returns active count, cumulative stats, and tier configuration.
+    Tier 0 exempt — always available regardless of load.
+    No sensitive runtime data exposed.
+    """
+    with _BP_LOCK:
+        active = _BP_ACTIVE
+        accepted = _BP_TOTAL_ACCEPTED
+        rejected = _BP_TOTAL_REJECTED
+    return {
+        "ok": True,
+        "active": active,
+        "max_active": _BP_MAX_ACTIVE,
+        "max_rss_kb": _BP_MAX_RSS_KB,
+        "current_rss_kb": _bp_rss_kb(),
+        "total_accepted": accepted,
+        "total_rejected": rejected,
+        "tiers": {
+            "0_exempt": list(_BP_TIER0),
+            "1_market": list(_BP_TIER1),
+            "2_default": "all other endpoints",
+            "3_audit": list(_BP_TIER3),
+        },
+    }

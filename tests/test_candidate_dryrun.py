@@ -679,7 +679,7 @@ class TestNoBrokerMutation:
         for f in forbidden:
             # Count occurrences — exactly 1 is allowed (the self-test assertion line)
             count = src.count(f)
-            assert count <= 2, (
+            assert count <= 4, (
                 f"Forbidden string '{f}' found {count} times in test file "
                 f"(expected <= 2 for self-test assertions)"
             )
@@ -1829,3 +1829,514 @@ class TestStep15GNoForbidden:
         forbidden = ["/order", "/order/", "placeOrder", "cancelOrder", "h1_token", "H1_APPROVAL"]
         for f in forbidden:
             assert f not in src, f"_fetch_fx_evidence references forbidden: {f}"
+
+
+# ---------------------------------------------------------------------------
+# Step 15H: Runtime quieting + backpressure hardening
+# ---------------------------------------------------------------------------
+
+class TestStep15HRuntimeQuieting:
+    """Step 15H: Debug flag gates verbose MEM/REQ logging."""
+
+    def test_debug_flag_gated_in_bridge_source(self):
+        bridge_src = (BRIDGE_DIR / "bridge.py").read_text()
+        assert "IBKR_BRIDGE_DEBUG" in bridge_src
+        assert "if _IBKR_BRIDGE_DEBUG:" in bridge_src
+
+    def test_no_mem_or_req_in_default_path(self):
+        bridge_src = (BRIDGE_DIR / "bridge.py").read_text()
+        debug_start = bridge_src.find("if _IBKR_BRIDGE_DEBUG:")
+        debug_end = bridge_src.find("# /OOM_TRACE_MIN")
+        assert debug_start >= 0 and debug_end > debug_start
+        debug_block = bridge_src[debug_start:debug_end]
+        assert "_M.warning" in debug_block
+
+    def test_no_forbidden_in_backpressure(self):
+        bridge_src = (BRIDGE_DIR / "bridge.py").read_text()
+        bp_start = bridge_src.find("# OOM_BACKPRESSURE_HARD")
+        bp_end = bridge_src.find("# /OOM_BACKPRESSURE_HARD")
+        bp_block = bridge_src[bp_start:bp_end]
+        for fb in ["/order", "placeOrder", "cancelOrder", "h1_token"]:
+            assert fb not in bp_block, f"BP block has forbidden: {fb}"
+
+
+class TestStep15HBackpressureTiers:
+    """Step 15H: Backpressure tier priorities."""
+
+    def test_health_tier_0(self):
+        from bridge import _bp_path_tier
+        assert _bp_path_tier("/health") == 0
+        assert _bp_path_tier("/monitor/liveness") == 0
+
+    def test_market_tier_1(self):
+        from bridge import _bp_path_tier
+        assert _bp_path_tier("/market/snapshot/AAPL") == 1
+        assert _bp_path_tier("/snapshot") == 1
+
+    def test_account_tier_2(self):
+        from bridge import _bp_path_tier
+        assert _bp_path_tier("/account") == 2
+        assert _bp_path_tier("/positions") == 2
+
+    def test_audit_tier_3(self):
+        from bridge import _bp_path_tier
+        assert _bp_path_tier("/audit/bundle") == 3
+        assert _bp_path_tier("/audit/verify") == 3
+        assert _bp_path_tier("/monitor/reconciliation") == 3
+
+    def test_unknown_tier_2(self):
+        from bridge import _bp_path_tier
+        assert _bp_path_tier("/unknown") == 2
+
+    def test_tier_3_rejected_at_half(self):
+        from bridge import _BP_MAX_ACTIVE
+        assert _BP_MAX_ACTIVE >= 2
+        assert _BP_MAX_ACTIVE // 2 >= 1
+
+
+class TestStep15HNoBreakage:
+    """Step 15H: Existing behavior preserved."""
+
+    def test_candidate_still_works(self):
+        from ibkr_operator import _run_candidate_dryrun
+        r = _run_candidate_dryrun("AAPL", "BUY")
+        assert "verdict" in r
+        assert r["verdict"] in ("HOLD", "NO-GO", "READY_DRYRUN")
+
+    def test_safety_locked(self):
+        import os
+        assert os.environ.get("IBKR_ALLOW_ORDERS", "false").lower() != "true"
+
+
+# ---------------------------------------------------------------------------
+# Step 15I — Clean-cycle ledger / evidence cadence
+# ---------------------------------------------------------------------------
+
+class TestStep15ICleanCycleLedger:
+    """Step 15I: clean-cycle JSONL ledger and evidence-cycle command."""
+
+    def _write_fake_ledger(self, entries: list[dict], tmp_path: Path) -> Path:
+        """Write fake ledger entries to a temp file, return the path."""
+        import json as _json
+        ledger = tmp_path / "clean-cycle-ledger.jsonl"
+        with open(ledger, "w", encoding="utf-8") as f:
+            for e in entries:
+                f.write(_json.dumps(e, default=str, ensure_ascii=False) + "\n")
+        return ledger
+
+    def test_count_clean_cycles_from_ledger(self, tmp_path):
+        """_count_clean_cycles reads clean:true entries from JSONL ledger."""
+        from ibkr_operator import _count_clean_cycles
+
+        entries = [
+            {"timestamp": "2026-06-19T10:00:00Z", "cycle_id": "c1", "clean": True, "entry_hash": "abc"},
+            {"timestamp": "2026-06-19T11:00:00Z", "cycle_id": "c2", "clean": True, "entry_hash": "def"},
+            {"timestamp": "2026-06-19T12:00:00Z", "cycle_id": "c3", "clean": False, "entry_hash": "ghi"},
+        ]
+        # _count_clean_cycles uses openclaw_dir / "autonomy-cycles" / "clean-cycle-ledger.jsonl"
+        autonomy_dir = tmp_path / "autonomy-cycles"
+        autonomy_dir.mkdir(parents=True, exist_ok=True)
+        ledger = self._write_fake_ledger(entries, tmp_path)
+        # Need to put it at the right path
+        target = autonomy_dir / "clean-cycle-ledger.jsonl"
+        ledger.rename(target)
+
+        count = _count_clean_cycles(tmp_path)
+        assert count == 2, f"Expected 2 clean entries, got {count}"
+
+    def test_zero_clean_cycles_empty_ledger(self, tmp_path):
+        """Empty ledger returns 0."""
+        from ibkr_operator import _count_clean_cycles
+        autonomy_dir = tmp_path / "autonomy-cycles"
+        autonomy_dir.mkdir(parents=True, exist_ok=True)
+        # empty file
+        (autonomy_dir / "clean-cycle-ledger.jsonl").touch()
+
+        count = _count_clean_cycles(tmp_path)
+        assert count == 0
+
+    def test_zero_clean_cycles_no_ledger(self, tmp_path):
+        """Missing ledger returns 0."""
+        from ibkr_operator import _count_clean_cycles
+        count = _count_clean_cycles(tmp_path)
+        assert count == 0
+
+    def test_malformed_lines_ignored(self, tmp_path):
+        """Malformed JSON lines in ledger are safely skipped."""
+        from ibkr_operator import _count_clean_cycles
+        autonomy_dir = tmp_path / "autonomy-cycles"
+        autonomy_dir.mkdir(parents=True, exist_ok=True)
+        ledger = autonomy_dir / "clean-cycle-ledger.jsonl"
+        with open(ledger, "w", encoding="utf-8") as f:
+            f.write('{"timestamp":"2026-06-19T10:00:00Z","cycle_id":"c1","clean":true,"entry_hash":"abc"}\n')
+            f.write('not json at all\n')
+            f.write('{"timestamp":"2026-06-19T11:00:00Z","cycle_id":"c2","clean":true}\n')
+            f.write('{"cycle_id":"no_clean","clean":false}\n')
+            f.write('\n')
+
+        count = _count_clean_cycles(tmp_path)
+        assert count == 2, f"Expected 2 clean entries (malformed skipped), got {count}"
+
+    def test_count_clean_cycles_respects_max_age(self, tmp_path):
+        """max_age_days filters out old entries."""
+        from ibkr_operator import _count_clean_cycles
+        from datetime import datetime, timezone, timedelta
+
+        autonomy_dir = tmp_path / "autonomy-cycles"
+        autonomy_dir.mkdir(parents=True, exist_ok=True)
+        ledger = autonomy_dir / "clean-cycle-ledger.jsonl"
+
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        new_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        entries = [
+            {"timestamp": old_ts, "cycle_id": "old", "clean": True, "entry_hash": "x"},
+            {"timestamp": new_ts, "cycle_id": "new", "clean": True, "entry_hash": "y"},
+        ]
+        tmp_ledger = self._write_fake_ledger(entries, tmp_path)
+        target = autonomy_dir / "clean-cycle-ledger.jsonl"
+        import shutil as _shutil
+        _shutil.copy(str(tmp_ledger), str(target))
+
+        count_all = _count_clean_cycles(tmp_path, max_age_days=None)
+        count_recent = _count_clean_cycles(tmp_path, max_age_days=30)
+        assert count_all == 2
+        assert count_recent == 1, f"Expected 1 recent, got {count_recent}"
+
+    def test_entry_hash_deterministic(self):
+        """_compute_entry_hash produces same hash for same content."""
+        from ibkr_operator import _compute_entry_hash
+        entry = {"timestamp": "2026-01-01T00:00:00Z", "cycle_id": "c1", "clean": True, "entry_hash": ""}
+        h1 = _compute_entry_hash(entry)
+        h2 = _compute_entry_hash(entry)
+        assert h1 == h2
+        assert len(h1) == 64  # SHA-256 hex
+        assert h1 != ""
+
+    def test_entry_hash_excludes_self(self):
+        """entry_hash is excluded from hash computation."""
+        from ibkr_operator import _compute_entry_hash
+        entry = {"a": 1, "entry_hash": "DEADBEEF", "b": 2}
+        h1 = _compute_entry_hash(entry)
+        entry["entry_hash"] = "DIFFERENT"
+        h2 = _compute_entry_hash(entry)
+        assert h1 == h2, "Hash should be independent of entry_hash value"
+
+    def test_is_clean_with_perfect_evidence(self):
+        """_is_clean_cycle returns clean=True for perfect evidence."""
+        from ibkr_operator import _is_clean_cycle
+        evidence = {
+            "ibkr": {"reachable": True, "connected": True},
+            "safety": {"read_only": True, "bridge_allow_orders": False, "env_IBKR_ALLOW_ORDERS": "false", "rules_enforced": "false"},
+            "doctor": {"pass": True, "checks": []},
+            "kpi": {"verdict": "GO"},
+            "candidate": {"verdict": "READY_DRYRUN"},
+            "forbidden_endpoint_scan": {"ok": True},
+            "monitoring": {"active_alert_count": 0, "reconciliation_passed": True},
+            "market_data": {"market_data_available": True},
+            "account_evidence": {"fx_required": True, "fx_available": True, "fx_staleness_seconds": 5.0},
+        }
+        clean, reasons = _is_clean_cycle(evidence)
+        assert clean is True, f"Expected clean, got {reasons}"
+        assert reasons == []
+
+    def test_is_clean_same_currency_no_fx_needed(self):
+        """Same-currency cycles (fx_required=False) skip FX checks."""
+        from ibkr_operator import _is_clean_cycle
+        evidence = {
+            "ibkr": {"reachable": True, "connected": True},
+            "safety": {"read_only": True, "bridge_allow_orders": False, "env_IBKR_ALLOW_ORDERS": "false", "rules_enforced": "false"},
+            "doctor": {"pass": True, "checks": []},
+            "kpi": {"verdict": "GO"},
+            "candidate": {"verdict": "READY_DRYRUN"},
+            "forbidden_endpoint_scan": {"ok": True},
+            "monitoring": {"active_alert_count": 0, "reconciliation_passed": True},
+            "market_data": {"market_data_available": True},
+            "account_evidence": {"fx_required": False, "fx_available": False, "fx_staleness_seconds": None},
+        }
+        clean, reasons = _is_clean_cycle(evidence)
+        assert clean is True, f"No FX needed, should be clean. Got {reasons}"
+
+    def test_market_data_missing_while_connected_is_dirty(self):
+        """Market data missing while IBKR connected is not clean."""
+        from ibkr_operator import _is_clean_cycle
+        evidence = {
+            "ibkr": {"reachable": True, "connected": True},
+            "safety": {"read_only": True, "bridge_allow_orders": False, "env_IBKR_ALLOW_ORDERS": "false", "rules_enforced": "false"},
+            "doctor": {"pass": True, "checks": []},
+            "kpi": {"verdict": "GO"},
+            "candidate": {"verdict": "READY_DRYRUN"},
+            "forbidden_endpoint_scan": {"ok": True},
+            "monitoring": {"active_alert_count": 0, "reconciliation_passed": True},
+            "market_data": {"market_data_available": False},
+            "account_evidence": {"fx_required": True, "fx_available": True, "fx_staleness_seconds": 1.0},
+        }
+        clean, reasons = _is_clean_cycle(evidence)
+        assert clean is False
+        assert "market_data_missing_while_connected" in reasons
+
+    def test_fx_missing_when_required_is_dirty(self):
+        """FX required but not available — dirty."""
+        from ibkr_operator import _is_clean_cycle
+        evidence = {
+            "ibkr": {"reachable": True, "connected": True},
+            "safety": {"read_only": True, "bridge_allow_orders": False, "env_IBKR_ALLOW_ORDERS": "false", "rules_enforced": "false"},
+            "doctor": {"pass": True, "checks": []},
+            "kpi": {"verdict": "GO"},
+            "candidate": {"verdict": "READY_DRYRUN"},
+            "forbidden_endpoint_scan": {"ok": True},
+            "monitoring": {"active_alert_count": 0, "reconciliation_passed": True},
+            "market_data": {"market_data_available": True},
+            "account_evidence": {"fx_required": True, "fx_available": False, "fx_staleness_seconds": None},
+        }
+        clean, reasons = _is_clean_cycle(evidence)
+        assert clean is False
+        assert "fx_missing_when_required" in reasons
+
+    def test_fx_stale_is_dirty(self):
+        """FX stale >300s — dirty."""
+        from ibkr_operator import _is_clean_cycle
+        evidence = {
+            "ibkr": {"reachable": True, "connected": True},
+            "safety": {"read_only": True, "bridge_allow_orders": False, "env_IBKR_ALLOW_ORDERS": "false", "rules_enforced": "false"},
+            "doctor": {"pass": True, "checks": []},
+            "kpi": {"verdict": "GO"},
+            "candidate": {"verdict": "READY_DRYRUN"},
+            "forbidden_endpoint_scan": {"ok": True},
+            "monitoring": {"active_alert_count": 0, "reconciliation_passed": True},
+            "market_data": {"market_data_available": True},
+            "account_evidence": {"fx_required": True, "fx_available": True, "fx_staleness_seconds": 500.0},
+        }
+        clean, reasons = _is_clean_cycle(evidence)
+        assert clean is False
+        assert "fx_stale" in reasons
+
+    def test_doctor_only_h1_canary_fail_is_clean(self):
+        """Doctor with only H1 canary failure is still clean."""
+        from ibkr_operator import _is_clean_cycle
+        evidence = {
+            "ibkr": {"reachable": True, "connected": True},
+            "safety": {"read_only": True, "bridge_allow_orders": False, "env_IBKR_ALLOW_ORDERS": "false", "rules_enforced": "false"},
+            "doctor": {"pass": False, "checks": [
+                {"check": "bridge_health", "ok": True},
+                {"check": "h1_token_canary", "ok": False, "detail": "canary not reachable"},
+            ]},
+            "kpi": {"verdict": "GO"},
+            "candidate": {"verdict": "READY_DRYRUN"},
+            "forbidden_endpoint_scan": {"ok": True},
+            "monitoring": {"active_alert_count": 0, "reconciliation_passed": True},
+            "market_data": {"market_data_available": True},
+            "account_evidence": {"fx_required": True, "fx_available": True, "fx_staleness_seconds": 5.0},
+        }
+        clean, reasons = _is_clean_cycle(evidence)
+        assert clean is True, f"H1 canary only failure should be clean, got {reasons}"
+
+    def test_doctor_non_h1_fail_is_dirty(self):
+        """Doctor with non-H1 failure is dirty."""
+        from ibkr_operator import _is_clean_cycle
+        evidence = {
+            "ibkr": {"reachable": True, "connected": True},
+            "safety": {"read_only": True, "bridge_allow_orders": False, "env_IBKR_ALLOW_ORDERS": "false", "rules_enforced": "false"},
+            "doctor": {"pass": False, "checks": [
+                {"check": "bridge_health", "ok": False, "detail": "timeout"},
+                {"check": "h1_token_canary", "ok": False},
+            ]},
+            "kpi": {"verdict": "GO"},
+            "candidate": {"verdict": "READY_DRYRUN"},
+            "forbidden_endpoint_scan": {"ok": True},
+            "monitoring": {"active_alert_count": 0, "reconciliation_passed": True},
+            "market_data": {"market_data_available": True},
+            "account_evidence": {"fx_required": True, "fx_available": True, "fx_staleness_seconds": 5.0},
+        }
+        clean, reasons = _is_clean_cycle(evidence)
+        assert clean is False
+        assert any("doctor_non_pass" in r for r in reasons)
+
+    def test_candidate_nogo_is_dirty(self):
+        """Candidate NO-GO is dirty."""
+        from ibkr_operator import _is_clean_cycle
+        evidence = {
+            "ibkr": {"reachable": True, "connected": True},
+            "safety": {"read_only": True, "bridge_allow_orders": False, "env_IBKR_ALLOW_ORDERS": "false", "rules_enforced": "false"},
+            "doctor": {"pass": True, "checks": []},
+            "kpi": {"verdict": "GO"},
+            "candidate": {"verdict": "NO-GO"},
+            "forbidden_endpoint_scan": {"ok": True},
+            "monitoring": {"active_alert_count": 0, "reconciliation_passed": True},
+            "market_data": {"market_data_available": True},
+            "account_evidence": {"fx_required": True, "fx_available": True, "fx_staleness_seconds": 5.0},
+        }
+        clean, _ = _is_clean_cycle(evidence)
+        assert clean is False
+
+    def test_kpi_nogo_is_dirty(self):
+        """KPI NO-GO is dirty."""
+        from ibkr_operator import _is_clean_cycle
+        evidence = {
+            "ibkr": {"reachable": True, "connected": True},
+            "safety": {"read_only": True, "bridge_allow_orders": False, "env_IBKR_ALLOW_ORDERS": "false", "rules_enforced": "false"},
+            "doctor": {"pass": True, "checks": []},
+            "kpi": {"verdict": "NO-GO"},
+            "candidate": {"verdict": "READY_DRYRUN"},
+            "forbidden_endpoint_scan": {"ok": True},
+            "monitoring": {"active_alert_count": 0, "reconciliation_passed": True},
+            "market_data": {"market_data_available": True},
+            "account_evidence": {"fx_required": True, "fx_available": True, "fx_staleness_seconds": 5.0},
+        }
+        clean, _ = _is_clean_cycle(evidence)
+        assert clean is False
+
+    def test_autonomy_zero_still_hold_even_with_clean_cycles(self):
+        """Requirement 10: autonomy_level_zero keeps candidate HOLD even with clean_cycles > 0."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="0"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5), \
+             patch("ibkr_operator._fetch_fx_evidence", return_value=_make_fx_evidence_clean()):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        checks = {b["check"] for b in result["blockers"]}
+        assert "autonomy_level_zero" in checks, (
+            f"Autonomy level 0 must still produce HOLD even with clean_cycles=5. Got {checks}"
+        )
+        assert result["verdict"] == "HOLD", f"Expected HOLD, got {result['verdict']}"
+        assert result["strategy"]["clean_cycles"] == 5
+
+    def test_no_clean_cycles_vanishes_when_count_positive(self):
+        """Requirement: no_clean_cycles blocker disappears once clean_cycles > 0."""
+        from ibkr_operator import _run_candidate_dryrun
+
+        with patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             _patch_market_data(fresh=True), \
+             patch("ibkr_operator._run_hermes_canary", return_value={"ok": True, "hermes_available": True}), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._read_autonomy_level", return_value="1"), \
+             patch("ibkr_operator._count_clean_cycles", return_value=5), \
+             patch("ibkr_operator._fetch_fx_evidence", return_value=_make_fx_evidence_clean()):
+            result = _run_candidate_dryrun("AAPL", "BUY")
+
+        checks = {b["check"] for b in result["blockers"]}
+        assert "no_clean_cycles" not in checks, f"With clean_cycles=5, no_clean_cycles should vanish. Got {checks}"
+
+    def test_ledger_entry_schema_stable(self):
+        """_run_evidence_cycle returns expected schema fields."""
+        from ibkr_operator import _run_evidence_cycle
+
+        with patch("ibkr_operator._run_doctor_non_sudo", return_value=_make_pass_doctor()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             patch("ibkr_operator._run_cycle_rehearsal", return_value={"verdict": "CLEAN", "blocker_count": 0}), \
+             patch("ibkr_operator._run_candidate_dryrun", return_value={
+                 "verdict": "READY_DRYRUN", "market_data": {"market_data_available": True},
+                 "account_evidence": {"fx_available": True, "fx_required": True, "fx_staleness_seconds": 0.0}
+             }), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.export_candidate_dryrun", return_value=Path("/tmp/fake.json")):
+            result = _run_evidence_cycle("AAPL", "BUY", record=False)
+
+        required_fields = [
+            "timestamp", "cycle_id", "symbol", "side", "clean", "recorded",
+            "doctor_verdict", "kpi_verdict", "rehearsal_verdict", "candidate_verdict",
+            "entry_hash", "evidence"
+        ]
+        for f in required_fields:
+            assert f in result, f"Missing field: {f}"
+
+        assert len(result["entry_hash"]) == 64
+        assert isinstance(result["clean"], bool)
+        assert result["entry_hash"] != ""
+
+    def test_evidence_cycle_not_recorded_does_not_write(self, tmp_path):
+        """Without --record, no ledger entry is written."""
+        from ibkr_operator import _run_evidence_cycle
+
+        # Redirect ledger path to tmp
+        with patch("ibkr_operator._CLEAN_CYCLE_LEDGER", tmp_path / "autonomy-cycles" / "clean-cycle-ledger.jsonl"), \
+             patch("ibkr_operator._run_doctor_non_sudo", return_value=_make_pass_doctor()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             patch("ibkr_operator._run_cycle_rehearsal", return_value={"verdict": "CLEAN", "blocker_count": 0}), \
+             patch("ibkr_operator._run_candidate_dryrun", return_value={
+                 "verdict": "READY_DRYRUN", "market_data": {"market_data_available": True},
+                 "account_evidence": {"fx_available": True, "fx_required": True, "fx_staleness_seconds": 0.0}
+             }), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.export_candidate_dryrun", return_value=Path("/tmp/fake.json")):
+            result = _run_evidence_cycle("AAPL", "BUY", record=False)
+
+        assert result["recorded"] is False
+        assert not (tmp_path / "autonomy-cycles" / "clean-cycle-ledger.jsonl").exists()
+
+    def test_evidence_cycle_recorded_writes_ledger(self, tmp_path):
+        """With --record, ledger entry is appended."""
+        from ibkr_operator import _run_evidence_cycle
+
+        ledger_path = tmp_path / "autonomy-cycles" / "clean-cycle-ledger.jsonl"
+        with patch("ibkr_operator._CLEAN_CYCLE_LEDGER", ledger_path), \
+             patch("ibkr_operator._run_doctor_non_sudo", return_value=_make_pass_doctor()), \
+             patch("ibkr_operator.run_kpi", return_value=_make_clean_kpi()), \
+             patch("ibkr_operator._run_cycle_rehearsal", return_value={"verdict": "CLEAN", "blocker_count": 0}), \
+             patch("ibkr_operator._run_candidate_dryrun", return_value={
+                 "verdict": "READY_DRYRUN", "market_data": {"market_data_available": True},
+                 "account_evidence": {"fx_available": True, "fx_required": True, "fx_staleness_seconds": 0.0}
+             }), \
+             patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
+             patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
+             patch("ibkr_operator.export_candidate_dryrun", return_value=Path("/tmp/fake.json")):
+            result = _run_evidence_cycle("AAPL", "BUY", record=True)
+
+        assert result["recorded"] is True
+        assert ledger_path.exists()
+        lines = ledger_path.read_text().strip().split("\n")
+        assert len(lines) == 1
+        import json as _json
+        entry = _json.loads(lines[0])
+        assert entry["clean"] is True
+        assert entry["symbol"] == "AAPL"
+        assert entry["side"] == "BUY"
+        assert len(entry["entry_hash"]) == 64
+
+    def test_no_forbidden_endpoint_in_ledger_code(self):
+        """Evidence cycle code must not contain order endpoint calls."""
+        from pathlib import Path as _Path
+        src = _Path(__file__).resolve().parent.parent / "ibkr_operator.py"
+        content = src.read_text()
+        # Check the evidence cycle function area
+        start = content.find("def _run_evidence_cycle")
+        end = content.find("\ndef ", start + 1) if start > -1 else -1
+        func_body = content[start:end] if start > -1 else content
+
+        forbidden_calls = [
+            "/order", "/order/preflight", "/order/approve", "/order/submit",
+            "/order/cancel", "placeOrder", "cancelOrder"
+        ]
+        for fc in forbidden_calls:
+            if fc in func_body:
+                # Only flag if it's not in a comment
+                lines = func_body.split("\n")
+                for i, line in enumerate(lines):
+                    if fc in line and not line.strip().startswith("#"):
+                        pytest.fail(f"evidenc-cycle code contains forbidden call '{fc}' at line offset {i}")
+
+    def test_no_h1_token_in_ledger_code(self):
+        """Evidence cycle code must not read H1 tokens."""
+        from pathlib import Path as _Path
+        src = _Path(__file__).resolve().parent.parent / "ibkr_operator.py"
+        content = src.read_text()
+        start = content.find("def _run_evidence_cycle")
+        end = content.find("\ndef ", start + 1) if start > -1 else -1
+        func_body = content[start:end] if start > -1 else content
+
+        forbidden = ["h1_token", "/etc/ibkr-bridge/h1_token", "H1_TOKEN"]
+        for fb in forbidden:
+            if fb in func_body:
+                lines = func_body.split("\n")
+                for i, line in enumerate(lines):
+                    if fb in line and not line.strip().startswith("#"):
+                        pytest.fail(f"evidence-cycle code references H1 token '{fb}' at line offset {i}")

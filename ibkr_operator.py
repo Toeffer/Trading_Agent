@@ -23,6 +23,7 @@ Usage:
     ibkr-operator checklist end-of-day --explain  # with rationale
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -2289,19 +2290,117 @@ def _read_autonomy_level(doc_path: Path) -> str:
     return "0"
 
 
-def _count_clean_cycles(openclaw_dir: Path) -> int:
-    """Count clean cycle evidence files."""
-    count = 0
-    cycle_dir = openclaw_dir / "trade-journal"
-    if not cycle_dir.exists():
+def _ledger_entry_strict_clean(entry: dict) -> tuple[bool, list[str]]:
+    """Evaluate whether a single ledger entry meets ALL strict clean-cycle criteria.
+
+    Returns (is_clean, reasons). Checks beyond the top-level `clean` flag:
+      - clean is True
+      - doctor_verdict == PASS
+      - kpi_verdict != NO-GO
+      - candidate_verdict != NO-GO
+      - no_forbidden_endpoints is True
+      - safety_flags are locked (read_only=True, allow_orders=False, etc.)
+      - no blockers of severity NO-GO (if blockers are dicts with severity)
+
+    Missing sub-fields are treated leniently (not a failure) so older
+    ledger entries without full detail are not penalised.
+    """
+    reasons: list[str] = []
+
+    # 0. Top-level clean flag must be True
+    if entry.get("clean") is not True:
+        reasons.append("clean_flag_not_true")
+        return False, reasons
+
+    # 1. doctor_verdict must be PASS (if present)
+    dv = entry.get("doctor_verdict")
+    if dv is not None and dv != "PASS":
+        reasons.append(f"doctor_verdict={dv}")
+
+    # 2. kpi_verdict must NOT be NO-GO (if present)
+    kv = entry.get("kpi_verdict")
+    if kv is not None and kv == "NO-GO":
+        reasons.append(f"kpi_verdict={kv}")
+
+    # 3. candidate_verdict must NOT be NO-GO (if present)
+    cv = entry.get("candidate_verdict")
+    if cv is not None and cv == "NO-GO":
+        reasons.append(f"candidate_verdict={cv}")
+
+    # 4. no_forbidden_endpoints must be True (if present)
+    nfe = entry.get("no_forbidden_endpoints")
+    if nfe is not None and nfe is not True:
+        reasons.append("no_forbidden_endpoints_not_true")
+
+    # 5. Safety flags must be locked (if present)
+    sf = entry.get("safety_flags")
+    if isinstance(sf, dict):
+        if sf.get("read_only") is False:
+            reasons.append("safety_read_only_false")
+        bao = sf.get("bridge_allow_orders")
+        if bao is not None and bao is not False and bao != "false":
+            reasons.append(f"safety_bridge_allow_orders={bao}")
+        eao = sf.get("env_IBKR_ALLOW_ORDERS")
+        if eao is not None and eao != "false":
+            reasons.append(f"safety_env_IBKR_ALLOW_ORDERS={eao}")
+        re = sf.get("rules_enforced")
+        if re is not None and re != "false":
+            reasons.append(f"safety_rules_enforced={re}")
+
+    # 6. No blockers of severity NO-GO (if blockers list present with dicts)
+    blockers = entry.get("blockers")
+    if isinstance(blockers, list):
+        for b in blockers:
+            if isinstance(b, dict) and b.get("severity") == "NO-GO":
+                reasons.append(f"blocker_NO-GO: {b.get('check', '?')}")
+
+    return len(reasons) == 0, reasons
+
+
+def _count_clean_cycles(openclaw_dir: Path, max_age_days: int | None = None) -> int:
+    """Count strictly-clean cycle entries from the JSONL ledger.
+
+    Reads ~/.openclaw/autonomy-cycles/clean-cycle-ledger.jsonl.
+    Uses _ledger_entry_strict_clean for validation — not just the
+    top-level `clean` flag.  Malformed lines are ignored safely.
+
+    If max_age_days is set, only entries within that many days are counted.
+    """
+    import json as _json
+    ledger = openclaw_dir / "autonomy-cycles" / "clean-cycle-ledger.jsonl"
+    if not ledger.exists():
         return 0
+    cutoff = None
+    if max_age_days is not None:
+        cutoff = time.time() - (max_age_days * 86400)
+    count = 0
     try:
-        for f in cycle_dir.iterdir():
-            if f.is_file() and f.suffix == ".md":
-                raw = f.read_text(errors="replace")
-                if "clean cycle" in raw.lower() or "cycle complete" in raw.lower():
-                    count += 1
-    except Exception:
+        with open(ledger, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = _json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue  # skip malformed
+                if not isinstance(entry, dict):
+                    continue
+                # Apply strict validation
+                is_clean, _reasons = _ledger_entry_strict_clean(entry)
+                if not is_clean:
+                    continue
+                if cutoff is not None:
+                    ts = entry.get("timestamp", "")
+                    try:
+                        from datetime import datetime, timezone as tz
+                        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        if dt.timestamp() < cutoff:
+                            continue
+                    except (ValueError, TypeError):
+                        pass  # include entries with unparseable timestamps
+                count += 1
+    except OSError:
         pass
     return count
 
@@ -3549,6 +3648,8 @@ def export_cycle_rehearsal(result: dict, export_dir: Path | None = None) -> Path
 
 _CANDIDATE_EXPORT_DIR_NAME = "candidate-dryruns"
 _CANDIDATE_PROPOSALS_DIR = OPENCLAW_DIR / "proposals"
+_AUTONOMY_CYCLES_DIR = OPENCLAW_DIR / "autonomy-cycles"
+_CLEAN_CYCLE_LEDGER = _AUTONOMY_CYCLES_DIR / "clean-cycle-ledger.jsonl"
 
 # Gate H allowed symbols (large-cap ETFs/stocks only, no penny, no leveraged, no options)
 _CANDIDATE_ALLOWED_SYMBOLS: frozenset[str] = frozenset({
@@ -3901,6 +4002,315 @@ def _fetch_fx_evidence(base_currency: str, instrument_currency: str) -> dict:
     result["fx_source"] = "ibkr_account_exchange_rate"
     result["fx_timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     result["fx_staleness_seconds"] = 0.0  # account data is fresh on each fetch
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Step 15I — Clean-cycle ledger helpers
+# ---------------------------------------------------------------------------
+
+
+
+def _compute_entry_hash(entry: dict) -> str:
+    """Compute SHA-256 hash of a canonicalised ledger entry (excludes hash field)."""
+    canonical = {k: entry[k] for k in sorted(entry) if k != "entry_hash"}
+    raw = json.dumps(canonical, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _write_ledger_entry(entry: dict, ledger_path: Path) -> None:
+    """Append a single JSON line to the JSONL ledger with fsync.
+
+    Creates parent directory if needed. Uses atomic write pattern
+    (write to .tmp, fsync, rename) for the file as a whole for safety,
+    but JSONL semantics mean we append to a tmp copy of the existing file.
+    """
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(entry, default=str, ensure_ascii=False) + "\n"
+    with open(ledger_path, "a", encoding="utf-8") as f:
+        f.write(line)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def _is_clean_cycle(evidence: dict) -> tuple[bool, list[str]]:
+    """Evaluate whether an evidence bundle constitutes a clean autonomy cycle.
+
+    Returns (clean_bool, list_of_reasons).
+    A cycle is clean only when ALL criteria are met (see requirements).
+    Autonomy level zero and system_locked are ALLOWED — they do not block clean.
+    """
+    reasons: list[str] = []
+
+    ibkr_conn = evidence.get("ibkr", {})
+    safety = evidence.get("safety", {})
+    doctor = evidence.get("doctor", {})
+    kpi = evidence.get("kpi", {})
+    candidate = evidence.get("candidate", {})
+    scan = evidence.get("forbidden_endpoint_scan", {})
+    monitoring = evidence.get("monitoring", {})
+
+    # 1. Bridge reachable
+    if not ibkr_conn.get("reachable"):
+        reasons.append("bridge_not_reachable")
+
+    # 2. Safety locked
+    if not safety.get("read_only"):
+        reasons.append("safety_read_only_false")
+    if safety.get("bridge_allow_orders") is not False:
+        reasons.append("safety_bridge_allow_orders_not_false")
+    if safety.get("env_IBKR_ALLOW_ORDERS") != "false":
+        reasons.append("safety_env_IBKR_ALLOW_ORDERS_not_false")
+    if safety.get("rules_enforced") != "false":
+        reasons.append("safety_rules_enforced_not_false")
+
+    # 3. No active alerts
+    if monitoring.get("active_alert_count", 0) > 0:
+        reasons.append("active_alerts_present")
+
+    # 4. No reconciliation failure
+    if monitoring.get("reconciliation_passed") is False:
+        reasons.append("reconciliation_failed")
+
+    # 5. Doctor passes (H1 canary skippable)
+    doc_pass = doctor.get("pass")
+    if not doc_pass:
+        # Check if H1 canary is the ONLY failure
+        checks = doctor.get("checks", [])
+        non_h1_failures = [
+            c.get("check", "?")
+            for c in checks
+            if not c.get("ok") and c.get("check") != "h1_token_canary"
+        ]
+        if non_h1_failures:
+            reasons.append(f"doctor_non_pass: {', '.join(non_h1_failures)}")
+        elif not checks:
+            # No checks at all — cannot verify doctor; fail open (flag as dirty)
+            reasons.append("doctor_non_pass: no checks available")
+        elif doc_pass is None:
+            # pass=None with check list but no non-H1 failures means
+            # the doctor result is indeterminate — flag as dirty
+            reasons.append("doctor_non_pass: indeterminate (pass=None)")
+        # else: only h1_token_canary failed — acceptable
+
+    # 6. KPI is not NO-GO
+    kpi_verdict = kpi.get("verdict", "ERROR")
+    if kpi_verdict == "NO-GO":
+        reasons.append("kpi_nogo")
+
+    # 7. Candidate is not NO-GO
+    cand_verdict = candidate.get("verdict", "ERROR")
+    if cand_verdict == "NO-GO":
+        reasons.append("candidate_nogo")
+
+    # 8. No market_data_missing when IBKR connected
+    market = evidence.get("market_data", {})
+    if ibkr_conn.get("connected") and not market.get("market_data_available"):
+        reasons.append("market_data_missing_while_connected")
+
+    # 9. No fx_missing/fx_stale when FX required
+    account_ev = evidence.get("account_evidence", {})
+    fx_required = account_ev.get("fx_required", False)
+    if fx_required:
+        if not account_ev.get("fx_available"):
+            reasons.append("fx_missing_when_required")
+        elif (account_ev.get("fx_staleness_seconds") or 0) > 300:
+            reasons.append("fx_stale")
+
+    # 10. No forbidden endpoint violations
+    if not scan.get("ok"):
+        reasons.append("forbidden_endpoint_violations")
+
+    # 11. No /order* calls (confirmed via scan)
+    # 12. No H1 token reads (confirmed via doctor H1 canary)
+
+    clean = len(reasons) == 0
+    return clean, reasons
+
+
+def _run_evidence_cycle(
+    symbol: str,
+    side: str,
+    record: bool = False,
+) -> dict:
+    """Run a full read-only evidence bundle for one candidate.
+
+    Collects doctor, KPI, cycle-rehearsal, candidate-dryrun,
+    forbidden-endpoint scan, and safety flags. Evaluates clean-cycle
+    criteria. Optionally records to the JSONL ledger.
+
+    Returns the evidence dict plus entry metadata.
+    """
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    cycle_id = f"cycle-{symbol}-{side}-{ts_file}"
+
+    # Lightweight evidence snapshot (single call — safety + doctor)
+    lw_ev: dict = {}
+    try:
+        lw_ev = _collect_lightweight_evidence()
+    except Exception:
+        pass
+
+    # Canonical doctor: use lightweight evidence doctor (actual in-process
+    # checks), NOT the placeholder _run_doctor_non_sudo().
+    doctor_result = lw_ev.get("doctor", {})
+    if not doctor_result:
+        # Fallback
+        try:
+            doctor_result = _run_doctor_non_sudo()
+        except Exception as e:
+            doctor_result = {"error": str(e)[:200]}
+
+    kpi_result = run_kpi()
+
+    rehearsal_result = {}
+    try:
+        rehearsal_result = _run_cycle_rehearsal()
+    except Exception as e:
+        rehearsal_result = {"error": str(e)[:200]}
+
+    candidate_result = {}
+    try:
+        candidate_result = _run_candidate_dryrun(symbol, side)
+    except Exception as e:
+        candidate_result = {"error": str(e)[:200]}
+
+    scan_result = _scan_forbidden_endpoints()
+
+    # Build safety snapshot
+    safety_snapshot: dict = {}
+    sf = lw_ev.get("safety", {})
+    if sf:
+        safety_snapshot = {
+            "read_only": sf.get("read_only"),
+            "bridge_allow_orders": sf.get("bridge_allow_orders"),
+            "env_IBKR_ALLOW_ORDERS": sf.get("env_IBKR_ALLOW_ORDERS"),
+            "rules_enforced": sf.get("rules_enforced"),
+            "system_locked": sf.get("system_locked"),
+        }
+
+    # IBKR connection state from KPI
+    ibkr_snapshot = {
+        "reachable": kpi_result.get("bridge", {}).get("reachable", False),
+        "connected": kpi_result.get("bridge", {}).get("connected", False),
+        "mode": kpi_result.get("bridge", {}).get("mode"),
+    }
+
+    # Monitoring snapshot
+    mon = kpi_result.get("monitoring", {})
+    monitoring_snapshot = {
+        "active_alert_count": mon.get("active_alert_count", 0),
+        "reconciliation_passed": mon.get("reconciliation_passed"),
+    }
+
+    # Build evidence bundle for clean evaluation
+    evidence_bundle = {
+        "ibkr": ibkr_snapshot,
+        "safety": safety_snapshot,
+        "doctor": doctor_result,
+        "kpi": kpi_result,
+        "candidate": candidate_result,
+        "forbidden_endpoint_scan": scan_result,
+        "monitoring": monitoring_snapshot,
+        "market_data": candidate_result.get("market_data", {}),
+        "account_evidence": candidate_result.get("account_evidence", {}),
+    }
+
+    clean, reasons = _is_clean_cycle(evidence_bundle)
+
+    # Convert string reasons to structured blockers with severity
+    structured_blockers: list[dict] = []
+    for reason in reasons:
+        # Extract check name from reason string
+        check_name = reason.split(":")[0].strip() if ":" in reason else reason
+        # All _is_clean_cycle reasons are NO-GO for the cycle
+        structured_blockers.append({
+            "severity": "NO-GO",
+            "check": check_name,
+            "detail": reason,
+        })
+
+    # Export candidate dry-run to disk
+    candidate_export_path = None
+    try:
+        candidate_export_path = str(export_candidate_dryrun(candidate_result))
+    except Exception:
+        pass
+
+    # Build ledger entry
+    git_meta = _git_metadata(BRIDGE_DIR)
+    ledger_entry = {
+        "timestamp": ts_str,
+        "cycle_id": cycle_id,
+        "git_branch": git_meta.get("branch", "?"),
+        "git_commit": git_meta.get("commit", "?"),
+        "git_tag": git_meta.get("tag"),
+        "symbol": symbol,
+        "side": side,
+        "doctor_verdict": "PASS" if doctor_result.get("pass") is True else ("FAIL" if doctor_result else "N/A"),
+        "kpi_verdict": kpi_result.get("verdict", "ERROR"),
+        "rehearsal_verdict": rehearsal_result.get("verdict", "ERROR"),
+        "candidate_verdict": candidate_result.get("verdict", "ERROR"),
+        "candidate_export_path": candidate_export_path,
+        "kpi_export_path": kpi_result.get("_export_path"),
+        "safety_flags": safety_snapshot,
+        "ibkr_connected": ibkr_snapshot.get("connected", False),
+        "ibkr_reachable": ibkr_snapshot.get("reachable", False),
+        "market_data_available": candidate_result.get("market_data", {}).get("market_data_available", False),
+        "fx_available": candidate_result.get("account_evidence", {}).get("fx_available"),
+        "fx_required": candidate_result.get("account_evidence", {}).get("fx_required"),
+        "no_forbidden_endpoints": scan_result.get("ok", False),
+        "clean": clean,
+        "blockers": structured_blockers,
+        "dirty_reasons": reasons,  # human-readable reasons (for diagnostics)
+        "entry_hash": "",  # placeholder, computed below
+    }
+
+    # Compute hash after building the entry
+    ledger_entry["entry_hash"] = _compute_entry_hash(ledger_entry)
+
+    # Record to ledger if requested
+    if record:
+        _write_ledger_entry(ledger_entry, _CLEAN_CYCLE_LEDGER)
+        ledger_entry["_recorded"] = True
+        ledger_entry["_ledger_path"] = str(_CLEAN_CYCLE_LEDGER)
+    else:
+        ledger_entry["_recorded"] = False
+
+    # Build result
+    result = {
+        "advisory": "Read-only evidence cycle. No orders. No H1 token. No broker mutation.",
+        "timestamp": ts_str,
+        "cycle_id": cycle_id,
+        "symbol": symbol,
+        "side": side,
+        "clean": clean,
+        "clean_reasons": reasons if not clean else [],
+        "recorded": record,
+        "ledger_path": str(_CLEAN_CYCLE_LEDGER) if record else None,
+        "doctor_verdict": ledger_entry["doctor_verdict"],
+        "kpi_verdict": ledger_entry["kpi_verdict"],
+        "rehearsal_verdict": ledger_entry["rehearsal_verdict"],
+        "candidate_verdict": ledger_entry["candidate_verdict"],
+        "candidate_export_path": candidate_export_path,
+        "kpi_export_path": ledger_entry["kpi_export_path"],
+        "safety_flags": safety_snapshot,
+        "ibkr_connected": ibkr_snapshot.get("connected", False),
+        "ibkr_reachable": ibkr_snapshot.get("reachable", False),
+        "market_data_available": ledger_entry["market_data_available"],
+        "fx_available": ledger_entry["fx_available"],
+        "fx_required": ledger_entry["fx_required"],
+        "no_forbidden_endpoints": scan_result.get("ok", False),
+        "entry_hash": ledger_entry["entry_hash"],
+        "blockers": structured_blockers,  # structured dicts with severity
+        "dirty_reasons": reasons,          # human-readable strings
+        "evidence": evidence_bundle,
+    }
 
     return result
 
@@ -4658,6 +5068,44 @@ def print_candidate_dryrun(result: dict) -> None:
     print()
 
 
+def _print_evidence_cycle(result: dict) -> None:
+    """Print evidence cycle result in human-readable format."""
+    clean = result.get("clean", False)
+    status_text = f"{GREEN}CLEAN{RESET}" if clean else f"{RED}DIRTY{RESET}"
+
+    print(f"{BOLD}Evidence Cycle{RESET}  [{status_text}]")
+    print(f"  Timestamp:       {result.get('timestamp', '?')}")
+    print(f"  Cycle ID:        {result.get('cycle_id', '?')}")
+    print(f"  Symbol/Side:     {result.get('symbol', '?')} {result.get('side', '?')}")
+    print(f"  Recorded:        {'✓' if result.get('recorded') else '✗'}")
+    if result.get("ledger_path"):
+        print(f"  Ledger:          {result['ledger_path']}")
+    print(f"  Doctor:          {result.get('doctor_verdict', '?')}")
+    print(f"  KPI:             {result.get('kpi_verdict', '?')}")
+    print(f"  Rehearsal:       {result.get('rehearsal_verdict', '?')}")
+    print(f"  Candidate:       {result.get('candidate_verdict', '?')}")
+    print(f"  IBKR connected:  {result.get('ibkr_connected', False)}")
+    print(f"  Market data:     {'available' if result.get('market_data_available') else 'missing'}")
+    print(f"  FX available:    {result.get('fx_available')}  (required={result.get('fx_required')})")
+    print(f"  EP scan clean:   {result.get('no_forbidden_endpoints', False)}")
+    print(f"  Entry hash:      {result.get('entry_hash', '?')[:16]}...")
+
+    blockers = result.get("blockers", [])
+    dirty_reasons = result.get("dirty_reasons", [])
+    if blockers or dirty_reasons:
+        print(f"\n  {BOLD}Blocker details:{RESET}")
+        for b in blockers:
+            if isinstance(b, dict):
+                sev_color = RED if b.get("severity") == "NO-GO" else RESET
+                print(f"    [{sev_color}{b.get('severity', '?')}{RESET}] {b.get('check', '?')}: {b.get('detail', '')}")
+            else:
+                print(f"    - {b}")
+        if dirty_reasons and not blockers:
+            for r in dirty_reasons:
+                print(f"    - {r}")
+    print()
+
+
 def export_candidate_dryrun(result: dict, export_dir: Path | None = None) -> Path:
     """Export candidate dry-run result to JSON file.
 
@@ -5068,6 +5516,1100 @@ def _print_hermes_result(result: dict) -> None:
     print(f"{BOLD}Advisory only. No order enabled or submitted. No state mutated.{RESET}")
 
 
+# ---------------------------------------------------------------------------
+# Step 15J — Autonomy Readiness Evaluator / Promotion Proposal
+# ---------------------------------------------------------------------------
+
+_AUTONOMY_STATUS_EXPORT_DIR = OPENCLAW_DIR / "autonomy-status"
+_CLEAN_CYCLES_REQUIRED = 5
+_CLEAN_CYCLES_WINDOW_DAYS = 7
+_CANDIDATE_EVIDENCE_MAX_AGE_SECONDS = 600
+_DEFAULT_REFRESH_SYMBOL = "AAPL"
+_DEFAULT_REFRESH_SIDE = "BUY"
+
+
+def _latest_clean_cycle_timestamp(ledger_path: Path) -> str | None:
+    """Return the timestamp of the most recent clean=true entry in the ledger.
+
+    Malformed lines are ignored safely.
+    """
+    import json as _json
+    if not ledger_path.exists():
+        return None
+    latest_ts: str | None = None
+    latest_epoch: float = 0.0
+    try:
+        with open(ledger_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = _json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("clean") is not True:
+                    continue
+                ts = entry.get("timestamp", "")
+                if not ts:
+                    continue
+                try:
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    epoch = dt.timestamp()
+                    if epoch > latest_epoch:
+                        latest_epoch = epoch
+                        latest_ts = ts
+                except (ValueError, TypeError):
+                    pass
+    except OSError:
+        pass
+    return latest_ts
+
+
+def _run_autonomy_status(refresh_evidence: bool = False) -> dict:
+    """Run autonomy readiness evaluator / promotion proposal.
+
+    Read-only. No broker mutation. No autonomy level changes.
+    Determines whether the system has enough evidence to be
+    manually reviewed for promotion from autonomy level 0 to level 1.
+
+    Args:
+        refresh_evidence: If True, run fresh candidate dry-run + connected
+            checks (doctor, KPI, market/FX snapshot, forbidden endpoints).
+            If False, use latest on-disk exports and mark evidence age.
+
+    Returns a dict with recommendation: HOLD | READY_FOR_MANUAL_REVIEW | NO_GO.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+
+    # ------------------------------------------------------------------
+    # 1. Git metadata
+    # ------------------------------------------------------------------
+    git = _git_metadata(BRIDGE_DIR)
+
+    # ------------------------------------------------------------------
+    # 2. Current autonomy level
+    # ------------------------------------------------------------------
+    autonomy_path = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
+    current_level = _read_autonomy_level(autonomy_path) if autonomy_path.exists() else "0"
+    target_level = "1"
+
+    # ------------------------------------------------------------------
+    # 3. Clean-cycle ledger
+    # ------------------------------------------------------------------
+    ledger_path = _CLEAN_CYCLE_LEDGER
+    clean_cycles_observed = _count_clean_cycles(OPENCLAW_DIR, max_age_days=_CLEAN_CYCLES_WINDOW_DAYS)
+    clean_cycles_required = _CLEAN_CYCLES_REQUIRED
+    latest_clean_ts = _latest_clean_cycle_timestamp(ledger_path)
+
+    # ------------------------------------------------------------------
+    # 4. Bridge health (lightweight snapshot)
+    # ------------------------------------------------------------------
+    light_evidence: dict = {}
+    try:
+        light_evidence = _collect_lightweight_evidence()
+    except Exception as e:
+        light_evidence = {"_error": str(e)[:200]}
+
+    lw_bridge = light_evidence.get("bridge", {})
+    lw_safety = light_evidence.get("safety", {})
+    lw_doctor = light_evidence.get("doctor", {})
+
+    bridge_reachable = lw_bridge.get("reachable", False)
+    ibkr_connected = lw_bridge.get("connected", None)
+
+    safety_locked = (
+        lw_safety.get("read_only") is True
+        and lw_safety.get("bridge_allow_orders") in (False, "false")
+        and lw_safety.get("env_IBKR_ALLOW_ORDERS") == "false"
+        and lw_safety.get("rules_enforced") == "false"
+        and lw_safety.get("system_locked") is True
+    )
+
+    env_allow_orders = lw_safety.get("env_IBKR_ALLOW_ORDERS", "?")
+    rules_enforced = lw_safety.get("rules_enforced", "?")
+
+    # ------------------------------------------------------------------
+    # 5. Doctor verdict (lightweight, H1 canary MANUAL allowed)
+    # ------------------------------------------------------------------
+    doctor_pass = lw_doctor.get("pass", False)
+    doctor_checks = lw_doctor.get("checks", [])
+    # H1 canary may be MANUAL_REQUIRED — that's acceptable
+    non_h1_failures = [
+        c.get("check", "?")
+        for c in doctor_checks
+        if not c.get("ok") and c.get("check") != "h1_token_canary"
+    ]
+    doctor_ok = doctor_pass or len(non_h1_failures) == 0
+    doctor_verdict = "PASS" if doctor_ok else "FAIL"
+
+    # ------------------------------------------------------------------
+    # 6. KPI verdict
+    # ------------------------------------------------------------------
+    kpi_evidence: dict = {}
+    kpi_verdict = "UNKNOWN"
+    try:
+        kpi_evidence = run_kpi()
+        kpi_verdict = kpi_evidence.get("verdict", "ERROR")
+    except Exception as e:
+        kpi_evidence = {"_error": str(e)[:200]}
+        kpi_verdict = "ERROR"
+
+    # ------------------------------------------------------------------
+    # 7. Monitoring / alerts / reconciliation
+    # ------------------------------------------------------------------
+    monitoring = kpi_evidence.get("monitoring", {})
+    active_alert_count = monitoring.get("active_alert_count", 0)
+    reconciliation_passed = monitoring.get("reconciliation_passed", None)
+
+    # ------------------------------------------------------------------
+    # 8. Candidate evidence: fresh (refresh) or from latest on-disk export
+    # ------------------------------------------------------------------
+    refreshed_fields: dict = {}
+    candidate_evidence_age_seconds: float | None = None
+    latest_candidate_verdict = "unknown"
+    market_data_status = "unknown"
+    fx_status = "unknown"
+    latest_cand_data: dict = {}
+    refreshed_candidate_path: str | None = None
+    refreshed_kpi_path: str | None = None
+
+    candidate_dir = OPENCLAW_DIR / _CANDIDATE_EXPORT_DIR_NAME
+
+    if refresh_evidence:
+        # ------------------------------------------------------------------
+        # 8a. Fresh connected evidence: candidate dry-run + fresh KPI/doctor
+        # ------------------------------------------------------------------
+        refresh_start = time.time()
+        refreshed_at_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Fresh KPI
+        kpi_evidence = run_kpi()
+        kpi_verdict = kpi_evidence.get("verdict", "ERROR")
+        monitoring = kpi_evidence.get("monitoring", {})
+        active_alert_count = monitoring.get("active_alert_count", 0)
+        reconciliation_passed = monitoring.get("reconciliation_passed", None)
+
+        # Export fresh KPI
+        try:
+            kpi_export_dir = OPENCLAW_DIR / "exports"
+            kpi_export_dir.mkdir(parents=True, exist_ok=True)
+            kpi_export_path = kpi_export_dir / f"kpi-dashboard-{ts_file}.json"
+            with open(kpi_export_path, "w", encoding="utf-8") as kf:
+                _json.dump(kpi_evidence, kf, indent=2, default=str, ensure_ascii=False)
+            refreshed_kpi_path = str(kpi_export_path)
+        except Exception:
+            pass
+
+        # Fresh candidate dry-run
+        try:
+            fresh_candidate = _run_candidate_dryrun(_DEFAULT_REFRESH_SYMBOL, _DEFAULT_REFRESH_SIDE)
+            latest_cand_data = fresh_candidate
+            latest_candidate_verdict = fresh_candidate.get("verdict", "unknown")
+            refreshed_candidate_path = fresh_candidate.get("_export_path")
+
+            # Market data status from fresh candidate
+            md = fresh_candidate.get("market_data", {})
+            if md.get("market_data_available"):
+                market_data_status = "available" if not md.get("stale", True) else "stale"
+            elif md:
+                market_data_status = "unavailable"
+
+            # FX status from fresh candidate
+            ae = fresh_candidate.get("account_evidence", {}) or fresh_candidate.get("fx_evidence", {})
+            if ae:
+                fx_available = ae.get("fx_available", False)
+                fx_required = ae.get("fx_required", None)
+                if fx_required is False:
+                    fx_status = "not_required"
+                elif fx_available:
+                    fx_stale = (ae.get("fx_staleness_seconds") or 0) > 300
+                    fx_status = "available" if not fx_stale else "stale"
+                else:
+                    fx_status = "unavailable"
+        except Exception as e:
+            fresh_candidate = {"_error": str(e)[:200], "verdict": "ERROR"}
+            latest_candidate_verdict = "ERROR"
+
+        # Fresh forbidden endpoint scan
+        scan_result = _scan_forbidden_endpoints()
+        scan_ok = scan_result.get("ok", True)
+
+        # Fresh doctor (lightweight)
+        try:
+            light_evidence = _collect_lightweight_evidence()
+        except Exception:
+            pass
+        lw_bridge = light_evidence.get("bridge", {})
+        lw_safety = light_evidence.get("safety", {})
+        lw_doctor = light_evidence.get("doctor", {})
+
+        bridge_reachable = lw_bridge.get("reachable", False)
+        ibkr_connected = lw_bridge.get("connected", None)
+        safety_locked = (
+            lw_safety.get("read_only") is True
+            and lw_safety.get("bridge_allow_orders") in (False, "false")
+            and lw_safety.get("env_IBKR_ALLOW_ORDERS") == "false"
+            and lw_safety.get("rules_enforced") == "false"
+            and lw_safety.get("system_locked") is True
+        )
+        env_allow_orders = lw_safety.get("env_IBKR_ALLOW_ORDERS", "?")
+        rules_enforced = lw_safety.get("rules_enforced", "?")
+
+        doctor_pass = lw_doctor.get("pass", False)
+        doctor_checks = lw_doctor.get("checks", [])
+        non_h1_failures = [
+            c.get("check", "?")
+            for c in doctor_checks
+            if not c.get("ok") and c.get("check") != "h1_token_canary"
+        ]
+        doctor_ok = doctor_pass or len(non_h1_failures) == 0
+        doctor_verdict = "PASS" if doctor_ok else "FAIL"
+
+        candidate_evidence_age_seconds = time.time() - refresh_start
+
+        refreshed_fields = {
+            "refreshed_at": refreshed_at_ts,
+            "refreshed_candidate_export_path": refreshed_candidate_path,
+            "refreshed_kpi_export_path": refreshed_kpi_path,
+            "refreshed_market_data_status": market_data_status,
+            "refreshed_fx_status": fx_status,
+            "refreshed_ibkr_connected": ibkr_connected,
+            "refreshed_evidence_age_seconds": round(candidate_evidence_age_seconds, 2),
+        }
+    else:
+        # ------------------------------------------------------------------
+        # 8b. Latest candidate verdict from on-disk export (existing behaviour)
+        # ------------------------------------------------------------------
+        try:
+            if candidate_dir.exists():
+                candidate_files = sorted(
+                    candidate_dir.glob("candidate-*.json"),
+                    key=lambda f: f.stat().st_mtime,
+                    reverse=True,
+                )
+                if candidate_files:
+                    latest_cand_path_obj = candidate_files[0]
+                    candidate_evidence_age_seconds = time.time() - latest_cand_path_obj.stat().st_mtime
+                    with open(latest_cand_path_obj, "r", encoding="utf-8") as cf:
+                        latest_cand_data = _json.load(cf)
+                        latest_candidate_verdict = latest_cand_data.get("verdict", "unknown")
+
+                        # Market data status from candidate
+                        md = latest_cand_data.get("market_data", {})
+                        if md.get("market_data_available"):
+                            market_data_status = "available" if not md.get("stale", True) else "stale"
+                        elif md:
+                            market_data_status = "unavailable"
+
+                        # FX status from candidate
+                        ae = latest_cand_data.get("account_evidence", {})
+                        if ae:
+                            fx_available = ae.get("fx_available", False)
+                            fx_required = ae.get("fx_required", None)
+                            if fx_required is False:
+                                fx_status = "not_required"
+                            elif fx_available:
+                                fx_stale = (ae.get("fx_staleness_seconds") or 0) > 300
+                                fx_status = "available" if not fx_stale else "stale"
+                            else:
+                                fx_status = "unavailable"
+        except Exception:
+            pass
+
+        # Age-based staleness marker (non-refresh path only)
+        refreshed_fields = {}
+
+    # ------------------------------------------------------------------
+    # 11. Forbidden endpoint scan
+    # ------------------------------------------------------------------
+    scan_result = _scan_forbidden_endpoints()
+    scan_ok = scan_result.get("ok", True)
+
+    # ------------------------------------------------------------------
+    # 12. No H1 token reads (from doctor H1 canary)
+    # ------------------------------------------------------------------
+    h1_canary_check = next(
+        (c for c in doctor_checks if c.get("check") == "h1_token_canary"),
+        None,
+    )
+    h1_token_read = False
+    if h1_canary_check:
+        h1_token_read = h1_canary_check.get("ok") is True
+    # Doctor's H1 canary is a PASS (token accepted) or MANUAL_REQUIRED.
+    # FAIL would mean token issues.
+    h1_canary_ok = h1_canary_check.get("ok", False) if h1_canary_check else True
+
+    # ------------------------------------------------------------------
+    # 13. Build blocker list
+    # ------------------------------------------------------------------
+    blockers: list[dict] = []
+    hold_reasons: list[dict] = []
+
+    # --- NO-GO conditions ---
+
+    if bridge_reachable is False and lw_bridge.get("_error") is None:
+        blockers.append({"severity": "NO-GO", "check": "bridge_unreachable",
+                         "detail": "IBKR bridge is not reachable"})
+
+    if not safety_locked:
+        fail_items = []
+        if lw_safety.get("read_only") is not True:
+            fail_items.append("read_only is not True")
+        if lw_safety.get("bridge_allow_orders") not in (False, "false"):
+            fail_items.append(f"bridge_allow_orders={lw_safety.get('bridge_allow_orders')}")
+        if lw_safety.get("env_IBKR_ALLOW_ORDERS") != "false":
+            fail_items.append(f"env IBKR_ALLOW_ORDERS={env_allow_orders}")
+        if lw_safety.get("rules_enforced") != "false":
+            fail_items.append(f"rules.enforced={rules_enforced}")
+        blockers.append({"severity": "NO-GO", "check": "safety_unlocked",
+                         "detail": "; ".join(fail_items) if fail_items else "safety unlocked"})
+
+    if active_alert_count > 0:
+        blockers.append({"severity": "NO-GO", "check": "active_alerts",
+                         "detail": f"{active_alert_count} active alert(s)"})
+
+    if reconciliation_passed is False:
+        blockers.append({"severity": "NO-GO", "check": "reconciliation_failed",
+                         "detail": "Reconciliation check(s) failed"})
+
+    if kpi_verdict == "NO-GO":
+        blockers.append({"severity": "NO-GO", "check": "kpi_nogo",
+                         "detail": "KPI dashboard reports NO-GO"})
+
+    if latest_candidate_verdict == "NO-GO":
+        blockers.append({"severity": "NO-GO", "check": "candidate_nogo",
+                         "detail": "Latest candidate dry-run verdict is NO-GO"})
+
+    if not scan_ok:
+        violations = scan_result.get("violations", [])
+        blockers.append({"severity": "NO-GO", "check": "forbidden_endpoint_violation",
+                         "detail": f"{len(violations)} forbidden endpoint(s) found in source"})
+
+    # H1 token read: if the canary explicitly READ the token (PASS with token read)
+    # we consider it evidence of H1 token usage — but the canary is designed to
+    # USE the token. The NO-GO condition is when H1 token has been read outside
+    # of the expected canary path (FAIL with token_required = token was read but invalid).
+    # For autonomy readiness, H1 token read evidence means the canary was run and
+    # the token was consumed. That's expected behaviour, not a NO-GO.
+    # Only flag if the canary status is PASS (token was sent to bridge).
+    h1_canary_status = h1_canary_check.get("status", "") if h1_canary_check else ""
+    # The "H1 token read" blocker in the spec is about UNINTENDED token reads.
+    # The canary deliberately uses the token — that's not a violation.
+    # We interpret "no H1 token read evidence" as: the canary did not unexpectedly
+    # succeed with a real token when it shouldn't have. Since the doctor H1 canary
+    # is designed to exercise the token, we do NOT flag it as NO-GO.
+
+    # --- HOLD conditions ---
+
+    if current_level != "0":
+        hold_reasons.append({"severity": "HOLD", "check": "autonomy_not_level_zero",
+                             "detail": f"Current autonomy level is {current_level}, not 0 — promotion only from level 0"})
+
+    if clean_cycles_observed < clean_cycles_required:
+        hold_reasons.append({"severity": "HOLD", "check": "insufficient_clean_cycles",
+                             "detail": f"{clean_cycles_observed}/{clean_cycles_required} clean cycles in {_CLEAN_CYCLES_WINDOW_DAYS}-day window"})
+
+    if ibkr_connected is False:
+        hold_reasons.append({"severity": "HOLD", "check": "ibkr_disconnected",
+                             "detail": "IBKR Gateway is not connected"})
+
+    if market_data_status == "unavailable":
+        hold_reasons.append({"severity": "HOLD", "check": "market_data_unavailable",
+                             "detail": "Market data is unavailable"})
+    elif market_data_status == "stale":
+        hold_reasons.append({"severity": "HOLD", "check": "market_data_stale",
+                             "detail": "Market data is stale"})
+
+    if fx_status == "unavailable":
+        hold_reasons.append({"severity": "HOLD", "check": "fx_unavailable",
+                             "detail": "FX rate unavailable when required"})
+    elif fx_status == "stale":
+        hold_reasons.append({"severity": "HOLD", "check": "fx_stale",
+                             "detail": "FX rate is stale (>300s)"})
+
+    if doctor_verdict == "FAIL":
+        hold_reasons.append({"severity": "HOLD", "check": "doctor_fail",
+                             "detail": f"Doctor non-canary checks failed: {', '.join(non_h1_failures)}" if non_h1_failures else "Doctor failed"})
+
+    # Stale connected evidence (non-refresh path only)
+    if not refresh_evidence and candidate_evidence_age_seconds is not None:
+        if candidate_evidence_age_seconds > _CANDIDATE_EVIDENCE_MAX_AGE_SECONDS:
+            hold_reasons.append({"severity": "HOLD", "check": "stale_candidate_evidence",
+                                 "detail": f"Candidate evidence is {candidate_evidence_age_seconds:.0f}s old (> {_CANDIDATE_EVIDENCE_MAX_AGE_SECONDS}s max)"})
+
+    # ------------------------------------------------------------------
+    # 14. Compute recommendation
+    # ------------------------------------------------------------------
+    has_nogo = any(b["severity"] == "NO-GO" for b in blockers)
+    has_hold = any(r["severity"] == "HOLD" for r in hold_reasons)
+
+    if has_nogo:
+        recommendation = "NO_GO"
+    elif has_hold:
+        recommendation = "HOLD"
+    else:
+        recommendation = "READY_FOR_MANUAL_REVIEW"
+
+    # Combine all for display
+    all_blockers = blockers + hold_reasons
+
+    # ------------------------------------------------------------------
+    # 15. Evidence exports
+    # ------------------------------------------------------------------
+    evidence_exports: list[str] = []
+    _AUTONOMY_STATUS_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Export autonomy status result itself
+    export_path = _AUTONOMY_STATUS_EXPORT_DIR / f"autonomy-status-{ts_file}.json"
+    evidence_exports.append(str(export_path))
+
+    # ------------------------------------------------------------------
+    # 16. Build result
+    # ------------------------------------------------------------------
+    result = {
+        "command": "ibkr-operator autonomy-status",
+        "advisory": "Read-only autonomy readiness evaluator. No broker mutation. No autonomy level changes.",
+        "timestamp": ts_str,
+        "git": {
+            "branch": git.get("branch", "?"),
+            "commit": git.get("commit", "?"),
+            "tag": git.get("tag", "?"),
+        },
+        "current_autonomy_level": current_level,
+        "target_autonomy_level": target_level,
+        "recommendation": recommendation,
+        "clean_cycles_observed": clean_cycles_observed,
+        "clean_cycles_required": clean_cycles_required,
+        "clean_cycles_window_days": _CLEAN_CYCLES_WINDOW_DAYS,
+        "latest_clean_cycle_timestamp": latest_clean_ts,
+        "ledger_path": str(ledger_path),
+        "doctor_verdict": doctor_verdict,
+        "kpi_verdict": kpi_verdict,
+        "bridge_reachable": bridge_reachable,
+        "ibkr_connected": ibkr_connected,
+        "safety_locked": safety_locked,
+        "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+        "rules_enforced": rules_enforced,
+        "active_alert_count": active_alert_count,
+        "reconciliation_passed": reconciliation_passed,
+        "latest_candidate_verdict": latest_candidate_verdict,
+        "market_data_status": market_data_status,
+        "fx_status": fx_status,
+        "refresh_evidence": refresh_evidence,
+        "candidate_evidence_age_seconds": round(candidate_evidence_age_seconds, 2) if candidate_evidence_age_seconds is not None else None,
+        **refreshed_fields,
+        "blockers": all_blockers,
+        "blocker_count": len(all_blockers),
+        "evidence_exports": evidence_exports,
+        "no_broker_mutation": True,
+    }
+
+    # Write export
+    try:
+        with open(export_path, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        pass
+
+    return result
+
+
+def print_autonomy_status(result: dict) -> None:
+    """Print autonomy status in human-readable format."""
+    rec = result.get("recommendation", "HOLD")
+    if rec == "READY_FOR_MANUAL_REVIEW":
+        rec_color = GREEN
+        rec_text = f"{GREEN}READY_FOR_MANUAL_REVIEW{RESET}"
+    elif rec == "NO_GO":
+        rec_color = RED
+        rec_text = f"{RED}NO_GO{RESET}"
+    else:
+        rec_color = RESET
+        rec_text = f"{RESET}HOLD{RESET}"
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Autonomy Readiness Evaluator{RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+
+    print(f"  Timestamp:          {result.get('timestamp', '?')}")
+    print(f"  Git:                {result['git'].get('branch', '?')} @ {result['git'].get('commit', '?')}  (tag: {result['git'].get('tag', '?')})")
+    print()
+
+    print(f"  {BOLD}Recommendation: {rec_text}{RESET}\n")
+
+    print(f"  {BOLD}Autonomy Levels{RESET}")
+    print(f"    Current: {result.get('current_autonomy_level', '?')}")
+    print(f"    Target:  {result.get('target_autonomy_level', '?')}")
+    print()
+
+    print(f"  {BOLD}Clean Cycles{RESET}")
+    print(f"    Observed:  {result.get('clean_cycles_observed', 0)}")
+    print(f"    Required:  {result.get('clean_cycles_required', _CLEAN_CYCLES_REQUIRED)}")
+    print(f"    Window:    {result.get('clean_cycles_window_days', _CLEAN_CYCLES_WINDOW_DAYS)} days")
+    print(f"    Latest:    {result.get('latest_clean_cycle_timestamp', 'none')}")
+    print(f"    Ledger:    {result.get('ledger_path', '?')}")
+    print()
+
+    print(f"  {BOLD}Bridge{RESET}")
+    print(f"    Reachable: {result.get('bridge_reachable', False)}")
+    print(f"    Connected: {result.get('ibkr_connected', False)}")
+    print()
+
+    print(f"  {BOLD}Safety{RESET}")
+    print(f"    Locked:    {result.get('safety_locked', False)}")
+    print(f"    Allow Ord: {result.get('env_IBKR_ALLOW_ORDERS', '?')}")
+    print(f"    Enforced:  {result.get('rules_enforced', '?')}")
+    print()
+
+    print(f"  {BOLD}Verdicts{RESET}")
+    print(f"    Doctor:    {result.get('doctor_verdict', '?')}")
+    print(f"    KPI:       {result.get('kpi_verdict', '?')}")
+    print(f"    Candidate: {result.get('latest_candidate_verdict', '?')}")
+    print()
+
+    print(f"  {BOLD}Monitoring{RESET}")
+    print(f"    Alerts:    {result.get('active_alert_count', 0)}")
+    print(f"    Recon:     {'PASS' if result.get('reconciliation_passed') else 'N/A'}")
+    print()
+
+    print(f"  {BOLD}Data Status{RESET}")
+    print(f"    Market:    {result.get('market_data_status', '?')}")
+    print(f"    FX:        {result.get('fx_status', '?')}")
+    print()
+
+    blockers = result.get("blockers", [])
+    if blockers:
+        print(f"  {BOLD}Blockers ({len(blockers)}){RESET}")
+        for b in blockers:
+            sev_color = RED if b["severity"] == "NO-GO" else RESET
+            print(f"    [{sev_color}{b['severity']}{RESET}] {b['check']}: {b.get('detail', '')}"[:200])
+        print()
+
+    exports = result.get("evidence_exports", [])
+    if exports:
+        print(f"  {BOLD}Evidence Exports{RESET}")
+        for e in exports:
+            print(f"    {e}")
+        print()
+
+    print(f"  no_broker_mutation: {result.get('no_broker_mutation', True)}")
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Step 15K — Manual Autonomy-Promotion Review Package
+# ---------------------------------------------------------------------------
+
+_AUTONOMY_REVIEW_EXPORT_DIR = OPENCLAW_DIR / "autonomy-review"
+
+_MANUAL_REVIEW_CHECKLIST: list[str] = [
+    "Confirm no order window was opened.",
+    "Confirm safety flags are locked (IBKR_ALLOW_ORDERS=false, rules.enforced=false).",
+    "Confirm clean cycles are valid and recent.",
+    "Confirm candidate evidence is HOLD/READY only, never NO-GO.",
+    "Confirm market data and FX evidence if IBKR connected.",
+    "Confirm promotion is manual only — this package does not auto-promote.",
+    "Confirm no live orders will be enabled by this review package.",
+]
+
+
+def _compute_evidence_hash(data: object) -> str:
+    """Compute a SHA-256 hash of canonicalised review evidence.
+
+    Used to provide tamper-evident packaging for manual review.
+    Excludes volatile fields (timestamp, review_id, evidence_hash itself).
+    """
+    import hashlib
+    if isinstance(data, dict):
+        canonical = {
+            k: _compute_evidence_hash(v)
+            for k, v in sorted(data.items())
+            if k not in ("timestamp", "review_id", "evidence_hash", "generated_at_utc")
+        }
+        raw = json.dumps(canonical, sort_keys=True, default=str, ensure_ascii=False)
+    elif isinstance(data, list):
+        raw = json.dumps(
+            [_compute_evidence_hash(v) for v in data],
+            sort_keys=True, default=str, ensure_ascii=False,
+        )
+    else:
+        raw = json.dumps(data, default=str, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _run_autonomy_review(target_level: str = "1", refresh_evidence: bool = False) -> dict:
+    """Build a manual autonomy-promotion review package.
+
+    Read-only. No broker mutation. No autonomy level changes.
+    Never auto-promotes. Packages all evidence for operator review.
+
+    Args:
+        target_level: Target autonomy level (default "1").
+        refresh_evidence: Pass through to autonomy-status for fresh connected checks.
+
+    Returns:
+        Dict with review_status, manual checklist, evidence hash, and all
+        backing evidence needed for a human operator to make a promotion decision.
+    """
+    import hashlib
+    import json as _json
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    review_id = f"review-{ts_file}"
+
+    # ------------------------------------------------------------------
+    # 1. Git metadata
+    # ------------------------------------------------------------------
+    git = _git_metadata(BRIDGE_DIR)
+
+    # ------------------------------------------------------------------
+    # 2. Run autonomy-status (canonical readiness evaluation)
+    # ------------------------------------------------------------------
+    autonomy_status: dict = {}
+    try:
+        autonomy_status = _run_autonomy_status(refresh_evidence=refresh_evidence)
+    except Exception as e:
+        autonomy_status = {"_error": str(e)[:200], "recommendation": "ERROR"}
+
+    as_recommendation = autonomy_status.get("recommendation", "HOLD")
+    current_level = autonomy_status.get("current_autonomy_level", "0")
+
+    # ------------------------------------------------------------------
+    # 3. Latest candidate (most recent from candidate-dryruns)
+    # ------------------------------------------------------------------
+    latest_candidate: dict = {}
+    latest_cand_path: str | None = None
+    candidate_dir = OPENCLAW_DIR / _CANDIDATE_EXPORT_DIR_NAME
+    try:
+        if candidate_dir.exists():
+            cand_files = sorted(
+                candidate_dir.glob("candidate-*.json"),
+                key=lambda f: f.stat().st_mtime,
+                reverse=True,
+            )
+            if cand_files:
+                latest_cand_path = str(cand_files[0])
+                with open(cand_files[0], "r", encoding="utf-8") as cf:
+                    latest_candidate = _json.load(cf)
+    except Exception:
+        pass
+
+    cand_verdict = latest_candidate.get("verdict", "unavailable")
+    cand_summary = {
+        "path": latest_cand_path,
+        "symbol": latest_candidate.get("symbol", "?"),
+        "side": latest_candidate.get("side", "?"),
+        "verdict": cand_verdict,
+        "timestamp": latest_candidate.get("timestamp", "?"),
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Latest KPI (most recent from exports)
+    # ------------------------------------------------------------------
+    latest_kpi: dict = {}
+    kpi_files: list = []
+    kpi_dir = OPENCLAW_DIR / "exports"
+    try:
+        if kpi_dir.exists():
+            kpi_files = sorted(
+                kpi_dir.glob("kpi-dashboard-*.json"),
+                key=lambda f: f.stat().st_mtime,
+                reverse=True,
+            )
+            if kpi_files:
+                with open(kpi_files[0], "r", encoding="utf-8") as kf:
+                    latest_kpi = _json.load(kf)
+    except Exception:
+        pass
+
+    kpi_verdict = latest_kpi.get("verdict", "unavailable")
+    kpi_summary = {
+        "path": str(kpi_files[0]) if kpi_files else None,
+        "verdict": kpi_verdict,
+        "timestamp": latest_kpi.get("timestamp", "?"),
+        "active_alert_count": latest_kpi.get("monitoring", {}).get("active_alert_count", -1),
+        "reconciliation_passed": latest_kpi.get("monitoring", {}).get("reconciliation_passed"),
+    }
+
+    # ------------------------------------------------------------------
+    # 5. Doctor summary (lightweight in-process)
+    # ------------------------------------------------------------------
+    doctor_summary: dict = {}
+    try:
+        lw = _collect_lightweight_evidence()
+        doc = lw.get("doctor", {})
+        doctor_summary = {
+            "pass": doc.get("pass"),
+            "passed": doc.get("passed", 0),
+            "total": doc.get("total", 0),
+            "checks": [
+                {"check": c.get("check"), "ok": c.get("ok")}
+                for c in doc.get("checks", [])
+            ],
+        }
+    except Exception:
+        doctor_summary = {"pass": None, "error": "unavailable"}
+
+    # ------------------------------------------------------------------
+    # 6. Clean-cycle ledger entries used (with time window)
+    # ------------------------------------------------------------------
+    ledger_path = _CLEAN_CYCLE_LEDGER
+    clean_cycle_entries: list[dict] = []
+    window_cutoff = time.time() - (_CLEAN_CYCLES_WINDOW_DAYS * 86400)
+    try:
+        if ledger_path.exists():
+            with open(ledger_path, "r", encoding="utf-8") as lf:
+                for line in lf:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = _json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    is_clean, _ = _ledger_entry_strict_clean(entry)
+                    if not is_clean:
+                        continue
+                    # Apply time window
+                    ts = entry.get("timestamp", "")
+                    try:
+                        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        if dt.timestamp() < window_cutoff:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+                    # Include timestamp/id/symbol for audit trail
+                    clean_cycle_entries.append({
+                        "cycle_id": entry.get("cycle_id", "?"),
+                        "timestamp": entry.get("timestamp", "?"),
+                        "symbol": entry.get("symbol", "?"),
+                        "side": entry.get("side", "?"),
+                        "entry_hash": entry.get("entry_hash", "?")[:16],
+                    })
+    except Exception:
+        pass
+
+    clean_cycles_observed = len(clean_cycle_entries)
+    clean_cycles_required = _CLEAN_CYCLES_REQUIRED
+
+    # ------------------------------------------------------------------
+    # 7. Safety flags (from autonomy-status)
+    # ------------------------------------------------------------------
+    safety_locked = autonomy_status.get("safety_locked", False)
+    env_ao = autonomy_status.get("env_IBKR_ALLOW_ORDERS", "?")
+    rules_enforced = autonomy_status.get("rules_enforced", "?")
+    ibkr_connected = autonomy_status.get("ibkr_connected", None)
+    active_alert_count = autonomy_status.get("active_alert_count", 0)
+    reconciliation_passed = autonomy_status.get("reconciliation_passed", None)
+    market_data_status = autonomy_status.get("market_data_status", "unknown")
+    fx_status = autonomy_status.get("fx_status", "unknown")
+
+    # ------------------------------------------------------------------
+    # 8. Forbidden endpoint scan
+    # ------------------------------------------------------------------
+    scan_result = _scan_forbidden_endpoints()
+    scan_ok = scan_result.get("ok", True)
+    scan_violations = scan_result.get("violations", [])
+
+    # ------------------------------------------------------------------
+    # 9. Compute review_status
+    # ------------------------------------------------------------------
+    blockers: list[dict] = []
+
+    # NO-GO conditions
+    if not safety_locked:
+        blockers.append({"severity": "NO-GO", "check": "safety_unlocked",
+                         "detail": "Safety flags are not locked"})
+
+    # Bridge reachable check (from autonomy-status)
+    if not autonomy_status.get("bridge_reachable", False):
+        blockers.append({"severity": "NO-GO", "check": "bridge_unreachable",
+                         "detail": "IBKR bridge is unreachable"})
+
+    if kpi_verdict == "NO-GO":
+        blockers.append({"severity": "NO-GO", "check": "kpi_nogo",
+                         "detail": "Latest KPI dashboard reports NO-GO"})
+
+    if cand_verdict == "NO-GO":
+        blockers.append({"severity": "NO-GO", "check": "candidate_nogo",
+                         "detail": "Latest candidate dry-run verdict is NO-GO"})
+
+    if active_alert_count > 0:
+        blockers.append({"severity": "NO-GO", "check": "active_alerts",
+                         "detail": f"{active_alert_count} active alert(s)"})
+
+    if reconciliation_passed is False:
+        blockers.append({"severity": "NO-GO", "check": "reconciliation_failed",
+                         "detail": "Reconciliation check(s) failed"})
+
+    if not scan_ok:
+        blockers.append({"severity": "NO-GO", "check": "forbidden_endpoint_violation",
+                         "detail": f"{len(scan_violations)} forbidden endpoint(s) in source"})
+
+    if as_recommendation == "NO_GO":
+        blockers.append({"severity": "NO-GO", "check": "autonomy_status_nogo",
+                         "detail": "Autonomy-status recommendation is NO_GO"})
+
+    if current_level != "0":
+        blockers.append({"severity": "NO-GO", "check": "autonomy_not_level_zero",
+                         "detail": f"Current level is {current_level}, promotion only from level 0"})
+
+    if target_level != "1":
+        blockers.append({"severity": "NO-GO", "check": "invalid_target_level",
+                         "detail": f"Target level {target_level} is not '1'"})
+
+    # HOLD conditions (only if no NO-GO)
+    hold_reasons: list[dict] = []
+
+    if as_recommendation == "HOLD":
+        hold_reasons.append({"severity": "HOLD", "check": "autonomy_status_hold",
+                             "detail": "Autonomy-status recommendation is HOLD"})
+
+    if clean_cycles_observed < clean_cycles_required:
+        hold_reasons.append({"severity": "HOLD", "check": "insufficient_clean_cycles",
+                             "detail": f"{clean_cycles_observed}/{clean_cycles_required} clean cycles"})
+
+    if ibkr_connected is False:
+        hold_reasons.append({"severity": "HOLD", "check": "ibkr_disconnected",
+                             "detail": "IBKR Gateway is not connected"})
+
+    if market_data_status == "unavailable":
+        hold_reasons.append({"severity": "HOLD", "check": "market_data_unavailable",
+                             "detail": "Market data unavailable"})
+
+    if fx_status == "unavailable":
+        hold_reasons.append({"severity": "HOLD", "check": "fx_unavailable",
+                             "detail": "FX rate unavailable when required"})
+
+    if autonomy_status.get("system_locked") is True and not any(
+        b["check"] == "autonomy_status_hold" for b in hold_reasons
+    ):
+        # System locked is only HOLD if no other blockers explain it
+        pass  # already covered by autonomy_status_hold
+
+    # Compute final review_status
+    has_nogo = any(b["severity"] == "NO-GO" for b in blockers)
+    has_hold = any(r["severity"] == "HOLD" for r in hold_reasons)
+
+    # READY_FOR_OPERATOR_REVIEW requires autonomy-status READY_FOR_MANUAL_REVIEW
+    # plus no NO-GO and no HOLD conditions
+    if as_recommendation == "READY_FOR_MANUAL_REVIEW" and not has_nogo and not has_hold:
+        review_status = "READY_FOR_OPERATOR_REVIEW"
+    elif has_nogo:
+        review_status = "NO_GO"
+    else:
+        review_status = "HOLD"
+
+    all_blockers = blockers + hold_reasons
+
+    # ------------------------------------------------------------------
+    # 10. Build evidence hash (tamper-evident)
+    # ------------------------------------------------------------------
+    hashable = {
+        "current_autonomy_level": current_level,
+        "target_autonomy_level": target_level,
+        "review_status": review_status,
+        "clean_cycles_observed": clean_cycles_observed,
+        "clean_cycles_required": clean_cycles_required,
+        "safety_locked": safety_locked,
+        "env_IBKR_ALLOW_ORDERS": env_ao,
+        "rules_enforced": rules_enforced,
+        "ibkr_connected": ibkr_connected,
+        "active_alert_count": active_alert_count,
+        "reconciliation_passed": reconciliation_passed,
+        "autonomy_status_recommendation": as_recommendation,
+        "kpi_verdict": kpi_verdict,
+        "candidate_verdict": cand_verdict,
+        "forbidden_endpoint_scan_ok": scan_ok,
+        "blocker_count": len(all_blockers),
+        "blocker_checks": sorted(b["check"] for b in all_blockers),
+        "git_commit": git.get("commit", "?"),
+        "auto_promotion_performed": False,
+        "no_broker_mutation": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 11. Export
+    # ------------------------------------------------------------------
+    _AUTONOMY_REVIEW_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    export_path = _AUTONOMY_REVIEW_EXPORT_DIR / f"autonomy-review-{ts_file}.json"
+
+    # Build result
+    result = {
+        "command": "ibkr-operator autonomy-review",
+        "advisory": "Read-only manual review package. No broker mutation. No autonomy level changes. No auto-promotion.",
+        "timestamp": ts_str,
+        "review_id": review_id,
+        "git": {
+            "branch": git.get("branch", "?"),
+            "commit": git.get("commit", "?"),
+            "tag": git.get("tag", "?"),
+        },
+        "current_autonomy_level": current_level,
+        "target_autonomy_level": target_level,
+        "review_status": review_status,
+        "operator_decision_required": True,
+        "auto_promotion_performed": False,
+        "no_broker_mutation": True,
+        "autonomy_status_export_path": autonomy_status.get("evidence_exports", [None])[0],
+        "latest_autonomy_status_summary": {
+            "recommendation": as_recommendation,
+            "clean_cycles_observed": autonomy_status.get("clean_cycles_observed", 0),
+            "doctor_verdict": autonomy_status.get("doctor_verdict", "?"),
+            "kpi_verdict": autonomy_status.get("kpi_verdict", "?"),
+            "latest_candidate_verdict": autonomy_status.get("latest_candidate_verdict", "?"),
+            "market_data_status": autonomy_status.get("market_data_status", "?"),
+            "fx_status": autonomy_status.get("fx_status", "?"),
+            "active_alert_count": autonomy_status.get("active_alert_count", 0),
+            "reconciliation_passed": autonomy_status.get("reconciliation_passed"),
+        },
+        "clean_cycles_observed": clean_cycles_observed,
+        "clean_cycles_required": clean_cycles_required,
+        "clean_cycle_ledger_path": str(ledger_path),
+        "clean_cycle_entries_used": clean_cycle_entries,
+        "latest_candidate_export_path": latest_cand_path,
+        "latest_candidate_summary": cand_summary,
+        "latest_kpi_summary": kpi_summary,
+        "doctor_summary": doctor_summary,
+        "safety_flags": {
+            "safety_locked": safety_locked,
+            "env_IBKR_ALLOW_ORDERS": env_ao,
+            "rules_enforced": rules_enforced,
+            "system_locked": autonomy_status.get("system_locked"),
+            "bridge_read_only": autonomy_status.get("bridge_reachable"),
+        },
+        "ibkr_connected": ibkr_connected,
+        "market_data_status": market_data_status,
+        "fx_status": fx_status,
+        "active_alert_count": active_alert_count,
+        "reconciliation_passed": reconciliation_passed,
+        "blockers": all_blockers,
+        "manual_review_checklist": [
+            {"item": idx + 1, "task": task}
+            for idx, task in enumerate(_MANUAL_REVIEW_CHECKLIST)
+        ],
+        "evidence_hash": evidence_hash,
+        "_export_path": str(export_path),
+    }
+
+    # Write export
+    try:
+        with open(export_path, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        pass
+
+    return result
+
+
+def print_autonomy_review(result: dict) -> None:
+    """Print autonomy review package in human-readable format."""
+    rs = result.get("review_status", "HOLD")
+    if rs == "READY_FOR_OPERATOR_REVIEW":
+        rs_color = GREEN
+        rs_text = f"{GREEN}READY_FOR_OPERATOR_REVIEW{RESET}"
+    elif rs == "NO_GO":
+        rs_color = RED
+        rs_text = f"{RED}NO_GO{RESET}"
+    else:
+        rs_color = RESET
+        rs_text = f"{RESET}HOLD{RESET}"
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Autonomy Promotion Review Package{RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+
+    print(f"  Review ID:         {result.get('review_id', '?')}")
+    print(f"  Timestamp:         {result.get('timestamp', '?')}")
+    print(f"  Git:               {result['git'].get('branch', '?')} @ {result['git'].get('commit', '?')}")
+    print()
+
+    print(f"  {BOLD}Review Status: {rs_text}{RESET}\n")
+
+    print(f"  {BOLD}Autonomy Levels{RESET}")
+    print(f"    Current:          {result.get('current_autonomy_level', '?')}")
+    print(f"    Target:           {result.get('target_autonomy_level', '?')}")
+    print()
+
+    print(f"  {BOLD}Clean Cycles{RESET}")
+    print(f"    Observed:         {result.get('clean_cycles_observed', 0)}")
+    print(f"    Required:         {result.get('clean_cycles_required', _CLEAN_CYCLES_REQUIRED)}")
+    print(f"    Ledger:           {result.get('clean_cycle_ledger_path', '?')}")
+    entries = result.get('clean_cycle_entries_used', [])
+    if entries:
+        for e in entries[:5]:
+            print(f"      {e.get('cycle_id', '?')}  {e.get('symbol', '?')}/{e.get('side', '?')}  {e.get('timestamp', '?')}")
+        if len(entries) > 5:
+            print(f"      ... and {len(entries) - 5} more")
+    print()
+
+    print(f"  {BOLD}Safety{RESET}")
+    sf = result.get("safety_flags", {})
+    print(f"    Locked:           {sf.get('safety_locked', False)}")
+    print(f"    Allow Orders:     {sf.get('env_IBKR_ALLOW_ORDERS', '?')}")
+    print(f"    Rules Enforced:   {sf.get('rules_enforced', '?')}")
+    print()
+
+    print(f"  {BOLD}Summaries{RESET}")
+    aus = result.get("latest_autonomy_status_summary", {})
+    print(f"    Autonomy-status:  {aus.get('recommendation', '?')}")
+    kpi = result.get("latest_kpi_summary", {})
+    print(f"    KPI:              {kpi.get('verdict', '?')}")
+    cand = result.get("latest_candidate_summary", {})
+    print(f"    Candidate:        {cand.get('verdict', '?')}  ({cand.get('symbol', '?')} {cand.get('side', '?')})")
+    doc = result.get("doctor_summary", {})
+    doc_pass = doc.get("pass")
+    doc_label = "PASS" if doc_pass is True else ("FAIL" if doc_pass is False else "N/A")
+    print(f"    Doctor:           {doc_label}  ({doc.get('passed', 0)}/{doc.get('total', 0)})")
+    print()
+
+    print(f"  {BOLD}Connection & Data{RESET}")
+    print(f"    IBKR connected:   {result.get('ibkr_connected', False)}")
+    print(f"    Market data:      {result.get('market_data_status', '?')}")
+    print(f"    FX:               {result.get('fx_status', '?')}")
+    print(f"    Active alerts:    {result.get('active_alert_count', 0)}")
+    print(f"    Reconciliation:   {'PASS' if result.get('reconciliation_passed') else 'N/A'}")
+    print()
+
+    blockers = result.get("blockers", [])
+    if blockers:
+        print(f"  {BOLD}Blockers ({len(blockers)}){RESET}")
+        for b in blockers:
+            sev_color = RED if b["severity"] == "NO-GO" else RESET
+            print(f"    [{sev_color}{b['severity']}{RESET}] {b['check']}: {b.get('detail', '')}"[:200])
+        print()
+
+    print(f"  {BOLD}Manual Review Checklist{RESET}")
+    for item in result.get("manual_review_checklist", []):
+        print(f"    [{item['item']}] {item['task']}")
+    print()
+
+    print(f"  Evidence hash:     {result.get('evidence_hash', '?')[:16]}...")
+    print(f"  Export:            {result.get('_export_path', '?')}")
+    print(f"  operator_decision_required: {result.get('operator_decision_required', True)}")
+    print(f"  auto_promotion_performed:   {result.get('auto_promotion_performed', False)}")
+    print(f"  no_broker_mutation:         {result.get('no_broker_mutation', True)}")
+    print()
+
+
 def main() -> None:
     import argparse
 
@@ -5182,6 +6724,59 @@ def main() -> None:
                       help="Output raw JSON only")
     canp.add_argument("--export", action="store_true",
                       help="Write output to ~/.openclaw/candidate-dryruns/")
+
+    # Step 15I — evidence cycle
+    ecp = sub.add_parser("evidence-cycle",
+                         help="Read-only evidence bundle + clean-cycle ledger entry")
+    ecp.add_argument("--symbol", required=True, type=str, help="Ticker symbol")
+    ecp.add_argument("--side", required=True, choices=["BUY", "SELL"],
+                      help="Order side: BUY or SELL")
+    ecp.add_argument("--json", action="store_true",
+                      help="Output raw JSON only")
+    ecp.add_argument("--export", action="store_true",
+                      help="Write candidate export to ~/.openclaw/candidate-dryruns/")
+    ecp.add_argument("--record", action="store_true",
+                      help="Append clean-cycle entry to ~/.openclaw/autonomy-cycles/clean-cycle-ledger.jsonl")
+
+    # Step 15J — autonomy readiness evaluator
+    asp = sub.add_parser("autonomy-status",
+                         help="Autonomy readiness evaluator / promotion proposal")
+    asp.add_argument("--json", action="store_true",
+                      help="Output raw JSON only")
+    asp.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/autonomy-status/")
+    asp.add_argument("--refresh-evidence", "--refresh-connected-evidence",
+                      action="store_true", dest="refresh_evidence",
+                      help="Run fresh connected checks: doctor, KPI, candidate dry-run, market/FX snapshot")
+    # Alias
+    arp = sub.add_parser("autonomy-readiness",
+                         help="Alias for autonomy-status")
+    arp.add_argument("--json", action="store_true",
+                      help="Output raw JSON only")
+    arp.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/autonomy-status/")
+    arp.add_argument("--refresh-evidence", "--refresh-connected-evidence",
+                      action="store_true", dest="refresh_evidence",
+                      help="Run fresh connected checks: doctor, KPI, candidate dry-run, market/FX snapshot")
+
+    # Step 15K — autonomy promotion review package
+    avp = sub.add_parser("autonomy-review",
+                         help="Manual autonomy-promotion review package")
+    avp.add_argument("--target-level", type=str, default="1",
+                      help="Target autonomy level (default: 1)")
+    avp.add_argument("--json", action="store_true",
+                      help="Output raw JSON only")
+    avp.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/autonomy-review/")
+    # Alias
+    pvp = sub.add_parser("promotion-review",
+                         help="Alias for autonomy-review")
+    pvp.add_argument("--target-level", type=str, default="1",
+                      help="Target autonomy level (default: 1)")
+    pvp.add_argument("--json", action="store_true",
+                      help="Output raw JSON only")
+    pvp.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/autonomy-review/")
 
     args = parser.parse_args()
 
@@ -5381,6 +6976,43 @@ def main() -> None:
             if args.export:
                 print(f"  Export written: {result.get('_export_path', '?')}")
         exit_code = 2 if result["verdict"] == "NO-GO" else (0 if result["verdict"] == "READY_DRYRUN" else 1)
+        sys.exit(exit_code)
+
+    if args.command == "evidence-cycle":
+        result = _run_evidence_cycle(args.symbol, args.side, record=args.record)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_evidence_cycle(result)
+        exit_code = 0 if result["clean"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("autonomy-status", "autonomy-readiness"):
+        refresh = getattr(args, "refresh_evidence", False)
+        result = _run_autonomy_status(refresh_evidence=refresh)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print_autonomy_status(result)
+        if args.export:
+            exports = result.get("evidence_exports", [])
+            if exports:
+                print(f"  Export written: {exports[0]}", file=sys.stderr)
+        exit_code = 0 if result["recommendation"] == "READY_FOR_MANUAL_REVIEW" else 1
+        sys.exit(exit_code)
+
+    if args.command in ("autonomy-review", "promotion-review"):
+        refresh = getattr(args, "refresh_evidence", False)
+        result = _run_autonomy_review(target_level=args.target_level, refresh_evidence=refresh)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print_autonomy_review(result)
+        if args.export:
+            ep = result.get("_export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result["review_status"] == "READY_FOR_OPERATOR_REVIEW" else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

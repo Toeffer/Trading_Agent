@@ -22,29 +22,31 @@ except Exception:
 APP_NAME = "ibkr-openclaw-bridge"
 app = FastAPI(title=APP_NAME)
 
+# Step 15H: Runtime quieting — debug flag gates verbose MEM/REQ logging
+_IBKR_BRIDGE_DEBUG = os.getenv("IBKR_BRIDGE_DEBUG", "").lower() in ("1", "true", "yes", "on")
 
-
-# OOM_TRACE_MIN
-import logging as _mlog
-_M=_mlog.getLogger("ibkr-bridge.mem")
-def _m():
-    d={}
-    try:
-        for l in open(f"/proc/{os.getpid()}/status"):
-            if l.startswith(("VmRSS:","VmPeak:","VmSize:","Threads:")):
-                k,v=l.split(":",1); d[k]=v.strip()
-    except Exception as e: d["err"]=repr(e)
-    return d
-async def _ms():
-    while True:
-        _M.warning("MEM %s",_m()); await asyncio.sleep(1)
-@app.on_event("startup")
-async def _mst(): asyncio.create_task(_ms())
-@app.middleware("http")
-async def _mt(req, call_next):
-    _M.warning("REQ_START %s %s %s",req.method,req.url.path,_m())
-    try: return await call_next(req)
-    finally: _M.warning("REQ_END %s %s %s",req.method,req.url.path,_m())
+if _IBKR_BRIDGE_DEBUG:
+    # OOM_TRACE_MIN — only active when IBKR_BRIDGE_DEBUG=true
+    import logging as _mlog
+    _M=_mlog.getLogger("ibkr-bridge.mem")
+    def _m():
+        d={}
+        try:
+            for l in open(f"/proc/{os.getpid()}/status"):
+                if l.startswith(("VmRSS:","VmPeak:","VmSize:","Threads:")):
+                    k,v=l.split(":",1); d[k]=v.strip()
+        except Exception as e: d["err"]=repr(e)
+        return d
+    async def _ms():
+        while True:
+            _M.warning("MEM %s",_m()); await asyncio.sleep(1)
+    @app.on_event("startup")
+    async def _mst(): asyncio.create_task(_ms())
+    @app.middleware("http")
+    async def _mt(req, call_next):
+        _M.warning("REQ_START %s %s %s",req.method,req.url.path,_m())
+        try: return await call_next(req)
+        finally: _M.warning("REQ_END %s %s %s",req.method,req.url.path,_m())
 # /OOM_TRACE_MIN
 
 
@@ -531,9 +533,13 @@ def _internal_fetch_quote(symbol: str) -> dict:
         if v is None:
             return None
         try:
-            return float(v)
+            fv = float(v)
         except (ValueError, TypeError):
             return None
+        # IBKR returns -1.0 as sentinel for unavailable values in delayed mode
+        if fv <= -1.0:
+            return None
+        return fv
 
     result = {
         "symbol": contract.symbol,
@@ -591,9 +597,13 @@ def _internal_fetch_bars(symbol: str) -> list:
         if v is None:
             return None
         try:
-            return float(v)
+            fv = float(v)
         except (ValueError, TypeError):
             return None
+        # IBKR returns -1.0 as sentinel for unavailable values in delayed mode
+        if fv <= -1.0:
+            return None
+        return fv
 
     result = []
     for b in raw:
@@ -2244,43 +2254,47 @@ def market_bars(req: BarsRequest):
         "bars": out,
     }
 
-def _proc_mem_kb() -> dict:
-    out = {}
-    try:
-        with open(f"/proc/{os.getpid()}/status", "r", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith(("VmRSS:", "VmPeak:", "VmSize:")):
-                    key, value = line.split(":", 1)
-                    out[key] = value.strip()
-    except OSError as exc:
-        out["error"] = str(exc)
-    return out
+if _IBKR_BRIDGE_DEBUG:
+
+    def _proc_mem_kb() -> dict:
+        out = {}
+        try:
+            with open(f"/proc/{os.getpid()}/status", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith(("VmRSS:", "VmPeak:", "VmSize:")):
+                        key, value = line.split(":", 1)
+                        out[key] = value.strip()
+        except OSError as exc:
+            out["error"] = str(exc)
+        return out
 
 
-@app.middleware("http")
-async def memory_trace_middleware(request: Request, call_next):
-    start = time.monotonic()
-    before = _proc_mem_kb()
-    logger.warning(
-        "REQ_START path=%s method=%s mem=%s",
-        request.url.path,
-        request.method,
-        before,
-    )
-
-    try:
-        response = await call_next(request)
-        return response
-    finally:
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        after = _proc_mem_kb()
+    @app.middleware("http")
+    async def memory_trace_middleware(request: Request, call_next):
+        start = time.monotonic()
+        before = _proc_mem_kb()
         logger.warning(
-            "REQ_END path=%s method=%s elapsed_ms=%s mem=%s",
+            "REQ_START path=%s method=%s mem=%s",
             request.url.path,
             request.method,
-            elapsed_ms,
-            after,
+            before,
         )
+
+        try:
+            response = await call_next(request)
+            return response
+        finally:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            after = _proc_mem_kb()
+            logger.warning(
+                "REQ_END path=%s method=%s elapsed_ms=%s mem=%s",
+                request.url.path,
+                request.method,
+                elapsed_ms,
+                after,
+            )
+
+# /MEMORY_TRACE_DEBUG
 
 # ===========================================================================
 # Phase 2F — Read-Only Monitoring Endpoints
@@ -3396,7 +3410,7 @@ def status_dashboard() -> Dict[str, Any]:
     }
 
 
-# OOM_BACKPRESSURE_HARD
+# OOM_BACKPRESSURE_HARD — Step 15H: priority-tiered load shedding
 from fastapi.responses import JSONResponse as _BPJR
 import threading as _BPTH
 import logging as _BPLOG
@@ -3405,6 +3419,22 @@ _BP_LOCK=_BPTH.Lock()
 _BP_ACTIVE=0
 _BP_MAX_ACTIVE=4
 _BP_MAX_RSS_KB=1800000
+
+# Step 15H: Priority tiers — lower number = higher priority
+_BP_TIER0 = ("/health", "/monitor/liveness")
+_BP_TIER1 = ("/market/", "/snapshot")
+_BP_TIER3 = ("/audit/", "/monitor/reconciliation", "/monitor/positions/drift")
+
+def _bp_path_tier(path: str) -> int:
+    if path in _BP_TIER0:
+        return 0
+    for pfx in _BP_TIER1:
+        if path.startswith(pfx):
+            return 1
+    for pfx in _BP_TIER3:
+        if path.startswith(pfx):
+            return 3
+    return 2
 
 def _bp_rss_kb():
     try:
@@ -3418,22 +3448,19 @@ def _bp_rss_kb():
 @app.middleware("http")
 async def _oom_backpressure_hard(req, call_next):
     global _BP_ACTIVE
-    if req.url.path in ("/health", "/monitor/liveness"):
+    tier = _bp_path_tier(req.url.path)
+    if tier == 0:
         return await call_next(req)
     rss=_bp_rss_kb()
     with _BP_LOCK:
         active=_BP_ACTIVE
+        # Tier 3 (audit) load-shed at half capacity
+        if tier == 3 and active >= _BP_MAX_ACTIVE // 2:
+            _BP_LOG.error("BP_REJECT_AUDIT path=%s active=%s rss_kb=%s tier=%s", req.url.path, active, rss, tier)
+            return _BPJR({"ok":False,"error":"bridge_backpressure","path":req.url.path,"active":active,"rss_kb":rss,"max_active":_BP_MAX_ACTIVE,"max_rss_kb":_BP_MAX_RSS_KB,"tier":tier,"detail":"Audit load-shed — retry when idle"}, status_code=503)
         if active >= _BP_MAX_ACTIVE or rss >= _BP_MAX_RSS_KB:
-            _BP_LOG.error("BP_REJECT path=%s active=%s rss_kb=%s", req.url.path, active, rss)
-            return _BPJR({
-                "ok": False,
-                "error": "bridge_backpressure",
-                "path": req.url.path,
-                "active": active,
-                "rss_kb": rss,
-                "max_active": _BP_MAX_ACTIVE,
-                "max_rss_kb": _BP_MAX_RSS_KB,
-            }, status_code=503)
+            _BP_LOG.error("BP_REJECT path=%s active=%s rss_kb=%s tier=%s", req.url.path, active, rss, tier)
+            return _BPJR({"ok":False,"error":"bridge_backpressure","path":req.url.path,"active":active,"rss_kb":rss,"max_active":_BP_MAX_ACTIVE,"max_rss_kb":_BP_MAX_RSS_KB,"tier":tier}, status_code=503)
         _BP_ACTIVE += 1
     try:
         return await call_next(req)

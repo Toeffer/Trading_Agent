@@ -205,6 +205,9 @@ class TestAutonomyStatus:
             },
             "strategy": {"strategy_exists": True, "autonomy_exists": True},
             "liveness": {"oom_detected": False, "oom_detail": "no OOM evidence", "n_restarts": 0, "k17_ok": True},
+            # Step 15P: session-aware fields
+            "market_session_status": {"session": "rth", "data_availability": "available", "reason": "Inside RTH", "is_tradable_day": True, "in_rth": True, "market_date_et": "2026-06-23"},
+            "market_data_runtime_ok": True,
         }
 
     def _make_lightweight_unlocked(self):
@@ -237,6 +240,9 @@ class TestAutonomyStatus:
             },
             "strategy": {"strategy_exists": True, "autonomy_exists": True},
             "liveness": {"oom_detected": False, "oom_detail": "no OOM evidence", "n_restarts": 0, "k17_ok": True},
+            # Step 15P: session-aware fields
+            "market_session_status": {"session": "rth", "data_availability": "available", "reason": "Inside RTH", "is_tradable_day": True, "in_rth": True, "market_date_et": "2026-06-23"},
+            "market_data_runtime_ok": True,
         }
 
     def _make_kpi_go(self):
@@ -1308,6 +1314,8 @@ for b in blockers:
             "safety": {"read_only": True, "bridge_allow_orders": False, "env_IBKR_ALLOW_ORDERS": "false", "rules_enforced": "false", "system_locked": True},
             "strategy": {"strategy_exists": True, "autonomy_exists": True},
             "liveness": {"oom_detected": False, "oom_detail": "no OOM", "n_restarts": 0, "k17_ok": True},
+            "market_session_status": {"session": "rth", "data_availability": "available", "reason": "Inside RTH", "is_tradable_day": True, "in_rth": True, "market_date_et": "2026-06-23"},
+            "market_data_runtime_ok": True,
         }
         kpi = {
             "verdict": "GO",

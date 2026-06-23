@@ -246,6 +246,8 @@ class TestVerdictLockedBaseline:
                 "system_locked": True,
             },
             "strategy": {"strategy_exists": True, "autonomy_exists": True},
+            "market_session_status": {"session": "rth", "data_availability": "available", "reason": "Inside RTH", "is_tradable_day": True, "in_rth": True, "market_date_et": "2026-06-23"},
+            "market_data_runtime_ok": True,
         }
 
     def test_mocked_dirty_state_not_clean(self):
@@ -570,6 +572,8 @@ class TestDoctorParsing:
                 "system_locked": True,
             },
             "strategy": {"strategy_exists": True, "autonomy_exists": True},
+            "market_session_status": {"session": "rth", "data_availability": "available", "reason": "Inside RTH", "is_tradable_day": True, "in_rth": True, "market_date_et": "2026-06-23"},
+            "market_data_runtime_ok": True,
         }
 
     # -- Test a: full PASS doctor → no doctor_non_pass --
@@ -813,4 +817,6 @@ class TestDoctorParsing:
                 "system_locked": True,
             },
             "strategy": {"strategy_exists": True, "autonomy_exists": True},
+            "market_session_status": {"session": "rth", "data_availability": "available", "reason": "Inside RTH", "is_tradable_day": True, "in_rth": True, "market_date_et": "2026-06-23"},
+            "market_data_runtime_ok": True,
         }

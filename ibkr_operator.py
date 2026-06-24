@@ -5068,6 +5068,544 @@ def _print_market_data_diagnostics(result: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Step 15R — Market-data recovery drill
+# ---------------------------------------------------------------------------
+
+_MD_RECOVERY_DRILL_EXPORT_DIR = OPENCLAW_DIR / "market-data-drills"
+
+_MD_RECOVERY_DRILL_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not open an order window.",
+    "This command did not call any order endpoint.",
+    "This command did not read H1 token.",
+    "This command did not place, modify, cancel, or transmit any order.",
+    "This command did not enable IBKR_ALLOW_ORDERS.",
+    "This command did not enable rules.enforced.",
+    "This command did not change any config or autonomy files.",
+    "This command is purely diagnostic/recovery — no broker/account/order mutation.",
+]
+
+
+def _capture_safety_flags_raw() -> dict:
+    """Capture safety flags before/after recovery drill.
+
+    Reads IBKR_ALLOW_ORDERS from .env and rules.enforced from rules YAML.
+    Returns dict suitable for safety_flags_before/after fields.
+    Never raises (falls back to "?" on any error).
+    """
+    env_path = BRIDGE_DIR / ".env"
+    rules_path = Path.home() / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
+    try:
+        allow_orders = _read_env_safety(env_path)
+    except Exception:
+        allow_orders = {"IBKR_ALLOW_ORDERS": "?"}
+    try:
+        rules = _read_rules_enforced(rules_path)
+    except Exception:
+        rules = {"enforced": "?"}
+    return {
+        "env_IBKR_ALLOW_ORDERS": allow_orders.get("IBKR_ALLOW_ORDERS", "?"),
+        "rules_enforced": rules.get("enforced", "?"),
+        "capture_timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def _capture_guard_state_snapshot() -> dict:
+    """Capture guard-state.json hash and daily_trade_count for mutation detection.
+
+    Returns dict with path, hash, daily_trade_count, and timestamp.
+    Used before/after recovery drill to verify no guard-state mutation occurred.
+    """
+    import hashlib
+    import json as _json
+    guard_path = OPENCLAW_DIR / "guard-state.json"
+    result = {
+        "guard_state_path": str(guard_path),
+        "guard_state_hash": None,
+        "daily_trade_count": None,
+        "capture_timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "file_exists": guard_path.exists(),
+    }
+    if guard_path.exists():
+        try:
+            raw = guard_path.read_bytes()
+            result["guard_state_hash"] = hashlib.sha256(raw).hexdigest()
+            data = _json.loads(raw.decode())
+            result["daily_trade_count"] = data.get("daily_trade_count", 0)
+        except Exception as e:
+            result["_error"] = str(e)[:200]
+    return result
+
+
+def _make_recovery_drill_error_result(
+    exc: Exception,
+    symbol: str = "?",
+) -> dict:
+    """Build a valid drill result dict for internal exceptions.
+
+    Always returns parseable JSON-safe dict with:
+    - final_severity=NO_GO
+    - drill_result=no_go_runtime_error
+    - bridge_runtime_ok=false
+    - no_broker_mutation=true
+    - no_order_window_opened=true
+    - internal_exception block with error_type and safe message
+    """
+    import hashlib
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    drill_id = f"md-recovery-drill-{symbol}-{ts_file}"
+    return {
+        "drill_id": drill_id,
+        "command": "ibkr-operator market-data-recovery-drill",
+        "symbol": symbol.upper().strip(),
+        "timestamp_utc": ts_str,
+        "final_severity": "NO_GO",
+        "drill_result": "no_go_runtime_error",
+        "bridge_runtime_ok": False,
+        "ibkr_connected": None,
+        "diagnostics_ran": False,
+        "attempts_requested": 0,
+        "attempts_used": 0,
+        "live_data_available": False,
+        "delayed_data_available": False,
+        "diagnosis": "bridge_runtime_error",
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "safety_flags_unchanged": None,
+        "guard_state_unchanged": None,
+        "internal_exception": True,
+        "error_type": type(exc).__name__,
+        "error_message": str(exc)[:500],
+        "_export_path": None,
+    }
+
+
+def _run_market_data_recovery_drill(
+    symbol: str = "AAPL",
+    attempts: int = 3,
+    sleep_seconds: float = 10.0,
+    connect_if_needed: bool = True,
+) -> dict:
+    """Run market-data recovery drill (Step 15R).
+
+    Orchestrates connect → diagnostics → optional retry → readiness refresh.
+    Read-only aside from /connect (session recovery).
+    No broker mutation, no order window, no H1 token, no config changes.
+    """
+    import hashlib
+    import json as _json
+    import urllib.request
+    import urllib.error
+    import time as _time
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    drill_id = f"md-recovery-drill-{symbol}-{ts_file}"
+    symbol = symbol.upper().strip()
+
+    # Clamp attempts
+    attempts = max(1, min(attempts, 5))
+    sleep_seconds = max(1.0, min(sleep_seconds, 60.0))
+
+    git = _git_metadata(BRIDGE_DIR)
+
+    # ------------------------------------------------------------------
+    # 1. Capture safety flags and guard-state before
+    # ------------------------------------------------------------------
+    safety_before = _capture_safety_flags_raw()
+    guard_state_before = _capture_guard_state_snapshot()
+
+    # ------------------------------------------------------------------
+    # 2. Initial bridge health
+    # ------------------------------------------------------------------
+    initial_health: dict = {}
+    initial_ibkr_connected: bool | None = None
+    try:
+        health_req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(health_req, timeout=10.0) as resp:
+            if resp.status == 200:
+                initial_health = _json.loads(resp.read().decode())
+                initial_ibkr_connected = initial_health.get("connected", None)
+    except Exception:
+        initial_health = {"_error": "unreachable"}
+
+    # ------------------------------------------------------------------
+    # 3. Connect if needed
+    # ------------------------------------------------------------------
+    connect_attempted = False
+    connect_result: dict = {}
+
+    if connect_if_needed and initial_ibkr_connected is False:
+        connect_attempted = True
+        try:
+            connect_req = urllib.request.Request(
+                f"{BRIDGE_URL}/connect",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(connect_req, timeout=30.0) as conn_resp:
+                if conn_resp.status == 200:
+                    connect_result = _json.loads(conn_resp.read().decode())
+                else:
+                    data = conn_resp.read().decode(errors="replace")
+                    try:
+                        connect_result = _json.loads(data) if data else {}
+                    except Exception:
+                        connect_result = {"detail": data[:200]}
+                    connect_result["http_status"] = conn_resp.status
+        except urllib.error.HTTPError as e:
+            connect_result = {"ok": False, "error": f"HTTP {e.code}", "detail": str(e)[:200]}
+        except Exception as e:
+            connect_result = {"ok": False, "error": str(e)[:200]}
+
+        # Brief wait after connect
+        _time.sleep(2.0)
+
+        # Re-check health
+        try:
+            health_req2 = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+            with urllib.request.urlopen(health_req2, timeout=10.0) as resp:
+                if resp.status == 200:
+                    updated_health = _json.loads(resp.read().decode())
+                    initial_health = updated_health
+                    initial_ibkr_connected = updated_health.get("connected", None)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # 4. Per-attempt diagnostics
+    # ------------------------------------------------------------------
+    per_attempt_results: list[dict] = []
+    final_diagnosis = "unknown"
+    final_severity = "HOLD"
+    final_market_data_status = "unknown"
+    drill_result = "unknown"
+    readiness_refresh_attempted = False
+    readiness_export_path: str | None = None
+    readiness_recommendation: str | None = None
+    promotion_safe_to_recheck = False
+    operator_action_required = False
+    bridge_saturated_blocker: dict | None = None
+    operator_actions: list[str] = []
+    blockers: list[dict] = []  # T18: bridge_saturated goes in blockers[] too
+    drill_aborted_early = False
+    drill_abort_reason: str | None = None
+
+    for attempt_num in range(1, attempts + 1):
+        # Step 15R-T18: Pre-attempt backpressure check. If bridge is already
+        # saturated, do not run diagnostics at all — stop immediately.
+        pre_bp = _check_bridge_backpressure()
+        if not pre_bp["ok"]:
+            # Bridge saturated before we even started this attempt
+            attempt_entry = {
+                "attempt_number": attempt_num,
+                "timestamp": ts_str,
+                "bridge_connected": initial_ibkr_connected,
+                "market_session_status": _determine_market_session_status(),
+                "diagnostics_export_path": None,
+                "diagnosis": "bridge_saturated",
+                "severity": "HOLD",
+                "market_data_unavailable_reason": "",
+                "live_market_data_available": False,
+                "delayed_market_data_available": False,
+                "bridge_runtime_ok": True,
+                "contract_qualified": False,
+                "operator_action_required": True,
+                "suggested_operator_actions": [],
+                "backpressure_aborted": True,
+                "backpressure_detail": pre_bp["detail"],
+            }
+            per_attempt_results.append(attempt_entry)
+            drill_aborted_early = True
+            drill_abort_reason = pre_bp["detail"]
+            break
+
+        diag_result = _run_market_data_diagnostics(symbol=symbol)
+
+        attempt_entry = {
+            "attempt_number": attempt_num,
+            "timestamp": diag_result.get("timestamp", ts_str),
+            "bridge_connected": diag_result.get("ibkr_connected"),
+            "market_session_status": diag_result.get("market_session_status", {}),
+            "diagnostics_export_path": diag_result.get("_export_path"),
+            "diagnosis": diag_result.get("diagnosis", "unknown"),
+            "severity": diag_result.get("severity", "HOLD"),
+            "market_data_unavailable_reason": diag_result.get("market_data_unavailable_reason", ""),
+            "live_market_data_available": diag_result.get("live_market_data_available", False),
+            "delayed_market_data_available": diag_result.get("delayed_market_data_available", False),
+            "bridge_runtime_ok": diag_result.get("bridge_runtime_ok", False),
+            "contract_qualified": diag_result.get("contract_qualified", False),
+            "operator_action_required": diag_result.get("operator_action_required", False),
+            "suggested_operator_actions": diag_result.get("suggested_operator_actions", []),
+        }
+        per_attempt_results.append(attempt_entry)
+
+        diag = diag_result.get("diagnosis", "unknown")
+        sev = diag_result.get("severity", "HOLD")
+        live_ok = diag_result.get("live_market_data_available", False)
+        delayed_ok = diag_result.get("delayed_market_data_available", False)
+
+        if diag in ("live_data_available", "delayed_data_available") or live_ok:
+            break
+
+        if diag == "ibkr_disconnected":
+            break
+
+        if diag in ("contract_qualification_failed", "bridge_runtime_error"):
+            break
+
+        # Step 15R-T18: bridge_saturated / cooldown_active — stop retry loop
+        if diag in ("bridge_saturated", "cooldown_active"):
+            break
+
+        # Step 15R-T18: If diagnostics aborted early due to 503, stop retry loop
+        if diag_result.get("aborted_early"):
+            drill_aborted_early = True
+            drill_abort_reason = diag_result.get("abort_reason", "aborted due to backpressure")
+            break
+
+        # For no_tick_stream_timeout / unknown — retry after sleep
+        if attempt_num < attempts:
+            _time.sleep(sleep_seconds)
+
+    # Final attempt result
+    last = per_attempt_results[-1] if per_attempt_results else {}
+    final_diagnosis = last.get("diagnosis", "unknown")
+    final_severity = last.get("severity", "HOLD")
+    live_available = last.get("live_market_data_available", False)
+    delayed_available = last.get("delayed_market_data_available", False)
+
+    if live_available:
+        final_market_data_status = "available"
+    elif delayed_available:
+        final_market_data_status = "delayed_available"
+    else:
+        final_market_data_status = "unavailable"
+
+    # ------------------------------------------------------------------
+    # 5. Determine drill_result
+    # ------------------------------------------------------------------
+    if live_available:
+        drill_result = "recovered"
+        final_severity = "OK"
+    elif delayed_available:
+        session = last.get("market_session_status", {}).get("session", "unknown")
+        if session not in ("rth",):
+            drill_result = "hold_session_not_expected"
+        else:
+            drill_result = "hold_no_tick_stream"
+        final_severity = "HOLD"
+    elif final_diagnosis == "no_tick_stream_timeout":
+        drill_result = "hold_no_tick_stream"
+        final_severity = "HOLD"
+    elif final_diagnosis == "ibkr_disconnected":
+        drill_result = "hold_ibkr_disconnected"
+        final_severity = "HOLD"
+    elif final_diagnosis in ("contract_qualification_failed",):
+        drill_result = "no_go_contract_failure"
+        final_severity = "NO_GO"
+    elif final_diagnosis in ("bridge_runtime_error",):
+        drill_result = "no_go_runtime_error"
+        final_severity = "NO_GO"
+    elif final_diagnosis == "bridge_saturated":
+        drill_result = "hold_bridge_saturated"
+        final_severity = "HOLD"
+        operator_action_required = True
+        bridge_saturated_blocker = {
+            "check": "bridge_saturated",
+            "severity": "HOLD",
+            "detail": (
+                "Bridge read-only endpoint/backpressure saturation; "
+                "retry after cooldown"
+            ),
+        }
+        operator_actions = [
+            "wait for active read-only probes to drain",
+            "run ibkr-operator doctor",
+            "run ibkr-operator kpi",
+            "retry market-data-recovery-drill after cooldown",
+        ]
+        blockers.append(bridge_saturated_blocker)
+    elif final_diagnosis == "cooldown_active":
+        drill_result = "hold_cooldown_active"
+        final_severity = "HOLD"
+        operator_action_required = True
+        cooldown_blocker = {
+            "check": "cooldown_active",
+            "severity": "HOLD",
+            "detail": (
+                "Market-data diagnostic cooldown is active; "
+                "retry after cooldown expires"
+            ),
+        }
+        operator_actions = [
+            "wait for cooldown to expire",
+            "rerun market-data-recovery-drill",
+            "run ibkr-operator doctor",
+            "run ibkr-operator kpi",
+        ]
+        blockers.append(cooldown_blocker)
+    elif "entitlement" in final_diagnosis.lower() or "no_live" in final_diagnosis.lower():
+        drill_result = "hold_no_entitlement"
+        final_severity = "HOLD"
+    else:
+        drill_result = "unknown"
+        final_severity = "HOLD"
+
+    # ------------------------------------------------------------------
+    # 6. Readiness refresh (if recovered or delayed available)
+    # ------------------------------------------------------------------
+    if live_available or delayed_available:
+        try:
+            readiness_refresh_attempted = True
+            autonomy_status = _run_autonomy_status(refresh_evidence=True)
+            readiness_recommendation = autonomy_status.get("recommendation", "?")
+            readiness_export_path = autonomy_status.get("_export_path")
+            promotion_safe_to_recheck = (
+                readiness_recommendation
+                in ("READY_FOR_MANUAL_REVIEW", "HOLD")
+                and autonomy_status.get("market_data_status", "unknown")
+                in ("available", "stale")
+            )
+        except Exception:
+            readiness_refresh_attempted = False
+            readiness_export_path = None
+            readiness_recommendation = None
+
+    # ------------------------------------------------------------------
+    # 7. Safety flags and guard-state after
+    # ------------------------------------------------------------------
+    safety_after = _capture_safety_flags_raw()
+    guard_state_after = _capture_guard_state_snapshot()
+
+    safety_unchanged = (
+        safety_before.get("env_IBKR_ALLOW_ORDERS")
+        == safety_after.get("env_IBKR_ALLOW_ORDERS")
+        and safety_before.get("rules_enforced")
+        == safety_after.get("rules_enforced")
+    )
+
+    guard_state_unchanged = (
+        guard_state_before.get("guard_state_hash") is not None
+        and guard_state_after.get("guard_state_hash") is not None
+        and guard_state_before["guard_state_hash"] == guard_state_after["guard_state_hash"]
+    )
+    guard_daily_tc_before = guard_state_before.get("daily_trade_count", 0) or 0
+    guard_daily_tc_after = guard_state_after.get("daily_trade_count", 0) or 0
+    guard_daily_trade_count_changed = guard_daily_tc_before != guard_daily_tc_after
+
+    # If guard_state changed during the drill (hash mismatch or daily_trade_count
+    # incremented), this is a critical regression. Override final_severity to NO_GO.
+    guard_state_mutated = False
+    if not guard_state_unchanged or guard_daily_trade_count_changed:
+        guard_state_mutated = True
+        final_severity = "NO_GO"
+        if drill_result not in ("no_go_contract_failure", "no_go_runtime_error"):
+            drill_result = "no_go_guard_state_mutation"
+
+    # ------------------------------------------------------------------
+    # 8. Forbidden endpoint scan
+    # ------------------------------------------------------------------
+    forbidden_scan = _scan_forbidden_endpoints()
+
+    # ------------------------------------------------------------------
+    # 9. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "drill_id": drill_id,
+        "symbol": symbol,
+        "attempts": attempts,
+        "connect_if_needed": connect_if_needed,
+        "final_diagnosis": final_diagnosis,
+        "final_severity": final_severity,
+        "drill_result": drill_result,
+        "safety_unchanged": safety_unchanged,
+        "git_commit": git.get("commit", "?"),
+        "no_broker_mutation": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 10. Build result
+    # ------------------------------------------------------------------
+    _MD_RECOVERY_DRILL_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    export_path = _MD_RECOVERY_DRILL_EXPORT_DIR / f"{drill_id}.json"
+
+    result: dict[str, Any] = {
+        "command": "ibkr-operator market-data-recovery-drill",
+        "advisory": (
+            "Read-only market data recovery drill (Step 15R). "
+            "No broker mutation. No order window. No H1 token. "
+            "May call /connect for session recovery only."
+        ),
+        "timestamp": ts_str,
+        "drill_id": drill_id,
+        "git": {
+            "branch": git.get("branch", "?"),
+            "commit": git.get("commit", "?"),
+            "tag": git.get("tag", "?"),
+        },
+        "symbol": symbol,
+        "attempts_requested": attempts,
+        "attempts_completed": len(per_attempt_results),
+        "connect_if_needed": connect_if_needed,
+        "drill_aborted_early": drill_aborted_early,
+        "drill_abort_reason": drill_abort_reason,
+        "initial_bridge_health": {
+            "connected": initial_ibkr_connected,
+            "reachable": bool(initial_health and "_error" not in initial_health),
+        },
+        "initial_ibkr_connected": initial_ibkr_connected,
+        "connect_attempted": connect_attempted,
+        "connect_result": connect_result if connect_attempted else {"skipped": True},
+        "per_attempt_results": per_attempt_results,
+        "final_diagnosis": final_diagnosis,
+        "final_severity": final_severity,
+        "final_market_data_status": final_market_data_status,
+        "readiness_refresh_attempted": readiness_refresh_attempted,
+        "readiness_export_path": readiness_export_path,
+        "readiness_recommendation": readiness_recommendation,
+        "promotion_safe_to_recheck": promotion_safe_to_recheck,
+        "drill_result": drill_result,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "safety_flags_before": safety_before,
+        "safety_flags_after": safety_after,
+        "safety_flags_unchanged": safety_unchanged,
+        "guard_state_path": guard_state_before.get("guard_state_path", str(OPENCLAW_DIR / "guard-state.json")),
+        "guard_state_hash_before": guard_state_before.get("guard_state_hash"),
+        "guard_state_hash_after": guard_state_after.get("guard_state_hash"),
+        "guard_daily_trade_count_before": guard_daily_tc_before,
+        "guard_daily_trade_count_after": guard_daily_tc_after,
+        "guard_state_unchanged": guard_state_unchanged,
+        "forbidden_endpoint_scan": forbidden_scan,
+        "explicit_non_actions": _MD_RECOVERY_DRILL_EXPLICIT_NON_ACTIONS,
+        "evidence_hash": evidence_hash,
+        "operator_action_required": operator_action_required,
+        "bridge_saturated_blocker": bridge_saturated_blocker,
+        "operator_actions": operator_actions,
+        "blockers": blockers,
+        "_export_path": str(export_path),
+    }
+
+    # Write export
+    try:
+        with open(export_path, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        pass
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 
 
 def _collect_lightweight_evidence() -> dict:
@@ -8866,6 +9404,43 @@ def main() -> None:
     md_diag.add_argument("--json", action="store_true")
     md_diag.add_argument("--export", action="store_true")
 
+    # Step 15R — Market-data recovery drill
+    mdr = sub.add_parser("market-data-recovery-drill",
+                         help="Recovery drill: connect + diagnostics + readiness refresh")
+    mdr.add_argument("--symbol", type=str, default="AAPL",
+                      help="Symbol to recover (default: AAPL)")
+    mdr.add_argument("--json", action="store_true",
+                      help="Output raw JSON only")
+    mdr.add_argument("--export", action="store_true",
+                      help="Write JSON export to ~/.openclaw/market-data-drills/")
+    mdr.add_argument("--attempts", type=int, default=3,
+                      help="Maximum diagnostic attempts (1-5, default 3)")
+    mdr.add_argument("--sleep-seconds", type=float, default=10.0,
+                      help="Seconds between retry attempts (1-60, default 10)")
+    mdr.add_argument("--connect-if-needed", action="store_true", dest="connect_if_needed",
+                      default=True, help="Call /connect if disconnected (default)")
+    mdr.add_argument("--no-connect", action="store_false", dest="connect_if_needed",
+                      help="Do not call /connect — diagnose only")
+    # Aliases
+    md_rec1 = sub.add_parser("md-recovery-drill",
+                             help="Alias for market-data-recovery-drill")
+    md_rec1.add_argument("--symbol", type=str, default="AAPL")
+    md_rec1.add_argument("--json", action="store_true")
+    md_rec1.add_argument("--export", action="store_true")
+    md_rec1.add_argument("--attempts", type=int, default=3)
+    md_rec1.add_argument("--sleep-seconds", type=float, default=10.0)
+    md_rec1.add_argument("--connect-if-needed", action="store_true", default=True)
+    md_rec1.add_argument("--no-connect", action="store_false", dest="connect_if_needed")
+    md_rec2 = sub.add_parser("market-recovery",
+                             help="Alias for market-data-recovery-drill")
+    md_rec2.add_argument("--symbol", type=str, default="AAPL")
+    md_rec2.add_argument("--json", action="store_true")
+    md_rec2.add_argument("--export", action="store_true")
+    md_rec2.add_argument("--attempts", type=int, default=3)
+    md_rec2.add_argument("--sleep-seconds", type=float, default=10.0)
+    md_rec2.add_argument("--connect-if-needed", action="store_true", default=True)
+    md_rec2.add_argument("--no-connect", action="store_false", dest="connect_if_needed")
+
     args = parser.parse_args()
 
     if args.command == "daily-report":
@@ -9146,6 +9721,34 @@ def main() -> None:
             if ep:
                 print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result["severity"] in ("OK", "HOLD") else 1
+        sys.exit(exit_code)
+
+    if args.command in ("market-data-recovery-drill", "md-recovery-drill", "market-recovery"):
+        symbol = getattr(args, "symbol", "AAPL")
+        attempts = getattr(args, "attempts", 3)
+        sleep_seconds = getattr(args, "sleep_seconds", 10.0)
+        connect_if_needed = getattr(args, "connect_if_needed", True)
+        try:
+            result = _run_market_data_recovery_drill(
+                symbol=symbol,
+                attempts=attempts,
+                sleep_seconds=sleep_seconds,
+                connect_if_needed=connect_if_needed,
+            )
+        except Exception as exc:
+            result = _make_recovery_drill_error_result(exc, symbol=symbol)
+            # Log traceback to stderr only (stdout stays pure JSON)
+            import traceback
+            print(f"Recovery drill internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        # Pure JSON stdout
+        print(json.dumps(result, indent=2, default=str))
+        # Export messages to stderr
+        if args.export:
+            ep = result.get("_export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result["final_severity"] in ("OK", "HOLD") else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

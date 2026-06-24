@@ -6099,6 +6099,413 @@ def _run_contract_qualification_drill(
     return result
 
 
+# ===========================================================================
+# Step 15T — Backpressure Drain Drill
+# ===========================================================================
+
+_BP_DRAIN_EXPORT_DIR = OPENCLAW_DIR / "backpressure-drain-drills"
+_BP_DRAIN_EXPLICIT_NON_ACTIONS: list[str] = [
+    "No orders placed or modified",
+    "No account values mutated",
+    "No position changes",
+    "No IBKR_ALLOW_ORDERS changes",
+    "No rules.enforced changes",
+    "No autonomy-level changes",
+    "No H1 token reads",
+    "No /order, /order/preflight, /order/approve, /order/submit",
+]
+
+
+def _run_backpressure_drain_drill(
+    observe_seconds: int = 15,
+    poll_seconds: int = 3,
+    include_endpoint_probes: bool = True,
+    symbol: str = "AAPL",
+) -> dict:
+    """Run bridge saturation / backpressure drain drill (Step 15T).
+
+    Observes bridge backpressure over time to determine whether saturation
+    drains naturally or indicates a persistent leak.
+
+    Read-only. No broker/account/order mutation. No H1 token.
+    """
+    import hashlib
+    import json as _json
+    import urllib.request
+    import urllib.error
+    import time as _time
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    drill_id = f"bp-drain-drill-{ts_file}"
+    symbol = symbol.upper().strip()
+    observe_seconds = min(max(observe_seconds, 1), 120)
+    poll_seconds = min(max(poll_seconds, 1), 15)
+
+    git = _git_metadata(BRIDGE_DIR)
+
+    # ------------------------------------------------------------------
+    # 1. Capture safety flags and guard-state before
+    # ------------------------------------------------------------------
+    safety_before = _capture_safety_flags_raw()
+    guard_state_before = _capture_guard_state_snapshot()
+
+    # ------------------------------------------------------------------
+    # 2. Initial bridge health
+    # ------------------------------------------------------------------
+    initial_health: dict = {}
+    bridge_reachable = False
+    ibkr_connected: bool | None = None
+    bridge_runtime_ok = True
+
+    try:
+        health_req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(health_req, timeout=10.0) as resp:
+            if resp.status == 200:
+                initial_health = _json.loads(resp.read().decode())
+                bridge_reachable = True
+                ibkr_connected = initial_health.get("connected")
+    except Exception:
+        bridge_runtime_ok = False
+
+    # ------------------------------------------------------------------
+    # 3. Cooldown state
+    # ------------------------------------------------------------------
+    cooldown_md_ok, cooldown_md_elapsed, _ = _check_diagnostics_cooldown()
+    cooldown_md_active = not cooldown_md_ok
+
+    # Recovery drill cooldown — same mechanism (reads same last-run file)
+    cooldown_recovery_active = cooldown_md_active
+    cooldown_remaining = max(0.0, _MD_DIAGNOSTICS_COOLDOWN_SECONDS - cooldown_md_elapsed)
+
+    cooldown_state: dict = {
+        "market_data_diagnostics_cooldown_active": cooldown_md_active,
+        "recovery_drill_cooldown_active": cooldown_recovery_active,
+        "cooldown_remaining_seconds": round(cooldown_remaining, 1),
+        "source": "market-data-diagnostics/.last-run",
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Observe backpressure over time
+    # ------------------------------------------------------------------
+    backpressure_samples: list[dict] = []
+    endpoint_probe_results: list[dict] = []
+    endpoint_probes_run = False
+
+    start_time = _time.monotonic()
+    elapsed = 0.0
+    sample_num = 0
+
+    while elapsed < observe_seconds:
+        sample_num += 1
+        sample_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Fetch backpressure snapshot
+        bp = _check_bridge_backpressure()
+        active = bp.get("active", -1)
+        max_active = bp.get("max_active", 4)
+        leaked = bp.get("leaked_md_threads", -1)
+
+        # Health status for this sample
+        health_status = 200
+        try:
+            hq = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+            with urllib.request.urlopen(hq, timeout=5.0) as hr:
+                health_status = hr.status
+        except urllib.error.HTTPError as he:
+            health_status = he.code
+        except Exception:
+            health_status = 0
+
+        saturated = bp["ok"] is False
+
+        sample_entry: dict = {
+            "sample_number": sample_num,
+            "timestamp": sample_ts,
+            "active_count": active,
+            "max_active": max_active,
+            "tier_counts": {},
+            "leaked_thread_count": leaked,
+            "saturated": saturated,
+            "health_http_status": health_status,
+        }
+        backpressure_samples.append(sample_entry)
+
+        elapsed = _time.monotonic() - start_time
+        if elapsed >= observe_seconds:
+            break
+
+        # Wait for next poll interval
+        _time.sleep(min(poll_seconds, observe_seconds - elapsed))
+        elapsed = _time.monotonic() - start_time
+
+    # If endpoint probes enabled, run them once at the end (not during polling
+    # to avoid worsening saturation)
+    if include_endpoint_probes and bridge_reachable:
+        endpoint_probes_run = True
+        probe_endpoints = [
+            "/positions",
+            "/account",
+            "/monitor/alerts",
+        ]
+        for ep in probe_endpoints:
+            ep_start = _time.monotonic()
+            ep_result: dict = {
+                "endpoint": ep,
+                "attempted": True,
+                "http_status": None,
+                "ok": False,
+                "duration_seconds": 0.0,
+                "error": None,
+            }
+            try:
+                ep_req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                with urllib.request.urlopen(ep_req, timeout=10.0) as ep_resp:
+                    ep_result["http_status"] = ep_resp.status
+                    ep_result["ok"] = ep_resp.status == 200
+                    if ep_resp.status == 200:
+                        ep_resp.read()  # consume body
+            except urllib.error.HTTPError as e:
+                ep_result["http_status"] = e.code
+                ep_result["error"] = f"HTTP {e.code}"
+            except Exception as e:
+                ep_result["error"] = str(e)[:150]
+            ep_result["duration_seconds"] = round(_time.monotonic() - ep_start, 3)
+            endpoint_probe_results.append(ep_result)
+            # Brief delay between probes
+            _time.sleep(0.3)
+
+    # ------------------------------------------------------------------
+    # 5. Final health
+    # ------------------------------------------------------------------
+    final_health: dict = {}
+    try:
+        fh_req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(fh_req, timeout=10.0) as fh_resp:
+            if fh_resp.status == 200:
+                final_health = _json.loads(fh_resp.read().decode())
+                bridge_reachable = True
+                ibkr_connected = final_health.get("connected", ibkr_connected)
+    except Exception:
+        pass
+
+    # ------------------------------------------------------------------
+    # 6. Classify diagnosis
+    # ------------------------------------------------------------------
+    diagnosis = "unknown"
+    severity = "HOLD"
+    operator_action_required = False
+    suggested_operator_actions: list[str] = []
+
+    samples = backpressure_samples
+    first_sample = samples[0] if samples else {}
+    last_sample = samples[-1] if samples else {}
+
+    active_first = first_sample.get("active_count", -1)
+    active_last = last_sample.get("active_count", -1)
+    saturated_first = first_sample.get("saturated", False)
+    saturated_last = last_sample.get("saturated", False)
+    leaked_first = first_sample.get("leaked_thread_count", -1)
+    leaked_last = last_sample.get("leaked_thread_count", -1)
+
+    if not bridge_reachable or not bridge_runtime_ok:
+        diagnosis = "bridge_unreachable"
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Check if bridge process is running",
+            "Run ibkr-operator doctor",
+            "Restart bridge if needed",
+        ]
+    elif cooldown_md_active and active_last <= 0:
+        diagnosis = "cooldown_active"
+        severity = "HOLD"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Wait for market-data diagnostics cooldown to expire",
+            "Rerun backpressure-drain-drill after cooldown",
+        ]
+    elif not saturated_first and not saturated_last and active_last <= 0:
+        diagnosis = "healthy_idle"
+        severity = "OK"
+    elif saturated_first and not saturated_last and active_last <= 0:
+        diagnosis = "transient_saturation_drained"
+        severity = "OK"
+        suggested_operator_actions = [
+            "Saturation was transient — bridge has recovered",
+            "Monitor for recurrence",
+        ]
+    elif saturated_last and active_last == active_first:
+        # No change — persistent
+        if leaked_last > 0:
+            diagnosis = "suspected_thread_leak"
+            severity = "NO_GO"
+            operator_action_required = True
+            suggested_operator_actions = [
+                f"Leaked thread count: {leaked_last} — threads may be stuck",
+                "Check bridge logs for hanging requests",
+                "Run ibkr-operator doctor",
+                "Consider bridge restart to clear leaked threads",
+            ]
+        else:
+            diagnosis = "persistent_saturation"
+            severity = "HOLD"
+            operator_action_required = True
+            suggested_operator_actions = [
+                f"Bridge remains saturated at {active_last}/{max_active} slots",
+                "Check for stuck diagnostic/read probes",
+                "Run ibkr-operator doctor",
+                "If saturation persists >60s, consider bridge restart",
+            ]
+    elif saturated_last and active_last > active_first:
+        # Getting worse
+        if leaked_last > leaked_first:
+            diagnosis = "suspected_thread_leak"
+            severity = "NO_GO"
+            operator_action_required = True
+            suggested_operator_actions = [
+                f"Active slots growing ({active_first}→{active_last}) AND leaked threads ({leaked_first}→{leaked_last})",
+                "Bridge may be accumulating stuck threads",
+                "Run ibkr-operator doctor immediately",
+                "Consider bridge restart",
+            ]
+        else:
+            diagnosis = "suspected_active_count_leak"
+            severity = "HOLD"
+            operator_action_required = True
+            suggested_operator_actions = [
+                f"Active slots growing ({active_first}→{active_last})",
+                "Check for slow/hanging probe calls",
+                "Run ibkr-operator doctor",
+            ]
+    elif saturated_last:
+        diagnosis = "persistent_saturation"
+        severity = "HOLD"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Bridge remains saturated",
+            "Run ibkr-operator doctor",
+            "If saturation persists, consider bridge restart",
+        ]
+    else:
+        diagnosis = "unknown"
+        severity = "HOLD"
+
+    # ------------------------------------------------------------------
+    # 7. Safety flags and guard-state after
+    # ------------------------------------------------------------------
+    safety_after = _capture_safety_flags_raw()
+    guard_state_after = _capture_guard_state_snapshot()
+
+    safety_unchanged = (
+        safety_before.get("env_IBKR_ALLOW_ORDERS")
+        == safety_after.get("env_IBKR_ALLOW_ORDERS")
+        and safety_before.get("rules_enforced")
+        == safety_after.get("rules_enforced")
+    )
+    guard_state_unchanged = (
+        guard_state_before.get("guard_state_hash") is not None
+        and guard_state_after.get("guard_state_hash") is not None
+        and guard_state_before["guard_state_hash"] == guard_state_after["guard_state_hash"]
+    )
+    guard_daily_tc_before = guard_state_before.get("daily_trade_count", 0) or 0
+    guard_daily_tc_after = guard_state_after.get("daily_trade_count", 0) or 0
+
+    # If guard_state changed during the drain drill, override to NO_GO
+    if not guard_state_unchanged or guard_daily_tc_before != guard_daily_tc_after:
+        diagnosis = "guard_state_mutation" if diagnosis != "bridge_unreachable" else diagnosis
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions.insert(0,
+            f"Guard-state mutated: daily_trade_count {guard_daily_tc_before}→{guard_daily_tc_after}")
+
+    # ------------------------------------------------------------------
+    # 8. Forbidden endpoint scan (backpressure drain drill)
+    # ------------------------------------------------------------------
+    forbidden_scan = _scan_forbidden_endpoints()
+
+    # ------------------------------------------------------------------
+    # 9. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "drill_id": drill_id,
+        "observe_seconds": observe_seconds,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "safety_unchanged": safety_unchanged,
+        "git_commit": git.get("commit", "?"),
+        "no_broker_mutation": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 10. Build result
+    # ------------------------------------------------------------------
+    _BP_DRAIN_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    export_path = _BP_DRAIN_EXPORT_DIR / f"{drill_id}.json"
+
+    result: dict = {
+        "command": "ibkr-operator backpressure-drain-drill",
+        "advisory": (
+            "Read-only backpressure drain drill (Step 15T). "
+            "No broker mutation. No order window. No H1 token."
+        ),
+        "timestamp": ts_str,
+        "drill_id": drill_id,
+        "git": {
+            "branch": git.get("branch", "?"),
+            "commit": git.get("commit", "?"),
+            "tag": git.get("tag", "?"),
+        },
+        "observe_seconds": observe_seconds,
+        "poll_seconds": poll_seconds,
+        "bridge_reachable": bridge_reachable,
+        "ibkr_connected": ibkr_connected,
+        "bridge_runtime_ok": bridge_runtime_ok,
+        "safety_flags_before": safety_before,
+        "safety_flags_after": safety_after,
+        "safety_flags_unchanged": safety_unchanged,
+        "guard_state_path": guard_state_before.get(
+            "guard_state_path", str(OPENCLAW_DIR / "guard-state.json")
+        ),
+        "guard_state_hash_before": guard_state_before.get("guard_state_hash"),
+        "guard_state_hash_after": guard_state_after.get("guard_state_hash"),
+        "guard_daily_trade_count_before": guard_state_before.get("daily_trade_count", 0) or 0,
+        "guard_daily_trade_count_after": guard_state_after.get("daily_trade_count", 0) or 0,
+        "guard_state_unchanged": guard_state_unchanged,
+        "initial_health": initial_health,
+        "final_health": final_health,
+        "backpressure_samples": backpressure_samples,
+        "samples_count": len(backpressure_samples),
+        "endpoint_probe_results": endpoint_probe_results,
+        "endpoint_probes_run": endpoint_probes_run,
+        "cooldown_state": cooldown_state,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_operator_actions,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "forbidden_endpoint_scan": forbidden_scan,
+        "explicit_non_actions": _BP_DRAIN_EXPLICIT_NON_ACTIONS,
+        "evidence_hash": evidence_hash,
+        "_export_path": str(export_path),
+    }
+
+    # Write export
+    try:
+        with open(export_path, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        pass
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -9975,6 +10382,37 @@ def main() -> None:
     cq_d3.add_argument("--no-attempt-alternates", action="store_false", dest="attempt_alternates")
     cq_d3.add_argument("--max-attempts", type=int, default=5)
 
+    # Step 15T: Backpressure drain drill
+    bp_drain = sub.add_parser("backpressure-drain-drill",
+                               help="Run bridge saturation / backpressure drain drill (Step 15T)")
+    bp_drain.add_argument("--json", action="store_true")
+    bp_drain.add_argument("--export", action="store_true")
+    bp_drain.add_argument("--observe-seconds", type=int, default=15)
+    bp_drain.add_argument("--poll-seconds", type=int, default=3)
+    bp_drain.add_argument("--include-endpoint-probes", action="store_true", default=True)
+    bp_drain.add_argument("--no-endpoint-probes", action="store_false", dest="include_endpoint_probes")
+    bp_drain.add_argument("--symbol", type=str, default="AAPL")
+
+    bp_d2 = sub.add_parser("bridge-drain-drill",
+                            help="Alias for backpressure-drain-drill")
+    bp_d2.add_argument("--json", action="store_true")
+    bp_d2.add_argument("--export", action="store_true")
+    bp_d2.add_argument("--observe-seconds", type=int, default=15)
+    bp_d2.add_argument("--poll-seconds", type=int, default=3)
+    bp_d2.add_argument("--include-endpoint-probes", action="store_true", default=True)
+    bp_d2.add_argument("--no-endpoint-probes", action="store_false", dest="include_endpoint_probes")
+    bp_d2.add_argument("--symbol", type=str, default="AAPL")
+
+    bp_d3 = sub.add_parser("backpressure-doctor",
+                            help="Alias for backpressure-drain-drill")
+    bp_d3.add_argument("--json", action="store_true")
+    bp_d3.add_argument("--export", action="store_true")
+    bp_d3.add_argument("--observe-seconds", type=int, default=15)
+    bp_d3.add_argument("--poll-seconds", type=int, default=3)
+    bp_d3.add_argument("--include-endpoint-probes", action="store_true", default=True)
+    bp_d3.add_argument("--no-endpoint-probes", action="store_false", dest="include_endpoint_probes")
+    bp_d3.add_argument("--symbol", type=str, default="AAPL")
+
     args = parser.parse_args()
 
     if args.command == "daily-report":
@@ -10283,6 +10721,48 @@ def main() -> None:
             if ep:
                 print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result["final_severity"] in ("OK", "HOLD") else 1
+        sys.exit(exit_code)
+
+    if args.command in ("backpressure-drain-drill", "bridge-drain-drill", "backpressure-doctor"):
+        observe_seconds = getattr(args, "observe_seconds", 15)
+        poll_seconds = getattr(args, "poll_seconds", 3)
+        include_endpoint_probes = getattr(args, "include_endpoint_probes", True)
+        symbol = getattr(args, "symbol", "AAPL")
+        try:
+            result = _run_backpressure_drain_drill(
+                observe_seconds=observe_seconds,
+                poll_seconds=poll_seconds,
+                include_endpoint_probes=include_endpoint_probes,
+                symbol=symbol,
+            )
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+            result = {
+                "command": "ibkr-operator backpressure-drain-drill",
+                "timestamp": ts_str,
+                "drill_id": f"bp-drain-drill-{ts_file}",
+                "diagnosis": "bridge_unreachable",
+                "severity": "NO_GO",
+                "internal_exception": True,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)[:500],
+                "no_broker_mutation": True,
+                "no_order_window_opened": True,
+                "_export_path": None,
+            }
+            print(f"Backpressure drain drill internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        # Pure JSON stdout
+        print(json.dumps(result, indent=2, default=str))
+        if args.export:
+            ep = result.get("_export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("severity") in ("OK", "HOLD") else 1
         sys.exit(exit_code)
 
     if args.command in ("contract-qualification-drill", "contract-diagnostics", "cq-drill"):

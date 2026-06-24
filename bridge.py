@@ -116,6 +116,40 @@ _LIVENESS_CACHE_TTL = 60.0  # seconds — memory/RSS doesn't change sub-second
 # Step 15L-B: Market data snapshot max wait before timeout
 _MARKET_SNAPSHOT_TIMEOUT = 8.0  # seconds — must return bounded JSON, never hang
 
+# Step 15Q-BP: Thread-leak tracker for leaked market-data threads from
+# _internal_fetch_quote_safe. executor.shutdown(wait=False) leaves the
+# background thread running. Track how many are alive so we can detect
+# accumulation from repeated diagnostics.
+_MD_LEAKED_THREAD_COUNT = 0
+_MD_LEAKED_THREAD_LOCK = _threading.Lock()
+_MD_LEAKED_THREAD_WARN = 5  # warn when leaked threads exceed this
+
+def _track_leaked_md_thread():
+    """Increment leaked market-data thread counter. Called before
+    executor.shutdown(wait=False) in _internal_fetch_quote_safe."""
+    global _MD_LEAKED_THREAD_COUNT
+    with _MD_LEAKED_THREAD_LOCK:
+        _MD_LEAKED_THREAD_COUNT += 1
+        if _MD_LEAKED_THREAD_COUNT >= _MD_LEAKED_THREAD_WARN:
+            logger.warning(
+                "MD_LEAKED_THREADS count=%s — repeated diagnostics may accumulate "
+                "background threads. Threads auto-cleanup when _internal_fetch_quote "
+                "completes. Consider adding a cooldown between diagnostics runs.",
+                _MD_LEAKED_THREAD_COUNT,
+            )
+
+def _decrement_leaked_md_thread():
+    """Decrement leaked market-data thread counter when a background
+    _internal_fetch_quote thread finally completes."""
+    global _MD_LEAKED_THREAD_COUNT
+    with _MD_LEAKED_THREAD_LOCK:
+        if _MD_LEAKED_THREAD_COUNT > 0:
+            _MD_LEAKED_THREAD_COUNT -= 1
+
+# Contract/bars timeout — bounded at 10s to prevent indefinite active-slot holding
+_CONTRACT_LOOKUP_TIMEOUT = 10.0
+_BARS_LOOKUP_TIMEOUT = 15.0  # historical data can take longer
+
 
 def _snapshot_ibkr_disconnected_response() -> dict:
     """Return a minimal disconnected-evidence payload for fast-fail.
@@ -562,6 +596,10 @@ def _internal_fetch_quote(symbol: str) -> dict:
     except Exception:
         pass
 
+    # Step 15Q-BP: If this thread was leaked (outer caller timed out),
+    # decrement the leaked-thread counter now that we're cleaning up.
+    _decrement_leaked_md_thread()
+
     return result
 
 
@@ -587,6 +625,10 @@ def _internal_fetch_quote_safe(symbol: str, timeout: float = _MARKET_SNAPSHOT_TI
         try:
             return future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
+            # Step 15Q-BP: Track leaked thread before re-raising.
+            # The background _internal_fetch_quote thread will eventually
+            # complete and call _decrement_leaked_md_thread().
+            _track_leaked_md_thread()
             # Step 15N: Do NOT attempt ib.qualifyContracts / ib.cancelMktData
             # here — those calls can block indefinitely if the global ib
             # object is in a bad state due to a leaked market-data thread.
@@ -1287,6 +1329,11 @@ class ContractLookup(BaseModel):
 
 @app.post("/contract/stock")
 def contract_stock(req: ContractLookup) -> Dict[str, Any]:
+    """Step 15Q-BP: Bounded timeout — never holds active slot indefinitely.
+
+    Wraps ib.reqContractDetails() in a thread executor with _CONTRACT_LOOKUP_TIMEOUT.
+    On timeout: returns HTTP 503 with detail 'contract_lookup_timeout'.
+    """
     ensure_loop()
 
     if not ib or not ib.isConnected():
@@ -1294,29 +1341,44 @@ def contract_stock(req: ContractLookup) -> Dict[str, Any]:
 
     c = Stock(req.symbol.upper(), req.exchange, req.currency.upper())
 
+    # Step 15Q-BP: Bounded timeout via thread executor — prevents
+    # indefinite active-slot holding when IBKR is slow or hung.
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        details = ib.reqContractDetails(c)
-        return {
-            "ok": True,
-            "symbol": req.symbol.upper(),
-            "matches": [
-                {
-                    "conId": d.contract.conId,
-                    "symbol": d.contract.symbol,
-                    "secType": d.contract.secType,
-                    "exchange": d.contract.exchange,
-                    "primaryExchange": getattr(d.contract, "primaryExchange", ""),
-                    "currency": d.contract.currency,
-                    "longName": getattr(d, "longName", ""),
-                }
-                for d in details[:10]
-            ],
-        }
+        future = executor.submit(ib.reqContractDetails, c)
+        try:
+            details = future.result(timeout=_CONTRACT_LOOKUP_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            raise HTTPException(
+                status_code=503,
+                detail=f"contract_lookup_timeout: did not complete within {_CONTRACT_LOOKUP_TIMEOUT:.0f}s",
+            )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=503,
             detail=f"contract lookup failed: {type(e).__name__}: {repr(e)}",
         )
+    finally:
+        executor.shutdown(wait=False)
+
+    return {
+        "ok": True,
+        "symbol": req.symbol.upper(),
+        "matches": [
+            {
+                "conId": d.contract.conId,
+                "symbol": d.contract.symbol,
+                "secType": d.contract.secType,
+                "exchange": d.contract.exchange,
+                "primaryExchange": getattr(d.contract, "primaryExchange", ""),
+                "currency": d.contract.currency,
+                "longName": getattr(d, "longName", ""),
+            }
+            for d in details[:10]
+        ],
+    }
 
 
 @app.post("/order")
@@ -2237,6 +2299,12 @@ class BarsRequest(BaseModel):
 
 @app.post("/market/bars")
 def market_bars(req: BarsRequest):
+    """Step 15Q-BP: Bounded timeout — never holds active slot indefinitely.
+
+    Wraps ib.reqHistoricalData() in a thread executor with _BARS_LOOKUP_TIMEOUT.
+    On timeout: returns HTTP 503 with detail 'bars_lookup_timeout'.
+    Contract qualification still happens synchronously (fast, sub-second).
+    """
     _ensure_worker_event_loop()
 
     if IB is None or Stock is None or ib is None:
@@ -2257,16 +2325,32 @@ def market_bars(req: BarsRequest):
 
     contract = qualified[0]
 
-    bars = ib.reqHistoricalData(
-        contract,
-        endDateTime="",
-        durationStr=req.duration,
-        barSizeSetting=req.bar_size,
-        whatToShow=req.what_to_show,
-        useRTH=req.use_rth,
-        formatDate=1,
-        keepUpToDate=False,
-    )
+    # Step 15Q-BP: Bounded timeout for historical data — prevents
+    # indefinite active-slot holding when IBKR data feed is slow.
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(
+            ib.reqHistoricalData,
+            contract,
+            endDateTime="",
+            durationStr=req.duration,
+            barSizeSetting=req.bar_size,
+            whatToShow=req.what_to_show,
+            useRTH=req.use_rth,
+            formatDate=1,
+            keepUpToDate=False,
+        )
+        try:
+            bars = future.result(timeout=_BARS_LOOKUP_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            raise HTTPException(
+                status_code=503,
+                detail=f"bars_lookup_timeout: did not complete within {_BARS_LOOKUP_TIMEOUT:.0f}s",
+            )
+    except HTTPException:
+        raise
+    finally:
+        executor.shutdown(wait=False)
 
     out = []
     for b in bars:
@@ -3542,6 +3626,8 @@ def monitor_backpressure() -> Dict[str, Any]:
         active = _BP_ACTIVE
         accepted = _BP_TOTAL_ACCEPTED
         rejected = _BP_TOTAL_REJECTED
+    with _MD_LEAKED_THREAD_LOCK:
+        leaked_md = _MD_LEAKED_THREAD_COUNT
     return {
         "ok": True,
         "active": active,
@@ -3550,6 +3636,8 @@ def monitor_backpressure() -> Dict[str, Any]:
         "current_rss_kb": _bp_rss_kb(),
         "total_accepted": accepted,
         "total_rejected": rejected,
+        "leaked_md_threads": leaked_md,
+        "leaked_md_threads_warn": _MD_LEAKED_THREAD_WARN,
         "tiers": {
             "0_exempt": list(_BP_TIER0),
             "1_market": list(_BP_TIER1),

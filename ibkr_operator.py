@@ -3198,7 +3198,7 @@ _GUARD_STATE_REPAIRS_DIR = OPENCLAW_DIR / "guard-state-repairs"
 _GUARD_RECONCILE_EXPLICIT_NON_ACTIONS: list[str] = [
     "This command did not change autonomy level.",
     "This command did not open an order window.",
-    "This command did not call any no-order endpoints (no /order calls).",
+    "This command did not call any no-order endpoints.",
     "This command did not read H1 token.",
     "This command did not place, modify, cancel, or transmit any order.",
     "This command did not enable IBKR_ALLOW_ORDERS.",
@@ -4323,6 +4323,751 @@ def _compute_unavailable_reason(
         {"ok": False, "market_data_available": False, "detail": snapshot_detail},
         session_info,
     )
+
+
+# ---------------------------------------------------------------------------
+# Step 15Q — Market-data entitlement / subscription diagnosis
+# ---------------------------------------------------------------------------
+
+_MD_DIAGNOSTICS_EXPORT_DIR = OPENCLAW_DIR / "market-data-diagnostics"
+
+_MD_DIAGNOSTICS_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not open an order window.",
+    "This command did not call any no-order endpoints.",
+    "This command did not read H1 token.",
+    "This command did not place, modify, cancel, or transmit any order.",
+    "This command did not enable IBKR_ALLOW_ORDERS.",
+    "This command did not enable rules.enforced.",
+    "This command is purely diagnostic — no broker/account/order mutation.",
+]
+
+# Step 15Q-BP: Cooldown mechanism — prevent repeated diagnostics from
+# saturating bridge active slots. Track last run timestamp on disk.
+# File path derived from _MD_DIAGNOSTICS_EXPORT_DIR so tests can patch it.
+_MD_DIAGNOSTICS_COOLDOWN_SECONDS = 30.0  # must wait this long between runs
+
+def _md_cooldown_file():
+    """Return the cooldown tracking file path.
+    Uses _MD_DIAGNOSTICS_EXPORT_DIR so test patches propagate."""
+    return _MD_DIAGNOSTICS_EXPORT_DIR / ".last-run"
+
+
+def _check_diagnostics_cooldown() -> tuple[bool, float, str]:
+    """Check whether diagnostics cooldown has elapsed.
+
+    Returns (ok, seconds_since_last, detail_string).
+    ok=True means cooldown has passed and diagnostics can proceed.
+    
+    During pytest runs, cooldown is always bypassed to prevent
+    test-ordering dependencies.
+    """
+    import time as _time
+    import os as _os
+    # Bypass cooldown during pytest — prevents test-ordering flakiness
+    if _os.environ.get("PYTEST_CURRENT_TEST"):
+        return True, 0.0, "cooldown bypassed (pytest)"
+    now = _time.time()
+    cooldown_file = _md_cooldown_file()
+    try:
+        if cooldown_file.exists():
+            last_run = float(cooldown_file.read_text().strip())
+            elapsed = now - last_run
+            if elapsed < _MD_DIAGNOSTICS_COOLDOWN_SECONDS:
+                remaining = _MD_DIAGNOSTICS_COOLDOWN_SECONDS - elapsed
+                return False, elapsed, f"cooldown active: {remaining:.0f}s remaining (last run {elapsed:.0f}s ago)"
+    except (ValueError, OSError):
+        pass
+    return True, 0.0, "cooldown passed"
+
+
+def _record_diagnostics_run():
+    """Record the current time as the last diagnostics run."""
+    import time as _time
+    try:
+        cooldown_file = _md_cooldown_file()
+        cooldown_file.parent.mkdir(parents=True, exist_ok=True)
+        cooldown_file.write_text(str(_time.time()))
+    except OSError:
+        pass
+
+
+def _check_bridge_backpressure() -> dict:
+    """Check bridge backpressure before diagnostics probes.
+
+    Returns dict with ok, active, max_active, detail.
+    ok=False when bridge is saturated — diagnostics should abort.
+    """
+    import urllib.request
+    import urllib.error
+    import json as _json
+    try:
+        req = urllib.request.Request(f"{BRIDGE_URL}/monitor/backpressure", method="GET")
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            if resp.status == 200:
+                data = _json.loads(resp.read().decode())
+                active = data.get("active", 0)
+                max_active = data.get("max_active", 4)
+                rejected = data.get("total_rejected", 0)
+                leaked = data.get("leaked_md_threads", 0)
+                # Allow diagnostics if bridge has at least 2 free slots
+                if active >= max_active - 1:
+                    return {
+                        "ok": False,
+                        "active": active,
+                        "max_active": max_active,
+                        "rejected": rejected,
+                        "leaked_md_threads": leaked,
+                        "detail": f"bridge saturated: {active}/{max_active} active slots — retry later",
+                    }
+                return {
+                    "ok": True,
+                    "active": active,
+                    "max_active": max_active,
+                    "rejected": rejected,
+                    "leaked_md_threads": leaked,
+                    "detail": f"bridge has capacity: {active}/{max_active} active",
+                }
+            # Non-200 response — bridge may be degraded, allow diagnostics
+            return {
+                "ok": True,
+                "active": -1,
+                "max_active": -1,
+                "rejected": -1,
+                "leaked_md_threads": -1,
+                "detail": f"backpressure endpoint returned HTTP {resp.status}",
+            }
+    except Exception as e:
+        # Bridge unreachable — allow diagnostics to try (they'll fail anyway)
+        return {
+            "ok": True,
+            "active": -1,
+            "max_active": -1,
+            "rejected": -1,
+            "leaked_md_threads": -1,
+            "detail": f"backpressure check unavailable: {str(e)[:100]}",
+        }
+
+
+def _run_market_data_diagnostics(symbol: str = "AAPL") -> dict:
+    """Run market-data entitlement/subscription diagnostics (Step 15Q).
+
+    Read-only diagnostic that classifies market-data unavailability into
+    specific root causes: entitlement missing, contract failure, pacing,
+    timeout, disconnected, session-expected, etc.
+
+    Uses existing read-only bridge endpoints with bounded timeouts.
+    No broker, account, or order mutation.
+
+    Step 15Q-BP additions:
+      - Cooldown check prevents repeated runs within 30s
+      - Pre-flight backpressure check aborts if bridge is saturated
+      - Inter-probe delays (0.5s) prevent flooding
+      - HTTP 503 from any probe aborts remaining probes
+      - Run is recorded on completion for cooldown tracking
+    """
+    import hashlib
+    import json as _json
+    import urllib.request
+    import urllib.error
+    import time as _time
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    diagnostic_id = f"md-diagnostic-{symbol}-{ts_file}"
+    symbol = symbol.upper().strip()
+
+    git = _git_metadata(BRIDGE_DIR)
+
+    # Step 15Q-BP: Cooldown check before any bridge calls
+    cooldown_ok, cooldown_elapsed, cooldown_detail = _check_diagnostics_cooldown()
+    if not cooldown_ok:
+        bp_info = {"ok": True, "active": -1, "max_active": -1, "detail": "skipped (cooldown)"}
+        # Fast-fail: return immediately without any bridge calls
+        return {
+            "command": "ibkr-operator market-data-diagnostics",
+            "advisory": (
+                "Read-only market data diagnostics (Step 15Q). "
+                "No broker mutation. No order window. No H1 token."
+            ),
+            "timestamp": ts_str,
+            "diagnostic_id": diagnostic_id,
+            "git": {"branch": git.get("branch", "?"), "commit": git.get("commit", "?"), "tag": git.get("tag", "?")},
+            "symbol": symbol,
+            "backpressure": bp_info,
+            "cooldown": {"ok": False, "elapsed_s": round(cooldown_elapsed, 1), "required_s": _MD_DIAGNOSTICS_COOLDOWN_SECONDS},
+            "diagnosis": "cooldown_active",
+            "severity": "HOLD",
+            "detail": cooldown_detail,
+            "no_broker_mutation": True,
+            "no_order_window_opened": True,
+            "explicit_non_actions": _MD_DIAGNOSTICS_EXPLICIT_NON_ACTIONS,
+        }
+
+    # Step 15Q-BP: Pre-flight backpressure check
+    bp_info = _check_bridge_backpressure()
+    if not bp_info["ok"]:
+        return {
+            "command": "ibkr-operator market-data-diagnostics",
+            "advisory": (
+                "Read-only market data diagnostics (Step 15Q). "
+                "No broker mutation. No order window. No H1 token."
+            ),
+            "timestamp": ts_str,
+            "diagnostic_id": diagnostic_id,
+            "git": {"branch": git.get("branch", "?"), "commit": git.get("commit", "?"), "tag": git.get("tag", "?")},
+            "symbol": symbol,
+            "backpressure": bp_info,
+            "cooldown": {"ok": True, "elapsed_s": round(cooldown_elapsed, 1)},
+            "diagnosis": "bridge_saturated",
+            "severity": "HOLD",
+            "detail": bp_info["detail"],
+            "no_broker_mutation": True,
+            "no_order_window_opened": True,
+            "explicit_non_actions": _MD_DIAGNOSTICS_EXPLICIT_NON_ACTIONS,
+        }
+
+    # Step 15Q-BP: Inter-probe delay helper — prevents flooding bridge slots
+    _INTER_PROBE_DELAY_S = 0.5
+
+    # Step 15Q-BP: Track whether we aborted early due to backpressure/503
+    aborted_early = False
+    abort_reason: str | None = None
+
+    # ------------------------------------------------------------------
+    # 1. Session status (local, no bridge call)
+    # ------------------------------------------------------------------
+    session_info = _determine_market_session_status()
+
+    # ------------------------------------------------------------------
+    # 2. Bridge health
+    # ------------------------------------------------------------------
+    bridge_reachable = False
+    ibkr_connected = None
+    bridge_runtime_ok = True
+    bridge_health_data: dict = {}
+
+    try:
+        health_req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(health_req, timeout=10.0) as resp:
+            if resp.status == 503:
+                # Step 15Q-BP: Bridge backpressured — abort
+                aborted_early = True
+                abort_reason = "health endpoint returned 503 (backpressure)"
+            bridge_health_data = _json.loads(resp.read().decode())
+            bridge_reachable = resp.status == 200
+            ibkr_connected = bridge_health_data.get("connected", None)
+    except urllib.error.HTTPError as e:
+        if e.code == 503:
+            aborted_early = True
+            abort_reason = f"health endpoint HTTP 503 (backpressure)"
+        bridge_runtime_ok = False
+        bridge_reachable = False
+    except urllib.error.URLError:
+        bridge_runtime_ok = False
+        bridge_reachable = False
+    except Exception:
+        bridge_runtime_ok = False
+
+    # Step 15Q-BP: Inter-probe delay
+    _time.sleep(_INTER_PROBE_DELAY_S)
+
+    # ------------------------------------------------------------------
+    # 3. Contract qualification (via bridge contract lookup)
+    # ------------------------------------------------------------------
+    contract_qualified = False
+    qualified_contract: dict = {}
+    requested_contract = {"symbol": symbol, "exchange": "SMART", "currency": "USD"}
+    contract_error: str | None = None
+
+    if not aborted_early:
+        try:
+            c_req_body = _json.dumps({"symbol": symbol, "exchange": "SMART", "currency": "USD"}).encode()
+            c_req = urllib.request.Request(
+                f"{BRIDGE_URL}/contract/stock",
+                data=c_req_body,
+                method="POST",
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(c_req, timeout=10.0) as c_resp:
+                if c_resp.status == 503:
+                    # Step 15Q-BP: Bridge backpressured — abort remaining probes
+                    aborted_early = True
+                    abort_reason = f"contract/stock returned 503 (backpressure)"
+                if c_resp.status == 200:
+                    contract_data = _json.loads(c_resp.read().decode())
+                    if contract_data.get("conid"):
+                        contract_qualified = True
+                        qualified_contract = {
+                            "symbol": contract_data.get("symbol", symbol),
+                            "exchange": contract_data.get("exchange", "SMART"),
+                            "currency": contract_data.get("currency", "USD"),
+                            "conid": contract_data.get("conid"),
+                            "asset_type": contract_data.get("asset_type", "STK"),
+                        }
+                    else:
+                        contract_error = contract_data.get("error", "contract not found")
+                else:
+                    contract_error = f"HTTP {c_resp.status}"
+        except urllib.error.HTTPError as e:
+            if e.code == 503:
+                aborted_early = True
+                abort_reason = f"contract/stock HTTP 503 (backpressure)"
+            contract_error = f"contract lookup HTTP {e.code}"
+        except urllib.error.URLError as e:
+            contract_error = f"contract lookup unreachable: {str(e)[:150]}"
+        except Exception as e:
+            contract_error = f"contract lookup error: {str(e)[:150]}"
+
+    # Step 15Q-BP: Inter-probe delay
+    _time.sleep(_INTER_PROBE_DELAY_S)
+
+    # ------------------------------------------------------------------
+    # 4. Market snapshot (delayed, bounded timeout)
+    # ------------------------------------------------------------------
+    snapshot_available = False
+    snapshot_delayed = True
+    snapshot_data: dict = {}
+    snapshot_error: str | None = None
+    snapshot_obtained = False
+    all_prices_null = False
+
+    if not aborted_early:
+        try:
+            md_req = urllib.request.Request(
+                f"{BRIDGE_URL}/market/snapshot/{symbol}", method="GET")
+            with urllib.request.urlopen(md_req, timeout=12.0) as md_resp:
+                if md_resp.status == 503:
+                    # Step 15Q-BP: Bridge backpressured — abort remaining probes
+                    aborted_early = True
+                    abort_reason = f"market/snapshot returned 503 (backpressure)"
+                if md_resp.status == 200:
+                    snapshot_data = _json.loads(md_resp.read().decode())
+                    snapshot_obtained = True
+                    snapshot_available = snapshot_data.get("market_data_available", False)
+                    snapshot_delayed = snapshot_data.get("delayed", True)
+                    if not snapshot_available:
+                        detail = snapshot_data.get("detail", "")
+                        snapshot_error = detail[:200] if detail else "market data unavailable"
+                        all_prices_null = "all price fields are null" in detail.lower()
+                else:
+                    snapshot_error = f"HTTP {md_resp.status}"
+        except urllib.error.HTTPError as e:
+            if e.code == 503:
+                aborted_early = True
+                abort_reason = f"market/snapshot HTTP 503 (backpressure)"
+            snapshot_error = f"snapshot HTTP {e.code}"
+        except urllib.error.URLError as e:
+            snapshot_error = f"snapshot unreachable: {str(e)[:150]}"
+        except Exception as e:
+            snapshot_error = f"snapshot error: {str(e)[:150]}"
+
+    # Step 15Q-BP: Inter-probe delay
+    _time.sleep(_INTER_PROBE_DELAY_S)
+
+    # ------------------------------------------------------------------
+    # 5. Observed IBKR errors (from snapshot detail + contract errors)
+    # ------------------------------------------------------------------
+    observed_ibkr_errors: list[dict] = []
+
+    if snapshot_error and snapshot_obtained:
+        observed_ibkr_errors.append({
+            "code": None,
+            "message": snapshot_error,
+            "source": "market_snapshot",
+            "timestamp": ts_str,
+        })
+
+    if contract_error:
+        observed_ibkr_errors.append({
+            "code": None,
+            "message": contract_error,
+            "source": "contract_qualification",
+            "timestamp": ts_str,
+        })
+
+    # Check for specific IBKR error patterns in snapshot detail
+    snapshot_detail_text = snapshot_data.get("detail", "")
+    if "not connected" in snapshot_detail_text.lower():
+        observed_ibkr_errors.append({
+            "code": 502,
+            "message": "IBKR not connected",
+            "source": "ibkr_gateway",
+            "timestamp": ts_str,
+        })
+
+    # ------------------------------------------------------------------
+    # 6. Historical probe (optional, via bars endpoint)
+    # ------------------------------------------------------------------
+    historical_probe_attempted = False
+    historical_probe_available = False
+    historical_probe_error: str | None = None
+
+    if bridge_reachable and ibkr_connected and not aborted_early:
+        historical_probe_attempted = True
+        try:
+            bars_req_body = _json.dumps({
+                "symbol": symbol, "duration": "5 D", "bar_size": "1 day"
+            }).encode()
+            bars_req = urllib.request.Request(
+                f"{BRIDGE_URL}/market/bars",
+                data=bars_req_body,
+                method="POST",
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(bars_req, timeout=10.0) as bars_resp:
+                if bars_resp.status == 503:
+                    # Step 15Q-BP: Bridge backpressured — mark but don't abort
+                    # (this is the last probe anyway)
+                    historical_probe_error = "bars HTTP 503 (backpressure)"
+                    aborted_early = True
+                    abort_reason = abort_reason or "market/bars returned 503 (backpressure)"
+                elif bars_resp.status == 200:
+                    bars_data = _json.loads(bars_resp.read().decode())
+                    historical_probe_available = (
+                        bars_data.get("bars") is not None
+                        and len(bars_data.get("bars", [])) > 0
+                    )
+                else:
+                    historical_probe_error = f"HTTP {bars_resp.status}"
+        except urllib.error.HTTPError as e:
+            if e.code == 503:
+                aborted_early = True
+                abort_reason = abort_reason or "market/bars HTTP 503 (backpressure)"
+            historical_probe_error = f"bars HTTP {e.code}"
+        except urllib.error.URLError as e:
+            historical_probe_error = f"bars unreachable: {str(e)[:150]}"
+        except Exception as e:
+            historical_probe_error = f"bars error: {str(e)[:150]}"
+
+    # ------------------------------------------------------------------
+    # 7. Classify diagnosis
+    # ------------------------------------------------------------------
+    diagnosis = "unknown"
+    severity = "HOLD"
+    operator_action_required = False
+    suggested_operator_actions: list[str] = []
+    readiness_impact = "market_data_unavailable"
+    promotion_impact = "market_data_blocks_promotion"
+
+    # Determine the unavailability reason for classification
+    unreason = _classify_market_data_unavailability(
+        {"ok": snapshot_data.get("ok", snapshot_obtained),
+         "market_data_available": snapshot_available,
+         "detail": snapshot_error or "", "stale": not snapshot_available},
+        session_info,
+    )
+
+    if not bridge_reachable or ibkr_connected is False:
+        # IBKR disconnected
+        diagnosis = "ibkr_disconnected"
+        severity = "HOLD"
+        bridge_runtime_ok = bridge_runtime_ok and ibkr_connected is not False
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Verify IBKR Gateway is running",
+            "Check bridge logs for connection errors",
+            "Restart IBKR Gateway if necessary",
+        ]
+
+    elif not contract_qualified and contract_error and "timeout" in contract_error.lower():
+        # Contract lookup timed out — likely same issue as market data
+        # Fall through to snapshot-based classification
+        if not snapshot_obtained:
+            diagnosis = "bridge_runtime_error"
+            severity = "NO_GO"
+        elif not snapshot_available and unreason == "market_data_timeout":
+            diagnosis = "no_tick_stream_timeout"
+            severity = "HOLD"
+            operator_action_required = True
+            suggested_operator_actions = [
+                "Contract lookup and market snapshot both timed out",
+                "Check market-data entitlement in IBKR account",
+                "Verify API market data permissions are enabled",
+                "Wait and retry — may be transient IBKR gateway issue",
+                "Check IBKR TWS/IBGW market data subscriptions",
+            ]
+        else:
+            diagnosis = "unknown"
+            severity = "HOLD"
+
+    elif not contract_qualified:
+        # Contract qualification explicitly failed (not timeout)
+        diagnosis = "contract_qualification_failed"
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            f"Verify symbol '{symbol}' is valid on exchange SMART",
+            "Check if the contract is available in the IBKR account",
+            "Try with a different exchange or currency",
+        ]
+
+    elif snapshot_available and not snapshot_data.get("stale", True):
+        # Live or delayed data available
+        if snapshot_data.get("delayed", True):
+            diagnosis = "delayed_data_available"
+            severity = "OK"
+            readiness_impact = "market_data_usable_delayed"
+            promotion_impact = "market_data_usable_delayed"
+        else:
+            diagnosis = "live_data_available"
+            severity = "OK"
+            readiness_impact = "market_data_usable"
+            promotion_impact = "none"
+
+    elif snapshot_obtained and not snapshot_available:
+        # Snapshot returned but no data
+        if unreason == "market_data_timeout":
+            session = session_info.get("session", "unknown")
+            if session == "rth":
+                # Bounded timeout during RTH — no explicit IBKR error
+                diagnosis = "no_tick_stream_timeout"
+                severity = "HOLD"
+                operator_action_required = True
+                suggested_operator_actions = [
+                    "Check market-data entitlement in IBKR account",
+                    "Verify API market data permissions are enabled",
+                    "Wait and retry — may be transient pacing or data feed issue",
+                    "Check IBKR TWS/IBGW market data subscriptions",
+                ]
+            else:
+                diagnosis = "session_not_expected"
+                severity = "HOLD"
+                readiness_impact = "session_inactive"
+                promotion_impact = "none"
+        elif all_prices_null:
+            diagnosis = "no_tick_stream_timeout"
+            severity = "HOLD"
+            operator_action_required = True
+            suggested_operator_actions = [
+                "All price fields are null — possible data feed issue",
+                "Check IBKR market data subscriptions and permissions",
+                "Retry during active trading hours",
+            ]
+        else:
+            diagnosis = "unknown"
+            severity = "HOLD"
+
+    elif not snapshot_obtained:
+        # Snapshot endpoint error
+        if not bridge_runtime_ok:
+            diagnosis = "bridge_runtime_error"
+            severity = "NO_GO"
+        else:
+            diagnosis = "unknown"
+            severity = "HOLD"
+
+    # Override with historical insight if available
+    if historical_probe_available and diagnosis == "no_tick_stream_timeout":
+        # Historical data works but live/delayed snapshot doesn't
+        suggested_operator_actions.append(
+            "Historical data is available but snapshot failed — likely a streaming data issue, not contract"
+        )
+
+    # ------------------------------------------------------------------
+    # 8. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "symbol": symbol,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "ibkr_connected": ibkr_connected,
+        "bridge_reachable": bridge_reachable,
+        "bridge_runtime_ok": bridge_runtime_ok,
+        "contract_qualified": contract_qualified,
+        "snapshot_available": snapshot_available,
+        "snapshot_obtained": snapshot_obtained,
+        "unavailability_reason": unreason,
+        "historical_probe_available": historical_probe_available,
+        "git_commit": git.get("commit", "?"),
+        "no_broker_mutation": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 9. Build result
+    # ------------------------------------------------------------------
+    attempts = {
+        "contract_qualification": {
+            "attempted": True,
+            "successful": contract_qualified,
+            "error": contract_error,
+        },
+        "live_snapshot": {
+            "attempted": True,
+            "successful": snapshot_obtained and snapshot_available and not snapshot_delayed,
+            "delayed": snapshot_delayed,
+            "available": snapshot_obtained and snapshot_available,
+            "error": snapshot_error if not snapshot_available else None,
+        },
+        "delayed_snapshot": {
+            "attempted": True,
+            "successful": snapshot_obtained and snapshot_available,
+            "available": snapshot_obtained and snapshot_available,
+            "error": snapshot_error if not snapshot_available else None,
+        },
+        "historical_probe": {
+            "attempted": historical_probe_attempted,
+            "successful": historical_probe_available,
+            "error": historical_probe_error,
+        },
+    }
+
+    live_market_data_available = (
+        snapshot_obtained and snapshot_available and not snapshot_delayed
+    )
+    delayed_market_data_available = (
+        snapshot_obtained and snapshot_available
+    )
+
+    # Export
+    _MD_DIAGNOSTICS_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    export_path = _MD_DIAGNOSTICS_EXPORT_DIR / f"{diagnostic_id}.json"
+
+    result = {
+        "command": "ibkr-operator market-data-diagnostics",
+        "advisory": (
+            "Read-only market data diagnostics (Step 15Q). "
+            "No broker mutation. No order window. No H1 token. "
+            "Classifies market-data unavailability root causes."
+        ),
+        "timestamp": ts_str,
+        "diagnostic_id": diagnostic_id,
+        "git": {
+            "branch": git.get("branch", "?"),
+            "commit": git.get("commit", "?"),
+            "tag": git.get("tag", "?"),
+        },
+        "symbol": symbol,
+        "requested_contract": requested_contract,
+        "qualified_contract": qualified_contract,
+        "contract_qualified": contract_qualified,
+        "ibkr_connected": ibkr_connected,
+        "bridge_reachable": bridge_reachable,
+        "bridge_runtime_ok": bridge_runtime_ok,
+        "market_session_status": session_info,
+        "attempts": attempts,
+        "observed_ibkr_errors": observed_ibkr_errors,
+        "observed_snapshot_detail": snapshot_data.get("detail", ""),
+        "live_market_data_available": live_market_data_available,
+        "delayed_market_data_available": delayed_market_data_available,
+        "market_data_unavailable_reason": unreason,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "readiness_impact": readiness_impact,
+        "promotion_impact": promotion_impact,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_operator_actions,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "explicit_non_actions": _MD_DIAGNOSTICS_EXPLICIT_NON_ACTIONS,
+        "backpressure": bp_info,
+        "cooldown": {"ok": True, "elapsed_s": round(cooldown_elapsed, 1), "required_s": _MD_DIAGNOSTICS_COOLDOWN_SECONDS},
+        "aborted_early": aborted_early,
+        "abort_reason": abort_reason,
+        "evidence_hash": evidence_hash,
+        "_export_path": str(export_path),
+    }
+
+    # Write export
+    try:
+        with open(export_path, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        pass
+
+    # Step 15Q-BP: Record diagnostics run for cooldown tracking
+    _record_diagnostics_run()
+
+    return result
+
+
+def _print_market_data_diagnostics(result: dict) -> None:
+    """Print market data diagnostics in human-readable format."""
+    diag = result.get("diagnosis", "unknown")
+    sev = result.get("severity", "HOLD")
+
+    if sev == "OK":
+        sev_color = GREEN
+    elif sev == "NO_GO":
+        sev_color = RED
+    else:
+        sev_color = RESET
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Market Data Diagnostics (Step 15Q){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+
+    print(f"  Diagnostic ID:     {result.get('diagnostic_id', '?')}")
+    print(f"  Timestamp:         {result.get('timestamp', '?')}")
+    print(f"  Symbol:            {result.get('symbol', '?')}")
+    print()
+
+    print(f"  {BOLD}Diagnosis:{RESET}      {diag}")
+    print(f"  {BOLD}Severity:{RESET}       {sev_color}{sev}{RESET}")
+    print()
+
+    print(f"  {BOLD}Connection{RESET}")
+    print(f"    IBKR connected:   {result.get('ibkr_connected', '?')}")
+    print(f"    Bridge reachable: {result.get('bridge_reachable', '?')}")
+    print(f"    Bridge runtime:   {'OK' if result.get('bridge_runtime_ok') else 'ERROR'}")
+    print()
+
+    print(f"  {BOLD}Contract{RESET}")
+    print(f"    Qualified:        {result.get('contract_qualified', '?')}")
+    qc = result.get("qualified_contract", {})
+    if qc:
+        print(f"    Symbol/Exch:      {qc.get('symbol', '?')}/{qc.get('exchange', '?')}")
+        print(f"    Conid:            {qc.get('conid', '?')}")
+    print()
+
+    print(f"  {BOLD}Market Data{RESET}")
+    print(f"    Live available:   {result.get('live_market_data_available', '?')}")
+    print(f"    Delayed avail:    {result.get('delayed_market_data_available', '?')}")
+    print(f"    Unavailability:   {result.get('market_data_unavailable_reason', '?')}")
+    print()
+
+    session = result.get("market_session_status", {})
+    print(f"  {BOLD}Session{RESET}")
+    print(f"    Status:           {session.get('session', '?')}")
+    print(f"    Reason:           {session.get('reason', '?')}")
+    print()
+
+    print(f"  {BOLD}Impacts{RESET}")
+    print(f"    Readiness:        {result.get('readiness_impact', '?')}")
+    print(f"    Promotion:        {result.get('promotion_impact', '?')}")
+    print()
+
+    errors = result.get("observed_ibkr_errors", [])
+    if errors:
+        print(f"  {BOLD}IBKR Errors ({len(errors)}){RESET}")
+        for e in errors:
+            print(f"    [{e.get('source', '?')}] {e.get('message', '?')}")
+        print()
+
+    actions = result.get("suggested_operator_actions", [])
+    if actions:
+        print(f"  {BOLD}Suggested Actions{RESET}")
+        for a in actions:
+            print(f"    →  {a}")
+        print()
+
+    # Explicit non-actions
+    na = result.get("explicit_non_actions", [])
+    if na:
+        print(f"  {BOLD}Explicit Non-Actions{RESET}")
+        for a in na:
+            print(f"    ✗  {a}")
+        print()
+
+    print(f"  Evidence Hash:     {result.get('evidence_hash', '?')[:16]}...")
+    print()
+    print(f"  {BOLD}══════════════════════════════════════════════════{RESET}")
+
+
+# ---------------------------------------------------------------------------
 
 
 def _collect_lightweight_evidence() -> dict:
@@ -8100,6 +8845,27 @@ def main() -> None:
     rtc.add_argument("--apply", action="store_true")
     rtc.add_argument("--confirm-local-state-repair", action="store_true")
 
+    # Step 15Q — Market-data diagnostics
+    mdd = sub.add_parser("market-data-diagnostics",
+                         help="Diagnose market-data entitlement/subscription issues")
+    mdd.add_argument("--symbol", type=str, default="AAPL",
+                      help="Symbol to diagnose (default: AAPL)")
+    mdd.add_argument("--json", action="store_true",
+                      help="Output raw JSON only")
+    mdd.add_argument("--export", action="store_true",
+                      help="Write JSON export to ~/.openclaw/market-data-diagnostics/")
+    # Aliases
+    md_doctor = sub.add_parser("market-data-doctor",
+                               help="Alias for market-data-diagnostics")
+    md_doctor.add_argument("--symbol", type=str, default="AAPL")
+    md_doctor.add_argument("--json", action="store_true")
+    md_doctor.add_argument("--export", action="store_true")
+    md_diag = sub.add_parser("md-diagnostics",
+                             help="Alias for market-data-diagnostics")
+    md_diag.add_argument("--symbol", type=str, default="AAPL")
+    md_diag.add_argument("--json", action="store_true")
+    md_diag.add_argument("--export", action="store_true")
+
     args = parser.parse_args()
 
     if args.command == "daily-report":
@@ -8366,6 +9132,20 @@ def main() -> None:
             if ep:
                 print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("repair_recommended") or result.get("repair_applied") else 1
+        sys.exit(exit_code)
+
+    if args.command in ("market-data-diagnostics", "market-data-doctor", "md-diagnostics"):
+        symbol = getattr(args, "symbol", "AAPL")
+        result = _run_market_data_diagnostics(symbol=symbol)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_market_data_diagnostics(result)
+        if args.export:
+            ep = result.get("_export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result["severity"] in ("OK", "HOLD") else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

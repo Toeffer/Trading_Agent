@@ -5605,6 +5605,500 @@ def _run_market_data_recovery_drill(
     return result
 
 
+# ===========================================================================
+# Step 15S — Contract Qualification / Root-Cause Drill
+# ===========================================================================
+
+_CQ_DRILL_EXPORT_DIR = OPENCLAW_DIR / "contract-qualification-drills"
+_CQ_DRILL_EXPLICIT_NON_ACTIONS: list[str] = [
+    "No orders placed or modified",
+    "No account values queried",
+    "No position changes",
+    "No IBKR_ALLOW_ORDERS changes",
+    "No rules.enforced changes",
+    "No autonomy-level changes",
+    "No H1 token reads",
+    "No /order, /order/preflight, /order/approve, /order/submit",
+]
+
+_CQ_DEFAULT_EXCHANGES: list[str] = ["SMART"]
+_CQ_ALTERNATE_PRIMARY_EXCHANGES: list[str] = ["NASDAQ", "NYSE", "ARCA"]
+_CQ_ALTERNATE_EXCHANGES: list[tuple[str, str]] = [
+    # (exchange, primaryExchange) — bounded safe alternates
+    ("SMART", "NASDAQ"),
+    ("SMART", "NYSE"),
+    ("SMART", "ARCA"),
+    ("NASDAQ", ""),
+    ("NYSE", ""),
+]
+
+
+def _qualify_contract_probe(
+    symbol: str,
+    exchange: str = "SMART",
+    currency: str = "USD",
+    sec_type: str = "STK",
+    primary_exchange: str = "",
+    timeout: float = 10.0,
+) -> dict:
+    """Single contract qualification probe via bridge /contract/stock.
+
+    Returns standardized dict with:
+    - qualified: bool
+    - contract: dict | None
+    - error_code: str | None
+    - error_message: str | None
+    - duration_seconds: float
+    - aborted_503: bool
+    """
+    import json as _json
+    import urllib.request
+    import urllib.error
+    import time as _time
+
+    start = _time.monotonic()
+    request_body = {
+        "symbol": symbol.upper().strip(),
+        "exchange": exchange,
+        "currency": currency,
+        "secType": sec_type,
+    }
+    if primary_exchange:
+        request_body["primaryExchange"] = primary_exchange
+
+    result: dict = {
+        "qualified": False,
+        "contract": None,
+        "con_id": None,
+        "exchange": exchange,
+        "primary_exchange": primary_exchange or None,
+        "currency": currency,
+        "sec_type": sec_type,
+        "local_symbol": None,
+        "trading_class": None,
+        "error_code": None,
+        "error_message": None,
+        "duration_seconds": 0.0,
+        "aborted_503": False,
+    }
+
+    try:
+        c_req_body = _json.dumps(request_body).encode()
+        c_req = urllib.request.Request(
+            f"{BRIDGE_URL}/contract/stock",
+            data=c_req_body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(c_req, timeout=timeout) as c_resp:
+            elapsed = _time.monotonic() - start
+            result["duration_seconds"] = round(elapsed, 3)
+            if c_resp.status == 503:
+                result["aborted_503"] = True
+                result["error_message"] = "contract/stock returned 503 (backpressure)"
+            if c_resp.status == 200:
+                contract_data = _json.loads(c_resp.read().decode())
+                if contract_data.get("conid"):
+                    result["qualified"] = True
+                    result["contract"] = contract_data
+                    result["con_id"] = contract_data.get("conid")
+                    result["local_symbol"] = contract_data.get("localSymbol")
+                    result["trading_class"] = contract_data.get("tradingClass")
+                    # Use actual exchange from response if available
+                    result["exchange"] = contract_data.get("exchange", exchange)
+                    result["primary_exchange"] = (
+                        contract_data.get("primaryExchange") or primary_exchange or None
+                    )
+                    result["currency"] = contract_data.get("currency", currency)
+                else:
+                    result["error_code"] = contract_data.get("code")
+                    result["error_message"] = contract_data.get("error", "contract not found")
+    except urllib.error.HTTPError as e:
+        elapsed = _time.monotonic() - start
+        result["duration_seconds"] = round(elapsed, 3)
+        if e.code == 503:
+            result["aborted_503"] = True
+            result["error_message"] = f"contract/stock HTTP 503 (backpressure)"
+        else:
+            result["error_code"] = e.code
+            result["error_message"] = f"contract lookup HTTP {e.code}"
+    except urllib.error.URLError as e:
+        elapsed = _time.monotonic() - start
+        result["duration_seconds"] = round(elapsed, 3)
+        result["error_message"] = f"contract lookup unreachable: {str(e)[:150]}"
+    except Exception as e:
+        elapsed = _time.monotonic() - start
+        result["duration_seconds"] = round(elapsed, 3)
+        result["error_message"] = f"contract lookup error: {str(e)[:150]}"
+
+    return result
+
+
+def _run_contract_qualification_drill(
+    symbol: str = "AAPL",
+    sec_type: str = "STK",
+    currency: str = "USD",
+    exchange: str = "SMART",
+    primary_exchange: str = "",
+    attempt_alternates: bool = True,
+    max_attempts: int = 5,
+) -> dict:
+    """Run contract qualification / root-cause drill (Step 15S).
+
+    Systematically probes contract qualification with default and alternate
+    exchange/primaryExchange combinations to determine root cause of
+    contract_qualification_failed.
+
+    Read-only. No broker/account/order mutation. No H1 token.
+    """
+    import hashlib
+    import json as _json
+    import urllib.request
+    import urllib.error
+    import time as _time
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    drill_id = f"cq-drill-{symbol}-{ts_file}"
+    symbol = symbol.upper().strip()
+    max_attempts = min(max(max_attempts, 1), 8)
+
+    git = _git_metadata(BRIDGE_DIR)
+
+    # ------------------------------------------------------------------
+    # 1. Capture safety flags and guard-state before
+    # ------------------------------------------------------------------
+    safety_before = _capture_safety_flags_raw()
+    guard_state_before = _capture_guard_state_snapshot()
+
+    # ------------------------------------------------------------------
+    # 2. Bridge health
+    # ------------------------------------------------------------------
+    bridge_reachable = False
+    ibkr_connected: bool | None = None
+    bridge_runtime_ok = True
+    market_session_status: dict = {}
+
+    try:
+        health_req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(health_req, timeout=10.0) as resp:
+            if resp.status == 200:
+                health_data = _json.loads(resp.read().decode())
+                bridge_reachable = True
+                ibkr_connected = health_data.get("connected", None)
+    except Exception:
+        bridge_runtime_ok = False
+
+    # Determine market session status (local, no bridge call)
+    market_session_status = _determine_market_session_status()
+
+    # ------------------------------------------------------------------
+    # 3. Contract qualification probes
+    # ------------------------------------------------------------------
+    attempts: list[dict] = []
+    best_contract: dict | None = None
+    all_qualified: list[dict] = []
+    root_cause = "unknown"
+    severity = "HOLD"
+    operator_action_required = False
+    suggested_operator_actions: list[str] = []
+
+    # Build the probe list
+    probe_contracts: list[tuple[str, str, str, str]] = []
+
+    # 3a. Default probe (no primary exchange unless specified)
+    probe_contracts.append((symbol, exchange, currency, primary_exchange))
+
+    # 3b. If default has no primary exchange, also try with common ones
+    if attempt_alternates and not primary_exchange:
+        if primary_exchange == "":
+            for pe in _CQ_ALTERNATE_PRIMARY_EXCHANGES:
+                probe_contracts.append((symbol, exchange, currency, pe))
+        for alt_ex, alt_pe in _CQ_ALTERNATE_EXCHANGES:
+            if alt_ex != exchange or alt_pe != primary_exchange:
+                # Avoid duplicating the default probe
+                already = any(
+                    p[1] == alt_ex and p[3] == alt_pe for p in probe_contracts
+                )
+                if not already:
+                    probe_contracts.append((symbol, alt_ex, currency, alt_pe))
+
+    # Limit to max_attempts
+    probe_contracts = probe_contracts[:max_attempts]
+
+    for attempt_num, (sym, exc, cur, pe) in enumerate(probe_contracts, start=1):
+        probe_result = _qualify_contract_probe(
+            symbol=sym,
+            exchange=exc,
+            currency=cur,
+            sec_type=sec_type,
+            primary_exchange=pe,
+        )
+
+        attempt_entry = {
+            "attempt_number": attempt_num,
+            "contract_request": {
+                "symbol": sym,
+                "exchange": exc,
+                "currency": cur,
+                "sec_type": sec_type,
+                "primary_exchange": pe or None,
+            },
+            "qualified": probe_result["qualified"],
+            "qualified_contract": probe_result["contract"],
+            "con_id": probe_result["con_id"],
+            "exchange": probe_result["exchange"],
+            "primary_exchange": probe_result["primary_exchange"],
+            "currency": probe_result["currency"],
+            "local_symbol": probe_result["local_symbol"],
+            "trading_class": probe_result["trading_class"],
+            "error_code": probe_result["error_code"],
+            "error_message": probe_result["error_message"],
+            "duration_seconds": probe_result["duration_seconds"],
+            "aborted_503": probe_result["aborted_503"],
+        }
+        attempts.append(attempt_entry)
+
+        if probe_result["qualified"]:
+            all_qualified.append(attempt_entry)
+            if best_contract is None:
+                best_contract = attempt_entry
+
+        # Stop early on 503 — backpressure
+        if probe_result["aborted_503"]:
+            break
+
+        # Brief delay between probes
+        if attempt_num < len(probe_contracts):
+            _time.sleep(0.3)
+
+    # ------------------------------------------------------------------
+    # 4. Classify root cause
+    # ------------------------------------------------------------------
+    contract_qualified = len(all_qualified) > 0
+    n_qualified = len(all_qualified)
+
+    if not bridge_reachable or not bridge_runtime_ok:
+        root_cause = "bridge_runtime_error"
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Check bridge health",
+            "Verify bridge is running and reachable",
+            "Run ibkr-operator doctor",
+        ]
+    elif ibkr_connected is False:
+        root_cause = "ibkr_disconnected"
+        severity = "HOLD"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Verify IBKR Gateway is running",
+            "Connect bridge to IBKR: ibkr-operator connect",
+            "Check bridge logs for connection errors",
+        ]
+    elif any(a.get("aborted_503") for a in attempts):
+        root_cause = "pacing_or_backpressure"
+        severity = "HOLD"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Wait for bridge backpressure to drain",
+            "Retry after cooldown",
+            "Run ibkr-operator doctor",
+        ]
+    elif n_qualified == 1:
+        # One contract qualified — determine root cause by what fixed it
+        qual = all_qualified[0]
+        req = qual.get("contract_request", {})
+        req_pe = req.get("primary_exchange")
+        req_ex = req.get("exchange", "SMART")
+
+        if qual["attempt_number"] == 1:
+            root_cause = "qualified_with_default_contract"
+            severity = "OK"
+        elif req_pe and req_pe != "":
+            # Alternate succeeded because of primary exchange
+            root_cause = "missing_primary_exchange"
+            severity = "OK"
+            operator_action_required = True
+            suggested_operator_actions = [
+                f"Use primaryExchange={req_pe} for {symbol}",
+                "Update trading config to include primary exchange",
+            ]
+        elif req_ex not in ("SMART",):
+            root_cause = "qualified_with_alternate_exchange"
+            severity = "OK"
+            operator_action_required = True
+            suggested_operator_actions = [
+                f"Use exchange={req_ex} instead of SMART for {symbol}",
+                "Update trading config to use alternate exchange",
+            ]
+        else:
+            root_cause = "contract_construction_bug"
+            severity = "HOLD"
+            operator_action_required = True
+            suggested_operator_actions = [
+                "Unexpected: default failed but identical alternate succeeded",
+                "Review contract construction in bridge",
+                "Run ibkr-operator doctor",
+            ]
+    elif n_qualified > 1:
+        root_cause = "ambiguous_multiple_contracts"
+        severity = "HOLD"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Multiple contracts qualified — ambiguous",
+            "Review qualified_contracts to select the correct one",
+            "Specify primaryExchange explicitly to disambiguate",
+        ]
+    else:
+        # n_qualified == 0 — all failed
+        error_messages = [a.get("error_message", "") for a in attempts]
+        combined = " ".join(e for e in error_messages if e)
+        if "not found" in combined.lower() or "200" in combined:
+            root_cause = "ibkr_contract_not_found"
+            severity = "NO_GO"
+        elif "timeout" in combined.lower():
+            root_cause = "pacing_or_backpressure"
+            severity = "HOLD"
+        elif any("unreachable" in (e or "") for e in error_messages):
+            root_cause = "bridge_runtime_error"
+            severity = "NO_GO"
+        else:
+            root_cause = "unknown"
+            severity = "HOLD"
+        operator_action_required = True
+        suggested_operator_actions = [
+            f"Symbol '{symbol}' not found on any probed exchange",
+            "Verify symbol is correct and listed on IBKR",
+            "Check contract details in TWS or IBKR Client Portal",
+        ]
+
+    # ------------------------------------------------------------------
+    # 5. Safety flags and guard-state after
+    # ------------------------------------------------------------------
+    safety_after = _capture_safety_flags_raw()
+    guard_state_after = _capture_guard_state_snapshot()
+
+    safety_unchanged = (
+        safety_before.get("env_IBKR_ALLOW_ORDERS")
+        == safety_after.get("env_IBKR_ALLOW_ORDERS")
+        and safety_before.get("rules_enforced")
+        == safety_after.get("rules_enforced")
+    )
+    guard_state_unchanged = (
+        guard_state_before.get("guard_state_hash") is not None
+        and guard_state_after.get("guard_state_hash") is not None
+        and guard_state_before["guard_state_hash"] == guard_state_after["guard_state_hash"]
+    )
+
+    # ------------------------------------------------------------------
+    # 6. Forbidden endpoint scan
+    # ------------------------------------------------------------------
+    forbidden_scan = _scan_forbidden_endpoints()
+
+    # ------------------------------------------------------------------
+    # 7. Readiness / promotion impact
+    # ------------------------------------------------------------------
+    if severity == "OK":
+        readiness_impact = "contract_qualified"
+        promotion_impact = "none"
+    elif severity == "NO_GO":
+        readiness_impact = "contract_blocked"
+        promotion_impact = "contract_blocks_promotion"
+    else:
+        readiness_impact = "contract_unknown"
+        promotion_impact = "contract_blocks_promotion"
+
+    # ------------------------------------------------------------------
+    # 8. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "drill_id": drill_id,
+        "symbol": symbol,
+        "root_cause": root_cause,
+        "severity": severity,
+        "contract_qualified": contract_qualified,
+        "safety_unchanged": safety_unchanged,
+        "git_commit": git.get("commit", "?"),
+        "no_broker_mutation": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 9. Build result
+    # ------------------------------------------------------------------
+    _CQ_DRILL_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    export_path = _CQ_DRILL_EXPORT_DIR / f"{drill_id}.json"
+
+    result: dict = {
+        "command": "ibkr-operator contract-qualification-drill",
+        "advisory": (
+            "Read-only contract qualification drill (Step 15S). "
+            "No broker mutation. No order window. No H1 token."
+        ),
+        "timestamp": ts_str,
+        "drill_id": drill_id,
+        "git": {
+            "branch": git.get("branch", "?"),
+            "commit": git.get("commit", "?"),
+            "tag": git.get("tag", "?"),
+        },
+        "symbol": symbol,
+        "requested_contract": {
+            "symbol": symbol,
+            "sec_type": sec_type,
+            "currency": currency,
+            "exchange": exchange,
+            "primary_exchange": primary_exchange or None,
+        },
+        "ibkr_connected": ibkr_connected,
+        "bridge_reachable": bridge_reachable,
+        "bridge_runtime_ok": bridge_runtime_ok,
+        "market_session_status": market_session_status,
+        "attempts": attempts,
+        "attempts_count": len(attempts),
+        "best_contract": best_contract,
+        "qualified_contracts": all_qualified,
+        "contract_qualified": contract_qualified,
+        "root_cause": root_cause,
+        "severity": severity,
+        "readiness_impact": readiness_impact,
+        "promotion_impact": promotion_impact,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_operator_actions,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "safety_flags_before": safety_before,
+        "safety_flags_after": safety_after,
+        "safety_flags_unchanged": safety_unchanged,
+        "guard_state_path": guard_state_before.get(
+            "guard_state_path", str(OPENCLAW_DIR / "guard-state.json")
+        ),
+        "guard_state_hash_before": guard_state_before.get("guard_state_hash"),
+        "guard_state_hash_after": guard_state_after.get("guard_state_hash"),
+        "guard_daily_trade_count_before": guard_state_before.get("daily_trade_count", 0) or 0,
+        "guard_daily_trade_count_after": guard_state_after.get("daily_trade_count", 0) or 0,
+        "guard_state_unchanged": guard_state_unchanged,
+        "forbidden_endpoint_scan": forbidden_scan,
+        "explicit_non_actions": _CQ_DRILL_EXPLICIT_NON_ACTIONS,
+        "evidence_hash": evidence_hash,
+        "_export_path": str(export_path),
+    }
+
+    # Write export
+    try:
+        with open(export_path, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        pass
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -9441,6 +9935,46 @@ def main() -> None:
     md_rec2.add_argument("--connect-if-needed", action="store_true", default=True)
     md_rec2.add_argument("--no-connect", action="store_false", dest="connect_if_needed")
 
+    # Step 15S: Contract qualification / root-cause drill
+    cq_drill = sub.add_parser("contract-qualification-drill",
+                               help="Run contract qualification root-cause drill (Step 15S)")
+    cq_drill.add_argument("--symbol", type=str, default="AAPL")
+    cq_drill.add_argument("--json", action="store_true")
+    cq_drill.add_argument("--export", action="store_true")
+    cq_drill.add_argument("--sec-type", type=str, default="STK")
+    cq_drill.add_argument("--currency", type=str, default="USD")
+    cq_drill.add_argument("--exchange", type=str, default="SMART")
+    cq_drill.add_argument("--primary-exchange", type=str, default="")
+    cq_drill.add_argument("--attempt-alternates", action="store_true", default=True)
+    cq_drill.add_argument("--no-attempt-alternates", action="store_false", dest="attempt_alternates")
+    cq_drill.add_argument("--max-attempts", type=int, default=5)
+
+    cq_d2 = sub.add_parser("contract-diagnostics",
+                            help="Alias for contract-qualification-drill")
+    cq_d2.add_argument("--symbol", type=str, default="AAPL")
+    cq_d2.add_argument("--json", action="store_true")
+    cq_d2.add_argument("--export", action="store_true")
+    cq_d2.add_argument("--sec-type", type=str, default="STK")
+    cq_d2.add_argument("--currency", type=str, default="USD")
+    cq_d2.add_argument("--exchange", type=str, default="SMART")
+    cq_d2.add_argument("--primary-exchange", type=str, default="")
+    cq_d2.add_argument("--attempt-alternates", action="store_true", default=True)
+    cq_d2.add_argument("--no-attempt-alternates", action="store_false", dest="attempt_alternates")
+    cq_d2.add_argument("--max-attempts", type=int, default=5)
+
+    cq_d3 = sub.add_parser("cq-drill",
+                            help="Alias for contract-qualification-drill")
+    cq_d3.add_argument("--symbol", type=str, default="AAPL")
+    cq_d3.add_argument("--json", action="store_true")
+    cq_d3.add_argument("--export", action="store_true")
+    cq_d3.add_argument("--sec-type", type=str, default="STK")
+    cq_d3.add_argument("--currency", type=str, default="USD")
+    cq_d3.add_argument("--exchange", type=str, default="SMART")
+    cq_d3.add_argument("--primary-exchange", type=str, default="")
+    cq_d3.add_argument("--attempt-alternates", action="store_true", default=True)
+    cq_d3.add_argument("--no-attempt-alternates", action="store_false", dest="attempt_alternates")
+    cq_d3.add_argument("--max-attempts", type=int, default=5)
+
     args = parser.parse_args()
 
     if args.command == "daily-report":
@@ -9749,6 +10283,57 @@ def main() -> None:
             if ep:
                 print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result["final_severity"] in ("OK", "HOLD") else 1
+        sys.exit(exit_code)
+
+    if args.command in ("contract-qualification-drill", "contract-diagnostics", "cq-drill"):
+        symbol = getattr(args, "symbol", "AAPL")
+        sec_type = getattr(args, "sec_type", "STK")
+        currency = getattr(args, "currency", "USD")
+        exchange = getattr(args, "exchange", "SMART")
+        primary_exchange = getattr(args, "primary_exchange", "")
+        attempt_alternates = getattr(args, "attempt_alternates", True)
+        max_attempts = getattr(args, "max_attempts", 5)
+        try:
+            result = _run_contract_qualification_drill(
+                symbol=symbol,
+                sec_type=sec_type,
+                currency=currency,
+                exchange=exchange,
+                primary_exchange=primary_exchange,
+                attempt_alternates=attempt_alternates,
+                max_attempts=max_attempts,
+            )
+        except Exception as exc:
+            # Build a safe error result (same contract as recovery drill errors)
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+            result = {
+                "command": "ibkr-operator contract-qualification-drill",
+                "timestamp": ts_str,
+                "drill_id": f"cq-drill-{symbol}-{ts_file}",
+                "symbol": symbol.upper().strip(),
+                "contract_qualified": False,
+                "root_cause": "bridge_runtime_error",
+                "severity": "NO_GO",
+                "internal_exception": True,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)[:500],
+                "no_broker_mutation": True,
+                "no_order_window_opened": True,
+                "_export_path": None,
+            }
+            print(f"CQ drill internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        # Pure JSON stdout
+        print(json.dumps(result, indent=2, default=str))
+        if args.export:
+            ep = result.get("_export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("severity") in ("OK", "HOLD") else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

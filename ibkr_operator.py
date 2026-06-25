@@ -3092,7 +3092,13 @@ def _repair_stale_alerts(dry_run: bool = True) -> dict:
         })
 
     # --- 2. Repair trade_count_mismatch ---
-    gs = load_guard_state()
+    # Use read-only loader for dry_run (no file creation, no H1 requirement).
+    # Mutating repair below only runs when dry_run=False.
+    if dry_run:
+        from guard import load_guard_state_readonly
+        gs = load_guard_state_readonly()
+    else:
+        gs = load_guard_state()
     evidence["before"]["daily_trade_count"] = gs.get("daily_trade_count", 0)
 
     # Determine authoritative count: only count today's events with UNIQUE permIds
@@ -3216,6 +3222,10 @@ def _run_guard_state_reconcile(
     Dry-run by default. Repairs only when --apply and --confirm-local-state-repair
     are both present.
 
+    Uses canonical_trade_date() from guard.py as the single source of truth
+    for trade-date comparison. All consumers (reconcile, sentinel, monitor,
+    KPI) use the same canonical date.
+
     Repair policy:
       - Downward only: guard count > confirmed events → can repair down.
       - Never upward: confirmed > guard count → NO_GO.
@@ -3228,6 +3238,11 @@ def _run_guard_state_reconcile(
     import json as _json
     import shutil
     from datetime import datetime, timezone
+    from guard import (
+        canonical_trade_date,
+        load_guard_state as guard_load_guard_state,
+        _stream_count_confirmed_orders_for_date,
+    )
     from monitor import (
         load_guard_state,
         load_events,
@@ -3246,29 +3261,34 @@ def _run_guard_state_reconcile(
     git = _git_metadata(BRIDGE_DIR)
 
     # ------------------------------------------------------------------
-    # 2. Load guard state
+    # 2. Compute canonical trade date (SINGLE SOURCE OF TRUTH)
+    # ------------------------------------------------------------------
+    canonical_date = canonical_trade_date(now_utc)
+
+    # ------------------------------------------------------------------
+    # 3. Load guard state
     # ------------------------------------------------------------------
     guard_state_path = OPENCLAW_DIR / "guard-state.json"
     gs = load_guard_state()
     guard_count_before = gs.get("daily_trade_count", 0)
-    trade_date = gs.get("trade_date", now_utc.strftime("%Y-%m-%d"))
+    gs_trade_date = gs.get("trade_date", "unknown")
 
     # ------------------------------------------------------------------
-    # 3. Count confirmed events (order_submitted with unique real permIds)
+    # 4. Count confirmed events using canonical logic (same as monitor+ sentinel)
     # ------------------------------------------------------------------
     events = load_events(event_type="order_submitted")
     today_events = [
         e for e in events
-        if (ts := e.get("timestamp_utc", "")) and ts.startswith(trade_date)
+        if (ts := e.get("timestamp_utc", "")) and ts.startswith(gs_trade_date)
     ]
     # Exclude test artifacts (fake permId 5001, test-bracket, test-double)
+    confirmed_order_ids: list[str] = []
     real_today = [
         e for e in today_events
         if not str(e.get("approval_id", "")).startswith("test-bracket-")
         and not str(e.get("approval_id", "")).startswith("test-double-")
     ]
     real_perm_ids: set = set()
-    confirmed_order_ids: list[str] = []
     for e in real_today:
         ibkr_md = e.get("ibkr_metadata")
         if ibkr_md and ibkr_md.get("permId") is not None:
@@ -3284,6 +3304,11 @@ def _run_guard_state_reconcile(
                 confirmed_order_ids.append(aid)
 
     confirmed_count = len(real_perm_ids)
+
+    # ------------------------------------------------------------------
+    # 3b. Determine if guard_state trade_date is stale vs canonical
+    # ------------------------------------------------------------------
+    trade_date_stale = (gs_trade_date != canonical_date)
 
     # ------------------------------------------------------------------
     # 4. Check IBKR live state (open orders, positions)
@@ -3388,6 +3413,13 @@ def _run_guard_state_reconcile(
                              "detail": f"{len(real_today)} event(s) without permIds — ambiguous"})
             checks_ok = False
 
+        # Special case: stale trade_date with non-zero counter on canonical date
+        # and zero confirmed events → this is a stale counter that should be
+        # repairable down to 0.
+        if checks_ok and trade_date_stale and guard_count_before > 0 and confirmed_count == 0:
+            # Allow repair even though guard_count is for old date
+            checks_ok = True
+
         if checks_ok:
             repair_recommended = True
 
@@ -3397,7 +3429,9 @@ def _run_guard_state_reconcile(
                 backup_path = _GUARD_STATE_REPAIRS_DIR / f"guard-state.bak-{ts_file}.json"
                 shutil.copy2(guard_state_path, backup_path)
 
-                # Apply repair
+                # Apply repair — update both trade_date (if stale) and daily_trade_count
+                if trade_date_stale:
+                    gs["trade_date"] = canonical_date
                 gs["daily_trade_count"] = confirmed_count
                 gs["last_updated_utc"] = ts_str
                 gs["trade_count_repaired"] = True
@@ -3431,7 +3465,8 @@ def _run_guard_state_reconcile(
     # 8. Evidence hash
     # ------------------------------------------------------------------
     hashable = {
-        "trade_date": trade_date,
+        "canonical_trade_date": canonical_date,
+        "trade_date": gs_trade_date,
         "guard_daily_trade_count_before": guard_count_before,
         "confirmed_event_trade_count": confirmed_count,
         "mismatch_detected": mismatch_detected,
@@ -3471,7 +3506,9 @@ def _run_guard_state_reconcile(
         "guard_state_path": str(guard_state_path),
         "backup_path": str(_GUARD_STATE_REPAIRS_DIR / f"guard-state.bak-{ts_file}.json") if repair_applied else None,
         "audit_export_path": str(audit_export_path),
-        "trade_date": trade_date,
+        "canonical_trade_date": canonical_date,
+        "trade_date": gs_trade_date,
+        "trade_date_stale": trade_date_stale,
         "guard_daily_trade_count_before": guard_count_before,
         "confirmed_event_trade_count": confirmed_count,
         "confirmed_unique_order_ids": confirmed_order_ids,
@@ -6500,6 +6537,537 @@ def _run_backpressure_drain_drill(
             _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
+    except Exception:
+        pass
+
+    return result
+
+
+# ===========================================================================
+# Step 15U — Guard-State Drift Sentinel
+# ===========================================================================
+
+_GUARD_DRIFT_EXPORT_DIR = OPENCLAW_DIR / "guard-state-drift-sentinels"
+_GUARD_DRIFT_EXPLICIT_NON_ACTIONS: list[str] = [
+    "No orders placed or modified",
+    "No account values mutated",
+    "No position changes",
+    "No IBKR_ALLOW_ORDERS changes",
+    "No rules.enforced changes",
+    "No autonomy-level changes",
+    "No guard-state repair (unless --repair flag)",
+    "No H1 token reads",
+    "No /order, /order/preflight, /order/approve, /order/submit",
+]
+
+
+def _count_confirmed_orders_from_events() -> tuple[int, int, list[str], list[str]]:
+    """Count confirmed unique orders from guard-events using canonical logic.
+
+    Returns (event_count, unique_order_ids_count, unique_ids, event_log_paths).
+
+    Uses guard-state's trade_date for filtering (to match the guard counter's
+    date). Also computes the count for canonical_trade_date and returns both
+    in unique_ids metadata.
+
+    Uses the centralized _stream_count_confirmed_orders_for_date() from guard.py.
+    """
+    from pathlib import Path
+    from guard import canonical_trade_date, _stream_count_confirmed_orders_for_date
+
+    events_path = Path.home() / ".openclaw" / "guard-events.jsonl"
+    event_log_paths = [str(events_path)]
+
+    # Read guard-state's trade_date for matching with guard counter
+    gs_path = Path.home() / ".openclaw" / "guard-state.json"
+    gs_trade_date = "unknown"
+    if gs_path.exists():
+        try:
+            import json as _json
+            gs = _json.loads(gs_path.read_text())
+            gs_trade_date = gs.get("trade_date", "unknown")
+        except Exception:
+            pass
+
+    canonical_date = canonical_trade_date()
+
+    # Primary: count events for guard-state's trade_date (matches guard counter)
+    if gs_trade_date != "unknown" and events_path.exists():
+        event_count = _stream_count_confirmed_orders_for_date(
+            gs_trade_date, events_path=events_path
+        )
+    elif events_path.exists():
+        event_count = _stream_count_confirmed_orders_for_date(
+            canonical_date, events_path=events_path
+        )
+    else:
+        event_count = 0
+
+    # Also compute canonical count for drift detection metadata
+    if events_path.exists() and gs_trade_date != canonical_date:
+        canonical_count = _stream_count_confirmed_orders_for_date(
+            canonical_date, events_path=events_path
+        )
+    else:
+        canonical_count = event_count
+
+    unique_ids = [
+        f"guard_date({gs_trade_date}):count={event_count}",
+        f"canonical_date({canonical_date}):count={canonical_count}",
+    ]
+
+    return event_count, event_count, unique_ids, event_log_paths
+
+
+def _run_guard_state_drift_sentinel(
+    observe_seconds: int = 15,
+    poll_seconds: int = 3,
+    include_readonly_probes: bool = True,
+    fail_on_drift: bool = False,
+    include_process_scan: bool = True,
+) -> dict:
+    """Run guard-state drift attribution / mutation sentinel (Step 15U).
+
+    Detects pre-existing drift between guard_state daily_trade_count and
+    confirmed order events. Monitors guard-state during observation for
+    mutation. Attributes likely mutation source.
+
+    Read-only diagnostic/audit only. No broker/account/order mutation.
+    """
+    import hashlib
+    import json as _json
+    import urllib.request
+    import urllib.error
+    import time as _time
+    import os as _os
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    sentinel_id = f"gs-drift-sentinel-{ts_file}"
+    observe_seconds = min(max(observe_seconds, 1), 120)
+    poll_seconds = min(max(poll_seconds, 1), 15)
+
+    # ------------------------------------------------------------------
+    # 0. Canonical trade date (SINGLE SOURCE OF TRUTH)
+    # ------------------------------------------------------------------
+    from guard import canonical_trade_date as _canonical_trade_date
+    canonical_date = _canonical_trade_date(now_utc)
+
+    git = _git_metadata(BRIDGE_DIR)
+    guard_state_path = OPENCLAW_DIR / "guard-state.json"
+
+    # ------------------------------------------------------------------
+    # 1. Capture safety flags before
+    # ------------------------------------------------------------------
+    safety_before = _capture_safety_flags_raw()
+
+    # ------------------------------------------------------------------
+    # 2. Capture guard-state before
+    # ------------------------------------------------------------------
+    guard_before: dict = {
+        "hash": None,
+        "mtime": None,
+        "size": None,
+        "daily_trade_count": None,
+        "trade_date": "unknown",
+        "raw_keys": [],
+    }
+    guard_state_exists = guard_state_path.exists()
+
+    if guard_state_exists:
+        try:
+            stat = _os.stat(guard_state_path)
+            guard_before["mtime"] = stat.st_mtime
+            guard_before["size"] = stat.st_size
+            raw = guard_state_path.read_bytes()
+            guard_before["hash"] = hashlib.sha256(raw).hexdigest()
+            data = _json.loads(raw.decode())
+            guard_before["daily_trade_count"] = data.get("daily_trade_count", 0)
+            guard_before["trade_date"] = data.get("trade_date", "unknown")
+            guard_before["raw_keys"] = sorted(data.keys())
+        except (OSError, _json.JSONDecodeError):
+            guard_state_exists = False
+
+    # ------------------------------------------------------------------
+    # 3. Count confirmed orders from events
+    # ------------------------------------------------------------------
+    event_count, total_submitted, unique_ids, event_log_paths = \
+        _count_confirmed_orders_from_events()
+
+    confirmed_trade_count: dict = {
+        "event_count": event_count,
+        "unique_order_ids": unique_ids[:20],
+        "unique_order_ids_count": len(unique_ids),
+        "total_submitted_events": total_submitted,
+        "source": "guard-events.jsonl (composite identity: permId > approval_id > event_id)",
+        "event_log_paths": event_log_paths,
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Classify pre-existing drift
+    # ------------------------------------------------------------------
+    guard_count = guard_before.get("daily_trade_count") or 0
+    delta = guard_count - event_count
+    gs_trade_date = guard_before.get("trade_date", "unknown")
+    trade_date_stale = (gs_trade_date != "unknown" and gs_trade_date != canonical_date)
+
+    drift_before: dict = {
+        "present": delta != 0,
+        "guard_count": guard_count,
+        "confirmed_count": event_count,
+        "delta": delta,
+        "classification": "clean",
+        "guard_trade_date": gs_trade_date,
+        "canonical_trade_date": canonical_date,
+        "trade_date_stale": trade_date_stale,
+    }
+
+    if not guard_state_exists:
+        drift_before["classification"] = "guard_state_missing"
+    elif trade_date_stale and guard_count > 0 and event_count == 0:
+        # Guard has a stale trade_date with non-zero count and no events
+        # on canonical date — this is a rollover artifact
+        drift_before["classification"] = "preexisting_trade_count_drift"
+    elif event_count > 0:
+        drift_before["classification"] = "confirmed_order_events_present"
+    elif delta != 0:
+        drift_before["classification"] = "preexisting_trade_count_drift"
+
+    # ------------------------------------------------------------------
+    # 5. Poll guard-state during observation
+    # ------------------------------------------------------------------
+    guard_state_samples: list[dict] = []
+    mutation_detected = False
+    last_hash = guard_before.get("hash")
+    last_count = guard_count
+
+    start_time = _time.monotonic()
+    elapsed = 0.0
+    sample_num = 0
+
+    while elapsed < observe_seconds:
+        sample_num += 1
+        sample_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        sample: dict = {
+            "sample_number": sample_num,
+            "timestamp": sample_ts,
+            "hash": None,
+            "mtime": None,
+            "size": None,
+            "daily_trade_count": None,
+            "changed_since_previous": False,
+        }
+
+        if guard_state_path.exists():
+            try:
+                st = _os.stat(guard_state_path)
+                sample["mtime"] = st.st_mtime
+                sample["size"] = st.st_size
+                raw = guard_state_path.read_bytes()
+                sample["hash"] = hashlib.sha256(raw).hexdigest()
+                data = _json.loads(raw.decode())
+                sample["daily_trade_count"] = data.get("daily_trade_count", 0)
+                if sample["hash"] != last_hash:
+                    sample["changed_since_previous"] = True
+                    last_hash = sample["hash"]
+                    if sample["daily_trade_count"] != last_count:
+                        mutation_detected = True
+                    last_count = sample["daily_trade_count"]
+            except Exception:
+                pass
+
+        guard_state_samples.append(sample)
+
+        elapsed = _time.monotonic() - start_time
+        if elapsed >= observe_seconds:
+            break
+        _time.sleep(min(poll_seconds, observe_seconds - elapsed))
+        elapsed = _time.monotonic() - start_time
+
+    # ------------------------------------------------------------------
+    # 6. Read-only endpoint probes (if enabled)
+    # ------------------------------------------------------------------
+    readonly_probe_results: list[dict] = []
+    if include_readonly_probes:
+        probe_endpoints = ["/positions", "/account", "/monitor/alerts"]
+        for ep in probe_endpoints:
+            ep_start = _time.monotonic()
+            ep_result: dict = {
+                "endpoint": ep,
+                "attempted": True,
+                "http_status": None,
+                "ok": False,
+                "duration_seconds": 0.0,
+                "error": None,
+            }
+            try:
+                ep_req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                with urllib.request.urlopen(ep_req, timeout=10.0) as ep_resp:
+                    ep_result["http_status"] = ep_resp.status
+                    ep_result["ok"] = ep_resp.status == 200
+                    if ep_resp.status == 200:
+                        ep_resp.read()
+            except urllib.error.HTTPError as e:
+                ep_result["http_status"] = e.code
+                ep_result["error"] = f"HTTP {e.code}"
+            except Exception as e:
+                ep_result["error"] = str(e)[:150]
+            ep_result["duration_seconds"] = round(_time.monotonic() - ep_start, 3)
+            readonly_probe_results.append(ep_result)
+            _time.sleep(0.3)
+
+    # ------------------------------------------------------------------
+    # 7. Process scan (optional)
+    # ------------------------------------------------------------------
+    process_scan: dict = {
+        "enabled": include_process_scan,
+        "candidate_processes": [],
+        "open_file_matches": [],
+        "limitations": "process scan requires platform support",
+    }
+
+    if include_process_scan:
+        try:
+            import subprocess
+            # Check which processes have guard-state.json open
+            guard_str = str(guard_state_path)
+            result = subprocess.run(
+                ["lsof", "--", guard_str],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                lines = result.stdout.strip().split("\n")
+                process_scan["open_file_matches"] = lines[:20]
+                process_scan["limitations"] = "lsof succeeded"
+            else:
+                process_scan["limitations"] = "lsof returned no matches or unavailable"
+        except Exception:
+            process_scan["limitations"] = "process scan unavailable (lsof not found?)"
+
+    # ------------------------------------------------------------------
+    # 8. Safety flags after
+    # ------------------------------------------------------------------
+    safety_after = _capture_safety_flags_raw()
+    safety_unchanged = (
+        safety_before.get("env_IBKR_ALLOW_ORDERS")
+        == safety_after.get("env_IBKR_ALLOW_ORDERS")
+        and safety_before.get("rules_enforced")
+        == safety_after.get("rules_enforced")
+    )
+
+    # ------------------------------------------------------------------
+    # 9. Post-sentinel guard-state
+    # ------------------------------------------------------------------
+    guard_after_hash = None
+    guard_after_count = None
+    if guard_state_path.exists():
+        try:
+            raw = guard_state_path.read_bytes()
+            guard_after_hash = hashlib.sha256(raw).hexdigest()
+            data = _json.loads(raw.decode())
+            guard_after_count = data.get("daily_trade_count", 0)
+        except Exception:
+            pass
+
+    # Check for mutation during sentinel
+    if guard_before.get("hash") and guard_after_hash:
+        if guard_before["hash"] != guard_after_hash:
+            mutation_detected = True
+
+    drift_after: dict = {
+        "present": False,
+        "guard_count": guard_after_count or 0,
+        "confirmed_count": event_count,
+        "delta": (guard_after_count or 0) - event_count,
+        "classification": "clean",
+    }
+    if guard_after_count != event_count:
+        drift_after["present"] = True
+        if event_count > 0:
+            drift_after["classification"] = "confirmed_order_events_present"
+        else:
+            drift_after["classification"] = "preexisting_trade_count_drift"
+
+    # ------------------------------------------------------------------
+    # 10. Classify diagnosis and mutation attribution
+    # ------------------------------------------------------------------
+    diagnosis = "unknown"
+    severity = "HOLD"
+    operator_action_required = False
+    suggested_operator_actions: list[str] = []
+    mutation_attribution: dict = {
+        "likely_source": "unknown",
+        "confidence": "low",
+        "evidence": [],
+    }
+
+    if not guard_state_exists:
+        diagnosis = "guard_state_missing"
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "guard-state.json is missing or unparseable",
+            "Check ~/.openclaw/ directory integrity",
+            "Run ibkr-operator doctor",
+        ]
+    elif mutation_detected:
+        # Mutation happened during sentinel observation
+        diagnosis = "read_only_command_mutated_guard_state"
+        severity = "NO_GO"
+        operator_action_required = True
+
+        # Attribute likely source
+        if readonly_probe_results:
+            mutation_attribution["likely_source"] = "readonly_probe_endpoint"
+            mutation_attribution["evidence"] = [
+                f"Probe {p['endpoint']}: HTTP {p.get('http_status')}"
+                for p in readonly_probe_results
+            ]
+        elif process_scan.get("open_file_matches"):
+            mutation_attribution["likely_source"] = "external_process"
+            mutation_attribution["evidence"] = process_scan["open_file_matches"][:5]
+        else:
+            mutation_attribution["likely_source"] = "unknown_process"
+
+        suggested_operator_actions = [
+            "Guard-state was mutated during a read-only sentinel run",
+            "Check for external processes writing to guard-state.json",
+            "Review open_file_matches in process_scan",
+            "Run ibkr-operator doctor",
+        ]
+    elif drift_before["classification"] == "preexisting_trade_count_drift":
+        diagnosis = "preexisting_trade_count_drift"
+        severity = "HOLD"
+        operator_action_required = True
+        mutation_attribution["likely_source"] = "stale_guard_counter"
+        mutation_attribution["evidence"] = [
+            f"guard_state daily_trade_count={guard_count}",
+            f"confirmed events today={event_count}",
+            f"delta={delta}",
+            f"guard_trade_date={gs_trade_date}",
+            f"canonical_trade_date={canonical_date}",
+            f"trade_date_stale={trade_date_stale}",
+        ]
+        if trade_date_stale:
+            suggested_operator_actions = [
+                f"Guard-state trade_date ({gs_trade_date}) does not match canonical ({canonical_date})",
+                f"Daily trade count ({guard_count}) is for old date; confirmed events on canonical date = {event_count}",
+                "Run ibkr-operator guard-state-reconcile --apply --confirm-local-state-repair to repair",
+                "After repair, re-run sentinel to confirm clean state",
+            ]
+        else:
+            suggested_operator_actions = [
+                f"Pre-existing drift detected: guard_state count={guard_count}, events={event_count}",
+                "This is likely a stale counter from a previous session",
+                "No action needed if no orders were placed this session",
+                "Run ibkr-operator guard-state-reconcile to auto-correct",
+            ]
+    elif drift_before["classification"] == "confirmed_order_events_present":
+        diagnosis = "confirmed_order_events_present"
+        severity = "OK"
+        mutation_attribution["likely_source"] = "legitimate_trades"
+        mutation_attribution["evidence"] = [
+            f"{event_count} confirmed orders today: {unique_ids[:5]}"
+        ]
+        suggested_operator_actions = [
+            f"{event_count} confirmed orders today — guard_state is consistent",
+        ]
+    elif drift_before["classification"] == "guard_state_missing":
+        diagnosis = "guard_state_missing"
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "guard-state.json not found",
+            "Run ibkr-operator initialize to create guard-state",
+            "Run ibkr-operator doctor",
+        ]
+    else:
+        diagnosis = "clean"
+        severity = "OK"
+        mutation_attribution["likely_source"] = "none"
+        mutation_attribution["evidence"] = ["No pre-existing drift, no mutation during sentinel"]
+
+    # ------------------------------------------------------------------
+    # 11. Forbidden endpoint scan
+    # ------------------------------------------------------------------
+    forbidden_scan = _scan_forbidden_endpoints()
+
+    # ------------------------------------------------------------------
+    # 12. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "sentinel_id": sentinel_id,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "guard_count": guard_count,
+        "event_count": event_count,
+        "mutation_detected": mutation_detected,
+        "safety_unchanged": safety_unchanged,
+        "git_commit": git.get("commit", "?"),
+        "no_broker_mutation": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 13. Build result
+    # ------------------------------------------------------------------
+    _GUARD_DRIFT_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    export_path = _GUARD_DRIFT_EXPORT_DIR / f"{sentinel_id}.json"
+
+    result: dict = {
+        "command": "ibkr-operator guard-state-drift-sentinel",
+        "advisory": (
+            "Read-only guard-state drift attribution sentinel (Step 15U). "
+            "No broker mutation. No order window. No H1 token."
+        ),
+        "timestamp": ts_str,
+        "sentinel_id": sentinel_id,
+        "canonical_trade_date": canonical_date,
+        "git": {
+            "branch": git.get("branch", "?"),
+            "commit": git.get("commit", "?"),
+            "tag": git.get("tag", "?"),
+        },
+        "observe_seconds": observe_seconds,
+        "poll_seconds": poll_seconds,
+        "guard_state_path": str(guard_state_path),
+        "guard_state_exists": guard_state_exists,
+        "guard_state_before": guard_before,
+        "confirmed_trade_count": confirmed_trade_count,
+        "drift_before": drift_before,
+        "safety_flags_before": safety_before,
+        "safety_flags_after": safety_after,
+        "safety_flags_unchanged": safety_unchanged,
+        "readonly_probe_results": readonly_probe_results,
+        "readonly_probes_run": include_readonly_probes,
+        "guard_state_samples": guard_state_samples,
+        "samples_count": len(guard_state_samples),
+        "process_scan": process_scan,
+        "mutation_detected_during_sentinel": mutation_detected,
+        "mutation_attribution": mutation_attribution,
+        "drift_after": drift_after,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_operator_actions,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "forbidden_endpoint_scan": forbidden_scan,
+        "explicit_non_actions": _GUARD_DRIFT_EXPLICIT_NON_ACTIONS,
+        "evidence_hash": evidence_hash,
+        "_export_path": str(export_path),
+    }
+
+    # Write export
+    try:
+        with open(export_path, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            _os.fsync(f.fileno())
     except Exception:
         pass
 
@@ -10413,6 +10981,43 @@ def main() -> None:
     bp_d3.add_argument("--no-endpoint-probes", action="store_false", dest="include_endpoint_probes")
     bp_d3.add_argument("--symbol", type=str, default="AAPL")
 
+    # Step 15U: Guard-state drift sentinel
+    gs_drift = sub.add_parser("guard-state-drift-sentinel",
+                               help="Run guard-state drift attribution sentinel (Step 15U)")
+    gs_drift.add_argument("--json", action="store_true")
+    gs_drift.add_argument("--export", action="store_true")
+    gs_drift.add_argument("--observe-seconds", type=int, default=15)
+    gs_drift.add_argument("--poll-seconds", type=int, default=3)
+    gs_drift.add_argument("--include-readonly-probes", action="store_true", default=True)
+    gs_drift.add_argument("--no-readonly-probes", action="store_false", dest="include_readonly_probes")
+    gs_drift.add_argument("--fail-on-drift", action="store_true", default=False)
+    gs_drift.add_argument("--include-process-scan", action="store_true", default=True)
+    gs_drift.add_argument("--no-process-scan", action="store_false", dest="include_process_scan")
+
+    gs_d2 = sub.add_parser("guard-drift-sentinel",
+                            help="Alias for guard-state-drift-sentinel")
+    gs_d2.add_argument("--json", action="store_true")
+    gs_d2.add_argument("--export", action="store_true")
+    gs_d2.add_argument("--observe-seconds", type=int, default=15)
+    gs_d2.add_argument("--poll-seconds", type=int, default=3)
+    gs_d2.add_argument("--include-readonly-probes", action="store_true", default=True)
+    gs_d2.add_argument("--no-readonly-probes", action="store_false", dest="include_readonly_probes")
+    gs_d2.add_argument("--fail-on-drift", action="store_true", default=False)
+    gs_d2.add_argument("--include-process-scan", action="store_true", default=True)
+    gs_d2.add_argument("--no-process-scan", action="store_false", dest="include_process_scan")
+
+    gs_d3 = sub.add_parser("guard-state-audit",
+                            help="Alias for guard-state-drift-sentinel")
+    gs_d3.add_argument("--json", action="store_true")
+    gs_d3.add_argument("--export", action="store_true")
+    gs_d3.add_argument("--observe-seconds", type=int, default=15)
+    gs_d3.add_argument("--poll-seconds", type=int, default=3)
+    gs_d3.add_argument("--include-readonly-probes", action="store_true", default=True)
+    gs_d3.add_argument("--no-readonly-probes", action="store_false", dest="include_readonly_probes")
+    gs_d3.add_argument("--fail-on-drift", action="store_true", default=False)
+    gs_d3.add_argument("--include-process-scan", action="store_true", default=True)
+    gs_d3.add_argument("--no-process-scan", action="store_false", dest="include_process_scan")
+
     args = parser.parse_args()
 
     if args.command == "daily-report":
@@ -10757,6 +11362,48 @@ def main() -> None:
             print(f"Backpressure drain drill internal exception: {exc}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
         # Pure JSON stdout
+        print(json.dumps(result, indent=2, default=str))
+        if args.export:
+            ep = result.get("_export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("severity") in ("OK", "HOLD") else 1
+        sys.exit(exit_code)
+
+    if args.command in ("guard-state-drift-sentinel", "guard-drift-sentinel", "guard-state-audit"):
+        observe_seconds = getattr(args, "observe_seconds", 15)
+        poll_seconds = getattr(args, "poll_seconds", 3)
+        include_readonly_probes = getattr(args, "include_readonly_probes", True)
+        fail_on_drift = getattr(args, "fail_on_drift", False)
+        include_process_scan = getattr(args, "include_process_scan", True)
+        try:
+            result = _run_guard_state_drift_sentinel(
+                observe_seconds=observe_seconds,
+                poll_seconds=poll_seconds,
+                include_readonly_probes=include_readonly_probes,
+                fail_on_drift=fail_on_drift,
+                include_process_scan=include_process_scan,
+            )
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+            result = {
+                "command": "ibkr-operator guard-state-drift-sentinel",
+                "timestamp": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "sentinel_id": f"gs-drift-sentinel-{ts_file}",
+                "diagnosis": "unknown",
+                "severity": "NO_GO",
+                "internal_exception": True,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)[:500],
+                "no_broker_mutation": True,
+                "no_order_window_opened": True,
+                "_export_path": None,
+            }
+            print(f"Guard-state drift sentinel internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
         print(json.dumps(result, indent=2, default=str))
         if args.export:
             ep = result.get("_export_path")

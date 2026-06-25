@@ -258,3 +258,133 @@ class TestBackpressureDrainDrill:
             capture_output=True, text=True, cwd="/home/chris/agents/ibkr-bridge", timeout=10)
         assert cp.returncode == 0
         assert "--observe-seconds" in cp.stdout
+
+
+# ---------------------------------------------------------------------------
+# Step 15T/15U Extension: CLI --help Fast-Path Tests
+# ---------------------------------------------------------------------------
+
+class TestHelpFastPath:
+    """Verify CLI --help is parse-only — no heavy init, no side effects."""
+
+    PYTHON = ".venv/bin/python"
+    SCRIPT = "ibkr_operator.py"
+    CWD = "/home/chris/agents/ibkr-bridge"
+
+    def _help(self, command: str, timeout: int = 5) -> "subprocess.CompletedProcess":
+        import subprocess
+        return subprocess.run(
+            [self.PYTHON, self.SCRIPT, command, "--help"],
+            capture_output=True, text=True, cwd=self.CWD, timeout=timeout,
+        )
+
+    # --- Speed: each alias --help exits quickly ---
+
+    def test_backpressure_drain_drill_help_fast(self):
+        cp = self._help("backpressure-drain-drill", timeout=2)
+        assert cp.returncode == 0
+        assert "--observe-seconds" in cp.stdout
+
+    def test_bridge_drain_drill_help_fast(self):
+        cp = self._help("bridge-drain-drill", timeout=2)
+        assert cp.returncode == 0
+
+    def test_backpressure_doctor_help_fast(self):
+        cp = self._help("backpressure-doctor", timeout=2)
+        assert cp.returncode == 0
+
+    def test_guard_state_drift_sentinel_help_fast(self):
+        cp = self._help("guard-state-drift-sentinel", timeout=2)
+        assert cp.returncode == 0
+        assert "--observe-seconds" in cp.stdout
+
+    def test_guard_drift_sentinel_help_fast(self):
+        cp = self._help("guard-drift-sentinel", timeout=2)
+        assert cp.returncode == 0
+
+    def test_guard_state_audit_help_fast(self):
+        cp = self._help("guard-state-audit", timeout=2)
+        assert cp.returncode == 0
+
+    # --- No side effects: --help must not write files ---
+
+    def test_help_does_not_create_export_files(self):
+        """--help must not create any export or audit files."""
+        import os, tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            # Run --help with a clean HOME pointing to temp dir
+            import subprocess
+            env = {**os.environ, "HOME": td}
+            cp = subprocess.run(
+                [self.PYTHON, self.SCRIPT, "backpressure-drain-drill", "--help"],
+                capture_output=True, text=True, cwd=self.CWD, timeout=5,
+                env=env,
+            )
+            assert cp.returncode == 0
+
+            # No exports dir should have been created
+            openclaw = Path(td) / ".openclaw"
+            assert not openclaw.exists(), f"{openclaw} was created by --help"
+
+    def test_help_does_not_create_guard_state(self):
+        """--help must not create or read guard-state.json."""
+        import os, tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            import subprocess
+            env = {**os.environ, "HOME": td}
+            cp = subprocess.run(
+                [self.PYTHON, self.SCRIPT, "guard-state-drift-sentinel", "--help"],
+                capture_output=True, text=True, cwd=self.CWD, timeout=5,
+                env=env,
+            )
+            assert cp.returncode == 0
+
+            # No guard-state file should exist
+            gs = Path(td) / ".openclaw" / "guard-state.json"
+            assert not gs.exists(), f"guard-state.json was created by --help"
+
+    def test_help_does_not_create_cooldown_files(self):
+        """--help must not create cooldown/tracking files."""
+        import os, tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            import subprocess
+            env = {**os.environ, "HOME": td}
+            cp = subprocess.run(
+                [self.PYTHON, self.SCRIPT, "backpressure-drain-drill", "--help"],
+                capture_output=True, text=True, cwd=self.CWD, timeout=5,
+                env=env,
+            )
+            assert cp.returncode == 0
+
+            openclaw = Path(td) / ".openclaw"
+            if openclaw.exists():
+                # If .openclaw exists, it must be empty (just dir maybe)
+                contents = list(openclaw.rglob("*"))
+                assert len(contents) == 0, f"Files created: {contents}"
+
+    # --- No bridge calls: --help must not touch HTTP ---
+
+    def test_help_does_not_call_bridge(self):
+        """--help must exit even when bridge is unreachable / no network."""
+        import subprocess
+        # Use a short timeout to verify it exits quickly without connecting
+        cp = subprocess.run(
+            [self.PYTHON, self.SCRIPT, "backpressure-drain-drill", "--help"],
+            capture_output=True, text=True, cwd=self.CWD, timeout=2,
+            env={**__import__('os').environ, "IBKR_BRIDGE_URL": "http://127.0.0.1:1"},
+        )
+        assert cp.returncode == 0
+
+    def test_all_15u_aliases_help_fast(self):
+        """All 15U aliases (guard-state-drift-sentinel, guard-drift-sentinel,
+        guard-state-audit) produce --help within 2s."""
+        for alias in ("guard-state-drift-sentinel", "guard-drift-sentinel", "guard-state-audit"):
+            cp = self._help(alias, timeout=2)
+            assert cp.returncode == 0, f"{alias} --help failed: {cp.stderr[:200]}"
+            assert len(cp.stdout) > 50, f"{alias} --help output too short"

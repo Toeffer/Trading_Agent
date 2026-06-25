@@ -189,6 +189,133 @@ def _today_utc_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def canonical_trade_date(now_utc: datetime | None = None) -> str:
+    """Return the canonical trading date as YYYY-MM-DD (UTC).
+
+    This is the SINGLE SOURCE OF TRUTH for date comparison across ALL
+    guard-state consumers:
+      - guard-state-reconcile (Step 15O)
+      - guard-state-drift-sentinel (Step 15U)
+      - monitor/alerts trade_count_mismatch
+      - KPI active-alert logic
+      - _rollover_guard_state
+
+    All consumers MUST use this function to determine "what trading date
+    is it" so that trade_date comparisons are consistent.
+
+    Args:
+        now_utc: Optional override for testing. Defaults to datetime.now(UTC).
+
+    Returns:
+        str like "2026-06-25"
+    """
+    dt = now_utc if now_utc is not None else datetime.now(timezone.utc)
+    return dt.strftime("%Y-%m-%d")
+
+
+def _stream_count_confirmed_orders_for_date(
+    trade_date: str,
+    events_path: Path | None = None,
+) -> int:
+    """Count confirmed unique orders for a given trade_date using streaming.
+
+    Uses the same canonical logic as monitor.reconcile_snapshot():
+    - Composite identity: permId > approval_id > event_id
+    - Excludes test artifacts (test-bracket-, test-double-, permId=5001, etc.)
+    - Excludes unconfirmed orders (order_unconfirmed events)
+    - Streams the events file (no full-memory load)
+
+    Args:
+        trade_date: YYYY-MM-DD date string to filter events by.
+        events_path: Optional override for events file path.
+
+    Returns:
+        int: number of confirmed unique orders for the given date.
+    """
+    p = Path(events_path) if events_path else GUARD_EVENTS_PATH
+    if not p.exists():
+        return 0
+
+    unconfirmed_aids: set[str] = set()
+    submitted_events: list[dict] = []
+
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    evt = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                et = evt.get("event_type", "")
+
+                # Track unconfirmed orders
+                if et == "order_unconfirmed":
+                    aid = evt.get("approval_id", "")
+                    if aid:
+                        unconfirmed_aids.add(aid)
+                    continue
+
+                # Collect only order_submitted for the target date
+                if et != "order_submitted":
+                    continue
+
+                ts = evt.get("timestamp_utc", "")
+                if not ts.startswith(trade_date):
+                    continue
+
+                # Exclude test artifacts inline
+                aid = str(evt.get("approval_id", ""))
+                if aid.startswith(("test-bracket-", "test-double-")):
+                    continue
+
+                submitted_events.append(evt)
+    except Exception:
+        return 0
+
+    # Mark SELL events with no ibkr_metadata as unconfirmed
+    for e in submitted_events:
+        aid = e.get("approval_id", "")
+        if aid and aid not in unconfirmed_aids:
+            ibkr = e.get("ibkr_metadata")
+            if ibkr is None and e.get("action") == "SELL":
+                unconfirmed_aids.add(aid)
+
+    # Filter to confirmed and use composite identity
+    confirmed_identities: set[str] = set()
+    for e in submitted_events:
+        aid = e.get("approval_id", "")
+        if aid in unconfirmed_aids:
+            continue
+
+        ibkr = e.get("ibkr_metadata")
+        if ibkr and ibkr.get("permId") is not None:
+            pid = ibkr["permId"]
+            if pid == 5001:  # known test artifact
+                continue
+            identity = f"permId:{pid}"
+        elif aid:
+            identity = f"approval:{aid}"
+        elif e.get("event_id"):
+            identity = f"event:{e['event_id']}"
+        else:
+            oid = e.get("order_id")
+            if oid is not None:
+                oid_str = str(oid)
+                if oid_str in {"12345", "99999", "1001"}:
+                    continue
+                identity = f"order_id:{oid_str}"
+            else:
+                continue
+
+        confirmed_identities.add(identity)
+
+    return len(confirmed_identities)
+
+
 def _current_week_monday_utc_str() -> str:
     """Return YYYY-MM-DD for the Monday of the current UTC week.
     Monday = 0 in Python's weekday() convention (Mon=0, Sun=6).
@@ -238,6 +365,54 @@ def default_guard_state() -> dict:
     }
 
 
+def load_guard_state_readonly(path: Path | None = None) -> dict:
+    """Load guard state in pure read-only mode — NEVER writes to disk.
+
+    For diagnostics, monitoring, sentinel, and dry-run audit paths
+    that must not mutate the guard-state file or trigger H1 protection.
+
+    - If the file doesn't exist: returns in-memory defaults WITHOUT creating it.
+    - If the file is corrupt/unparseable: returns in-memory defaults.
+    - If schema_version mismatches: returns in-memory defaults.
+    - NEVER calls save_guard_state_atomic.
+    - NEVER triggers _assert_h1_authorized_for_path.
+    - NEVER creates directories or tmp files.
+
+    Args:
+        path: Optional override path. Defaults to GUARD_STATE_PATH.
+
+    Returns:
+        The parsed guard state dict, or in-memory defaults if unavailable.
+    """
+    p = Path(path) if path else GUARD_STATE_PATH
+
+    if not p.exists():
+        return default_guard_state()
+
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            state = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return default_guard_state()
+
+    if not isinstance(state, dict):
+        return default_guard_state()
+
+    schema_v = state.get("schema_version")
+    if schema_v != EXPECTED_SCHEMA_VERSION:
+        return default_guard_state()
+
+    # Fill missing fields with defaults (in-memory only)
+    defaults = default_guard_state()
+    for key in defaults:
+        if key not in state:
+            state[key] = defaults[key]
+
+    state["last_updated_utc"] = _now_utc_iso()
+
+    return state
+
+
 def load_guard_state(path: Path | None = None) -> dict:
     """Load guard state from JSON file.
 
@@ -246,6 +421,10 @@ def load_guard_state(path: Path | None = None) -> dict:
 
     If the file exists but has an invalid schema_version or is corrupt,
     raises ValueError.
+
+    **Important**: This function performs file I/O (creates/normalizes).
+    For read-only diagnostics/monitoring/sentinel paths, use
+    load_guard_state_readonly() which never writes to disk.
 
     Args:
         path: Optional override path. Defaults to GUARD_STATE_PATH.
@@ -261,7 +440,7 @@ def load_guard_state(path: Path | None = None) -> dict:
         return state
 
     try:
-        with open(p, "r") as f:
+        with open(p, "r", encoding="utf-8") as f:
             state = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         raise ValueError(
@@ -293,10 +472,17 @@ def load_guard_state(path: Path | None = None) -> dict:
 
 
 def _rollover_guard_state(state: dict) -> bool:
-    """Roll over guard state counters if trade_date < current UTC date.
+    """Roll over guard state counters if trade_date < current canonical date.
+
+    Uses canonical_trade_date() for consistent date comparison across all
+    guard-state consumers (reconcile, sentinel, monitor, KPI).
 
     Resets daily_trade_count to 0, clears daily_halt_active, updates
     trade_date, and captures day_start_nl_eur if available.
+
+    Then restores count from confirmed events already on the new date
+    using the same canonical counting logic as monitor.reconcile_snapshot()
+    and the guard-state-drift-sentinel.
 
     Args:
         state: Guard state dict (loaded by load_guard_state), mutated in place
@@ -306,7 +492,7 @@ def _rollover_guard_state(state: dict) -> bool:
         True if rollover occurred, False if no rollover needed.
     """
     now_utc = datetime.now(timezone.utc)
-    today_str = now_utc.strftime("%Y-%m-%d")
+    today_str = canonical_trade_date(now_utc)
     current_trade_date = state.get("trade_date", "")
 
     if not current_trade_date or current_trade_date >= today_str:
@@ -318,45 +504,13 @@ def _rollover_guard_state(state: dict) -> bool:
     state["last_updated_utc"] = now_utc.isoformat()
 
     # Restore count from confirmed events already on today's date
-    # (e.g. order placed, bridge restarted, rollover triggered)
-    # Deduplicate by unique order_id to prevent event-replay inflation.
+    # using the SAME canonical counting logic as reconcile_snapshot()
+    # and guard-state-drift-sentinel (composite identity, test-artifact
+    # exclusion, unconfirmed exclusion).
     try:
-        events_path = Path.home() / ".openclaw" / "guard-events.jsonl"
-        if events_path.exists():
-            seen_order_ids: set[str] = set()
-            for line in events_path.read_text().splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    evt = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if evt.get("event_type") != "order_submitted":
-                    continue
-                ts = evt.get("timestamp_utc", "")
-                if not ts.startswith(today_str):
-                    continue
-                # Skip unconfirmed (no ibkr_metadata, SELL action)
-                ibkr = evt.get("ibkr_metadata")
-                if ibkr is None and evt.get("action") == "SELL":
-                    continue
-                # Skip known test artifacts:
-                #   - order_id 1001: test-bracket shared fake order_id
-                #   - permId 5001: test-bracket shared fake IBKR permId
-                #   - approval_id starting with test-* (test-bracket, test-double,
-                #     test-killswitch, test-failclosed)
-                oid = str(evt.get("order_id", "")) if evt.get("order_id") is not None else ""
-                if oid in {"12345", "99999", "1001"}:
-                    continue
-                if ibkr and ibkr.get("permId") == 5001:
-                    continue
-                aid = str(evt.get("approval_id", ""))
-                if aid.startswith("test-"):
-                    continue
-                # Deduplicate: only count each unique order_id once
-                if oid and oid not in seen_order_ids:
-                    seen_order_ids.add(oid)
-            state["daily_trade_count"] = len(seen_order_ids)
+        restored_count = _stream_count_confirmed_orders_for_date(today_str)
+        if restored_count > 0:
+            state["daily_trade_count"] = restored_count
     except Exception:
         pass
 
@@ -377,6 +531,7 @@ def _rollover_guard_state(state: dict) -> bool:
         "to_trade_date": today_str,
         "daily_trade_count_reset": True,
         "daily_halt_cleared": True,
+        "canonical_trade_date": today_str,
     })
 
     return True

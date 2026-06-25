@@ -616,7 +616,7 @@ class TestTestArtifactFiltering:
         from unittest.mock import patch
         from monitor import reconcile_snapshot
 
-        with patch("monitor.load_guard_state",
+        with patch("monitor.load_guard_state_readonly",
                    return_value={"daily_trade_count": 0, "trade_date": "2026-06-16"}), \
              patch("monitor.load_events",
                    return_value=[
@@ -643,7 +643,7 @@ class TestTestArtifactFiltering:
         from unittest.mock import patch
         from monitor import reconcile_snapshot
 
-        with patch("monitor.load_guard_state",
+        with patch("monitor.load_guard_state_readonly",
                    return_value={"daily_trade_count": 0, "trade_date": "2026-06-16"}), \
              patch("monitor.load_events", return_value=[]), \
              patch("monitor.load_submitted_approvals",

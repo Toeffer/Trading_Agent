@@ -25,6 +25,7 @@ from guard import (
     SUBMITTED_APPROVALS_PATH,
     ALLOWED_EVENT_TYPES,
     load_guard_state,
+    load_guard_state_readonly,
     save_guard_state_atomic,
     read_guard_events,
     append_guard_event,
@@ -437,9 +438,9 @@ def reconcile_snapshot() -> dict:
     now_utc = datetime.now(timezone.utc)
     alerts: list[dict] = []
 
-    # 1. Guard state
+    # 1. Guard state (read-only — diagnostic only, no file creation)
     try:
-        gs = load_guard_state()
+        gs = load_guard_state_readonly()
         guard_ok = True
     except (ValueError, OSError) as e:
         gs = {}
@@ -451,19 +452,27 @@ def reconcile_snapshot() -> dict:
         })
 
     daily_trade_count = gs.get("daily_trade_count", 0)
-    trade_date = gs.get("trade_date", "unknown")
+    gs_trade_date = gs.get("trade_date", "unknown")
 
-    # 2. Events — count order_submitted events today
+    # ------------------------------------------------------------------
+    # Use canonical_trade_date() from guard.py as reference metadata.
+    # Primary filtering uses guard_state's own trade_date to match
+    # the guard counter. canonical_date is shown for drift detection.
+    # ------------------------------------------------------------------
+    from guard import canonical_trade_date as _canonical_trade_date
+    canonical_date = _canonical_trade_date(now_utc)
+    # Use guard state's own trade_date for primary event matching
+    trade_date = gs_trade_date if gs_trade_date != "unknown" else canonical_date
+
+    # 2. Events — count order_submitted events for guard state's trade date
     events = load_events(event_type="order_submitted")
 
-    # Filter to today (by trade_date from guard state)
-    today_events = events
-    if trade_date != "unknown":
-        today_events = [
-            e for e in events
-            if (ts := e.get("timestamp_utc", ""))
-            and ts.startswith(trade_date)
-        ]
+    # Filter to guard state's trade_date (primary comparison)
+    today_events = [
+        e for e in events
+        if (ts := e.get("timestamp_utc", ""))
+        and ts.startswith(trade_date)
+    ]
 
     unique_order_ids_today = set()
     for e in today_events:
@@ -689,7 +698,9 @@ def reconcile_snapshot() -> dict:
         "state": {
             "guard": {
                 "daily_trade_count": daily_trade_count,
-                "trade_date": trade_date,
+                "trade_date": gs_trade_date,
+                "canonical_trade_date": canonical_date,
+                "trade_date_stale": (gs_trade_date != canonical_date),
                 "healthy": guard_ok,
             },
             "events": {
@@ -718,8 +729,11 @@ def reconcile_snapshot() -> dict:
 
 def health_summary() -> dict:
     """Return a lightweight health summary — no IBKR calls needed."""
+    from guard import canonical_trade_date as _canonical_trade_date
+    canonical_date = _canonical_trade_date()
+
     try:
-        gs = load_guard_state()
+        gs = load_guard_state_readonly()
     except (ValueError, OSError):
         gs = {}
 
@@ -750,6 +764,8 @@ def health_summary() -> dict:
             "guard": {
                 "daily_trade_count": daily_trade_count,
                 "trade_date": trade_date,
+                "canonical_trade_date": canonical_date,
+                "trade_date_stale": (trade_date != canonical_date),
             },
             "events": {
                 "total_events": len(events),

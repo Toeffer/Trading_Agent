@@ -6629,6 +6629,574 @@ def _run_reconnect_readiness_drill(
 
 
 # ===========================================================================
+# Step 15W — Post-Gateway-Start Reconnect Proof
+# ===========================================================================
+
+_POST_GATEWAY_PROOF_EXPORT_DIR = OPENCLAW_DIR / "post-gateway-reconnect-proofs"
+_POST_GATEWAY_PROOF_READONLY_ENDPOINTS = [
+    "/status",
+    "/readiness",
+    "/positions",
+    "/account",
+    "/monitor/alerts",
+    "/monitor/reconciliation",
+]
+
+_POST_GATEWAY_PROOF_EXPLICIT_NON_ACTIONS: list[str] = [
+    "No orders placed or modified",
+    "No account values mutated",
+    "No position changes",
+    "No IBKR_ALLOW_ORDERS changes",
+    "No rules.enforced changes",
+    "No autonomy-level changes",
+    "No H1 token reads",
+    "No /order, /order/preflight, /order/approve, /order/submit",
+    "No guard-state mutation",
+    "No bridge restart",
+    "No Gateway/TWS start or restart",
+    "No auto-connect (unless --attempt-connect explicit opt-in)",
+]
+
+
+def _run_post_gateway_reconnect_proof(
+    host: str = "127.0.0.1",
+    port: int = 4002,
+    client_id: int = 777,
+    socket_timeout: int = 2,
+    attempt_connect: bool = False,
+    refresh_evidence: bool = True,
+    symbol: str = "AAPL",
+) -> dict:
+    """Run post-Gateway-start reconnect proof (Step 15W).
+
+    After the operator starts IB Gateway/TWS, produces one auditable
+    read-only proof that:
+    - local Gateway socket is reachable
+    - bridge reconnect is explicit and bounded
+    - bridge becomes connected or failure is classified
+    - post-connect read-only endpoints work
+    - monitor alerts remain clean
+    - guard-state and safety flags remain unchanged
+
+    Read-only by default. No broker/account/order mutation. No H1 token.
+    """
+    import hashlib
+    import json as _json
+    import urllib.request
+    import urllib.error
+    import socket
+    import time as _time
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    proof_id = f"post-gateway-reconnect-proof-{ts_file}"
+
+    # Clamp inputs
+    host = str(host).strip() or "127.0.0.1"
+    port = max(1, min(port, 65535))
+    client_id = max(1, min(client_id, 999999))
+    socket_timeout = max(1, min(socket_timeout, 10))
+    symbol = symbol.upper().strip() or "AAPL"
+
+    git = _git_metadata(BRIDGE_DIR)
+
+    # ------------------------------------------------------------------
+    # 1. Capture safety flags and guard-state before
+    # ------------------------------------------------------------------
+    safety_before = _capture_safety_flags_raw()
+    guard_state_before = _capture_guard_state_snapshot()
+
+    # ------------------------------------------------------------------
+    # 2. Bridge health before
+    # ------------------------------------------------------------------
+    bridge_health_before: dict = {}
+    bridge_reachable = False
+    bridge_service_active = False
+    bridge_connected_before: bool | None = None
+    bridge_runtime_ok = True
+
+    try:
+        health_req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(health_req, timeout=10.0) as resp:
+            if resp.status == 200:
+                bridge_health_before = _json.loads(resp.read().decode())
+                bridge_reachable = True
+                bridge_service_active = True
+                bridge_connected_before = bridge_health_before.get("connected", None)
+    except urllib.error.HTTPError as e:
+        bridge_reachable = True
+        bridge_health_before = {"http_status": e.code, "error": str(e)[:200]}
+        bridge_runtime_ok = False
+    except Exception as e:
+        bridge_health_before = {"reachable": False, "error": str(e)[:200]}
+        bridge_runtime_ok = False
+
+    # ------------------------------------------------------------------
+    # 3. Monitor alerts before
+    # ------------------------------------------------------------------
+    monitor_alerts_before: dict = {}
+    try:
+        if bridge_reachable:
+            alert_req = urllib.request.Request(f"{BRIDGE_URL}/monitor/alerts", method="GET")
+            with urllib.request.urlopen(alert_req, timeout=10.0) as resp:
+                if resp.status == 200:
+                    monitor_alerts_before = _json.loads(resp.read().decode())
+    except Exception:
+        pass
+
+    # ------------------------------------------------------------------
+    # 4. Socket probe to IB Gateway
+    # ------------------------------------------------------------------
+    socket_probe: dict = {
+        "attempted": True,
+        "host": host,
+        "port": port,
+        "reachable": False,
+        "duration_seconds": 0.0,
+        "error": None,
+    }
+    socket_reachable = False
+    probe_start = _time.monotonic()
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(socket_timeout)
+        sock.connect((host, port))
+        sock.close()
+        socket_reachable = True
+        socket_probe["reachable"] = True
+    except socket.timeout:
+        socket_probe["error"] = f"timeout after {socket_timeout}s"
+    except ConnectionRefusedError:
+        socket_probe["error"] = "connection refused"
+    except OSError as e:
+        socket_probe["error"] = str(e)[:200]
+    finally:
+        socket_probe["duration_seconds"] = round(_time.monotonic() - probe_start, 3)
+
+    # ------------------------------------------------------------------
+    # 5. Connect attempt
+    # ------------------------------------------------------------------
+    connect_attempt: dict = {
+        "attempted": False,
+        "allowed_by_flag": attempt_connect,
+        "skipped_reason": None,
+        "http_status": None,
+        "ok": None,
+        "duration_seconds": 0.0,
+        "error": None,
+        "response_summary": None,
+    }
+    bridge_connected_after: bool | None = None
+    bridge_health_after: dict = {}
+
+    if attempt_connect and bridge_reachable and socket_reachable and not bridge_connected_before:
+        connect_attempt["attempted"] = True
+        connect_start = _time.monotonic()
+        try:
+            connect_req = urllib.request.Request(
+                f"{BRIDGE_URL}/connect",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(connect_req, timeout=30.0) as conn_resp:
+                raw_body = conn_resp.read().decode(errors="replace")
+                connect_result = _json.loads(raw_body) if raw_body else {}
+                connect_attempt["http_status"] = conn_resp.status
+                if conn_resp.status == 200 and connect_result.get("ok", True):
+                    connect_attempt["ok"] = True
+                    connect_attempt["response_summary"] = "connected"
+                else:
+                    connect_attempt["ok"] = False
+                    connect_attempt["response_summary"] = connect_result.get(
+                        "detail", connect_result.get("message", str(conn_resp.status))
+                    )[:200]
+                    connect_attempt["error"] = connect_attempt["response_summary"]
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            try:
+                err_data = _json.loads(body)
+            except Exception:
+                err_data = {}
+            connect_attempt["ok"] = False
+            connect_attempt["http_status"] = e.code
+            connect_attempt["error"] = err_data.get("detail", str(e))[:200]
+            connect_attempt["response_summary"] = "HTTP {} {}".format(
+                e.code, err_data.get("detail", "")[:100]
+            )
+        except Exception as e:
+            connect_attempt["ok"] = False
+            connect_attempt["error"] = str(e)[:200]
+            connect_attempt["response_summary"] = str(e)[:200]
+        finally:
+            connect_attempt["duration_seconds"] = round(
+                _time.monotonic() - connect_start, 3
+            )
+
+        # Brief wait + re-check health
+        if connect_attempt["ok"]:
+            _time.sleep(2.0)
+            try:
+                health_req2 = urllib.request.Request(
+                    f"{BRIDGE_URL}/health", method="GET"
+                )
+                with urllib.request.urlopen(health_req2, timeout=10.0) as resp:
+                    if resp.status == 200:
+                        bridge_health_after = _json.loads(resp.read().decode())
+                        bridge_connected_after = bridge_health_after.get(
+                            "connected", None
+                        )
+            except Exception:
+                pass
+    elif attempt_connect:
+        # Skipped — record reason
+        if bridge_connected_before is True:
+            connect_attempt["skipped_reason"] = "already_connected"
+        elif not socket_reachable:
+            connect_attempt["skipped_reason"] = "socket_not_reachable"
+        elif not bridge_reachable:
+            connect_attempt["skipped_reason"] = "bridge_unreachable"
+
+    # If no connect attempted, bridge_connected_after = bridge_connected_before
+    if bridge_connected_after is None:
+        bridge_connected_after = bridge_connected_before
+
+    # ------------------------------------------------------------------
+    # 6. Post-connect read-only evidence (if refresh_evidence and connected)
+    # ------------------------------------------------------------------
+    readonly_evidence: dict[str, dict] = {}
+    evidence_all_ok = True
+    evidence_degraded = False
+
+    if refresh_evidence and bridge_connected_after is True:
+        for ep in _POST_GATEWAY_PROOF_READONLY_ENDPOINTS:
+            ep_result: dict = {
+                "attempted": True,
+                "http_status": None,
+                "ok": False,
+                "duration_seconds": 0.0,
+                "error": None,
+                "summary": None,
+            }
+            ep_start = _time.monotonic()
+            try:
+                ep_req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                with urllib.request.urlopen(ep_req, timeout=10.0) as resp:
+                    ep_result["http_status"] = resp.status
+                    raw_body = resp.read().decode(errors="replace")
+                    try:
+                        ep_data = _json.loads(raw_body)
+                        ep_result["ok"] = True
+                        # Build a concise summary for each endpoint type
+                        ep_result["summary"] = _summarise_evidence(ep, ep_data)
+                    except _json.JSONDecodeError:
+                        ep_result["error"] = "invalid JSON"
+                        ep_result["summary"] = raw_body[:200]
+                        evidence_all_ok = False
+                        evidence_degraded = True
+            except urllib.error.HTTPError as e:
+                ep_result["http_status"] = e.code
+                ep_result["error"] = "HTTP {}".format(e.code)
+                ep_result["summary"] = str(e)[:100]
+                evidence_all_ok = False
+                evidence_degraded = True
+            except Exception as e:
+                ep_result["error"] = str(e)[:200]
+                ep_result["summary"] = str(e)[:200]
+                evidence_all_ok = False
+                evidence_degraded = True
+            finally:
+                ep_result["duration_seconds"] = round(
+                    _time.monotonic() - ep_start, 3
+                )
+            ep_name = ep.lstrip("/").replace("/", "_")
+            readonly_evidence[ep_name] = ep_result
+
+    # ------------------------------------------------------------------
+    # 7. Monitor alerts after
+    # ------------------------------------------------------------------
+    monitor_alerts_after: dict = {}
+    if bridge_reachable:
+        try:
+            alert_req2 = urllib.request.Request(
+                f"{BRIDGE_URL}/monitor/alerts", method="GET"
+            )
+            with urllib.request.urlopen(alert_req2, timeout=10.0) as resp:
+                if resp.status == 200:
+                    monitor_alerts_after = _json.loads(resp.read().decode())
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # 8. Capture safety flags and guard-state after
+    # ------------------------------------------------------------------
+    safety_after = _capture_safety_flags_raw()
+    guard_state_after = _capture_guard_state_snapshot()
+
+    guard_state_unchanged = (
+        guard_state_before.get("guard_state_hash") is not None
+        and guard_state_after.get("guard_state_hash") is not None
+        and guard_state_before["guard_state_hash"] == guard_state_after["guard_state_hash"]
+    )
+
+    safety_flags_unchanged = (
+        safety_before.get("env_IBKR_ALLOW_ORDERS")
+        == safety_after.get("env_IBKR_ALLOW_ORDERS")
+        and safety_before.get("rules_enforced")
+        == safety_after.get("rules_enforced")
+    )
+
+    # ------------------------------------------------------------------
+    # 9. Diagnosis
+    # ------------------------------------------------------------------
+    diagnosis = "unknown"
+    severity = "HOLD"
+    operator_action_required = False
+    suggested_operator_actions: list[str] = []
+
+    # Check active monitor alerts
+    live_alerts = monitor_alerts_after.get("live", []) if monitor_alerts_after else []
+    if isinstance(live_alerts, list):
+        active_alert_count = len(live_alerts)
+    else:
+        active_alert_count = monitor_alerts_after.get("live_count", 0)
+    monitor_alerts_active = active_alert_count > 0
+
+    if not bridge_reachable:
+        diagnosis = "bridge_unreachable"
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Check if IBKR bridge service is running",
+            "Verify BRIDGE_URL: {}".format(BRIDGE_URL),
+            "Run: systemctl status ibkr-bridge (or docker ps)",
+        ]
+    elif bridge_connected_after is True:
+        # Connected — evaluate evidence quality
+        if not refresh_evidence:
+            diagnosis = "connected_already"
+            severity = "OK"
+        elif evidence_degraded:
+            diagnosis = "post_connect_evidence_degraded"
+            severity = "HOLD"
+            operator_action_required = True
+            failed_eps = [
+                k for k, v in readonly_evidence.items() if not v.get("ok")
+            ]
+            suggested_operator_actions = [
+                "Degraded post-connect endpoints: {}".format(", ".join(failed_eps)),
+                "Rerun with --refresh-evidence to retry",
+            ]
+        elif monitor_alerts_active and safety_flags_unchanged:
+            diagnosis = "monitor_alerts_active"
+            severity = "NO_GO"
+            operator_action_required = True
+            suggested_operator_actions = [
+                "{} active monitor alerts found — NO_GO".format(active_alert_count),
+                "Review alerts: ibkr-operator guard-state-reconcile --json",
+                "Run KPI dashboard: ibkr-operator kpi --json",
+            ]
+        elif not safety_flags_unchanged:
+            diagnosis = "safety_unlocked"
+            severity = "NO_GO"
+            operator_action_required = True
+            suggested_operator_actions = [
+                "SAFETY FLAGS CHANGED during proof run — DO NOT PROCEED",
+                "Review env_IBKR_ALLOW_ORDERS and rules.enforced",
+                "Run: ibkr-operator doctor --json",
+            ]
+        elif not guard_state_unchanged:
+            diagnosis = "safety_unlocked"
+            severity = "NO_GO"
+            operator_action_required = True
+            suggested_operator_actions = [
+                "GUARD-STATE CHANGED during proof run — DO NOT PROCEED",
+                "Guard-state hash mismatch detected",
+                "Run: ibkr-operator guard-state-reconcile --json",
+                "Run: ibkr-operator doctor --json",
+            ]
+            result["guard_state_blocker"] = True
+        else:
+            diagnosis = "post_connect_evidence_ok"
+            severity = "OK"
+    elif bridge_connected_before is False and not socket_reachable:
+        diagnosis = "gateway_socket_closed"
+        severity = "HOLD"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Start TWS or IB Gateway on {}:{}".format(host, port),
+            "Verify firewall allows local connections to port {}".format(port),
+            "After starting Gateway, rerun this proof",
+        ]
+    elif bridge_connected_before is False and socket_reachable and not attempt_connect:
+        diagnosis = "gateway_socket_reachable_no_connect_requested"
+        severity = "HOLD"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Gateway socket is reachable at {}:{}".format(host, port),
+            "Rerun with --attempt-connect to complete the proof",
+            "ibkr-operator post-gateway-reconnect-proof --attempt-connect --json",
+        ]
+    elif bridge_connected_before is False and connect_attempt.get("attempted"):
+        if connect_attempt.get("ok") and bridge_connected_after is True:
+            diagnosis = "reconnect_succeeded"
+            severity = "OK"
+        else:
+            diagnosis = "reconnect_failed"
+            severity = "HOLD"
+            operator_action_required = True
+
+            # Refine from error
+            err_lower = (connect_attempt.get("error") or "").lower()
+            resp_summary = (connect_attempt.get("response_summary") or "").lower()
+            if any(
+                kw in err_lower or kw in resp_summary
+                for kw in ("client_id", "client id", "already in use", "conflict")
+            ):
+                diagnosis = "client_id_conflict_suspected"
+            elif any(
+                kw in err_lower or kw in resp_summary
+                for kw in ("login", "authentication", "credentials")
+            ):
+                diagnosis = "gateway_login_required"
+            elif any(
+                kw in err_lower or kw in resp_summary
+                for kw in ("runtime", "500", "internal")
+            ):
+                diagnosis = "bridge_runtime_error"
+
+            suggested_operator_actions = [
+                "Review connect error: {}".format(
+                    (connect_attempt.get("error") or connect_attempt.get("response_summary") or "unknown")[:120]
+                ),
+                "Verify TWS/IB Gateway is running and logged in",
+                "Check port={} and client_id={} match Gateway settings".format(port, client_id),
+            ]
+    elif bridge_connected_before is True:
+        # Already connected before any action
+        diagnosis = "connected_already"
+        severity = "OK" if safety_flags_unchanged else "safety_unlocked"
+
+    # ------------------------------------------------------------------
+    # 10. Forbidden endpoint scan
+    # ------------------------------------------------------------------
+    forbidden_scan = _scan_forbidden_endpoints()
+
+    # ------------------------------------------------------------------
+    # 11. Build result
+    # ------------------------------------------------------------------
+    result: dict = {
+        "advisory": (
+            "Read-only post-Gateway-start reconnect proof. "
+            "No broker/account/order mutation. No H1 token. "
+            "/connect only when --attempt-connect explicit."
+        ),
+        "timestamp": ts_str,
+        "proof_id": proof_id,
+        "command": "ibkr-operator post-gateway-reconnect-proof",
+        "git_branch": git.get("branch", "?"),
+        "git_commit": git.get("commit", "?"),
+        "git_tag": git.get("tag", "?"),
+        "requested_connection": {
+            "host": host,
+            "port": port,
+            "client_id": client_id,
+            "attempt_connect": attempt_connect,
+            "refresh_evidence": refresh_evidence,
+            "symbol": symbol,
+        },
+        "bridge_reachable": bridge_reachable,
+        "bridge_service_active": bridge_service_active,
+        "bridge_runtime_ok": bridge_runtime_ok,
+        "bridge_connected_before": bridge_connected_before,
+        "bridge_connected_after": bridge_connected_after,
+        "ib_gateway_socket": socket_probe,
+        "connect_attempt": connect_attempt,
+        "health_before": bridge_health_before,
+        "health_after": bridge_health_after if bridge_health_after else None,
+        "readonly_evidence": readonly_evidence,
+        "guard_state_before": {
+            "hash": guard_state_before.get("guard_state_hash"),
+            "daily_trade_count": guard_state_before.get("daily_trade_count"),
+            "file_exists": guard_state_before.get("file_exists"),
+        },
+        "guard_state_after": {
+            "hash": guard_state_after.get("guard_state_hash"),
+            "daily_trade_count": guard_state_after.get("daily_trade_count"),
+            "file_exists": guard_state_after.get("file_exists"),
+        },
+        "guard_state_unchanged": guard_state_unchanged,
+        "safety_flags_before": safety_before,
+        "safety_flags_after": safety_after,
+        "safety_flags_unchanged": safety_flags_unchanged,
+        "monitor_alerts_before": monitor_alerts_before,
+        "monitor_alerts_after": monitor_alerts_after,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_operator_actions,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "forbidden_endpoint_scan": forbidden_scan,
+        "explicit_non_actions": _POST_GATEWAY_PROOF_EXPLICIT_NON_ACTIONS,
+        "evidence_hash": None,
+        "_export_path": None,
+    }
+
+    # Evidence hash
+    hash_payload = {
+        k: v for k, v in result.items()
+        if k not in ("evidence_hash", "_export_path")
+    }
+    result["evidence_hash"] = hashlib.sha256(
+        _json.dumps(hash_payload, sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+    # Export
+    try:
+        _POST_GATEWAY_PROOF_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        export_path = _POST_GATEWAY_PROOF_EXPORT_DIR / f"{proof_id}.json"
+        tmp = export_path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, export_path)
+        result["_export_path"] = str(export_path)
+    except OSError as e:
+        result["_export_write_error"] = str(e)[:200]
+
+    return result
+
+
+def _summarise_evidence(ep: str, data: dict) -> str:
+    """Build a concise human-readable summary for a read-only evidence endpoint."""
+    if not isinstance(data, dict):
+        return str(data)[:100]
+    if ep == "/status":
+        return "connected={} mode={}".format(
+            data.get("connected", "?"), data.get("mode", "?")
+        )
+    if ep == "/readiness":
+        ks = data.get("summary", {}).get("kill_switches", {})
+        return "allow_orders={}".format(ks.get("IBKR_ALLOW_ORDERS", "?"))
+    if ep == "/positions":
+        if isinstance(data, list):
+            return "{} positions".format(len(data))
+        return "positions_count={}".format(data.get("count", "?"))
+    if ep == "/account":
+        return "account_id={}".format(data.get("account", data.get("account_id", "?")))
+    if ep == "/monitor/alerts":
+        live = data.get("live", [])
+        count = len(live) if isinstance(live, list) else data.get("live_count", 0)
+        return "{} active alerts".format(count)
+    if ep == "/monitor/reconciliation":
+        return "passed={}".format(data.get("passed", "?"))
+    return "ok"
+
+
+# ===========================================================================
 # Step 15T — Backpressure Drain Drill
 # ===========================================================================
 
@@ -11447,6 +12015,63 @@ def main() -> None:
                             action="store_true", dest="attempt_connect", default=False)
     rrd_alias2.add_argument("--no-connect", action="store_false", dest="attempt_connect")
 
+    # Step 15W: Post-Gateway-start reconnect proof
+    pgp = sub.add_parser("post-gateway-reconnect-proof",
+                         help="Post-Gateway-start reconnect proof (Step 15W)")
+    pgp.add_argument("--json", action="store_true",
+                     help="Output raw JSON only")
+    pgp.add_argument("--export", action="store_true",
+                     help="Write output to ~/.openclaw/post-gateway-reconnect-proofs/")
+    pgp.add_argument("--host", type=str, default="127.0.0.1",
+                     help="IB Gateway host (default: 127.0.0.1)")
+    pgp.add_argument("--port", type=int, default=4002,
+                     help="IB Gateway port (default: 4002)")
+    pgp.add_argument("--client-id", type=int, default=777,
+                     help="IB Gateway client ID (default: 777)")
+    pgp.add_argument("--socket-timeout", type=int, default=2,
+                     help="Socket probe timeout seconds (1-10, default: 2)")
+    pgp.add_argument("--attempt-connect", "--connect-if-needed",
+                     action="store_true", dest="attempt_connect", default=False,
+                     help="Explicit opt-in to call bridge /connect (default: off)")
+    pgp.add_argument("--no-connect", action="store_false", dest="attempt_connect",
+                     help="Do not call /connect (default)")
+    pgp.add_argument("--refresh-evidence", action="store_true", default=True,
+                     help="Gather post-connect read-only evidence (default: on)")
+    pgp.add_argument("--no-refresh-evidence", action="store_false", dest="refresh_evidence",
+                     help="Skip post-connect evidence gathering")
+    pgp.add_argument("--symbol", type=str, default="AAPL",
+                     help="Context symbol for post-connect checks (default: AAPL)")
+    # Alias: reconnect-proof
+    pgp_a1 = sub.add_parser("reconnect-proof",
+                            help="Alias for post-gateway-reconnect-proof")
+    pgp_a1.add_argument("--json", action="store_true")
+    pgp_a1.add_argument("--export", action="store_true")
+    pgp_a1.add_argument("--host", type=str, default="127.0.0.1")
+    pgp_a1.add_argument("--port", type=int, default=4002)
+    pgp_a1.add_argument("--client-id", type=int, default=777)
+    pgp_a1.add_argument("--socket-timeout", type=int, default=2)
+    pgp_a1.add_argument("--attempt-connect", "--connect-if-needed",
+                        action="store_true", dest="attempt_connect", default=False)
+    pgp_a1.add_argument("--no-connect", action="store_false", dest="attempt_connect")
+    pgp_a1.add_argument("--refresh-evidence", action="store_true", default=True)
+    pgp_a1.add_argument("--no-refresh-evidence", action="store_false", dest="refresh_evidence")
+    pgp_a1.add_argument("--symbol", type=str, default="AAPL")
+    # Alias: gateway-connect-proof
+    pgp_a2 = sub.add_parser("gateway-connect-proof",
+                            help="Alias for post-gateway-reconnect-proof")
+    pgp_a2.add_argument("--json", action="store_true")
+    pgp_a2.add_argument("--export", action="store_true")
+    pgp_a2.add_argument("--host", type=str, default="127.0.0.1")
+    pgp_a2.add_argument("--port", type=int, default=4002)
+    pgp_a2.add_argument("--client-id", type=int, default=777)
+    pgp_a2.add_argument("--socket-timeout", type=int, default=2)
+    pgp_a2.add_argument("--attempt-connect", "--connect-if-needed",
+                        action="store_true", dest="attempt_connect", default=False)
+    pgp_a2.add_argument("--no-connect", action="store_false", dest="attempt_connect")
+    pgp_a2.add_argument("--refresh-evidence", action="store_true", default=True)
+    pgp_a2.add_argument("--no-refresh-evidence", action="store_false", dest="refresh_evidence")
+    pgp_a2.add_argument("--symbol", type=str, default="AAPL")
+
     # Step 15S: Contract qualification / root-cause drill
     cq_drill = sub.add_parser("contract-qualification-drill",
                                help="Run contract qualification root-cause drill (Step 15S)")
@@ -11983,6 +12608,54 @@ def main() -> None:
                 "_export_path": None,
             }
             print(f"Reconnect readiness drill internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        # Pure JSON stdout
+        print(json.dumps(result, indent=2, default=str))
+        if args.export:
+            ep = result.get("_export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("severity") in ("OK", "HOLD") else 1
+        sys.exit(exit_code)
+
+    if args.command in ("post-gateway-reconnect-proof", "reconnect-proof", "gateway-connect-proof"):
+        host = getattr(args, "host", "127.0.0.1")
+        port = getattr(args, "port", 4002)
+        client_id = getattr(args, "client_id", 777)
+        socket_timeout = getattr(args, "socket_timeout", 2)
+        attempt_connect = getattr(args, "attempt_connect", False)
+        refresh_evidence = getattr(args, "refresh_evidence", True)
+        symbol = getattr(args, "symbol", "AAPL")
+        try:
+            result = _run_post_gateway_reconnect_proof(
+                host=host,
+                port=port,
+                client_id=client_id,
+                socket_timeout=socket_timeout,
+                attempt_connect=attempt_connect,
+                refresh_evidence=refresh_evidence,
+                symbol=symbol,
+            )
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+            result = {
+                "command": "ibkr-operator post-gateway-reconnect-proof",
+                "timestamp": ts_str,
+                "proof_id": f"post-gateway-reconnect-proof-{ts_file}",
+                "diagnosis": "unknown",
+                "severity": "NO_GO",
+                "internal_exception": True,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)[:500],
+                "no_broker_mutation": True,
+                "no_order_window_opened": True,
+                "_export_path": None,
+            }
+            print(f"Post-gateway reconnect proof internal exception: {exc}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
         # Pure JSON stdout
         print(json.dumps(result, indent=2, default=str))

@@ -7791,6 +7791,546 @@ def _summarise_endpoint_matrix(ep_path: str, data: dict) -> str:
 
 
 # ===========================================================================
+# Step 15Y — Connected Read-Only Account/Position Evidence Stability Drill
+# ===========================================================================
+
+_CONNECTED_STABILITY_EXPORT_DIR = OPENCLAW_DIR / "connected-readonly-stability-drills"
+
+_CONNECTED_STABILITY_READONLY_ENDPOINTS = [
+    "/health",
+    "/readiness",
+    "/positions",
+    "/account",
+    "/monitor/alerts",
+    "/monitor/reconciliation",
+]
+
+_CONNECTED_STABILITY_EXPLICIT_NON_ACTIONS: list[str] = [
+    "No orders placed or modified",
+    "No account values mutated",
+    "No position changes",
+    "No IBKR_ALLOW_ORDERS changes",
+    "No rules.enforced changes",
+    "No autonomy-level changes",
+    "No H1 token reads",
+    "No /order, /order/preflight, /order/approve, /order/submit",
+    "No /connect call",
+    "No bridge restart",
+    "No guard-state mutation",
+]
+
+
+def _run_connected_readonly_stability_drill(
+    samples: int = 5,
+    interval_seconds: int = 3,
+    timeout: int = 8,
+    strict: bool = False,
+) -> dict:
+    """Run connected read-only account/position evidence stability drill (Step 15Y).
+
+    Proves that, while IBKR is connected and bridge remains locked/read-only,
+    repeated read-only evidence snapshots are stable and non-mutating.
+
+    Read-only. No broker/account/order mutation. No H1 token.
+    No /connect, no bridge restart.
+    """
+    import hashlib
+    import json as _json
+    import urllib.request
+    import urllib.error
+    import time as _time
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    drill_id = f"connected-readonly-stability-drill-{ts_file}"
+
+    samples = max(2, min(samples, 10))
+    interval_seconds = max(1, min(interval_seconds, 15))
+    timeout = max(1, min(timeout, 20))
+
+    git = _git_metadata(BRIDGE_DIR)
+
+    # ------------------------------------------------------------------
+    # 1. Safety and guard-state before
+    # ------------------------------------------------------------------
+    safety_before = _capture_safety_flags_raw()
+    guard_state_before = _capture_guard_state_snapshot()
+
+    # ------------------------------------------------------------------
+    # 2. Bridge health — confirm reachable and connected
+    # ------------------------------------------------------------------
+    bridge_health_before: dict = {}
+    bridge_reachable = False
+    bridge_connected_before: bool | None = None
+    bridge_runtime_ok = True
+
+    try:
+        health_req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(health_req, timeout=10.0) as resp:
+            if resp.status == 200:
+                bridge_health_before = _json.loads(resp.read().decode())
+                bridge_reachable = True
+                bridge_connected_before = bridge_health_before.get("connected", None)
+    except Exception as e:
+        bridge_health_before = {"reachable": False, "error": str(e)[:200]}
+        bridge_runtime_ok = False
+
+    # ------------------------------------------------------------------
+    # 3. Monitor alerts before
+    # ------------------------------------------------------------------
+    monitor_alerts_before: dict = {}
+    try:
+        if bridge_reachable:
+            alert_req = urllib.request.Request(f"{BRIDGE_URL}/monitor/alerts", method="GET")
+            with urllib.request.urlopen(alert_req, timeout=10.0) as resp:
+                if resp.status == 200:
+                    monitor_alerts_before = _json.loads(resp.read().decode())
+    except Exception:
+        pass
+
+    # ------------------------------------------------------------------
+    # 4. Handle disconnected
+    # ------------------------------------------------------------------
+    if not bridge_connected_before:
+        diagnosis = "ibkr_disconnected"
+        severity = "HOLD"
+        return _build_stability_result(
+            drill_id=drill_id, ts_str=ts_str, git=git,
+            bridge_reachable=bridge_reachable,
+            bridge_connected_before=bridge_connected_before,
+            bridge_connected_after=None,
+            bridge_runtime_ok=bridge_runtime_ok,
+            bridge_health_before=bridge_health_before,
+            bridge_health_after={},
+            safety_before=safety_before, safety_after=safety_before,
+            safety_flags_unchanged=True,
+            guard_state_before=guard_state_before,
+            guard_state_after=guard_state_before,
+            guard_state_unchanged=True,
+            monitor_alerts_before=monitor_alerts_before,
+            monitor_alerts_after=monitor_alerts_before,
+            all_samples=[],
+            stability_summary=None,
+            diagnosis=diagnosis, severity=severity,
+            operator_action_required=True,
+            suggested_operator_actions=[
+                "IBKR not connected — cannot run stability drill",
+                "Run: ibkr-operator reconnect-readiness-drill --json",
+                "After connecting, rerun this drill",
+            ],
+            requested_samples=samples,
+            requested_interval=interval_seconds,
+            requested_timeout=timeout,
+            requested_strict=strict,
+        )
+
+    # ------------------------------------------------------------------
+    # 5. Collect repeated read-only samples
+    # ------------------------------------------------------------------
+    all_samples: list[dict] = []
+    endpoint_failures_count = 0
+    all_positions_counts: list[int] = []
+    all_position_symbols: set[str] = set()
+    all_account_available = True
+    all_readiness_verdicts: list[str] = []
+    all_monitor_clean = True
+    guard_state_hashes: list[str] = []
+    safety_flags_pairs: list[tuple] = []
+
+    for sample_num in range(1, samples + 1):
+        sample_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        sample: dict = {
+            "sample_number": sample_num,
+            "timestamp": sample_ts,
+            "endpoint_results": {},
+            "account_summary": {},
+            "positions_summary": {},
+            "readiness_summary": {},
+            "monitor_summary": {},
+            "guard_state_hash": None,
+        }
+
+        # Probe each read-only endpoint
+        for ep in _CONNECTED_STABILITY_READONLY_ENDPOINTS:
+            ep_name = ep.lstrip("/").replace("/", "_")
+            ep_result: dict = {
+                "path": ep,
+                "ok": False,
+                "http_status": None,
+                "duration_seconds": 0.0,
+                "error": None,
+                "summary": None,
+            }
+            ep_start = _time.monotonic()
+            try:
+                ep_req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                with urllib.request.urlopen(ep_req, timeout=timeout) as resp:
+                    ep_result["http_status"] = resp.status
+                    raw_body = resp.read().decode(errors="replace")
+                    try:
+                        ep_data = _json.loads(raw_body)
+                        ep_result["ok"] = resp.status == 200
+                        ep_result["summary"] = _summarise_endpoint_matrix(ep, ep_data)
+
+                        # Capture endpoint-specific data for per-sample summaries
+                        if ep == "/health":
+                            sample["bridge_connected_sample"] = ep_data.get("connected")
+                        elif ep == "/readiness":
+                            ks = ep_data.get("summary", {}).get("kill_switches", {})
+                            verdict = "locked" if ks.get("IBKR_ALLOW_ORDERS") in (False, "false") else "unlocked"
+                            sample["readiness_summary"] = {
+                                "verdict": verdict,
+                                "blockers": [],
+                            }
+                            all_readiness_verdicts.append(verdict)
+                        elif ep == "/positions":
+                            if isinstance(ep_data, list):
+                                count = len(ep_data)
+                                flat_symbols = sorted(
+                                    (p.get("symbol", "?") for p in ep_data),
+                                    key=lambda s: str(s)
+                                ) if count > 0 else []
+                            else:
+                                count = ep_data.get("count", 0)
+                                flat_symbols = sorted(
+                                    (p.get("symbol", "?") for p in ep_data.get("positions", []))
+                                ) if count > 0 else []
+                            sample["positions_summary"] = {
+                                "count": count,
+                                "flat": count == 0,
+                                "symbols": flat_symbols,
+                            }
+                            all_positions_counts.append(count)
+                            all_position_symbols.update(flat_symbols)
+                        elif ep == "/account":
+                            nl = ep_data.get("net_liquidation")
+                            sample["account_summary"] = {
+                                "available": ep_result["ok"],
+                                "net_liquidation_available": nl is not None,
+                                "currency": ep_data.get("currency", "?"),
+                                "raw_keys_count": len(ep_data),
+                            }
+                            if not sample["account_summary"]["available"]:
+                                all_account_available = False
+                        elif ep == "/monitor/alerts":
+                            live = ep_data.get("live", [])
+                            count = len(live) if isinstance(live, list) else ep_data.get("live_count", 0)
+                            sample["monitor_summary"] = {
+                                "active_alerts_count": count,
+                            }
+                            if count > 0:
+                                all_monitor_clean = False
+                        elif ep == "/monitor/reconciliation":
+                            sample["reconciliation_passed"] = ep_data.get("passed", None)
+
+                    except _json.JSONDecodeError:
+                        ep_result["error"] = "invalid JSON"
+                        ep_result["summary"] = raw_body[:200]
+                        endpoint_failures_count += 1
+            except urllib.error.HTTPError as e:
+                ep_result["http_status"] = e.code
+                ep_result["error"] = f"HTTP {e.code}"
+                ep_result["summary"] = str(e)[:100]
+                endpoint_failures_count += 1
+            except Exception as e:
+                ep_result["error"] = str(e)[:200]
+                ep_result["summary"] = str(e)[:200]
+                endpoint_failures_count += 1
+            finally:
+                ep_result["duration_seconds"] = round(_time.monotonic() - ep_start, 3)
+
+            sample["endpoint_results"][ep_name] = ep_result
+
+        # Capture guard-state hash this sample
+        gs_now = _capture_guard_state_snapshot()
+        sample["guard_state_hash"] = gs_now.get("guard_state_hash")
+        guard_state_hashes.append(sample["guard_state_hash"])
+
+        # Capture safety flags this sample
+        sf_now = _capture_safety_flags_raw()
+        sample["safety_flags_sample"] = sf_now
+        safety_flags_pairs.append((
+            sf_now.get("env_IBKR_ALLOW_ORDERS"),
+            sf_now.get("rules_enforced"),
+        ))
+
+        all_samples.append(sample)
+
+        # Inter-sample sleep (except after last)
+        if sample_num < samples:
+            _time.sleep(interval_seconds)
+
+    # ------------------------------------------------------------------
+    # 6. After-loop captures
+    # ------------------------------------------------------------------
+    safety_after = _capture_safety_flags_raw()
+    guard_state_after = _capture_guard_state_snapshot()
+
+    safety_flags_unchanged = (
+        safety_before.get("env_IBKR_ALLOW_ORDERS")
+        == safety_after.get("env_IBKR_ALLOW_ORDERS")
+        and safety_before.get("rules_enforced")
+        == safety_after.get("rules_enforced")
+    )
+
+    guard_state_unchanged = (
+        guard_state_before.get("guard_state_hash") is not None
+        and guard_state_after.get("guard_state_hash") is not None
+        and guard_state_before["guard_state_hash"] == guard_state_after["guard_state_hash"]
+    )
+
+    # Guard-state hash stability across all samples
+    guard_first = guard_state_hashes[0] if guard_state_hashes else None
+    guard_state_hash_stable = all(h == guard_first for h in guard_state_hashes) if guard_first else True
+
+    # Safety flags stability across all samples
+    sf_first = safety_flags_pairs[0] if safety_flags_pairs else None
+    safety_flags_stable = all(p == sf_first for p in safety_flags_pairs) if sf_first else True
+
+    # Monitor alerts after
+    monitor_alerts_after: dict = {}
+    try:
+        alert_req2 = urllib.request.Request(f"{BRIDGE_URL}/monitor/alerts", method="GET")
+        with urllib.request.urlopen(alert_req2, timeout=10.0) as resp:
+            if resp.status == 200:
+                monitor_alerts_after = _json.loads(resp.read().decode())
+    except Exception:
+        pass
+
+    # Bridge health after
+    bridge_connected_after: bool | None = bridge_connected_before
+    bridge_health_after: dict = {}
+    try:
+        health_req2 = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(health_req2, timeout=10.0) as resp:
+            if resp.status == 200:
+                bridge_health_after = _json.loads(resp.read().decode())
+                bridge_connected_after = bridge_health_after.get("connected", None)
+    except Exception:
+        pass
+
+    # ------------------------------------------------------------------
+    # 7. Stability analysis
+    # ------------------------------------------------------------------
+    positions_count_stable = len(set(all_positions_counts)) <= 1 if all_positions_counts else True
+    positions_all_flat = all(c == 0 for c in all_positions_counts) if all_positions_counts else True
+
+    stability_summary = {
+        "samples_count": len(all_samples),
+        "connected_all_samples": all(
+            s.get("bridge_connected_sample", False) for s in all_samples
+        ),
+        "endpoint_failures_count": endpoint_failures_count,
+        "positions_count_stable": positions_count_stable,
+        "positions_flat_all_samples": positions_all_flat,
+        "account_available_all_samples": all_account_available,
+        "readiness_verdicts": all_readiness_verdicts,
+        "monitor_alerts_clean_all_samples": all_monitor_clean,
+        "guard_state_hash_stable": guard_state_hash_stable,
+        "safety_flags_stable": safety_flags_stable,
+    }
+
+    # ------------------------------------------------------------------
+    # 8. Diagnosis
+    # ------------------------------------------------------------------
+    diagnosis = "connected_readonly_stability_ok"
+    severity = "OK"
+    operator_action_required = False
+    suggested_operator_actions: list[str] = []
+
+    if not guard_state_unchanged:
+        diagnosis = "guard_state_mutated"
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Guard-state changed during stability drill — DO NOT PROCEED",
+            "Run: ibkr-operator guard-state-reconcile --json",
+        ]
+    elif not safety_flags_unchanged:
+        diagnosis = "safety_flags_changed"
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Safety flags changed during stability drill — DO NOT PROCEED",
+            "Run: ibkr-operator doctor --json",
+        ]
+    elif not positions_all_flat:
+        diagnosis = "positions_changed"
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            f"Non-flat positions detected: {sorted(all_position_symbols)}",
+            "Positions must be flat (count=0) for stability drill",
+            "Run: ibkr-operator guard-state-reconcile --json",
+        ]
+    elif not all_monitor_clean:
+        diagnosis = "monitor_alerts_active"
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Monitor alerts detected during stability sampling",
+            "Run: ibkr-operator kpi --json",
+            "Run: ibkr-operator kpi-repair --live to clear stale alerts",
+        ]
+    elif endpoint_failures_count > 0 and strict:
+        diagnosis = "endpoint_degraded"
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            f"Strict mode: {endpoint_failures_count} endpoint failure(s) across {samples} samples",
+        ]
+    elif endpoint_failures_count > 0:
+        diagnosis = "endpoint_degraded"
+        severity = "HOLD"
+        operator_action_required = True
+        suggested_operator_actions = [
+            f"{endpoint_failures_count} endpoint failure(s) across {samples} samples",
+        ]
+    else:
+        diagnosis = "connected_readonly_stability_ok"
+        severity = "OK"
+
+    return _build_stability_result(
+        drill_id=drill_id, ts_str=ts_str, git=git,
+        bridge_reachable=bridge_reachable,
+        bridge_connected_before=bridge_connected_before,
+        bridge_connected_after=bridge_connected_after,
+        bridge_runtime_ok=bridge_runtime_ok,
+        bridge_health_before=bridge_health_before,
+        bridge_health_after=bridge_health_after,
+        safety_before=safety_before, safety_after=safety_after,
+        safety_flags_unchanged=safety_flags_unchanged,
+        guard_state_before=guard_state_before,
+        guard_state_after=guard_state_after,
+        guard_state_unchanged=guard_state_unchanged,
+        monitor_alerts_before=monitor_alerts_before,
+        monitor_alerts_after=monitor_alerts_after,
+        all_samples=all_samples,
+        stability_summary=stability_summary,
+        diagnosis=diagnosis, severity=severity,
+        operator_action_required=operator_action_required,
+        suggested_operator_actions=suggested_operator_actions,
+        requested_samples=samples,
+        requested_interval=interval_seconds,
+        requested_timeout=timeout,
+        requested_strict=strict,
+    )
+
+
+def _build_stability_result(
+    drill_id, ts_str, git,
+    bridge_reachable, bridge_connected_before, bridge_connected_after,
+    bridge_runtime_ok, bridge_health_before, bridge_health_after,
+    safety_before, safety_after, safety_flags_unchanged,
+    guard_state_before, guard_state_after, guard_state_unchanged,
+    monitor_alerts_before, monitor_alerts_after,
+    all_samples, stability_summary, diagnosis, severity,
+    operator_action_required, suggested_operator_actions,
+    requested_samples: int = 0,
+    requested_interval: int = 0,
+    requested_timeout: int = 0,
+    requested_strict: bool = False,
+) -> dict:
+    import hashlib
+    import json as _json
+
+    # Default empty stability summary
+    if stability_summary is None:
+        stability_summary = {
+            "samples_count": 0,
+            "connected_all_samples": False,
+            "endpoint_failures_count": 0,
+            "positions_count_stable": True,
+            "positions_flat_all_samples": True,
+            "account_available_all_samples": True,
+            "readiness_verdicts": [],
+            "monitor_alerts_clean_all_samples": True,
+            "guard_state_hash_stable": True,
+            "safety_flags_stable": True,
+        }
+
+    requested_sampling = {
+        "samples": len(all_samples) if all_samples else requested_samples,
+        "interval_seconds": requested_interval,
+        "timeout": requested_timeout,
+        "strict": requested_strict,
+    }
+
+    result: dict = {
+        "advisory": (
+            "Read-only connected account/position evidence stability drill. "
+            "No broker/account/order mutation. No H1 token. "
+            "Repeated read-only sampling proves evidence stability."
+        ),
+        "timestamp": ts_str,
+        "drill_id": drill_id,
+        "command": "ibkr-operator connected-readonly-stability-drill",
+        "git_branch": git.get("branch", "?"),
+        "git_commit": git.get("commit", "?"),
+        "git_tag": git.get("tag", "?"),
+        "requested_sampling": requested_sampling,
+        "bridge_reachable": bridge_reachable,
+        "bridge_connected_before": bridge_connected_before,
+        "bridge_connected_after": bridge_connected_after,
+        "bridge_runtime_ok": bridge_runtime_ok,
+        "safety_flags_before": safety_before,
+        "safety_flags_after": safety_after,
+        "safety_flags_unchanged": safety_flags_unchanged,
+        "guard_state_before": {
+            "hash": guard_state_before.get("guard_state_hash") if isinstance(guard_state_before, dict) else None,
+            "daily_trade_count": guard_state_before.get("daily_trade_count") if isinstance(guard_state_before, dict) else None,
+            "file_exists": guard_state_before.get("file_exists") if isinstance(guard_state_before, dict) else None,
+        },
+        "guard_state_after": {
+            "hash": guard_state_after.get("guard_state_hash") if isinstance(guard_state_after, dict) else None,
+            "daily_trade_count": guard_state_after.get("daily_trade_count") if isinstance(guard_state_after, dict) else None,
+            "file_exists": guard_state_after.get("file_exists") if isinstance(guard_state_after, dict) else None,
+        },
+        "guard_state_unchanged": guard_state_unchanged,
+        "monitor_alerts_before": monitor_alerts_before,
+        "monitor_alerts_after": monitor_alerts_after,
+        "samples": all_samples,
+        "stability_summary": stability_summary,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_operator_actions,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "forbidden_endpoint_scan": _scan_forbidden_endpoints(),
+        "explicit_non_actions": _CONNECTED_STABILITY_EXPLICIT_NON_ACTIONS,
+        "evidence_hash": None,
+        "_export_path": None,
+    }
+
+    hash_payload = {
+        k: v for k, v in result.items()
+        if k not in ("evidence_hash", "_export_path")
+    }
+    result["evidence_hash"] = hashlib.sha256(
+        _json.dumps(hash_payload, sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+    # Export
+    try:
+        _CONNECTED_STABILITY_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        export_path = _CONNECTED_STABILITY_EXPORT_DIR / f"{drill_id}.json"
+        tmp = export_path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, export_path)
+        result["_export_path"] = str(export_path)
+    except OSError as e:
+        result["_export_write_error"] = str(e)[:200]
+
+    return result
+
+
+# ===========================================================================
 # Step 15T — Backpressure Drain Drill
 # ===========================================================================
 
@@ -12753,6 +13293,48 @@ def main() -> None:
     ced_a3.add_argument("--strict", action="store_true", default=False)
     ced_a3.add_argument("--symbol", type=str, default="AAPL")
 
+    # Step 15Y: Connected read-only account/position evidence stability drill
+    csd = sub.add_parser("connected-readonly-stability-drill",
+                         help="Connected read-only account/position stability drill (Step 15Y)")
+    csd.add_argument("--json", action="store_true", help="Output raw JSON only")
+    csd.add_argument("--export", action="store_true",
+                     help="Write output to ~/.openclaw/connected-readonly-stability-drills/")
+    csd.add_argument("--samples", type=int, default=5,
+                     help="Number of repeated samples (2-10, default: 5)")
+    csd.add_argument("--interval-seconds", type=int, default=3,
+                     help="Seconds between samples (1-15, default: 3)")
+    csd.add_argument("--timeout", type=int, default=8,
+                     help="Endpoint probe timeout seconds (1-20, default: 8)")
+    csd.add_argument("--strict", action="store_true", default=False,
+                     help="Endpoint degradation => NO_GO")
+    # Alias: readonly-stability-drill
+    csd_a1 = sub.add_parser("readonly-stability-drill",
+                            help="Alias for connected-readonly-stability-drill")
+    csd_a1.add_argument("--json", action="store_true")
+    csd_a1.add_argument("--export", action="store_true")
+    csd_a1.add_argument("--samples", type=int, default=5)
+    csd_a1.add_argument("--interval-seconds", type=int, default=3)
+    csd_a1.add_argument("--timeout", type=int, default=8)
+    csd_a1.add_argument("--strict", action="store_true", default=False)
+    # Alias: account-position-stability-drill
+    csd_a2 = sub.add_parser("account-position-stability-drill",
+                            help="Alias for connected-readonly-stability-drill")
+    csd_a2.add_argument("--json", action="store_true")
+    csd_a2.add_argument("--export", action="store_true")
+    csd_a2.add_argument("--samples", type=int, default=5)
+    csd_a2.add_argument("--interval-seconds", type=int, default=3)
+    csd_a2.add_argument("--timeout", type=int, default=8)
+    csd_a2.add_argument("--strict", action="store_true", default=False)
+    # Alias: connected-evidence-stability-drill
+    csd_a3 = sub.add_parser("connected-evidence-stability-drill",
+                            help="Alias for connected-readonly-stability-drill")
+    csd_a3.add_argument("--json", action="store_true")
+    csd_a3.add_argument("--export", action="store_true")
+    csd_a3.add_argument("--samples", type=int, default=5)
+    csd_a3.add_argument("--interval-seconds", type=int, default=3)
+    csd_a3.add_argument("--timeout", type=int, default=8)
+    csd_a3.add_argument("--strict", action="store_true", default=False)
+
     # Step 15T: Backpressure drain drill
     bp_drain = sub.add_parser("backpressure-drain-drill",
                                help="Run bridge saturation / backpressure drain drill (Step 15T)")
@@ -13340,6 +13922,48 @@ def main() -> None:
                 "_export_path": None,
             }
             print(f"Endpoint evidence drill internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        print(json.dumps(result, indent=2, default=str))
+        if args.export:
+            ep = result.get("_export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("severity") in ("OK", "HOLD") else 1
+        sys.exit(exit_code)
+
+    if args.command in ("connected-readonly-stability-drill", "readonly-stability-drill",
+                        "account-position-stability-drill", "connected-evidence-stability-drill"):
+        samples_n = getattr(args, "samples", 5)
+        interval = getattr(args, "interval_seconds", 3)
+        timeout_val = getattr(args, "timeout", 8)
+        strict = getattr(args, "strict", False)
+        try:
+            result = _run_connected_readonly_stability_drill(
+                samples=samples_n,
+                interval_seconds=interval,
+                timeout=timeout_val,
+                strict=strict,
+            )
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+            result = {
+                "command": "ibkr-operator connected-readonly-stability-drill",
+                "timestamp": ts_str,
+                "drill_id": f"connected-readonly-stability-drill-{ts_file}",
+                "diagnosis": "unknown",
+                "severity": "NO_GO",
+                "internal_exception": True,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)[:500],
+                "no_broker_mutation": True,
+                "no_order_window_opened": True,
+                "_export_path": None,
+            }
+            print(f"Stability drill internal exception: {exc}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
         print(json.dumps(result, indent=2, default=str))
         if args.export:

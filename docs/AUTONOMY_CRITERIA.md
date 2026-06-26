@@ -193,7 +193,7 @@ A cycle is **clean** when ALL of the following are true:
 
 | Level | Clean Cycles Required | What Changes |
 |---|---|---|
-| **0 (current)** | N/A | Zero autonomy. Chris must approve and provide H1 token for every submit. |
+| **1 (current)** | N/A | Zero autonomy. Chris must approve and provide H1 token for every submit. |
 | **1** | 5 consecutive clean cycles | Werner may prepare and submit proposals to Chris in batch. Chris still approves individually. |
 | **2** | 10 consecutive clean cycles (after reaching Level 1) | Werner may pre-approve proposals that pass all gates and are ≤1% of NL notional. Chris reviews post-hoc within 24h. |
 | **3** | 20 consecutive clean cycles (after reaching Level 2) | Werner may execute up to 1 trade/day autonomously within tighter limits (≤2% NL notional, ≤1% NL risk). Chris reviews daily. |

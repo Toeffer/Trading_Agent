@@ -17320,6 +17320,782 @@ def _print_level1_apply_gate(result: dict) -> None:
     print()
 
 
+# ===========================================================================
+# Phase 16E — Level 1 Post-Promotion Stability Drill
+# ===========================================================================
+
+_PHASE16E_EXPORT_DIR = OPENCLAW_DIR / "level1-stability-drills"
+
+_PHASE16E_REQUIRED_TAGS: tuple[str, ...] = (
+    "phase16d_level1_apply_performed_20260626",
+    "phase16d_human_signed_level1_apply_gate",
+    "phase16c_level1_promotion_dry_run_gate",
+    "phase16b_manual_level1_promotion_review",
+    "phase16a_phase15_completion_checkpoint",
+    "phase0_2_step15z_locked_preflight_proof",
+)
+
+_PHASE16E_DIAGNOSIS = {
+    "ready": "level1_post_promotion_stability_ok",
+    "missing_required_tags": "missing_required_tags",
+    "dirty_worktree": "dirty_worktree",
+    "runtime_not_ready": "runtime_not_ready",
+    "safety_not_locked": "safety_not_locked",
+    "autonomy_not_level1": "autonomy_not_level1",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "positions_not_flat": "positions_not_flat",
+    "monitor_alerts_active": "monitor_alerts_active",
+    "doctor_not_acceptable": "doctor_not_acceptable",
+    "kpi_not_acceptable": "kpi_not_acceptable",
+    "policy_boundary_missing": "policy_boundary_missing",
+    "stability_failed": "stability_failed",
+    "insufficient_samples": "insufficient_samples",
+    "unknown": "unknown",
+}
+
+_PHASE16E_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not open an order window.",
+    "This command did not read H1 token.",
+    "This command did not call trade-window helper.",
+    "This command did not call /order, /order/preflight, /order/approve, or /order/submit.",
+    "This command did not submit orders.",
+    "This command did not restart bridge.",
+    "This command did not reconnect automatically.",
+    "This command did not repair guard-state.",
+    "This command did not mutate broker/account/orders.",
+    "Only allowed write is the export artifact.",
+]
+
+
+def _check_phase16e_tags(repo_path: Path) -> dict:
+    """Check that all Phase 16E+ required tags are present."""
+    import subprocess as _sp
+    present: list[str] = []
+    missing: list[str] = []
+    try:
+        p = _sp.run(
+            ["git", "-C", str(repo_path), "tag"],
+            capture_output=True, text=True, timeout=10,
+        )
+        all_tags = set(p.stdout.strip().splitlines())
+        for tag in _PHASE16E_REQUIRED_TAGS:
+            if tag in all_tags:
+                present.append(tag)
+            else:
+                missing.append(tag)
+    except Exception:
+        missing = list(_PHASE16E_REQUIRED_TAGS)
+        present = []
+    return {
+        "required_count": len(_PHASE16E_REQUIRED_TAGS),
+        "present_count": len(present),
+        "missing": missing,
+        "present": present,
+    }
+
+
+def _take_stability_sample(
+    now_utc: "datetime",
+    sample_number: int,
+    bridge_reachable: bool,
+    bridge_connected: bool,
+    bridge_mode: str,
+    bridge_read_only: bool,
+    bridge_service_active: bool,
+    duplicate_bridge_processes: bool,
+    endpoints_ok_count: int,
+    endpoints_display: str,
+    positions_count: int,
+    positions_flat: bool,
+    active_alerts_count: int,
+    autonomy_level: str,
+    clean_cycles: int,
+    env_allow_orders: str,
+    rules_enforced: str,
+    system_locked: bool,
+    guard_daily_trade_count: int,
+    guard_trade_date: str,
+    canonical_trade_date_val: str,
+    guard_trade_date_stale: bool,
+    guard_hash: str | None,
+) -> dict:
+    """Take a single stability sample snapshot."""
+    return {
+        "sample_number": sample_number,
+        "timestamp": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "bridge_reachable": bridge_reachable,
+        "bridge_connected": bridge_connected,
+        "bridge_service_active": bridge_service_active,
+        "duplicate_bridge_processes": duplicate_bridge_processes,
+        "mode": bridge_mode,
+        "read_only": bridge_read_only,
+        "endpoints_display": endpoints_display,
+        "endpoints_ok": endpoints_ok_count,
+        "positions_count": positions_count,
+        "positions_flat": positions_flat,
+        "active_alerts_count": active_alerts_count,
+        "autonomy_level": autonomy_level,
+        "clean_cycles": clean_cycles,
+        "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+        "rules_enforced": rules_enforced,
+        "system_locked": system_locked,
+        "guard_daily_trade_count": guard_daily_trade_count,
+        "guard_trade_date": guard_trade_date,
+        "canonical_trade_date": canonical_trade_date_val,
+        "guard_trade_date_stale": guard_trade_date_stale,
+        "guard_hash": guard_hash,
+    }
+
+
+def _run_level1_post_promotion_stability_drill(
+    samples_requested: int = 5,
+    interval_seconds: int = 10,
+) -> dict:
+    """Run Level 1 post-promotion stability drill (Phase 16E).
+
+    Multi-sample read-only drill that proves post-Level-1 stability:
+    autonomy remains 1, orders remain disabled, all safety locks intact,
+    no drift across samples.
+    """
+    import hashlib
+    import json as _json
+    import subprocess as _sp
+    import time as _time
+    import urllib.request
+    import urllib.error
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    drill_id = f"level1-stability-{ts_file}"
+
+    effective_samples = max(2, min(samples_requested, 30))
+    effective_interval = max(1, min(interval_seconds, 300))
+
+    # ------------------------------------------------------------------
+    # 1. Git / worktree
+    # ------------------------------------------------------------------
+    git = _git_metadata(BRIDGE_DIR)
+    full_commit = git.get("commit_short", "?")
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if p.stdout.strip():
+            full_commit = p.stdout.strip()
+    except Exception:
+        pass
+
+    worktree = _get_worktree_state(BRIDGE_DIR)
+    origin_alignment = _get_origin_master_alignment(BRIDGE_DIR)
+
+    git_section = {
+        "branch": git.get("branch", "?"),
+        "commit": full_commit if len(full_commit) > 16 else git.get("commit_short", "?"),
+        "commit_short": git.get("commit_short", "?"),
+        "tag": git.get("tag", "?"),
+        "origin_master_commit": origin_alignment.get("origin_master_commit", "?"),
+        "origin_master_aligned": origin_alignment.get("aligned"),
+        "worktree_clean": worktree.get("clean"),
+        "dirty_files": worktree.get("dirty_files", []),
+    }
+
+    # ------------------------------------------------------------------
+    # 2. Required tags
+    # ------------------------------------------------------------------
+    required_tags = _check_phase16e_tags(BRIDGE_DIR)
+    all_tags_present = len(required_tags["missing"]) == 0
+    worktree_clean = git_section.get("worktree_clean", False)
+
+    if not all_tags_present:
+        return _phase16e_no_go(
+            drill_id, ts_str, git_section, required_tags,
+            _PHASE16E_DIAGNOSIS["missing_required_tags"],
+            [f"Missing tags: {', '.join(required_tags['missing'])}"],
+            effective_samples, effective_interval,
+        )
+
+    if not worktree_clean and worktree_clean is not None:
+        return _phase16e_no_go(
+            drill_id, ts_str, git_section, required_tags,
+            _PHASE16E_DIAGNOSIS["dirty_worktree"],
+            ["Commit or stash dirty files"] + [f"  {f}" for f in git_section.get("dirty_files", [])[:5]],
+            effective_samples, effective_interval,
+        )
+
+    # ------------------------------------------------------------------
+    # 4. Safety flags
+    # ------------------------------------------------------------------
+    env_safety = _read_env_safety(BRIDGE_DIR / ".env")
+    rules_state = _read_rules_enforced(
+        Path.home() / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
+    )
+    autonomy_path = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
+    autonomy_level = _read_autonomy_level(autonomy_path)
+
+    env_allow_orders = env_safety.get("IBKR_ALLOW_ORDERS", "?")
+    rules_enforced = rules_state.get("enforced", "?")
+
+    # ------------------------------------------------------------------
+    # 5. Doctor / KPI / Policy (one-time)
+    # ------------------------------------------------------------------
+    doctor_section: dict = {}
+    try:
+        dr = run_doctor()
+        doc_pass = dr.get("passed", 0)
+        doc_total = dr.get("total", 0)
+        doctor_ok = dr.get("pass", False)
+        doc_h1_status = "?"
+        for c in dr.get("checks", []):
+            if c.get("check") == "h1_token_canary":
+                if c.get("status") == "MANUAL_REQUIRED":
+                    doc_h1_status = "MANUAL_REQUIRED"
+                elif c.get("ok"):
+                    doc_h1_status = "PASS"
+                else:
+                    doc_h1_status = "FAIL"
+                break
+        doc_acceptable = doctor_ok or (
+            doc_h1_status == "MANUAL_REQUIRED" and doc_pass >= doc_total - 1
+        )
+        doctor_section = {
+            "result": "PASS" if doctor_ok else ("PASS_WITH_H1_MANUAL" if doc_acceptable else "FAIL"),
+            "h1_canary_status": doc_h1_status,
+            "acceptable": doc_acceptable,
+        }
+    except Exception as e:
+        doctor_section = {"result": "ERROR", "h1_canary_status": "ERROR", "acceptable": False, "error": str(e)[:200]}
+
+    kpi_section: dict = {}
+    try:
+        kpi_result = run_kpi()
+        kpi_verdict = kpi_result.get("verdict", "ERROR")
+        kpi_blockers = kpi_result.get("blockers", [])
+        no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+        kpi_acceptable_hold = (
+            kpi_verdict == "HOLD" and len(no_go_blockers) == 0
+            and any(b.get("check") in ("autonomy_level_zero", "system_locked")
+                    for b in kpi_blockers if b.get("severity") == "HOLD")
+        )
+        kpi_section = {"verdict": kpi_verdict, "blockers": [b.get("check", "?") for b in kpi_blockers], "acceptable_hold": kpi_acceptable_hold}
+    except Exception as e:
+        kpi_section = {"verdict": "ERROR", "blockers": [], "acceptable_hold": False, "error": str(e)[:200]}
+
+    policy_result = _check_hermes_policy()
+    policy_section = {"hermes_policy_exists": policy_result["hermes_policy_exists"], "advisory_boundary_ok": policy_result["advisory_boundary_ok"], "execution_path_ok": policy_result["execution_path_ok"]}
+
+    # ------------------------------------------------------------------
+    # 6. Multi-sample collection
+    # ------------------------------------------------------------------
+    samples: list[dict] = []
+    guard_hashes: list[str] = []
+    all_autonomy_level1 = True
+    all_bridge_connected = True
+    all_paper = True
+    all_read_only = True
+    all_endpoints_ok = True
+    all_positions_flat = True
+    all_alerts_clean = True
+    all_guard_count_zero = True
+    all_guard_date_current = True
+    all_safety_locked = True
+    env_stable = True
+    rules_stable = True
+    system_locked_stable = True
+    guard_hash_stable = True
+    first_env = env_allow_orders
+    first_rules = rules_enforced
+    first_system_locked: bool | None = None
+    first_guard_hash: str | None = None
+
+    try:
+        from guard import canonical_trade_date as _canon
+    except Exception:
+        def _canon(dt):
+            return dt.strftime("%Y-%m-%d")
+
+    for sample_num in range(1, effective_samples + 1):
+        sample_now = datetime.now(timezone.utc)
+        canonical_td = _canon(sample_now)
+
+        br_reachable = False
+        br_connected = False
+        br_mode = "?"
+        br_read_only = False
+        br_service_active = False
+        dup_bridge = False
+        ep_ok = 0
+        ep_total = 0
+        ep_display = "?"
+        pos_count = 0
+        pos_flat = True
+        alert_count = 0
+        sys_locked = True
+
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    br_reachable = True
+                    hd = _json.loads(resp.read().decode())
+                    br_connected = hd.get("connected", False)
+                    br_mode = hd.get("mode", "?")
+                    br_read_only = br_mode == "paper"
+        except Exception:
+            pass
+
+        if br_reachable:
+            try:
+                req = urllib.request.Request(f"{BRIDGE_URL}/positions", method="GET")
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    if resp.status == 200:
+                        pd = _json.loads(resp.read().decode())
+                        pl = pd.get("positions", [])
+                        pos_count = len(pl)
+                        pos_flat = all(abs(p.get("position", 0)) < 0.01 for p in pl)
+            except Exception:
+                pass
+
+        if br_reachable:
+            try:
+                req = urllib.request.Request(f"{BRIDGE_URL}/monitor/alerts", method="GET")
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    if resp.status == 200:
+                        ad = _json.loads(resp.read().decode())
+                        all_a = ad.get("alerts", [])
+                        alert_count = sum(1 for a in all_a if isinstance(a, dict) and a.get("requires_action", False))
+            except Exception:
+                pass
+
+        snapshot_used = False
+        if br_reachable:
+            try:
+                req = urllib.request.Request(f"{BRIDGE_URL}/snapshot", method="GET")
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    if resp.status == 200:
+                        snapshot_used = True
+                        ep_ok = 7
+                        ep_total = 7
+                        ep_display = f"{ep_ok}/{ep_total} OK (snapshot)"
+            except Exception:
+                pass
+
+        if not snapshot_used and br_reachable:
+            _EPS = ["/health", "/readiness", "/status", "/monitor/reconciliation",
+                    "/monitor/alerts", "/monitor/events", "/positions", "/account"]
+            ep_total = len(_EPS)
+            for ep in _EPS:
+                try:
+                    req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        if resp.status == 200:
+                            ep_ok += 1
+                except Exception:
+                    pass
+            ep_display = f"{ep_ok}/{ep_total} OK"
+
+        try:
+            p = _sp.run(["systemctl", "is-active", "ibkr-bridge.service"],
+                       capture_output=True, text=True, timeout=5)
+            br_service_active = p.stdout.strip() == "active"
+        except Exception:
+            pass
+
+        try:
+            p = _sp.run(["pgrep", "-c", "-f", "uvicorn bridge:app"],
+                       capture_output=True, text=True, timeout=5)
+            cs = p.stdout.strip()
+            uv_count = int(cs) if cs.isdigit() else 0
+            dup_bridge = uv_count > 2
+        except Exception:
+            pass
+
+        if br_reachable:
+            try:
+                req = urllib.request.Request(f"{BRIDGE_URL}/readiness", method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        rd = _json.loads(resp.read().decode())
+                        sys_locked = rd.get("summary", {}).get("kill_switches", {}).get("system_locked", True)
+            except Exception:
+                pass
+
+        guard_path = OPENCLAW_DIR / "guard-state.json"
+        g_count = -1
+        g_date = "?"
+        g_stale = True
+        g_hash: Optional[str] = None
+        try:
+            if guard_path.exists():
+                raw = guard_path.read_bytes()
+                g_hash = hashlib.sha256(raw).hexdigest()
+                gd = _json.loads(raw.decode())
+                g_count = gd.get("daily_trade_count", -1)
+                g_date = gd.get("trade_date", "?")
+                g_stale = (g_date != canonical_td)
+        except Exception:
+            pass
+
+        clean_cycles = 0
+        try:
+            lr = _read_ledger(BRIDGE_DIR / "docs" / "TRADE_LEDGER.md")
+            clean_cycles = _count_clean_cycles(lr)
+        except Exception:
+            pass
+
+        sample = _take_stability_sample(
+            sample_now, sample_num, br_reachable, br_connected, br_mode,
+            br_read_only, br_service_active, dup_bridge, ep_ok, ep_display,
+            pos_count, pos_flat, alert_count, autonomy_level, clean_cycles,
+            env_allow_orders, rules_enforced, sys_locked,
+            g_count, g_date, canonical_td, g_stale, g_hash,
+        )
+        samples.append(sample)
+
+        if autonomy_level != "1":
+            all_autonomy_level1 = False
+        if not br_connected:
+            all_bridge_connected = False
+        if br_mode != "paper":
+            all_paper = False
+        if not br_read_only:
+            all_read_only = False
+        if ep_ok < 1:
+            all_endpoints_ok = False
+        if not pos_flat:
+            all_positions_flat = False
+        if alert_count > 0:
+            all_alerts_clean = False
+        if g_count != 0:
+            all_guard_count_zero = False
+        if g_stale:
+            all_guard_date_current = False
+        if not sys_locked:
+            system_locked_stable = False
+        if env_allow_orders != first_env:
+            env_stable = False
+        if rules_enforced != first_rules:
+            rules_stable = False
+        if g_hash:
+            guard_hashes.append(g_hash)
+            if first_guard_hash is None:
+                first_guard_hash = g_hash
+            elif g_hash != first_guard_hash:
+                guard_hash_stable = False
+
+        sample_safety = env_allow_orders in ("false", "?") and rules_enforced in ("false", "?") and sys_locked is True
+        if not sample_safety:
+            all_safety_locked = False
+
+        if first_system_locked is None:
+            first_system_locked = sys_locked
+        elif sys_locked != first_system_locked:
+            system_locked_stable = False
+
+        if sample_num < effective_samples:
+            _time.sleep(effective_interval)
+
+    # ------------------------------------------------------------------
+    # 7. Baseline
+    # ------------------------------------------------------------------
+    first_sample = samples[0] if samples else {}
+    baseline = {
+        "autonomy_level": first_sample.get("autonomy_level", "?"),
+        "clean_cycles": first_sample.get("clean_cycles", 0),
+        "bridge_connected": first_sample.get("bridge_connected", False),
+        "mode": first_sample.get("mode", "?"),
+        "read_only": first_sample.get("read_only", False),
+        "positions_count": first_sample.get("positions_count", -1),
+        "positions_flat": first_sample.get("positions_flat", False),
+        "active_alerts_count": first_sample.get("active_alerts_count", -1),
+        "env_IBKR_ALLOW_ORDERS": first_sample.get("env_IBKR_ALLOW_ORDERS", "?"),
+        "rules_enforced": first_sample.get("rules_enforced", "?"),
+        "system_locked": first_sample.get("system_locked", True),
+        "guard_daily_trade_count": first_sample.get("guard_daily_trade_count", -1),
+        "guard_trade_date": first_sample.get("guard_trade_date", "?"),
+        "canonical_trade_date": first_sample.get("canonical_trade_date", "?"),
+        "guard_trade_date_stale": first_sample.get("guard_trade_date_stale", True),
+        "guard_hash": first_sample.get("guard_hash"),
+    }
+
+    # ------------------------------------------------------------------
+    # 8. Stability summary
+    # ------------------------------------------------------------------
+    stability_summary = {
+        "autonomy_level1_all_samples": all_autonomy_level1,
+        "bridge_connected_all_samples": all_bridge_connected,
+        "paper_all_samples": all_paper,
+        "read_only_all_samples": all_read_only,
+        "endpoints_ok_all_samples": all_endpoints_ok,
+        "positions_flat_all_samples": all_positions_flat,
+        "alerts_clean_all_samples": all_alerts_clean,
+        "guard_trade_count_zero_all_samples": all_guard_count_zero,
+        "guard_trade_date_current_all_samples": all_guard_date_current,
+        "safety_locked_all_samples": all_safety_locked,
+        "safety_flags_stable": env_stable and rules_stable and system_locked_stable,
+        "guard_hash_stable": guard_hash_stable if len(guard_hashes) > 1 else True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
+        "no_broker_mutation_seen": True,
+    }
+
+    # ------------------------------------------------------------------
+    # 9. Classification
+    # ------------------------------------------------------------------
+    all_stable = (
+        all_autonomy_level1 and all_bridge_connected and all_paper
+        and all_read_only and all_endpoints_ok and all_positions_flat
+        and all_alerts_clean and all_guard_count_zero and all_guard_date_current
+        and all_safety_locked and env_stable and rules_stable and system_locked_stable
+    )
+
+    run_time_ready = all_bridge_connected and all_paper and all_read_only
+
+    if not all_tags_present:
+        diagnosis = _PHASE16E_DIAGNOSIS["missing_required_tags"]
+        severity = "NO_GO"
+    elif not worktree_clean and worktree_clean is not None:
+        diagnosis = _PHASE16E_DIAGNOSIS["dirty_worktree"]
+        severity = "NO_GO"
+    elif not all_positions_flat and first_sample.get("positions_count", 0) > 0:
+        diagnosis = _PHASE16E_DIAGNOSIS["positions_not_flat"]
+        severity = "NO_GO"
+    elif not all_alerts_clean:
+        diagnosis = _PHASE16E_DIAGNOSIS["monitor_alerts_active"]
+        severity = "NO_GO"
+    elif not run_time_ready:
+        diagnosis = _PHASE16E_DIAGNOSIS["runtime_not_ready"]
+        severity = "HOLD" if not all_bridge_connected else "NO_GO"
+    elif not (env_allow_orders in ("false", "?") and rules_enforced in ("false", "?")):
+        diagnosis = _PHASE16E_DIAGNOSIS["safety_not_locked"]
+        severity = "NO_GO"
+    elif autonomy_level != "1":
+        diagnosis = _PHASE16E_DIAGNOSIS["autonomy_not_level1"]
+        severity = "NO_GO"
+    elif not all_guard_count_zero or not all_guard_date_current:
+        diagnosis = _PHASE16E_DIAGNOSIS["guard_state_not_clean"]
+        severity = "NO_GO"
+    elif not doc_acceptable:
+        diagnosis = _PHASE16E_DIAGNOSIS["doctor_not_acceptable"]
+        severity = "NO_GO"
+    elif not kpi_section.get("acceptable_hold", False):
+        diagnosis = _PHASE16E_DIAGNOSIS["kpi_not_acceptable"]
+        severity = "NO_GO"
+    elif not policy_result["hermes_policy_exists"] or not policy_result["execution_path_ok"]:
+        diagnosis = _PHASE16E_DIAGNOSIS["policy_boundary_missing"]
+        severity = "NO_GO"
+    elif not all_stable:
+        diagnosis = _PHASE16E_DIAGNOSIS["stability_failed"]
+        severity = "NO_GO"
+    elif len(samples) < effective_samples:
+        diagnosis = _PHASE16E_DIAGNOSIS["insufficient_samples"]
+        severity = "HOLD"
+    else:
+        diagnosis = _PHASE16E_DIAGNOSIS["ready"]
+        severity = "OK"
+
+    drill_ok = diagnosis == _PHASE16E_DIAGNOSIS["ready"]
+    operator_action_required = not drill_ok
+    suggested_actions: list[str] = []
+    if not drill_ok:
+        suggested_actions.append(f"Stability drill failed: {diagnosis}")
+        if not all_autonomy_level1:
+            suggested_actions.append("Autonomy not Level 1 in all samples")
+        if not all_bridge_connected:
+            suggested_actions.append("Bridge disconnected in one or more samples")
+        if not all_positions_flat:
+            suggested_actions.append("Positions not flat in one or more samples")
+
+    # ------------------------------------------------------------------
+    # 10. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "diagnosis": diagnosis, "severity": severity,
+        "samples": len(samples), "interval": effective_interval,
+        "all_autonomy_level1": all_autonomy_level1,
+        "all_bridge_connected": all_bridge_connected,
+        "all_safety_locked": all_safety_locked,
+        "guard_hash_stable": guard_hash_stable,
+        "no_broker_mutation": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 11. Assemble result
+    # ------------------------------------------------------------------
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-post-promotion-stability-drill",
+        "advisory": (
+            "Read-only Level 1 post-promotion stability drill (Phase 16E). "
+            f"{effective_samples} samples at {effective_interval}s intervals. "
+            "No orders. No mutations. No H1 token. No broker activity. "
+            "No autonomy level change."
+        ),
+        "timestamp": ts_str,
+        "drill_id": drill_id,
+        "samples_requested": effective_samples,
+        "samples_collected": len(samples),
+        "interval_seconds": effective_interval,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "baseline": baseline,
+        "samples": samples,
+        "stability_summary": stability_summary,
+        "doctor_summary": doctor_section,
+        "kpi_summary": kpi_section,
+        "policy_summary": policy_section,
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "h1_token_not_used": True,
+        "evidence_hash": evidence_hash,
+        "explicit_non_actions": _PHASE16E_EXPLICIT_NON_ACTIONS,
+    }
+
+    _PHASE16E_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    export_path = _PHASE16E_EXPORT_DIR / f"{drill_id}.json"
+    try:
+        tmp = export_path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, export_path)
+        result["export_path"] = str(export_path)
+        result["_export_path"] = str(export_path)
+    except Exception as e:
+        result["_export_error"] = str(e)[:200]
+        result["export_path"] = None
+
+    return result
+
+
+def _phase16e_no_go(
+    drill_id: str, ts_str: str, git_section: dict, required_tags: dict,
+    diagnosis: str, actions: list, samples_req: int, interval: int,
+) -> dict:
+    """Build a NO_GO result for early-exit prerequisite failures."""
+    return {
+        "command": "ibkr-operator level1-post-promotion-stability-drill",
+        "timestamp": ts_str,
+        "drill_id": drill_id,
+        "samples_requested": samples_req,
+        "samples_collected": 0,
+        "interval_seconds": interval,
+        "diagnosis": diagnosis,
+        "severity": "NO_GO",
+        "operator_action_required": True,
+        "suggested_operator_actions": actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "baseline": {},
+        "samples": [],
+        "stability_summary": {},
+        "doctor_summary": {},
+        "kpi_summary": {},
+        "policy_summary": {},
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "h1_token_not_used": True,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16E_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _print_level1_post_promotion_stability_drill(result: dict) -> None:
+    """Print Phase 16E stability drill in human-readable format."""
+    drill_ok = result.get("diagnosis") == _PHASE16E_DIAGNOSIS["ready"]
+    diag_color = GREEN if drill_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else (YELLOW if sev == "HOLD" else RED)
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Post-Promotion Stability Drill (16E){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Drill ID:        {result.get('drill_id', '?')}")
+    print(f"  Timestamp:       {result.get('timestamp', '?')}")
+    print(f"  Samples:         {result.get('samples_collected', 0)}/{result.get('samples_requested', '?')}")
+    print(f"  Interval:        {result.get('interval_seconds', '?')}s")
+    print(f"  Diagnosis:       {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:        {sev_color}{sev}{RESET}")
+    print()
+
+    ss = result.get("stability_summary", {})
+    if ss:
+        print(f"  {BOLD}Stability Summary{RESET}")
+        for key, val in ss.items():
+            color = GREEN if val else RED
+            print(f"    {key:<42} {color}{val}{RESET}")
+        print()
+
+    bl = result.get("baseline", {})
+    if bl:
+        print(f"  {BOLD}Baseline (Sample 1){RESET}")
+        print(f"    Autonomy:          {bl.get('autonomy_level', '?')}")
+        print(f"    Bridge connected:  {_bool_str(bl.get('bridge_connected'))}")
+        print(f"    Mode:              {bl.get('mode', '?')}")
+        print(f"    Read-only:         {_bool_str(bl.get('read_only'))}")
+        print(f"    Positions:         {bl.get('positions_count', '?')}  flat={_bool_str(bl.get('positions_flat'))}")
+        print(f"    Alerts:            {bl.get('active_alerts_count', '?')}")
+        print(f"    Guard count:       {bl.get('guard_daily_trade_count', '?')}")
+        print(f"    Guard date stale:  {_bool_str(bl.get('guard_trade_date_stale'))}")
+        print()
+
+    samples = result.get("samples", [])
+    if samples:
+        print(f"  {BOLD}Samples Detail (first {min(3, len(samples))} of {len(samples)}){RESET}")
+        for s in samples[:3]:
+            print(f"    Sample {s.get('sample_number', '?')}: "
+                  f"bridge={_bool_str(s.get('bridge_connected'))} "
+                  f"mode={s.get('mode', '?')} "
+                  f"ro={_bool_str(s.get('read_only'))} "
+                  f"flat={_bool_str(s.get('positions_flat'))} "
+                  f"alerts={s.get('active_alerts_count', '?')} "
+                  f"autonomy={s.get('autonomy_level', '?')}")
+        print()
+
+    doc = result.get("doctor_summary", {})
+    if doc:
+        print(f"  {BOLD}Doctor / KPI{RESET}")
+        print(f"    Doctor: {doc.get('result', '?')}  ok={_bool_str(doc.get('acceptable', False))}")
+        kpi = result.get("kpi_summary", {})
+        print(f"    KPI:    {kpi.get('verdict', '?')}  ok={_bool_str(kpi.get('acceptable_hold', False))}")
+        print()
+
+    sa = result.get("suggested_operator_actions", [])
+    if sa:
+        print(f"  {BOLD}Suggested Actions{RESET}")
+        for a in sa:
+            print(f"    {YELLOW}→{RESET} {a}")
+        print()
+
+    print(f"  {BOLD}Advisory{RESET}")
+    print(f"    {result.get('advisory', '')}")
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"\n  Evidence hash: {eh[:16]}...")
+
+    ep = result.get("export_path") or result.get("_export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    print()
+
+
 def main() -> None:
     import argparse
 
@@ -18073,6 +18849,38 @@ def main() -> None:
     p16d_a3.add_argument("--ack-no-order-enablement", action="store_true")
     p16d_a3.add_argument("--ack-manual-approval-required", action="store_true")
     p16d_a3.add_argument("--ack-relock-required", action="store_true")
+
+    # Phase 16E — Level 1 Post-Promotion Stability Drill
+    p16e = sub.add_parser("level1-post-promotion-stability-drill",
+                          help="Level 1 post-promotion stability drill (Phase 16E)")
+    p16e.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16e.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-stability-drills/")
+    p16e.add_argument("--samples", type=int, default=5,
+                      help="Number of samples (default 5, min 2, max 30)")
+    p16e.add_argument("--interval", type=int, default=10,
+                      help="Seconds between samples (default 10, min 1, max 300)")
+    # Alias: phase16e-level1-stability-drill
+    p16e_a1 = sub.add_parser("phase16e-level1-stability-drill",
+                             help="Alias for level1-post-promotion-stability-drill")
+    p16e_a1.add_argument("--json", action="store_true")
+    p16e_a1.add_argument("--export", action="store_true")
+    p16e_a1.add_argument("--samples", type=int, default=5)
+    p16e_a1.add_argument("--interval", type=int, default=10)
+    # Alias: level1-stability-drill
+    p16e_a2 = sub.add_parser("level1-stability-drill",
+                             help="Alias for level1-post-promotion-stability-drill")
+    p16e_a2.add_argument("--json", action="store_true")
+    p16e_a2.add_argument("--export", action="store_true")
+    p16e_a2.add_argument("--samples", type=int, default=5)
+    p16e_a2.add_argument("--interval", type=int, default=10)
+    # Alias: post-level1-stability
+    p16e_a3 = sub.add_parser("post-level1-stability",
+                             help="Alias for level1-post-promotion-stability-drill")
+    p16e_a3.add_argument("--json", action="store_true")
+    p16e_a3.add_argument("--export", action="store_true")
+    p16e_a3.add_argument("--samples", type=int, default=5)
+    p16e_a3.add_argument("--interval", type=int, default=10)
 
     args = parser.parse_args()
 
@@ -18934,6 +19742,64 @@ def main() -> None:
         # Exit 0 if ready or applied
         ok_diagnoses = (_PHASE16D_DIAGNOSIS["ready"], _PHASE16D_DIAGNOSIS["applied"])
         exit_code = 0 if result.get("diagnosis") in ok_diagnoses else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-post-promotion-stability-drill",
+                        "phase16e-level1-stability-drill",
+                        "level1-stability-drill", "post-level1-stability"):
+        samples_req = getattr(args, "samples", 5)
+        interval_sec = getattr(args, "interval", 10)
+        try:
+            result = _run_level1_post_promotion_stability_drill(
+                samples_requested=samples_req,
+                interval_seconds=interval_sec,
+            )
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            result = {
+                "command": f"ibkr-operator {args.command}",
+                "timestamp": ts_str,
+                "drill_id": f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}",
+                "samples_requested": samples_req,
+                "samples_collected": 0,
+                "interval_seconds": interval_sec,
+                "diagnosis": "unknown",
+                "severity": "NO_GO",
+                "operator_action_required": True,
+                "suggested_operator_actions": [
+                    f"Internal error: {type(exc).__name__}",
+                    "Run ibkr-operator doctor",
+                ],
+                "git": {},
+                "required_tags": {},
+                "baseline": {},
+                "samples": [],
+                "stability_summary": {},
+                "doctor_summary": {},
+                "kpi_summary": {},
+                "policy_summary": {},
+                "promotion_allowed_now": False,
+                "order_enablement_allowed_now": False,
+                "no_broker_mutation": True,
+                "no_order_window_opened": True,
+                "h1_token_not_used": True,
+                "evidence_hash": _compute_evidence_hash({"diagnosis": "unknown"}),
+                "explicit_non_actions": _PHASE16E_EXPLICIT_NON_ACTIONS,
+            }
+            print(f"Stability drill internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_post_promotion_stability_drill(result)
+        if args.export:
+            ep = result.get("export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE16E_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

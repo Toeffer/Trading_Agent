@@ -338,6 +338,160 @@ class TestApplyRepairsDownward:
 # ---------------------------------------------------------------------------
 # T5: Never repair upward
 # ---------------------------------------------------------------------------
+# T5: Stale trade-date rollover repair
+# ---------------------------------------------------------------------------
+
+class TestStaleTradeDateRepair:
+    """Verify stale trade_date (count=0, events=0) triggers date-rollover repair."""
+
+    def test_stale_date_with_zero_counts_recommends_repair(self):
+        """trade_date stale, count=0, events=0 → repair_recommended=true.
+
+        No count mismatch, but guard state's trade_date is from yesterday.
+        Phase 16A requires trade_date_stale=false for promotion readiness.
+        """
+        from ibkr_operator import _run_guard_state_reconcile
+
+        # Guard state: yesterday's date, count 0
+        gs = _make_guard_state(daily_trade_count=0, trade_date="2026-06-25")
+        events: list[dict] = []  # no events
+
+        with patch("monitor.load_guard_state", return_value=gs), \
+             patch("monitor.load_events", return_value=events), \
+             patch("ibkr_operator._git_metadata", return_value={
+                 "branch": "test", "commit": "abc", "tag": "test"}), \
+             patch("ibkr_operator._atomic_write_json"), \
+             patch("ibkr_operator.os.getenv", return_value="false"), \
+             patch("ibkr_operator.urllib.request.urlopen",
+                   side_effect=Exception("no bridge")), \
+             patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR",
+                   Path("/tmp/guard-state-repairs")):
+            result = _run_guard_state_reconcile(
+                apply_repair=False,
+                confirm_local_state_repair=False,
+            )
+
+        assert result["trade_date_stale"] is True
+        assert result["mismatch_detected"] is False  # both 0
+        assert result["repair_recommended"] is True  # stale date triggers repair
+        assert result["stale_trade_date_repair"] is True
+        assert result["repair_reason"] == "stale_trade_date_rollover"
+        assert result["trade_date_before"] == "2026-06-25"
+        assert result["trade_date_after"] != "2026-06-25"  # advances to canonical
+        assert result["guard_daily_trade_count_before"] == 0
+        assert result["no_broker_mutation"] is True
+        assert result["no_order_window_opened"] is True
+
+    def test_apply_stale_date_repair_updates_trade_date(self, tmp_path):
+        """Apply stale-date repair: trade_date rotates, count stays 0."""
+        from ibkr_operator import _run_guard_state_reconcile
+
+        gs = _make_guard_state(daily_trade_count=0, trade_date="2026-06-25")
+        events: list[dict] = []
+
+        repaired_state = {}
+
+        def _mock_atomic_write(path, data):
+            repaired_state["data"] = dict(data)
+            repaired_state["path"] = str(path)
+
+        repairs_dir = tmp_path / "guard-state-repairs"
+        guard_path = tmp_path / "guard-state.json"
+        guard_path.write_text(json.dumps(gs))
+
+        call_count = [0]
+
+        def _mock_load_guard_state(path=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return dict(gs)
+            else:
+                return dict(repaired_state.get("data", gs))
+
+        with patch("monitor.load_guard_state",
+                   side_effect=_mock_load_guard_state), \
+             patch("monitor.load_events", return_value=events), \
+             patch("ibkr_operator._git_metadata", return_value={
+                 "branch": "test", "commit": "abc", "tag": "test"}), \
+             patch("ibkr_operator._atomic_write_json",
+                   side_effect=_mock_atomic_write), \
+             patch("ibkr_operator.os.getenv", return_value="false"), \
+             patch("ibkr_operator.urllib.request.urlopen",
+                   side_effect=Exception("no bridge")), \
+             patch("ibkr_operator.OPENCLAW_DIR", tmp_path), \
+             patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR", repairs_dir):
+            result = _run_guard_state_reconcile(
+                apply_repair=True,
+                confirm_local_state_repair=True,
+            )
+
+        assert result["mode"] == "apply"
+        assert result["repair_recommended"] is True
+        assert result["repair_applied"] is True
+        assert result["stale_trade_date_repair"] is True
+        assert result["repair_reason"] == "stale_trade_date_rollover"
+        assert result["trade_date_before"] == "2026-06-25"
+        # trade_date_after must be canonical (today)
+        assert result["trade_date_after"] != "2026-06-25"
+        # Count stays 0
+        assert result["guard_daily_trade_count_after"] == 0
+        assert repaired_state["data"]["daily_trade_count"] == 0
+        assert repaired_state["data"]["trade_date"] != "2026-06-25"
+        assert repaired_state["data"].get("stale_trade_date_repaired") is True
+        assert repaired_state["data"].get("trade_date_repair_reason") == "stale_trade_date_rollover"
+
+    def test_stale_date_repair_preserves_other_fields(self, tmp_path):
+        """Stale-date repair only changes trade_date, not other fields."""
+        from ibkr_operator import _run_guard_state_reconcile
+
+        gs = _make_guard_state(daily_trade_count=0, trade_date="2026-06-25")
+        original_week_start = gs["week_start_date"]
+        original_nl = gs["day_start_nl_eur"]
+        events: list[dict] = []
+
+        repaired_state = {}
+
+        def _mock_atomic_write(path, data):
+            repaired_state["data"] = dict(data)
+
+        repairs_dir = tmp_path / "guard-state-repairs"
+        guard_path = tmp_path / "guard-state.json"
+        guard_path.write_text(json.dumps(gs))
+
+        call_count = [0]
+
+        def _mock_load_guard_state(path=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return dict(gs)
+            else:
+                return dict(repaired_state.get("data", gs))
+
+        with patch("monitor.load_guard_state",
+                   side_effect=_mock_load_guard_state), \
+             patch("monitor.load_events", return_value=events), \
+             patch("ibkr_operator._git_metadata", return_value={
+                 "branch": "test", "commit": "abc", "tag": "test"}), \
+             patch("ibkr_operator._atomic_write_json",
+                   side_effect=_mock_atomic_write), \
+             patch("ibkr_operator.os.getenv", return_value="false"), \
+             patch("ibkr_operator.urllib.request.urlopen",
+                   side_effect=Exception("no bridge")), \
+             patch("ibkr_operator.OPENCLAW_DIR", tmp_path), \
+             patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR", repairs_dir):
+            _run_guard_state_reconcile(
+                apply_repair=True,
+                confirm_local_state_repair=True,
+            )
+
+        assert repaired_state["data"]["week_start_date"] == original_week_start
+        assert repaired_state["data"]["day_start_nl_eur"] == original_nl
+        assert repaired_state["data"]["daily_trade_count"] == 0
+        assert repaired_state["data"]["trade_date"] != "2026-06-25"
+        assert repaired_state["data"]["stale_trade_date_repaired"] is True
+
+
+# ---------------------------------------------------------------------------
 
 class TestNeverRepairUpward:
     """Verify confirmed events > guard count is NO_GO, never repaired."""

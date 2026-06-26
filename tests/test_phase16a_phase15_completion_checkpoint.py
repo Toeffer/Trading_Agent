@@ -1141,6 +1141,73 @@ class TestGuardTradeCount:
         finally:
             stop_patches(mocks, patches)
 
+    def test_stale_trade_date_produces_no_go(self,
+                                             clean_git_metadata,
+                                             clean_worktree,
+                                             origin_aligned,
+                                             all_tags_present,
+                                             bridge_health_ok,
+                                             positions_flat,
+                                             alerts_clean,
+                                             snapshot_ok,
+                                             readiness_locked,
+                                             env_safety_locked,
+                                             rules_locked,
+                                             autonomy_level_zero,
+                                             clean_cycles_recorded,
+                                             doctor_pass,
+                                             kpi_hold_expected,
+                                             hermes_policy_ok):
+        """Stale trade_date (yesterday, count=0) → NO_GO.
+
+        Guard state trade_date=2026-06-25 but canonical is 2026-06-26.
+        Even with daily_trade_count=0, a stale date means the guard
+        has not been rotated for today — block promotion.
+        """
+        stale_gs = json.dumps({
+            "schema_version": 1,
+            "trade_date": "2026-06-25",
+            "daily_trade_count": 0,
+            "day_start_nl_eur": 100000.0,
+            "daily_halt_active": False,
+            "weekly_halt_active": False,
+            "halt_reason": None,
+            "last_updated_utc": "2026-06-25T10:00:00Z",
+        })
+        patches = _build_clean_mocks(
+            health=bridge_health_ok,
+            positions=positions_flat,
+            alerts=alerts_clean,
+            snapshot=snapshot_ok,
+            readiness=readiness_locked,
+            git_metadata=clean_git_metadata,
+            worktree=clean_worktree,
+            origin=origin_aligned,
+            tags=all_tags_present,
+            guard_state_content=stale_gs,
+            env_safety=env_safety_locked,
+            rules=rules_locked,
+            autonomy=autonomy_level_zero,
+            clean_cycles=clean_cycles_recorded,
+            doctor=doctor_pass,
+            kpi=kpi_hold_expected,
+            policy=hermes_policy_ok,
+        )
+        mocks, patches = apply_patches(patches)
+        try:
+            result = _run_phase15_completion_checkpoint()
+            assert result["diagnosis"] == _PHASE16A_DIAGNOSIS["guard_state_not_clean"]
+            assert result["severity"] == "NO_GO"
+            assert result["phase15_complete"] is False
+            assert result["guard_state"]["trade_date"] == "2026-06-25"
+            assert result["guard_state"]["trade_date_stale"] is True
+            assert result["guard_state"]["daily_trade_count"] == 0
+            # Suggested actions reference guard-state-reconcile
+            actions_text = " ".join(result["suggested_operator_actions"])
+            assert "guard-state-reconcile" in actions_text
+        finally:
+            stop_patches(mocks, patches)
+
 
 # ===========================================================================
 # T8: Promotion flags always false

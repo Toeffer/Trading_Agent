@@ -3421,11 +3421,79 @@ def _run_guard_state_reconcile(
     repair_recommended = False
     repair_applied = False
     guard_count_after = guard_count_before
+    stale_trade_date_repair = False
+    trade_date_before = gs_trade_date
+    trade_date_after = gs_trade_date
+    repair_reason: str = "none"
     blockers: list[dict] = []
 
-    if not mismatch_detected:
-        # No mismatch — nothing to do
-        pass
+    # --- 6a. Stale trade-date rollover (priority over mismatch) ---
+    # If trade_date is stale but count is zero and no confirmed events,
+    # this is a pure date-rollover repair — rotate the guard to today's
+    # canonical date while preserving the zero count.  This is required
+    # for Phase 16A promotion readiness.
+    if trade_date_stale and guard_count_before == 0 and confirmed_count == 0:
+        # Safety checks before permitting stale-date repair
+        stale_checks_ok = True
+
+        if ibkr_live_order_count is not None and ibkr_live_order_count > 0:
+            blockers.append({"severity": "HOLD", "check": "live_orders_exist",
+                             "detail": f"{ibkr_live_order_count} live IBKR order(s) — cannot repair"})
+            stale_checks_ok = False
+
+        if open_order_count is not None and open_order_count > 0:
+            blockers.append({"severity": "HOLD", "check": "open_orders_exist",
+                             "detail": f"{open_order_count} open order(s) — cannot repair"})
+            stale_checks_ok = False
+
+        if positions_flat is False:
+            blockers.append({"severity": "HOLD", "check": "positions_not_flat",
+                             "detail": "Non-zero positions — ambiguous evidence"})
+            stale_checks_ok = False
+
+        if not safety_locked:
+            blockers.append({"severity": "NO-GO", "check": "safety_unlocked",
+                             "detail": "IBKR_ALLOW_ORDERS is not false"})
+            stale_checks_ok = False
+
+        if rules_enforced:
+            blockers.append({"severity": "NO-GO", "check": "rules_enforced",
+                             "detail": "rules.enforced is true"})
+            stale_checks_ok = False
+
+        if stale_checks_ok:
+            repair_recommended = True
+            stale_trade_date_repair = True
+            repair_reason = "stale_trade_date_rollover"
+            trade_date_after = canonical_date
+
+            if apply_repair and confirm_local_state_repair:
+                # Create backup
+                _GUARD_STATE_REPAIRS_DIR.mkdir(parents=True, exist_ok=True)
+                backup_path = _GUARD_STATE_REPAIRS_DIR / f"guard-state.bak-{ts_file}.json"
+                shutil.copy2(guard_state_path, backup_path)
+
+                # Apply repair: rotate trade_date to canonical, keep count at 0
+                gs["trade_date"] = canonical_date
+                gs["daily_trade_count"] = 0
+                gs["last_updated_utc"] = ts_str
+                gs["stale_trade_date_repaired"] = True
+                gs["trade_date_repair_id"] = repair_id
+                gs["trade_date_repair_reason"] = repair_reason
+                _atomic_write_json(guard_state_path, gs)
+
+                # Re-read and verify
+                gs_after = load_guard_state()
+                guard_count_after = gs_after.get("daily_trade_count", -1)
+                trade_date_after = gs_after.get("trade_date", "?")
+                repair_applied = (guard_count_after == 0 and trade_date_after == canonical_date)
+
+                if not repair_applied:
+                    blockers.append({"severity": "HOLD", "check": "repair_verification_failed",
+                                     "detail": f"After repair, count={guard_count_after}, "
+                                               f"date={trade_date_after}, expected 0 / {canonical_date}"})
+
+    # --- 6b. Trade-count mismatch detection ---
     elif guard_count_before > confirmed_count:
         # Guard count inflated — can repair downward IF safe
         checks_ok = True
@@ -3515,9 +3583,13 @@ def _run_guard_state_reconcile(
     hashable = {
         "canonical_trade_date": canonical_date,
         "trade_date": gs_trade_date,
+        "trade_date_before": trade_date_before,
+        "trade_date_after": trade_date_after,
         "guard_daily_trade_count_before": guard_count_before,
         "confirmed_event_trade_count": confirmed_count,
         "mismatch_detected": mismatch_detected,
+        "stale_trade_date_repair": stale_trade_date_repair,
+        "repair_reason": repair_reason,
         "repair_recommended": repair_recommended,
         "repair_applied": repair_applied,
         "guard_daily_trade_count_after": guard_count_after,
@@ -3556,7 +3628,11 @@ def _run_guard_state_reconcile(
         "audit_export_path": str(audit_export_path),
         "canonical_trade_date": canonical_date,
         "trade_date": gs_trade_date,
+        "trade_date_before": trade_date_before,
+        "trade_date_after": trade_date_after,
         "trade_date_stale": trade_date_stale,
+        "stale_trade_date_repair": stale_trade_date_repair,
+        "repair_reason": repair_reason,
         "guard_daily_trade_count_before": guard_count_before,
         "confirmed_event_trade_count": confirmed_count,
         "confirmed_unique_order_ids": confirmed_order_ids,
@@ -3610,6 +3686,13 @@ def _print_guard_state_reconcile(result: dict) -> None:
     print(f"  Timestamp:         {result.get('timestamp', '?')}")
     print(f"  Mode:              {mode_label}")
     print(f"  Trade Date:        {result.get('trade_date', '?')}")
+    td_stale = result.get('trade_date_stale', False)
+    stale_str = f"{YELLOW}stale{RESET}" if td_stale else f"{GREEN}current{RESET}"
+    print(f"  Trade Date Stale:  {stale_str}")
+    if result.get("stale_trade_date_repair"):
+        print(f"  Stale Date Repair: {GREEN}YES{RESET}  reason={result.get('repair_reason', '?')}")
+        print(f"    trade_date_before: {result.get('trade_date_before', '?')}")
+        print(f"    trade_date_after:  {result.get('trade_date_after', '?')}")
     print()
 
     print(f"  {BOLD}Trade Count{RESET}")
@@ -14099,7 +14182,7 @@ def _run_phase15_completion_checkpoint() -> dict:
         and active_alerts_count == 0
     )
     safety_ok = safety_locked_expected
-    guard_ok = (daily_trade_count == 0 and not halt_active and guard_state_ok)
+    guard_ok = (daily_trade_count == 0 and not halt_active and guard_state_ok and not trade_date_stale)
     doctor_acceptable_val = doctor_section.get("acceptable", False)
     kpi_acceptable_val = kpi_section.get("acceptable_hold", False)
     policy_ok = policy_result["hermes_policy_exists"] and policy_result["execution_path_ok"]
@@ -14162,6 +14245,7 @@ def _run_phase15_completion_checkpoint() -> dict:
         suggested_operator_actions = [
             f"daily_trade_count={daily_trade_count} (must be 0)",
             f"halt_active={halt_active} (must be false)",
+            f"trade_date={trade_date} (canonical={canonical_trade_date_val}, stale={trade_date_stale})",
             "Run: ibkr-operator guard-state-reconcile --apply --confirm-local-state-repair",
         ]
     elif not doctor_acceptable_val:

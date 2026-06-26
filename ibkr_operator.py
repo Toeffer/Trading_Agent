@@ -15433,6 +15433,952 @@ def _print_manual_level1_promotion_review(result: dict) -> None:
     print()
 
 
+
+# ===========================================================================
+# Phase 16C — Manual Level-1 Promotion Dry-Run Gate
+# ===========================================================================
+
+_PHASE16C_EXPORT_DIR = OPENCLAW_DIR / "level1-dry-run-gates"
+
+_PHASE16C_REQUIRED_TAGS: tuple[str, ...] = (
+    "phase16b_manual_level1_promotion_review",
+    "phase16a_phase15_completion_checkpoint",
+    "phase0_2_step15z_locked_preflight_proof",
+)
+
+_PHASE16C_DIAGNOSIS = {
+    "ready": "level1_dry_run_gate_ready",
+    "missing_required_tags": "missing_required_tags",
+    "dirty_worktree": "dirty_worktree",
+    "runtime_not_ready": "runtime_not_ready",
+    "safety_not_locked": "safety_not_locked",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "positions_not_flat": "positions_not_flat",
+    "monitor_alerts_active": "monitor_alerts_active",
+    "doctor_not_acceptable": "doctor_not_acceptable",
+    "kpi_not_acceptable": "kpi_not_acceptable",
+    "policy_boundary_missing": "policy_boundary_missing",
+    "unknown": "unknown",
+}
+
+_PHASE16C_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not set Level 1.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not open an order window.",
+    "This command did not read H1 token.",
+    "This command did not call /order, /order/preflight, /order/approve, or /order/submit.",
+    "This command did not call trade-window helper.",
+    "This command did not reconnect the bridge.",
+    "This command did not restart the bridge.",
+    "This command did not repair guard-state.",
+    "This command did not mutate broker/account/orders.",
+    "This command is purely read-only dry-run gate evidence aggregation.",
+    "Only allowed write is the export artifact.",
+    "The future_apply_command_preview, rollback_command_preview, and relock_command_preview are strings only — they were not executed.",
+]
+
+_PHASE16C_DRY_RUN_STEPS: list[dict] = [
+    {
+        "step_number": 1,
+        "title": "Verify Phase 16C Dry-Run Gate Dossier",
+        "purpose": "Confirm this gate report shows level1_dry_run_gate_ready / OK",
+        "command_or_action": "ibkr-operator level1-promotion-dry-run-gate --json --export",
+        "expected_result": "diagnosis=level1_dry_run_gate_ready, severity=OK, gate_ready=true",
+        "risk": "None — read-only",
+        "rollback": "None required",
+        "performed": False,
+    },
+    {
+        "step_number": 2,
+        "title": "Review Phase 16B Promotion Review Dossier",
+        "purpose": "Confirm Phase 16B review is still clean",
+        "command_or_action": "ibkr-operator manual-level1-promotion-review --json",
+        "expected_result": "diagnosis=level1_promotion_review_ready, severity=OK",
+        "risk": "None — read-only",
+        "rollback": "None required",
+        "performed": False,
+    },
+    {
+        "step_number": 3,
+        "title": "Rehearse Clean-Cycle Candidate Dry-Run",
+        "purpose": "Run a full candidate dry-run to confirm all gates pass at Level 0",
+        "command_or_action": "ibkr-operator candidate-dryrun --symbol AAPL --side BUY --json --export",
+        "expected_result": "All gates pass, KPI HOLD (Level 0), no NO_GO blockers",
+        "risk": "None — dry-run only, no order transmitted",
+        "rollback": "None required",
+        "performed": False,
+    },
+    {
+        "step_number": 4,
+        "title": "Run Full Doctor Suite",
+        "purpose": "Verify all non-H1 doctor checks pass",
+        "command_or_action": "ibkr-operator doctor --json",
+        "expected_result": "PASS or PASS with H1 MANUAL only",
+        "risk": "None — read-only",
+        "rollback": "None required",
+        "performed": False,
+    },
+    {
+        "step_number": 5,
+        "title": "Run KPI Dashboard",
+        "purpose": "Confirm KPI verdict is HOLD with only expected blockers",
+        "command_or_action": "ibkr-operator kpi --json",
+        "expected_result": "verdict=HOLD, only autonomy_level_zero and system_locked blockers",
+        "risk": "None — read-only",
+        "rollback": "None required",
+        "performed": False,
+    },
+    {
+        "step_number": 6,
+        "title": "Review Future Apply Command Preview",
+        "purpose": "Operator reviews the exact command that will be run in Phase 16D",
+        "command_or_action": "Review future_apply_command_preview in gate output",
+        "expected_result": "Operator understands and approves the apply command",
+        "risk": "None",
+        "rollback": "None required",
+        "performed": False,
+    },
+    {
+        "step_number": 7,
+        "title": "Review Rollback and Relock Commands",
+        "purpose": "Operator reviews rollback and relock command previews",
+        "command_or_action": "Review rollback_command_preview and relock_command_preview in gate output",
+        "expected_result": "Operator understands and approves rollback/relock plans",
+        "risk": "None",
+        "rollback": "None required",
+        "performed": False,
+    },
+    {
+        "step_number": 8,
+        "title": "Manual Operator Go/No-Go Decision",
+        "purpose": "Chris makes the final human decision to proceed to Phase 16D apply gate",
+        "command_or_action": "Proceed to Phase 16D: explicit human-signed Level-1 apply gate",
+        "expected_result": "Chris signs off on Level-1 promotion",
+        "risk": "Actual promotion follows in Phase 16D — requires human judgment",
+        "rollback": "Phase 16D rollback: ibkr-operator level1-relock",
+        "performed": False,
+    },
+]
+
+_PHASE16C_FUTURE_APPLY_COMMAND_PREVIEW = (
+    "ibkr-operator autonomy-promotion-plan --target-level 1 "
+    "--confirm-level1 --human-signed-apply --json --export"
+)
+
+_PHASE16C_ROLLBACK_COMMAND_PREVIEW = (
+    "ibkr-operator autonomy-promotion-plan --target-level 0 "
+    "--confirm-rollback --human-signed --json"
+)
+
+_PHASE16C_RELOCK_COMMAND_PREVIEW = (
+    "ibkr-operator safety-relock --confirm --json"
+)
+
+
+def _check_phase16c_tags(repo_path: Path) -> dict:
+    """Check that Phase 16B, 16A, and 15Z tags are present."""
+    import subprocess as _sp
+    present: list[str] = []
+    missing: list[str] = []
+    try:
+        p = _sp.run(
+            ["git", "-C", str(repo_path), "tag"],
+            capture_output=True, text=True, timeout=10,
+        )
+        all_tags = set(p.stdout.strip().splitlines())
+        for tag in _PHASE16C_REQUIRED_TAGS:
+            if tag in all_tags:
+                present.append(tag)
+            else:
+                missing.append(tag)
+    except Exception:
+        missing = list(_PHASE16C_REQUIRED_TAGS)
+        present = []
+    return {
+        "required_count": len(_PHASE16C_REQUIRED_TAGS),
+        "present_count": len(present),
+        "missing": missing,
+        "present": present,
+    }
+
+
+def _run_level1_promotion_dry_run_gate() -> dict:
+    """Run manual Level-1 promotion dry-run gate (Phase 16C).
+
+    Read-only gate that proves all prerequisites are clean,
+    publishes future apply/rollback/relock command previews,
+    and requires explicit future human apply — without
+    performing any promotion or order enablement.
+    """
+    import hashlib
+    import json as _json
+    import subprocess as _sp
+    import urllib.request
+    import urllib.error
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    gate_id = f"level1-dry-run-{ts_file}"
+    target_level = "1"
+
+    # ------------------------------------------------------------------
+    # 1. Git / worktree
+    # ------------------------------------------------------------------
+    git = _git_metadata(BRIDGE_DIR)
+    full_commit = git.get("commit_short", "?")
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if p.stdout.strip():
+            full_commit = p.stdout.strip()
+    except Exception:
+        pass
+
+    worktree = _get_worktree_state(BRIDGE_DIR)
+    origin_alignment = _get_origin_master_alignment(BRIDGE_DIR)
+
+    git_section = {
+        "branch": git.get("branch", "?"),
+        "commit": full_commit if len(full_commit) > 16 else git.get("commit_short", "?"),
+        "commit_short": git.get("commit_short", "?"),
+        "tag": git.get("tag", "?"),
+        "origin_master_commit": origin_alignment.get("origin_master_commit", "?"),
+        "origin_master_aligned": origin_alignment.get("aligned"),
+        "worktree_clean": worktree.get("clean"),
+        "dirty_files": worktree.get("dirty_files", []),
+    }
+
+    # ------------------------------------------------------------------
+    # 2. Required tags (16B + 16A + 15Z)
+    # ------------------------------------------------------------------
+    required_tags = _check_phase16c_tags(BRIDGE_DIR)
+
+    # ------------------------------------------------------------------
+    # 3. Runtime checks (bridge)
+    # ------------------------------------------------------------------
+    bridge_reachable = False
+    bridge_connected = False
+    bridge_mode = "?"
+    bridge_read_only = False
+    endpoints_ok_count = 0
+    endpoints_total_count = 0
+    endpoints_display = "?"
+    positions_count = 0
+    positions_flat = True
+    active_alerts_count = 0
+    bridge_service_active = False
+    duplicate_bridge_processes = False
+    health_data: dict = {}
+
+    try:
+        req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
+                bridge_reachable = True
+                health_data = _json.loads(resp.read().decode())
+                bridge_connected = health_data.get("connected", False)
+                bridge_mode = health_data.get("mode", "?")
+                bridge_read_only = bridge_mode == "paper"
+    except Exception:
+        pass
+
+    if bridge_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/positions", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    pos_data = _json.loads(resp.read().decode())
+                    pos_list = pos_data.get("positions", [])
+                    positions_count = len(pos_list)
+                    positions_flat = all(
+                        abs(p.get("position", 0)) < 0.01 for p in pos_list
+                    )
+        except Exception:
+            pass
+
+    if bridge_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/monitor/alerts", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    alert_data = _json.loads(resp.read().decode())
+                    all_alerts = alert_data.get("alerts", [])
+                    active_alerts_count = sum(
+                        1 for a in all_alerts
+                        if isinstance(a, dict) and a.get("requires_action", False)
+                    )
+        except Exception:
+            pass
+
+    snapshot_used = False
+    if bridge_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/snapshot", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    snapshot_used = True
+                    endpoints_ok_count = 7
+                    endpoints_total_count = 7
+                    endpoints_display = f"{endpoints_ok_count}/{endpoints_total_count} OK (snapshot)"
+        except Exception:
+            pass
+
+    if not snapshot_used:
+        _KPI_CHECK = ["/health", "/readiness", "/status",
+                      "/monitor/reconciliation", "/monitor/alerts",
+                      "/monitor/events", "/positions", "/account"]
+        endpoints_total_count = len(_KPI_CHECK)
+        for ep in _KPI_CHECK:
+            try:
+                req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        endpoints_ok_count += 1
+            except Exception:
+                pass
+        endpoints_display = f"{endpoints_ok_count}/{endpoints_total_count} OK"
+
+    try:
+        p = _sp.run(
+            ["systemctl", "is-active", "ibkr-bridge.service"],
+            capture_output=True, text=True, timeout=5,
+        )
+        bridge_service_active = p.stdout.strip() == "active"
+    except Exception:
+        pass
+
+    try:
+        p = _sp.run(
+            ["pgrep", "-c", "-f", "uvicorn bridge:app"],
+            capture_output=True, text=True, timeout=5,
+        )
+        count_str = p.stdout.strip()
+        uvicorn_count = int(count_str) if count_str.isdigit() else 0
+        duplicate_bridge_processes = uvicorn_count > 2
+    except Exception:
+        pass
+
+    runtime_section = {
+        "bridge_reachable": bridge_reachable,
+        "bridge_connected": bridge_connected,
+        "bridge_service_active": bridge_service_active,
+        "duplicate_bridge_processes": duplicate_bridge_processes,
+        "mode": bridge_mode,
+        "read_only": bridge_read_only,
+        "endpoints_display": endpoints_display,
+        "endpoints_ok": endpoints_ok_count,
+        "positions_count": positions_count,
+        "positions_flat": positions_flat,
+        "active_alerts_count": active_alerts_count,
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Safety flags
+    # ------------------------------------------------------------------
+    env_safety = _read_env_safety(BRIDGE_DIR / ".env")
+    rules_state = _read_rules_enforced(
+        Path.home() / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
+    )
+    autonomy_level = _read_autonomy_level(BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md")
+
+    system_locked = True
+    if bridge_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/readiness", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    rd = _json.loads(resp.read().decode())
+                    ks = rd.get("summary", {}).get("kill_switches", {})
+                    system_locked = ks.get("system_locked", True)
+        except Exception:
+            pass
+
+    env_allow_orders = env_safety.get("IBKR_ALLOW_ORDERS", "?")
+    rules_enforced = rules_state.get("enforced", "?")
+    current_state_locked = (
+        env_allow_orders in ("false", "?") and
+        rules_enforced in ("false", "?") and
+        system_locked is True and
+        autonomy_level == "0"
+    )
+
+    safety_section = {
+        "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+        "rules_enforced": rules_enforced,
+        "system_locked": system_locked,
+        "autonomy_level_current": autonomy_level,
+        "target_autonomy_level": target_level,
+        "current_state_locked": current_state_locked,
+    }
+
+    # ------------------------------------------------------------------
+    # 5. Guard state
+    # ------------------------------------------------------------------
+    guard_path = OPENCLAW_DIR / "guard-state.json"
+    guard_state_ok = False
+    guard_hash = None
+    daily_trade_count = -1
+    trade_date = "?"
+    canonical_trade_date_val = "?"
+    trade_date_stale = True
+    halt_active = None
+
+    try:
+        from guard import canonical_trade_date
+        canonical_trade_date_val = canonical_trade_date(now_utc)
+    except Exception:
+        canonical_trade_date_val = now_utc.strftime("%Y-%m-%d")
+
+    try:
+        if guard_path.exists():
+            raw = guard_path.read_bytes()
+            guard_hash = hashlib.sha256(raw).hexdigest()
+            gs_data = _json.loads(raw.decode())
+            daily_trade_count = gs_data.get("daily_trade_count", -1)
+            trade_date = gs_data.get("trade_date", "?")
+            trade_date_stale = (trade_date != canonical_trade_date_val)
+            halt_active = gs_data.get("daily_halt_active", False)
+            guard_state_ok = True
+    except Exception:
+        pass
+
+    guard_section = {
+        "daily_trade_count": daily_trade_count,
+        "trade_date": trade_date,
+        "canonical_trade_date": canonical_trade_date_val,
+        "trade_date_stale": trade_date_stale,
+        "hash": guard_hash,
+    }
+
+    # ------------------------------------------------------------------
+    # 6. Doctor / KPI
+    # ------------------------------------------------------------------
+    doctor_section: dict = {}
+    try:
+        dr = run_doctor()
+        doc_pass = dr.get("passed", 0)
+        doc_total = dr.get("total", 0)
+        doctor_ok = dr.get("pass", False)
+        doc_h1_status = "?"
+        for c in dr.get("checks", []):
+            if c.get("check") == "h1_token_canary":
+                if c.get("status") == "MANUAL_REQUIRED":
+                    doc_h1_status = "MANUAL_REQUIRED"
+                elif c.get("ok"):
+                    doc_h1_status = "PASS"
+                else:
+                    doc_h1_status = "FAIL"
+                break
+        doc_acceptable = doctor_ok or (
+            doc_h1_status == "MANUAL_REQUIRED" and
+            doc_pass >= doc_total - 1 and
+            doc_total > 0
+        )
+        doctor_section = {
+            "result": "PASS" if doctor_ok else ("PASS_WITH_H1_MANUAL" if doc_acceptable else "FAIL"),
+            "h1_canary_status": doc_h1_status,
+            "acceptable": doc_acceptable,
+        }
+    except Exception as e:
+        doctor_section = {
+            "result": "ERROR",
+            "h1_canary_status": "ERROR",
+            "acceptable": False,
+            "error": str(e)[:200],
+        }
+
+    kpi_section: dict = {}
+    try:
+        kpi_result = run_kpi()
+        kpi_verdict = kpi_result.get("verdict", "ERROR")
+        kpi_blockers = kpi_result.get("blockers", [])
+        no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+        kpi_acceptable_hold = (
+            kpi_verdict == "HOLD"
+            and len(no_go_blockers) == 0
+            and any(b.get("check") in ("autonomy_level_zero", "system_locked")
+                    for b in kpi_blockers if b.get("severity") == "HOLD")
+        )
+        kpi_section = {
+            "verdict": kpi_verdict,
+            "blockers": [b.get("check", "?") for b in kpi_blockers],
+            "acceptable_hold": kpi_acceptable_hold,
+        }
+    except Exception as e:
+        kpi_section = {
+            "verdict": "ERROR",
+            "blockers": [],
+            "acceptable_hold": False,
+            "error": str(e)[:200],
+        }
+
+    # ------------------------------------------------------------------
+    # 7. Policy
+    # ------------------------------------------------------------------
+    policy_result = _check_hermes_policy()
+    policy_section = {
+        "hermes_policy_exists": policy_result["hermes_policy_exists"],
+        "advisory_boundary_ok": policy_result["advisory_boundary_ok"],
+        "execution_path_ok": policy_result["execution_path_ok"],
+    }
+
+    # ------------------------------------------------------------------
+    # 8. Prerequisites assessment
+    # ------------------------------------------------------------------
+    all_tags_present = len(required_tags["missing"]) == 0
+    worktree_clean = git_section.get("worktree_clean", False)
+    runtime_ready = (
+        bridge_reachable
+        and bridge_connected
+        and bridge_read_only
+        and positions_flat
+        and active_alerts_count == 0
+    )
+    safety_locked = current_state_locked
+    guard_clean = (daily_trade_count == 0 and not halt_active
+                   and guard_state_ok and not trade_date_stale)
+    alerts_clean = active_alerts_count == 0
+    doctor_acceptable_val = doctor_section.get("acceptable", False)
+    kpi_acceptable_val = kpi_section.get("acceptable_hold", False)
+    policy_boundary_ok = policy_result["hermes_policy_exists"] and policy_result["execution_path_ok"]
+    autonomy_at_zero = autonomy_level == "0"
+
+    prerequisites = {
+        "all_required_tags_present": all_tags_present,
+        "worktree_clean": worktree_clean,
+        "runtime_ready": runtime_ready,
+        "safety_locked": safety_locked,
+        "guard_state_clean": guard_clean,
+        "positions_flat": positions_flat,
+        "alerts_clean": alerts_clean,
+        "doctor_acceptable": doctor_acceptable_val,
+        "kpi_acceptable": kpi_acceptable_val,
+        "policy_boundary_ok": policy_boundary_ok,
+        "autonomy_at_zero": autonomy_at_zero,
+    }
+
+    # ------------------------------------------------------------------
+    # 9. Classification — ordered priority diagnosis
+    # ------------------------------------------------------------------
+    operator_action_required = False
+    suggested_operator_actions: list[str] = []
+
+    if not all_tags_present:
+        diagnosis = _PHASE16C_DIAGNOSIS["missing_required_tags"]
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            f"Missing required tags: {', '.join(required_tags['missing'])}",
+            "Phase 16B, 16A, and Phase 15Z tags must be present",
+            "Run: git tag <tag-name> <commit-hash>",
+        ]
+    elif not worktree_clean and worktree_clean is not None:
+        diagnosis = _PHASE16C_DIAGNOSIS["dirty_worktree"]
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Commit or stash dirty files before dry-run gate",
+            "Expected: git status --porcelain returns empty",
+        ] + [f"  {f}" for f in git_section.get("dirty_files", [])[:5]]
+    elif not positions_flat:
+        diagnosis = _PHASE16C_DIAGNOSIS["positions_not_flat"]
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            f"{positions_count} position(s) held — must be flat for dry-run gate",
+            "Close or reconcile all positions in TWS before proceeding",
+        ]
+    elif not alerts_clean:
+        diagnosis = _PHASE16C_DIAGNOSIS["monitor_alerts_active"]
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            f"{active_alerts_count} active monitor alert(s) — resolve before gate",
+            "Run: ibkr-operator kpi and resolve all active alerts",
+        ]
+    elif not runtime_ready:
+        diagnosis = _PHASE16C_DIAGNOSIS["runtime_not_ready"]
+        if not bridge_reachable or not bridge_connected:
+            severity = "HOLD"
+        else:
+            severity = "NO_GO"
+        operator_action_required = True
+        actions: list[str] = []
+        if not bridge_reachable:
+            actions.append("Bridge unreachable — verify ibkr-bridge.service is running")
+        if not bridge_connected:
+            actions.append("IBKR Gateway not connected — run ibkr-operator reconnect-readiness-drill")
+        if not bridge_read_only:
+            actions.append("Bridge mode is not paper — review bridge config")
+        suggested_operator_actions = actions
+    elif not safety_locked:
+        diagnosis = _PHASE16C_DIAGNOSIS["safety_not_locked"]
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            f"env IBKR_ALLOW_ORDERS={env_allow_orders} (must be false)",
+            f"rules.enforced={rules_enforced} (must be false)",
+            f"system_locked={system_locked} (must be true)",
+            f"autonomy_level={autonomy_level} (must be 0 before gate)",
+            "Review .env, paper-trading-rules.yaml, and AUTONOMY_CRITERIA.md",
+        ]
+    elif not autonomy_at_zero:
+        diagnosis = _PHASE16C_DIAGNOSIS["safety_not_locked"]
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            f"Autonomy level is {autonomy_level}, must be 0 before dry-run gate",
+            "The gate must start from Level 0 baseline",
+        ]
+    elif not guard_clean:
+        diagnosis = _PHASE16C_DIAGNOSIS["guard_state_not_clean"]
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            f"daily_trade_count={daily_trade_count} (must be 0)",
+            f"trade_date={trade_date} (canonical={canonical_trade_date_val}, stale={trade_date_stale})",
+            "Run: ibkr-operator guard-state-reconcile --apply --confirm-local-state-repair",
+        ]
+    elif not doctor_acceptable_val:
+        diagnosis = _PHASE16C_DIAGNOSIS["doctor_not_acceptable"]
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Doctor non-canary checks failed",
+            "Run: ibkr-operator doctor and fix all non-H1 failures",
+        ]
+    elif not kpi_acceptable_val:
+        diagnosis = _PHASE16C_DIAGNOSIS["kpi_not_acceptable"]
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            f"KPI verdict: {kpi_section.get('verdict', '?')}",
+            "Review KPI blockers — run ibkr-operator kpi",
+        ]
+    elif not policy_boundary_ok:
+        diagnosis = _PHASE16C_DIAGNOSIS["policy_boundary_missing"]
+        severity = "NO_GO"
+        operator_action_required = True
+        suggested_operator_actions = [
+            "Hermes advisory guard policy missing or compromised",
+            "Verify ~/.openclaw/memory/hermes-advisory-guard-policy.md exists",
+        ]
+    else:
+        diagnosis = _PHASE16C_DIAGNOSIS["ready"]
+        severity = "OK"
+
+    gate_ready = (diagnosis == _PHASE16C_DIAGNOSIS["ready"])
+
+    # ------------------------------------------------------------------
+    # 10. Dry-run gate section
+    # ------------------------------------------------------------------
+    proposed_next_step = (
+        "Phase 16D explicit human-signed Level-1 apply gate"
+        if gate_ready
+        else (suggested_operator_actions[0] if suggested_operator_actions
+              else "Resolve blockers before dry-run gate")
+    )
+
+    dry_run_gate_section = {
+        "gate_ready": gate_ready,
+        "promotion_dry_run_only": True,
+        "promotion_performed": False,
+        "order_enablement_performed": False,
+        "requires_future_explicit_human_apply": True,
+        "required_human_signoffs": [
+            "Chris reviews this Phase 16C dry-run gate dossier",
+            "Chris confirms all prerequisites are clean",
+            "Chris reviews future apply command preview",
+            "Chris reviews rollback and relock command previews",
+            "Chris explicitly signs off on Phase 16D human-signed apply",
+        ],
+        "required_pre_apply_checks": [
+            "Re-run this gate immediately before Phase 16D apply (fresh evidence)",
+            "Confirm doctor PASS (or PASS with H1 MANUAL only)",
+            "Confirm KPI HOLD with only autonomy_level_zero and system_locked",
+            "Confirm guard daily_trade_count=0 and trade_date not stale",
+            "Confirm positions flat and alerts 0",
+            "Confirm safety locked and autonomy Level 0",
+        ],
+        "future_apply_command_preview": _PHASE16C_FUTURE_APPLY_COMMAND_PREVIEW,
+        "rollback_command_preview": _PHASE16C_ROLLBACK_COMMAND_PREVIEW,
+        "relock_command_preview": _PHASE16C_RELOCK_COMMAND_PREVIEW,
+        "proposed_next_step": proposed_next_step,
+    }
+
+    # ------------------------------------------------------------------
+    # 11. Future Level-1 controls
+    # ------------------------------------------------------------------
+    future_level1_controls = {
+        "max_autonomy_level": "1",
+        "advisory_only_hermes": True,
+        "manual_approval_required": True,
+        "order_window_required": True,
+        "h1_required_for_approve_submit": True,
+        "preflight_required": True,
+        "submit_path_only": "/order/preflight -> /order/approve -> /order/submit",
+        "post_promotion_relock_required": True,
+        "promotion_not_order_enablement": True,
+        "no_automatic_order_placement": True,
+        "reconciliation_required_after_each_trade": True,
+        "daily_trade_count_limits_unchanged": True,
+    }
+
+    # ------------------------------------------------------------------
+    # 12. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "gate_ready": gate_ready,
+        "git_branch": git_section.get("branch"),
+        "git_commit": git_section.get("commit"),
+        "worktree_clean": worktree_clean,
+        "tags_present": required_tags["present_count"],
+        "tags_required": required_tags["required_count"],
+        "bridge_connected": bridge_connected,
+        "mode": bridge_mode,
+        "read_only": bridge_read_only,
+        "positions_flat": positions_flat,
+        "alerts_count": active_alerts_count,
+        "env_allow_orders": env_allow_orders,
+        "rules_enforced": rules_enforced,
+        "system_locked": system_locked,
+        "autonomy_level": autonomy_level,
+        "guard_daily_trade_count": daily_trade_count,
+        "trade_date_stale": trade_date_stale,
+        "doctor_acceptable": doctor_acceptable_val,
+        "kpi_verdict": kpi_section.get("verdict"),
+        "policy_exists": policy_result["hermes_policy_exists"],
+        "no_broker_mutation": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 13. Assemble result
+    # ------------------------------------------------------------------
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-promotion-dry-run-gate",
+        "advisory": (
+            "Read-only Level-1 promotion dry-run gate (Phase 16C). "
+            "No orders. No mutations. No H1 token. No broker activity. "
+            "No autonomy level change. No promotion. No order enablement. "
+            "Future apply/rollback/relock command previews are strings only — "
+            "they were not executed. Export artifact only."
+        ),
+        "timestamp": ts_str,
+        "gate_id": gate_id,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_operator_actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": runtime_section,
+        "safety": safety_section,
+        "guard_state": guard_section,
+        "doctor_summary": doctor_section,
+        "kpi_summary": kpi_section,
+        "policy_summary": policy_section,
+        "promotion_prerequisites": prerequisites,
+        "dry_run_gate": dry_run_gate_section,
+        "future_level1_controls": future_level1_controls,
+        "dry_run_steps": {
+            "step_count": len(_PHASE16C_DRY_RUN_STEPS),
+            "steps": _PHASE16C_DRY_RUN_STEPS,
+        },
+        "promotion_allowed_now": False,
+        "promotion_performed": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "h1_token_not_used": True,
+        "evidence_hash": evidence_hash,
+        "explicit_non_actions": _PHASE16C_EXPLICIT_NON_ACTIONS,
+    }
+
+    # Export
+    _PHASE16C_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    export_path = _PHASE16C_EXPORT_DIR / f"{gate_id}.json"
+    try:
+        tmp = export_path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, export_path)
+        result["export_path"] = str(export_path)
+        result["_export_path"] = str(export_path)
+    except Exception as e:
+        result["_export_error"] = str(e)[:200]
+        result["export_path"] = None
+
+    return result
+
+
+def _print_level1_promotion_dry_run_gate(result: dict) -> None:
+    """Print Phase 16C dry-run gate in human-readable format."""
+    gate_ready = (result.get("diagnosis") == _PHASE16C_DIAGNOSIS["ready"])
+    diag_color = GREEN if gate_ready else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else (YELLOW if sev == "HOLD" else RED)
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level-1 Promotion Dry-Run Gate (Phase 16C){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+
+    print(f"  Timestamp:       {result.get('timestamp', '?')}")
+    print(f"  Gate ID:         {result.get('gate_id', '?')}")
+    print(f"  Diagnosis:       {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:        {sev_color}{sev}{RESET}")
+    if result.get("operator_action_required"):
+        print(f"  Operator action: {RED}REQUIRED{RESET}")
+
+    dg = result.get("dry_run_gate", {})
+    print(f"  Gate ready:      {GREEN if dg.get('gate_ready') else RED}{dg.get('gate_ready', False)}{RESET}")
+    print()
+
+    # Git
+    g = result.get("git", {})
+    print(f"  {BOLD}Git / Worktree{RESET}")
+    print(f"    Branch:        {g.get('branch', '?')}")
+    print(f"    Commit:        {g.get('commit_short', g.get('commit', '?'))}")
+    print(f"    Tag:           {g.get('tag', '?')}")
+    print(f"    Origin/master: {g.get('origin_master_aligned', '?')}")
+    wtc = g.get("worktree_clean")
+    wtc_str = f"{GREEN}clean{RESET}" if wtc is True else (f"{RED}dirty{RESET}" if wtc is False else "?")
+    print(f"    Worktree:      {wtc_str}")
+    dirty = g.get("dirty_files", [])
+    if dirty:
+        for f in dirty[:10]:
+            print(f"      {YELLOW}{f}{RESET}")
+    print()
+
+    # Required tags
+    rt = result.get("required_tags", {})
+    missing_tags = rt.get("missing", [])
+    tag_color = GREEN if len(missing_tags) == 0 else RED
+    print(f"  {BOLD}Required Tags (16B + 16A + 15Z){RESET}")
+    print(f"    Required:       {rt.get('required_count', 0)}")
+    print(f"    Present:        {tag_color}{rt.get('present_count', 0)}{RESET}")
+    for tag in missing_tags:
+        print(f"      {RED}✗{RESET} {tag}")
+    if len(missing_tags) == 0:
+        print(f"      {GREEN}All required tags present{RESET}")
+    print()
+
+    # Runtime
+    rtr = result.get("runtime", {})
+    print(f"  {BOLD}Runtime / Bridge{RESET}")
+    print(f"    Reachable:      {_bool_str(rtr.get('bridge_reachable'))}")
+    print(f"    Connected:      {_bool_str(rtr.get('bridge_connected'))}")
+    print(f"    Mode:           {rtr.get('mode', '?')}")
+    print(f"    Read-only:      {_bool_str(rtr.get('read_only'))}")
+    print(f"    Endpoints:      {rtr.get('endpoints_display', '?')}")
+    print(f"    Positions:      {rtr.get('positions_count', '?')}  flat={_bool_str(rtr.get('positions_flat'))}")
+    print(f"    Active alerts:  {rtr.get('active_alerts_count', '?')}")
+    print()
+
+    # Safety
+    sf = result.get("safety", {})
+    print(f"  {BOLD}Safety Flags{RESET}")
+    print(f"    IBKR_ALLOW_ORDERS:     {sf.get('env_IBKR_ALLOW_ORDERS', '?')}")
+    print(f"    rules.enforced:        {sf.get('rules_enforced', '?')}")
+    print(f"    system_locked:         {sf.get('system_locked', '?')}")
+    print(f"    Autonomy current:      {sf.get('autonomy_level_current', '?')}")
+    print(f"    Target level:          {sf.get('target_autonomy_level', '?')}")
+    print(f"    State locked:          {_bool_str(sf.get('current_state_locked'))}")
+    print()
+
+    # Guard state
+    gs = result.get("guard_state", {})
+    print(f"  {BOLD}Guard State{RESET}")
+    print(f"    Daily trade count: {gs.get('daily_trade_count', '?')}")
+    print(f"    Trade date:        {gs.get('trade_date', '?')}")
+    print(f"    Canonical date:    {gs.get('canonical_trade_date', '?')}")
+    print(f"    Stale:             {_bool_str(gs.get('trade_date_stale'))}")
+    gh = gs.get("hash")
+    if gh:
+        print(f"    Hash:              {gh[:16]}...")
+    print()
+
+    # Doctor / KPI
+    doc = result.get("doctor_summary", {})
+    doc_color = GREEN if doc.get("acceptable") else RED
+    print(f"  {BOLD}Doctor / KPI{RESET}")
+    print(f"    Doctor:     {doc.get('result', '?')}  H1={doc.get('h1_canary_status', '?')}  ok={doc_color}{doc.get('acceptable', False)}{RESET}")
+    kpi = result.get("kpi_summary", {})
+    kpi_color = GREEN if kpi.get("acceptable_hold") else RED
+    print(f"    KPI:        {kpi.get('verdict', '?')}  blockers={kpi.get('blockers', [])}  ok={kpi_color}{kpi.get('acceptable_hold', False)}{RESET}")
+    print()
+
+    # Dry-run gate
+    print(f"  {BOLD}Dry-Run Gate{RESET}")
+    print(f"    Gate ready:              {_bool_str(dg.get('gate_ready'))}")
+    print(f"    Promotion performed:     {dg.get('promotion_performed', '?')}")
+    print(f"    Order enablement:        {dg.get('order_enablement_performed', '?')}")
+    print(f"    Requires human apply:    {dg.get('requires_future_explicit_human_apply', '?')}")
+    print(f"    Proposed next step:      {dg.get('proposed_next_step', '?')}")
+    print(f"    Future apply preview:    {dg.get('future_apply_command_preview', '?')[:100]}...")
+    print(f"    Rollback preview:        {dg.get('rollback_command_preview', '?')[:100]}...")
+    print(f"    Relock preview:          {dg.get('relock_command_preview', '?')[:100]}...")
+    if dg.get("required_human_signoffs"):
+        print(f"    Human signoffs required:")
+        for s in dg["required_human_signoffs"]:
+            print(f"      • {s}")
+    print()
+
+    # Future Level-1 controls
+    flc = result.get("future_level1_controls", {})
+    print(f"  {BOLD}Future Level-1 Controls{RESET}")
+    print(f"    Max autonomy:            {flc.get('max_autonomy_level', '?')}")
+    print(f"    Advisory-only Hermes:    {_bool_str(flc.get('advisory_only_hermes'))}")
+    print(f"    Manual approval req'd:   {_bool_str(flc.get('manual_approval_required'))}")
+    print(f"    Order window required:   {_bool_str(flc.get('order_window_required'))}")
+    print(f"    H1 for approve/submit:   {_bool_str(flc.get('h1_required_for_approve_submit'))}")
+    print(f"    Preflight required:      {_bool_str(flc.get('preflight_required'))}")
+    print(f"    Submit path:             {flc.get('submit_path_only', '?')}")
+    print(f"    Post-promo relock req'd: {_bool_str(flc.get('post_promotion_relock_required'))}")
+    print()
+
+    # Dry-run steps
+    drs = result.get("dry_run_steps", {})
+    print(f"  {BOLD}Dry-Run Steps ({drs.get('step_count', 0)} steps){RESET}")
+    for step in drs.get("steps", []):
+        print(f"    Step {step.get('step_number', '?')}: {step.get('title', '?')}")
+        print(f"      Expected:   {step.get('expected_result', '?')}")
+        print(f"      Risk:       {step.get('risk', '?')}")
+        print()
+
+    # Suggested actions
+    sa = result.get("suggested_operator_actions", [])
+    if sa:
+        print(f"  {BOLD}Suggested Operator Actions{RESET}")
+        for a in sa:
+            print(f"    {YELLOW}→{RESET} {a}")
+        print()
+
+    print(f"  {BOLD}Advisory{RESET}")
+    print(f"    {result.get('advisory', '')}")
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"\n  Evidence hash: {eh[:16]}...")
+
+    ep = result.get("export_path") or result.get("_export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    print()
+
+
 def main() -> None:
     import argparse
 
@@ -16112,6 +17058,28 @@ def main() -> None:
                              help="Alias for manual-level1-promotion-review")
     p16b_a3.add_argument("--json", action="store_true")
     p16b_a3.add_argument("--export", action="store_true")
+
+    # Phase 16C — Manual Level-1 Promotion Dry-Run Gate
+    p16c = sub.add_parser("level1-promotion-dry-run-gate",
+                          help="Level-1 promotion dry-run gate (Phase 16C)")
+    p16c.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16c.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-dry-run-gates/")
+    # Alias: manual-level1-dry-run-gate
+    p16c_a1 = sub.add_parser("manual-level1-dry-run-gate",
+                             help="Alias for level1-promotion-dry-run-gate")
+    p16c_a1.add_argument("--json", action="store_true")
+    p16c_a1.add_argument("--export", action="store_true")
+    # Alias: phase16c-promotion-dry-run
+    p16c_a2 = sub.add_parser("phase16c-promotion-dry-run",
+                             help="Alias for level1-promotion-dry-run-gate")
+    p16c_a2.add_argument("--json", action="store_true")
+    p16c_a2.add_argument("--export", action="store_true")
+    # Alias: level1-gate-dossier
+    p16c_a3 = sub.add_parser("level1-gate-dossier",
+                             help="Alias for level1-promotion-dry-run-gate")
+    p16c_a3.add_argument("--json", action="store_true")
+    p16c_a3.add_argument("--export", action="store_true")
 
     args = parser.parse_args()
 
@@ -16857,6 +17825,48 @@ def main() -> None:
             if ep:
                 print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE16B_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-promotion-dry-run-gate", "manual-level1-dry-run-gate",
+                        "phase16c-promotion-dry-run", "level1-gate-dossier"):
+        try:
+            result = _run_level1_promotion_dry_run_gate()
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            result = {
+                "command": f"ibkr-operator {args.command}",
+                "timestamp": ts_str,
+                "diagnosis": "unknown",
+                "severity": "NO_GO",
+                "operator_action_required": True,
+                "gate_ready": False,
+                "suggested_operator_actions": [
+                    f"Internal error: {type(exc).__name__}",
+                    "Run ibkr-operator doctor",
+                ],
+                "promotion_allowed_now": False,
+                "promotion_performed": False,
+                "order_enablement_allowed_now": False,
+                "order_enablement_performed": False,
+                "no_broker_mutation": True,
+                "no_order_window_opened": True,
+                "h1_token_not_used": True,
+                "export_path": None,
+            }
+            print(f"Dry-run gate internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_promotion_dry_run_gate(result)
+        if args.export:
+            ep = result.get("export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE16C_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

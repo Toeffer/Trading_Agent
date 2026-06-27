@@ -31,11 +31,19 @@ from unittest.mock import patch, MagicMock, mock_open, PropertyMock
 
 import pytest
 
+# Auto-generated: dynamic date helpers for guard-state fixtures
+from datetime import datetime, timezone, timedelta
+_TODAY_STR = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+_YESTERDAY_STR = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
 BRIDGE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BRIDGE_DIR))
 
 # Import after path setup
 from ibkr_operator import (
+
+
     _run_phase15_completion_checkpoint,
     _REQUIRED_PHASE15_TAGS,
     _PHASE16A_DIAGNOSIS,
@@ -203,7 +211,7 @@ def guard_state_clean():
     """Guard state with zero trades, no halt."""
     return json.dumps({
         "schema_version": 1,
-        "trade_date": "2026-06-26",
+        "trade_date": _TODAY_STR,
         "daily_trade_count": 0,
         "day_start_nl_eur": 100000.0,
         "daily_halt_active": False,
@@ -218,7 +226,7 @@ def guard_state_with_trades():
     """Guard state with non-zero daily trade count."""
     return json.dumps({
         "schema_version": 1,
-        "trade_date": "2026-06-26",
+        "trade_date": _TODAY_STR,
         "daily_trade_count": 3,
         "day_start_nl_eur": 100000.0,
         "daily_halt_active": False,
@@ -1166,7 +1174,7 @@ class TestGuardTradeCount:
         """
         stale_gs = json.dumps({
             "schema_version": 1,
-            "trade_date": "2026-06-25",
+            "trade_date": _YESTERDAY_STR,
             "daily_trade_count": 0,
             "day_start_nl_eur": 100000.0,
             "daily_halt_active": False,
@@ -1199,7 +1207,7 @@ class TestGuardTradeCount:
             assert result["diagnosis"] == _PHASE16A_DIAGNOSIS["guard_state_not_clean"]
             assert result["severity"] == "NO_GO"
             assert result["phase15_complete"] is False
-            assert result["guard_state"]["trade_date"] == "2026-06-25"
+            assert result["guard_state"]["trade_date"] == _YESTERDAY_STR
             assert result["guard_state"]["trade_date_stale"] is True
             assert result["guard_state"]["daily_trade_count"] == 0
             # Suggested actions reference guard-state-reconcile

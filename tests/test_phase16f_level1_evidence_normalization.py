@@ -1,4 +1,4 @@
-"""Tests for Phase 16E — Level 1 Post-Promotion Stability Drill.
+"""Tests for Phase 16F — Level 1 Evidence Normalization / Clean-Cycle Consistency.
 
 All tests are read-only. No broker mutation, no order endpoints,
 no H1 token usage, no autonomy level changes.
@@ -8,20 +8,25 @@ Coverage:
   - --help exits quickly
   - JSON stdout pure
   - Export written
-  - Clean runtime with 2 samples => level1_post_promotion_stability_ok / OK
+  - Clean Level 1 mocked runtime => level1_evidence_normalization_ok / OK
+  - clean_cycles_matches_kpi=true when both sources agree
+  - clean_cycles_matches_kpi=false when mismatch
+  - clean_cycles_defaulted_to_zero when ledger exists but drill returns 0
+  - unknown clean_cycles reported as null
   - Dirty worktree => NO_GO
   - Missing required tag => NO_GO
   - Autonomy not Level 1 => NO_GO
-  - Bridge disconnected => HOLD or NO_GO
+  - Bridge disconnected => HOLD
   - Safety unlocked => NO_GO
   - Guard issues => NO_GO
   - Active alerts => NO_GO
   - Positions not flat => NO_GO
-  - Samples collected count matches request
+  - KPI blockers => NO_GO
   - No /order* calls
   - No H1 token reads
   - No mutation except export artifact
   - No autonomy level change
+  - Evidence fields: clean_cycles_source, clean_cycles_matches_kpi present
 """
 
 import json
@@ -46,12 +51,11 @@ sys.path.insert(0, str(BRIDGE_DIR))
 from ibkr_operator import (
 
 
-    _run_level1_post_promotion_stability_drill,
-    _PHASE16E_DIAGNOSIS,
-    _PHASE16E_REQUIRED_TAGS,
-    _PHASE16E_EXPORT_DIR,
-    BRIDGE_DIR as _OP_BRIDGE_DIR,
-    OPENCLAW_DIR,
+    _run_level1_evidence_normalization_check,
+    _PHASE16F_DIAGNOSIS,
+    _PHASE16F_REQUIRED_TAGS,
+    _PHASE16F_EXPORT_DIR,
+    OPENCLAW_DIR as _OP_OPENCLAW_DIR,
 )
 
 
@@ -64,7 +68,7 @@ def clean_git_metadata():
     return {
         "branch": "main",
         "commit_short": "abc1234",
-        "tag": "phase16e_level1_post_promotion_stability_drill",
+        "tag": "phase16f_evidence_normalization",
     }
 
 
@@ -86,27 +90,27 @@ def origin_aligned():
 
 @pytest.fixture
 def all_tags_present():
-    return {"required_count": len(_PHASE16E_REQUIRED_TAGS),
-            "present_count": len(_PHASE16E_REQUIRED_TAGS),
-            "missing": [], "present": list(_PHASE16E_REQUIRED_TAGS)}
+    return {"required_count": len(_PHASE16F_REQUIRED_TAGS),
+            "present_count": len(_PHASE16F_REQUIRED_TAGS),
+            "missing": [], "present": list(_PHASE16F_REQUIRED_TAGS)}
 
 
 @pytest.fixture
 def one_tag_missing():
-    return {"required_count": len(_PHASE16E_REQUIRED_TAGS),
-            "present_count": len(_PHASE16E_REQUIRED_TAGS) - 1,
-            "missing": [list(_PHASE16E_REQUIRED_TAGS)[0]],
-            "present": list(_PHASE16E_REQUIRED_TAGS)[1:]}
+    return {"required_count": len(_PHASE16F_REQUIRED_TAGS),
+            "present_count": len(_PHASE16F_REQUIRED_TAGS) - 1,
+            "missing": [list(_PHASE16F_REQUIRED_TAGS)[0]],
+            "present": list(_PHASE16F_REQUIRED_TAGS)[1:]}
 
 
 @pytest.fixture
 def bridge_health_ok():
-    return {"connected": True, "mode": "paper", "read_only": True, "allow_orders": False}
+    return {"connected": True, "mode": "paper", "read_only": True}
 
 
 @pytest.fixture
 def bridge_health_disconnected():
-    return {"connected": False, "mode": "paper", "read_only": True, "allow_orders": False}
+    return {"connected": False, "mode": "paper", "read_only": True}
 
 
 @pytest.fixture
@@ -148,12 +152,6 @@ def guard_state_clean():
 
 
 @pytest.fixture
-def guard_state_stale():
-    return json.dumps({"schema_version": 1, "trade_date": _YESTERDAY_STR,
-                       "daily_trade_count": 0, "daily_halt_active": False})
-
-
-@pytest.fixture
 def guard_state_with_trades():
     return json.dumps({"schema_version": 1, "trade_date": _TODAY_STR,
                        "daily_trade_count": 3, "daily_halt_active": False})
@@ -172,11 +170,6 @@ def env_safety_unlocked():
 @pytest.fixture
 def rules_locked():
     return {"enforced": "false", "found": True}
-
-
-@pytest.fixture
-def rules_unlocked():
-    return {"enforced": "true", "found": True}
 
 
 @pytest.fixture
@@ -200,7 +193,8 @@ def doctor_pass():
 def kpi_hold_expected():
     """KPI HOLD — expected at Level 1 (only system_locked)."""
     return {"verdict": "HOLD",
-            "blockers": [{"severity": "HOLD", "check": "system_locked"}]}
+            "blockers": [{"severity": "HOLD", "check": "system_locked"}],
+            "autonomy": {"clean_cycles": 7}}
 
 
 @pytest.fixture
@@ -271,7 +265,8 @@ def _mock_subprocess_output(outputs: dict):
 def _build_mocks(health=None, positions=None, alerts=None, snapshot=None,
                  readiness=None, git_metadata=None, worktree=None, origin=None,
                  tags=None, guard_state_content=None, env_safety=None, rules=None,
-                 autonomy=None, doctor=None, kpi=None, policy=None):
+                 autonomy=None, doctor=None, kpi=None, policy=None,
+                 clean_cycles_count=7, ledger_exists=True):
     patches = []
     bridge_mock = _MockUrlOpen({
         "/health": (200, health) if health else (500, {}),
@@ -301,9 +296,17 @@ def _build_mocks(health=None, positions=None, alerts=None, snapshot=None,
     tmp_openclaw = Path(tempfile.mkdtemp())
     if guard_state_content is not None:
         (tmp_openclaw / "guard-state.json").write_text(guard_state_content)
+    if ledger_exists:
+        cc_dir = tmp_openclaw / "autonomy-cycles"
+        cc_dir.mkdir(parents=True, exist_ok=True)
+        ledger_path = cc_dir / "clean-cycle-ledger.jsonl"
+        lines = []
+        for i in range(clean_cycles_count):
+            lines.append(json.dumps({"timestamp": f"2026-06-{25-i}T12:00:00Z", "clean": True, "evidence_hash": f"hash{i}"}))
+        ledger_path.write_text("\n".join(lines) + "\n")
     patches.append(patch("ibkr_operator.OPENCLAW_DIR", tmp_openclaw))
     tmp_export = Path(tempfile.mkdtemp())
-    patches.append(patch("ibkr_operator._PHASE16E_EXPORT_DIR", tmp_export))
+    patches.append(patch("ibkr_operator._PHASE16F_EXPORT_DIR", tmp_export))
     if env_safety:
         patches.append(patch("ibkr_operator._read_env_safety", return_value=env_safety))
     if rules:
@@ -339,14 +342,14 @@ def stop_patches(mocks, patches):
 class TestCommandExists:
     def test_primary_command_registered(self):
         r = subprocess.run([sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
-                           "level1-post-promotion-stability-drill", "--help"],
+                           "level1-evidence-normalization-check", "--help"],
                           capture_output=True, text=True, timeout=10)
         assert r.returncode == 0, f"help failed: {r.stderr}"
 
     @pytest.mark.parametrize("alias", [
-        "phase16e-level1-stability-drill",
-        "level1-stability-drill",
-        "post-level1-stability",
+        "phase16f-evidence-normalization",
+        "clean-cycle-consistency-check",
+        "level1-clean-cycle-check",
     ])
     def test_alias_registered(self, alias):
         r = subprocess.run([sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
@@ -355,14 +358,14 @@ class TestCommandExists:
         assert r.returncode == 0, f"{alias} --help failed: {r.stderr}"
 
     def test_function_importable(self):
-        assert callable(_run_level1_post_promotion_stability_drill)
+        assert callable(_run_level1_evidence_normalization_check)
 
 
 # ===========================================================================
-# T2: Clean => level1_post_promotion_stability_ok
+# T2: Clean => level1_evidence_normalization_ok
 # ===========================================================================
 
-class TestCleanStability:
+class TestCleanNormalization:
     def test_clean_produces_ok(self, clean_git_metadata, clean_worktree,
                                origin_aligned, all_tags_present, bridge_health_ok,
                                positions_flat, alerts_clean, snapshot_ok,
@@ -377,58 +380,54 @@ class TestCleanStability:
             guard_state_content=guard_state_clean, env_safety=env_safety_locked,
             rules=rules_locked, autonomy=autonomy_level_one,
             doctor=doctor_pass, kpi=kpi_hold_expected, policy=hermes_policy_ok,
+            clean_cycles_count=7, ledger_exists=True,
         )
         mocks, patches = apply_patches(patches)
         try:
-            result = _run_level1_post_promotion_stability_drill(
-                samples_requested=2, interval_seconds=1,
-            )
-            assert result["diagnosis"] == _PHASE16E_DIAGNOSIS["ready"]
+            result = _run_level1_evidence_normalization_check()
+            assert result["diagnosis"] == _PHASE16F_DIAGNOSIS["ready"]
             assert result["severity"] == "OK"
-            assert result["samples_collected"] == 2
-            assert result["samples_requested"] == 2
             assert result["promotion_allowed_now"] is False
             assert result["order_enablement_allowed_now"] is False
+            assert result["order_enablement_performed"] is False
+            assert result["promotion_performed"] is False
             assert result["no_broker_mutation"] is True
             assert result["no_order_window_opened"] is True
             assert result["h1_token_not_used"] is True
             assert result["export_path"] is not None
-            # Stability summary checks
-            ss = result["stability_summary"]
-            assert ss["autonomy_level1_all_samples"] is True
-            assert ss["bridge_connected_all_samples"] is True
-            assert ss["paper_all_samples"] is True
-            assert ss["read_only_all_samples"] is True
-            assert ss["positions_flat_all_samples"] is True
-            assert ss["alerts_clean_all_samples"] is True
-            assert ss["safety_locked_all_samples"] is True
-            assert ss["no_order_window_seen"] is True
-            assert ss["no_h1_seen"] is True
-            assert ss["no_broker_mutation_seen"] is True
-            # Baseline present
-            bl = result["baseline"]
-            assert bl["autonomy_level"] == "1"
-            assert bl["bridge_connected"] is True
-            # Samples detail
-            assert len(result["samples"]) == 2
-            for s in result["samples"]:
-                assert s["autonomy_level"] == "1"
-                assert s["read_only"] is True
+            # Autonomy section
+            auto = result["autonomy"]
+            assert auto["current_level"] == "1"
+            assert auto["clean_cycles"] == 7
+            assert auto["clean_cycles_source"] == "openclaw_clean_cycle_ledger"
+            assert auto["clean_cycles_matches_kpi"] is True
+            assert auto["kpi_clean_cycles"] == 7
+            assert auto["drill_clean_cycles"] == 7
+            # Normalization summary
+            ns = result["normalization_summary"]
+            assert ns["evidence_normalized"] is True
+            assert ns["clean_cycle_consistency_ok"] is True
+            assert ns["stability_drill_source_corrected"] is True
+            # Safety
+            safety = result["safety"]
+            assert safety["env_IBKR_ALLOW_ORDERS"] in ("false", "?")
+            assert safety["system_locked"] is True
         finally:
             stop_patches(mocks, patches)
 
 
 # ===========================================================================
-# T3: Samples collected match request
+# T3: clean_cycles_matches_kpi=true
 # ===========================================================================
 
-class TestSampleCount:
-    def test_samples_count(self, clean_git_metadata, clean_worktree,
-                           origin_aligned, all_tags_present, bridge_health_ok,
-                           positions_flat, alerts_clean, snapshot_ok,
-                           readiness_locked, guard_state_clean, env_safety_locked,
-                           rules_locked, autonomy_level_one, doctor_pass,
-                           kpi_hold_expected, hermes_policy_ok):
+class TestCleanCyclesMatchesKpi:
+    def test_matches_kpi_when_same(self, clean_git_metadata, clean_worktree,
+                                   origin_aligned, all_tags_present, bridge_health_ok,
+                                   positions_flat, alerts_clean, snapshot_ok,
+                                   readiness_locked, guard_state_clean, env_safety_locked,
+                                   rules_locked, autonomy_level_one, doctor_pass,
+                                   kpi_hold_expected, hermes_policy_ok):
+        # KPI reports 7, ledger has 7 entries
         patches = _build_mocks(
             health=bridge_health_ok, positions=positions_flat,
             alerts=alerts_clean, snapshot=snapshot_ok, readiness=readiness_locked,
@@ -437,21 +436,127 @@ class TestSampleCount:
             guard_state_content=guard_state_clean, env_safety=env_safety_locked,
             rules=rules_locked, autonomy=autonomy_level_one,
             doctor=doctor_pass, kpi=kpi_hold_expected, policy=hermes_policy_ok,
+            clean_cycles_count=7, ledger_exists=True,
         )
         mocks, patches = apply_patches(patches)
         try:
-            result = _run_level1_post_promotion_stability_drill(
-                samples_requested=3, interval_seconds=1,
-            )
-            assert result["samples_requested"] == 3
-            assert result["samples_collected"] == 3
-            assert len(result["samples"]) == 3
+            result = _run_level1_evidence_normalization_check()
+            assert result["autonomy"]["clean_cycles_matches_kpi"] is True
         finally:
             stop_patches(mocks, patches)
 
 
 # ===========================================================================
-# T4: Dirty worktree => NO_GO
+# T4: clean_cycles_matches_kpi=false when mismatch
+# ===========================================================================
+
+class TestCleanCyclesMismatch:
+    def test_mismatch_detected(self, clean_git_metadata, clean_worktree,
+                               origin_aligned, all_tags_present, bridge_health_ok,
+                               positions_flat, alerts_clean, snapshot_ok,
+                               readiness_locked, guard_state_clean, env_safety_locked,
+                               rules_locked, autonomy_level_one, doctor_pass,
+                               hermes_policy_ok):
+        # KPI reports 7 but ledger has only 3 entries — mismatch
+        kpi_mismatch = {"verdict": "HOLD",
+                        "blockers": [{"severity": "HOLD", "check": "autonomy_level_zero"}],
+                        "autonomy": {"clean_cycles": 7}}
+        patches = _build_mocks(
+            health=bridge_health_ok, positions=positions_flat,
+            alerts=alerts_clean, snapshot=snapshot_ok, readiness=readiness_locked,
+            git_metadata=clean_git_metadata, worktree=clean_worktree,
+            origin=origin_aligned, tags=all_tags_present,
+            guard_state_content=guard_state_clean, env_safety=env_safety_locked,
+            rules=rules_locked, autonomy=autonomy_level_one,
+            doctor=doctor_pass, kpi=kpi_mismatch, policy=hermes_policy_ok,
+            clean_cycles_count=3, ledger_exists=True,
+        )
+        mocks, patches = apply_patches(patches)
+        try:
+            result = _run_level1_evidence_normalization_check()
+            assert result["diagnosis"] == _PHASE16F_DIAGNOSIS["clean_cycles_mismatch"]
+            assert result["severity"] == "NO_GO"
+            assert result["autonomy"]["clean_cycles_matches_kpi"] is False
+        finally:
+            stop_patches(mocks, patches)
+
+
+# ===========================================================================
+# T5: clean_cycles_defaulted_to_zero detection
+# ===========================================================================
+
+class TestCleanCyclesDefaultedToZero:
+    def test_defaulted_to_zero_detected(self, clean_git_metadata, clean_worktree,
+                                        origin_aligned, all_tags_present, bridge_health_ok,
+                                        positions_flat, alerts_clean, snapshot_ok,
+                                        readiness_locked, guard_state_clean, env_safety_locked,
+                                        rules_locked, autonomy_level_one, doctor_pass,
+                                        hermes_policy_ok):
+        # Ledger has entries but we simulate _count_clean_cycles returning 0
+        kpi_with_cycles = {"verdict": "HOLD",
+                           "blockers": [{"severity": "HOLD", "check": "autonomy_level_zero"}],
+                           "autonomy": {"clean_cycles": 7}}
+        patches = _build_mocks(
+            health=bridge_health_ok, positions=positions_flat,
+            alerts=alerts_clean, snapshot=snapshot_ok, readiness=readiness_locked,
+            git_metadata=clean_git_metadata, worktree=clean_worktree,
+            origin=origin_aligned, tags=all_tags_present,
+            guard_state_content=guard_state_clean, env_safety=env_safety_locked,
+            rules=rules_locked, autonomy=autonomy_level_one,
+            doctor=doctor_pass, kpi=kpi_with_cycles, policy=hermes_policy_ok,
+            clean_cycles_count=7, ledger_exists=True,
+        )
+        # Patch _count_clean_cycles to return 0 (simulating old broken drill source)
+        patches.append(patch("ibkr_operator._count_clean_cycles", return_value=0))
+        mocks, patches = apply_patches(patches)
+        try:
+            result = _run_level1_evidence_normalization_check()
+            assert result["diagnosis"] == _PHASE16F_DIAGNOSIS["clean_cycles_defaulted_to_zero"]
+            assert result["severity"] == "NO_GO"
+            assert result["autonomy"]["clean_cycles_matches_kpi"] is False
+        finally:
+            stop_patches(mocks, patches)
+
+
+# ===========================================================================
+# T6: Unknown clean_cycles reported as null
+# ===========================================================================
+
+class TestUnknownCleanCycles:
+    def test_null_when_ledger_missing(self, clean_git_metadata, clean_worktree,
+                                      origin_aligned, all_tags_present, bridge_health_ok,
+                                      positions_flat, alerts_clean, snapshot_ok,
+                                      readiness_locked, guard_state_clean, env_safety_locked,
+                                      rules_locked, autonomy_level_one, doctor_pass,
+                                      hermes_policy_ok):
+        # KPI has no clean_cycles (both unknown)
+        kpi_no_cc = {"verdict": "HOLD",
+                     "blockers": [{"severity": "HOLD", "check": "autonomy_level_zero"}],
+                     "autonomy": {}}
+        patches = _build_mocks(
+            health=bridge_health_ok, positions=positions_flat,
+            alerts=alerts_clean, snapshot=snapshot_ok, readiness=readiness_locked,
+            git_metadata=clean_git_metadata, worktree=clean_worktree,
+            origin=origin_aligned, tags=all_tags_present,
+            guard_state_content=guard_state_clean, env_safety=env_safety_locked,
+            rules=rules_locked, autonomy=autonomy_level_one,
+            doctor=doctor_pass, kpi=kpi_no_cc, policy=hermes_policy_ok,
+            clean_cycles_count=0, ledger_exists=False,
+        )
+        mocks, patches = apply_patches(patches)
+        try:
+            result = _run_level1_evidence_normalization_check()
+            assert result["autonomy"]["clean_cycles"] is None
+            assert result["autonomy"]["kpi_clean_cycles"] is None
+            assert result["autonomy"]["clean_cycles_matches_kpi"] is True  # both None → match
+            ns = result["normalization_summary"]
+            assert ns["unknown_clean_cycles_reported_as_null"] is True
+        finally:
+            stop_patches(mocks, patches)
+
+
+# ===========================================================================
+# T7: Dirty worktree => NO_GO
 # ===========================================================================
 
 class TestDirtyWorktree:
@@ -463,19 +568,19 @@ class TestDirtyWorktree:
             readiness={"summary": {"kill_switches": {"system_locked": True}}},
             git_metadata=clean_git_metadata, worktree=dirty_worktree,
             origin=origin_aligned, tags=all_tags_present,
+            ledger_exists=False,
         )
         mocks, patches = apply_patches(patches)
         try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
-            assert result["diagnosis"] == _PHASE16E_DIAGNOSIS["dirty_worktree"]
+            result = _run_level1_evidence_normalization_check()
+            assert result["diagnosis"] == _PHASE16F_DIAGNOSIS["dirty_worktree"]
             assert result["severity"] == "NO_GO"
-            assert result["samples_collected"] == 0
         finally:
             stop_patches(mocks, patches)
 
 
 # ===========================================================================
-# T5: Missing tags => NO_GO
+# T8: Missing tags => NO_GO
 # ===========================================================================
 
 class TestMissingTags:
@@ -487,19 +592,19 @@ class TestMissingTags:
             readiness={"summary": {"kill_switches": {"system_locked": True}}},
             git_metadata=clean_git_metadata, worktree=clean_worktree,
             origin=origin_aligned, tags=one_tag_missing,
+            ledger_exists=False,
         )
         mocks, patches = apply_patches(patches)
         try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
-            assert result["diagnosis"] == _PHASE16E_DIAGNOSIS["missing_required_tags"]
+            result = _run_level1_evidence_normalization_check()
+            assert result["diagnosis"] == _PHASE16F_DIAGNOSIS["missing_required_tags"]
             assert result["severity"] == "NO_GO"
-            assert result["samples_collected"] == 0
         finally:
             stop_patches(mocks, patches)
 
 
 # ===========================================================================
-# T6: Autonomy not Level 1 => NO_GO
+# T9: Autonomy not Level 1 => NO_GO
 # ===========================================================================
 
 class TestAutonomyNotLevel1:
@@ -517,28 +622,29 @@ class TestAutonomyNotLevel1:
             guard_state_content=guard_state_clean, env_safety=env_safety_locked,
             rules=rules_locked, autonomy=autonomy_level_zero,
             doctor=doctor_pass, kpi=kpi_hold_expected, policy=hermes_policy_ok,
+            ledger_exists=False,
         )
         mocks, patches = apply_patches(patches)
         try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
-            assert result["diagnosis"] == _PHASE16E_DIAGNOSIS["autonomy_not_level1"]
+            result = _run_level1_evidence_normalization_check()
+            assert result["diagnosis"] == _PHASE16F_DIAGNOSIS["autonomy_not_level1"]
             assert result["severity"] == "NO_GO"
         finally:
             stop_patches(mocks, patches)
 
 
 # ===========================================================================
-# T7: Bridge disconnected => NO_GO
+# T10: Bridge disconnected => HOLD
 # ===========================================================================
 
 class TestDisconnected:
-    def test_disconnected_no_go(self, clean_git_metadata, clean_worktree,
-                                origin_aligned, all_tags_present,
-                                bridge_health_disconnected, positions_flat,
-                                alerts_clean, snapshot_ok, readiness_locked,
-                                guard_state_clean, env_safety_locked,
-                                rules_locked, autonomy_level_one, doctor_pass,
-                                kpi_hold_expected, hermes_policy_ok):
+    def test_disconnected_hold(self, clean_git_metadata, clean_worktree,
+                               origin_aligned, all_tags_present,
+                               bridge_health_disconnected, positions_flat,
+                               alerts_clean, snapshot_ok, readiness_locked,
+                               guard_state_clean, env_safety_locked,
+                               rules_locked, autonomy_level_one, doctor_pass,
+                               kpi_hold_expected, hermes_policy_ok):
         patches = _build_mocks(
             health=bridge_health_disconnected, positions=positions_flat,
             alerts=alerts_clean, snapshot=None, readiness=readiness_locked,
@@ -547,18 +653,19 @@ class TestDisconnected:
             guard_state_content=guard_state_clean, env_safety=env_safety_locked,
             rules=rules_locked, autonomy=autonomy_level_one,
             doctor=doctor_pass, kpi=kpi_hold_expected, policy=hermes_policy_ok,
+            ledger_exists=False,
         )
         mocks, patches = apply_patches(patches)
         try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
-            assert result["diagnosis"] == _PHASE16E_DIAGNOSIS["runtime_not_ready"]
+            result = _run_level1_evidence_normalization_check()
+            assert result["diagnosis"] == _PHASE16F_DIAGNOSIS["runtime_not_ready"]
             assert result["severity"] == "HOLD"
         finally:
             stop_patches(mocks, patches)
 
 
 # ===========================================================================
-# T8: Safety unlocked => NO_GO
+# T11: Safety unlocked => NO_GO
 # ===========================================================================
 
 class TestSafetyUnlocked:
@@ -577,18 +684,19 @@ class TestSafetyUnlocked:
             guard_state_content=guard_state_clean, env_safety=env_safety_unlocked,
             rules=rules_locked, autonomy=autonomy_level_one,
             doctor=doctor_pass, kpi=kpi_hold_expected, policy=hermes_policy_ok,
+            ledger_exists=False,
         )
         mocks, patches = apply_patches(patches)
         try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
-            assert result["diagnosis"] == _PHASE16E_DIAGNOSIS["safety_not_locked"]
+            result = _run_level1_evidence_normalization_check()
+            assert result["diagnosis"] == _PHASE16F_DIAGNOSIS["safety_not_locked"]
             assert result["severity"] == "NO_GO"
         finally:
             stop_patches(mocks, patches)
 
 
 # ===========================================================================
-# T9: Guard issues => NO_GO
+# T12: Guard issues => NO_GO
 # ===========================================================================
 
 class TestGuard:
@@ -608,18 +716,19 @@ class TestGuard:
             env_safety=env_safety_locked, rules=rules_locked,
             autonomy=autonomy_level_one, doctor=doctor_pass,
             kpi=kpi_hold_expected, policy=hermes_policy_ok,
+            ledger_exists=False,
         )
         mocks, patches = apply_patches(patches)
         try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
-            assert result["diagnosis"] == _PHASE16E_DIAGNOSIS["guard_state_not_clean"]
+            result = _run_level1_evidence_normalization_check()
+            assert result["diagnosis"] == _PHASE16F_DIAGNOSIS["guard_state_not_clean"]
             assert result["severity"] == "NO_GO"
         finally:
             stop_patches(mocks, patches)
 
 
 # ===========================================================================
-# T10: Active alerts => NO_GO
+# T13: Active alerts => NO_GO
 # ===========================================================================
 
 class TestActiveAlerts:
@@ -638,18 +747,19 @@ class TestActiveAlerts:
             guard_state_content=guard_state_clean, env_safety=env_safety_locked,
             rules=rules_locked, autonomy=autonomy_level_one,
             doctor=doctor_pass, kpi=kpi_hold_expected, policy=hermes_policy_ok,
+            ledger_exists=False,
         )
         mocks, patches = apply_patches(patches)
         try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
-            assert result["diagnosis"] == _PHASE16E_DIAGNOSIS["monitor_alerts_active"]
+            result = _run_level1_evidence_normalization_check()
+            assert result["diagnosis"] == _PHASE16F_DIAGNOSIS["monitor_alerts_active"]
             assert result["severity"] == "NO_GO"
         finally:
             stop_patches(mocks, patches)
 
 
 # ===========================================================================
-# T11: Positions not flat => NO_GO
+# T14: Positions not flat => NO_GO
 # ===========================================================================
 
 class TestPositionsNotFlat:
@@ -668,18 +778,50 @@ class TestPositionsNotFlat:
             guard_state_content=guard_state_clean, env_safety=env_safety_locked,
             rules=rules_locked, autonomy=autonomy_level_one,
             doctor=doctor_pass, kpi=kpi_hold_expected, policy=hermes_policy_ok,
+            ledger_exists=False,
         )
         mocks, patches = apply_patches(patches)
         try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
-            assert result["diagnosis"] == _PHASE16E_DIAGNOSIS["positions_not_flat"]
+            result = _run_level1_evidence_normalization_check()
+            assert result["diagnosis"] == _PHASE16F_DIAGNOSIS["positions_not_flat"]
             assert result["severity"] == "NO_GO"
         finally:
             stop_patches(mocks, patches)
 
 
 # ===========================================================================
-# T12: JSON stdout pure
+# T15: KPI blockers => NO_GO
+# ===========================================================================
+
+class TestKpiBlocker:
+    def test_kpi_no_go(self, clean_git_metadata, clean_worktree,
+                       origin_aligned, all_tags_present, bridge_health_ok,
+                       positions_flat, alerts_clean, snapshot_ok,
+                       readiness_locked, guard_state_clean,
+                       env_safety_locked, rules_locked,
+                       autonomy_level_one, doctor_pass,
+                       kpi_no_go, hermes_policy_ok):
+        patches = _build_mocks(
+            health=bridge_health_ok, positions=positions_flat,
+            alerts=alerts_clean, snapshot=snapshot_ok, readiness=readiness_locked,
+            git_metadata=clean_git_metadata, worktree=clean_worktree,
+            origin=origin_aligned, tags=all_tags_present,
+            guard_state_content=guard_state_clean, env_safety=env_safety_locked,
+            rules=rules_locked, autonomy=autonomy_level_one,
+            doctor=doctor_pass, kpi=kpi_no_go, policy=hermes_policy_ok,
+            ledger_exists=False,
+        )
+        mocks, patches = apply_patches(patches)
+        try:
+            result = _run_level1_evidence_normalization_check()
+            assert result["diagnosis"] == _PHASE16F_DIAGNOSIS["kpi_not_acceptable"]
+            assert result["severity"] == "NO_GO"
+        finally:
+            stop_patches(mocks, patches)
+
+
+# ===========================================================================
+# T16: JSON stdout pure
 # ===========================================================================
 
 class TestJsonOutput:
@@ -697,19 +839,20 @@ class TestJsonOutput:
             guard_state_content=guard_state_clean, env_safety=env_safety_locked,
             rules=rules_locked, autonomy=autonomy_level_one,
             doctor=doctor_pass, kpi=kpi_hold_expected, policy=hermes_policy_ok,
+            clean_cycles_count=7, ledger_exists=True,
         )
         mocks, patches = apply_patches(patches)
         try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
+            result = _run_level1_evidence_normalization_check()
             serialized = json.dumps(result, indent=2, default=str)
             parsed = json.loads(serialized)
-            assert parsed["drill_id"] == result["drill_id"]
+            assert parsed["check_id"] == result["check_id"]
         finally:
             stop_patches(mocks, patches)
 
 
 # ===========================================================================
-# T13: Export written
+# T17: Export written
 # ===========================================================================
 
 class TestExportWritten:
@@ -727,10 +870,11 @@ class TestExportWritten:
             guard_state_content=guard_state_clean, env_safety=env_safety_locked,
             rules=rules_locked, autonomy=autonomy_level_one,
             doctor=doctor_pass, kpi=kpi_hold_expected, policy=hermes_policy_ok,
+            clean_cycles_count=7, ledger_exists=True,
         )
         mocks, patches = apply_patches(patches)
         try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
+            result = _run_level1_evidence_normalization_check()
             assert result["export_path"] is not None
             assert os.path.exists(result["export_path"])
         finally:
@@ -738,7 +882,7 @@ class TestExportWritten:
 
 
 # ===========================================================================
-# T14: No /order* calls
+# T18: No /order* calls
 # ===========================================================================
 
 class TestNoOrderEndpoints:
@@ -750,7 +894,7 @@ class TestNoOrderEndpoints:
         source = (BRIDGE_DIR / "ibkr_operator.py").read_text()
         tree = ast.parse(source)
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "_run_level1_post_promotion_stability_drill":
+            if isinstance(node, ast.FunctionDef) and node.name == "_run_level1_evidence_normalization_check":
                 violations = []
                 for subnode in ast.walk(node):
                     if isinstance(subnode, ast.Constant) and isinstance(subnode.value, str):
@@ -758,17 +902,16 @@ class TestNoOrderEndpoints:
                             if fb in subnode.value:
                                 lower = subnode.value.lower()
                                 if any(kw in lower for kw in ["no " + fb, "forbidden", "must not", "never call",
-                                                               "do not call", "not call", "no /order",
-                                                               "/order/preflight -> /order/approve -> /order/submit"]):
+                                                               "do not call", "not call"]):
                                     continue
                                 violations.append(f"{fb} in: {subnode.value[:80]}")
                 assert len(violations) == 0, f"Forbidden endpoints: {violations}"
                 return
-        pytest.fail("Could not find stability drill function")
+        pytest.fail("Could not find evidence normalization check function")
 
 
 # ===========================================================================
-# T15: No H1 token
+# T19: No H1 token
 # ===========================================================================
 
 class TestNoH1Token:
@@ -786,17 +929,18 @@ class TestNoH1Token:
             guard_state_content=guard_state_clean, env_safety=env_safety_locked,
             rules=rules_locked, autonomy=autonomy_level_one,
             doctor=doctor_pass, kpi=kpi_hold_expected, policy=hermes_policy_ok,
+            clean_cycles_count=7, ledger_exists=True,
         )
         mocks, patches = apply_patches(patches)
         try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
+            result = _run_level1_evidence_normalization_check()
             assert result["h1_token_not_used"] is True
         finally:
             stop_patches(mocks, patches)
 
 
 # ===========================================================================
-# T16: No mutation except export
+# T20: No mutation except export
 # ===========================================================================
 
 class TestNoMutation:
@@ -814,108 +958,14 @@ class TestNoMutation:
             guard_state_content=guard_state_clean, env_safety=env_safety_locked,
             rules=rules_locked, autonomy=autonomy_level_one,
             doctor=doctor_pass, kpi=kpi_hold_expected, policy=hermes_policy_ok,
+            clean_cycles_count=7, ledger_exists=True,
         )
         mocks, patches = apply_patches(patches)
         try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
+            result = _run_level1_evidence_normalization_check()
             assert result["no_broker_mutation"] is True
             assert result["no_order_window_opened"] is True
             assert isinstance(result.get("explicit_non_actions"), list)
             assert len(result["explicit_non_actions"]) >= 10
-        finally:
-            stop_patches(mocks, patches)
-
-
-# ===========================================================================
-# T17: Stale guard trade_date => NO_GO
-# ===========================================================================
-
-class TestStaleGuardDate:
-    def test_stale_trade_date_no_go(self, clean_git_metadata, clean_worktree,
-                                    origin_aligned, all_tags_present, bridge_health_ok,
-                                    positions_flat, alerts_clean, snapshot_ok,
-                                    readiness_locked, guard_state_stale,
-                                    env_safety_locked, rules_locked,
-                                    autonomy_level_one, doctor_pass,
-                                    kpi_hold_expected, hermes_policy_ok):
-        patches = _build_mocks(
-            health=bridge_health_ok, positions=positions_flat,
-            alerts=alerts_clean, snapshot=snapshot_ok, readiness=readiness_locked,
-            git_metadata=clean_git_metadata, worktree=clean_worktree,
-            origin=origin_aligned, tags=all_tags_present,
-            guard_state_content=guard_state_stale,
-            env_safety=env_safety_locked, rules=rules_locked,
-            autonomy=autonomy_level_one, doctor=doctor_pass,
-            kpi=kpi_hold_expected, policy=hermes_policy_ok,
-        )
-        mocks, patches = apply_patches(patches)
-        try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
-            assert result["diagnosis"] == _PHASE16E_DIAGNOSIS["guard_state_not_clean"]
-            assert result["severity"] == "NO_GO"
-        finally:
-            stop_patches(mocks, patches)
-
-
-# ===========================================================================
-# T18: Autonomy Level 2 => NO_GO
-# ===========================================================================
-
-class TestAutonomyLevel2:
-    @pytest.fixture
-    def autonomy_level_two(self):
-        return "2"
-
-    def test_autonomy_level2_no_go(self, clean_git_metadata, clean_worktree,
-                                   origin_aligned, all_tags_present, bridge_health_ok,
-                                   positions_flat, alerts_clean, snapshot_ok,
-                                   readiness_locked, guard_state_clean,
-                                   env_safety_locked, rules_locked,
-                                   autonomy_level_two, doctor_pass,
-                                   kpi_hold_expected, hermes_policy_ok):
-        patches = _build_mocks(
-            health=bridge_health_ok, positions=positions_flat,
-            alerts=alerts_clean, snapshot=snapshot_ok, readiness=readiness_locked,
-            git_metadata=clean_git_metadata, worktree=clean_worktree,
-            origin=origin_aligned, tags=all_tags_present,
-            guard_state_content=guard_state_clean, env_safety=env_safety_locked,
-            rules=rules_locked, autonomy=autonomy_level_two,
-            doctor=doctor_pass, kpi=kpi_hold_expected, policy=hermes_policy_ok,
-        )
-        mocks, patches = apply_patches(patches)
-        try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
-            assert result["diagnosis"] == _PHASE16E_DIAGNOSIS["autonomy_not_level1"]
-            assert result["severity"] == "NO_GO"
-        finally:
-            stop_patches(mocks, patches)
-
-
-# ===========================================================================
-# T19: KPI blocker beyond system_locked => NO_GO
-# ===========================================================================
-
-class TestKpiBlocker:
-    def test_kpi_no_go_blocker(self, clean_git_metadata, clean_worktree,
-                               origin_aligned, all_tags_present, bridge_health_ok,
-                               positions_flat, alerts_clean, snapshot_ok,
-                               readiness_locked, guard_state_clean,
-                               env_safety_locked, rules_locked,
-                               autonomy_level_one, doctor_pass,
-                               kpi_no_go, hermes_policy_ok):
-        patches = _build_mocks(
-            health=bridge_health_ok, positions=positions_flat,
-            alerts=alerts_clean, snapshot=snapshot_ok, readiness=readiness_locked,
-            git_metadata=clean_git_metadata, worktree=clean_worktree,
-            origin=origin_aligned, tags=all_tags_present,
-            guard_state_content=guard_state_clean, env_safety=env_safety_locked,
-            rules=rules_locked, autonomy=autonomy_level_one,
-            doctor=doctor_pass, kpi=kpi_no_go, policy=hermes_policy_ok,
-        )
-        mocks, patches = apply_patches(patches)
-        try:
-            result = _run_level1_post_promotion_stability_drill(samples_requested=2, interval_seconds=1)
-            assert result["diagnosis"] == _PHASE16E_DIAGNOSIS["kpi_not_acceptable"]
-            assert result["severity"] == "NO_GO"
         finally:
             stop_patches(mocks, patches)

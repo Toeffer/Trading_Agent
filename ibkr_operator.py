@@ -13811,6 +13811,122 @@ def _check_hermes_policy() -> dict:
     return result
 
 
+# ===========================================================================
+# Centralized guard-state cleanliness assessor (Phase 16B–16F)
+# ===========================================================================
+
+def _assess_guard_state_cleanliness(now_utc: "datetime") -> dict:
+    """Parse guard-state.json and return a consistent cleanliness assessment.
+
+    SINGLE canonical helper for all Phase 16 commands:
+      - _run_manual_level1_promotion_review      (16B)
+      - _run_level1_promotion_dry_run_gate       (16C)
+      - _run_level1_apply_gate                   (16D)
+      - _run_level1_post_promotion_stability_drill (16E)
+      - _run_level1_evidence_normalization_check (16F)
+
+    Returns a dict with:
+      - guard_state_ok:   bool – json was found and parsed
+      - guard_state_clean: bool – daily_trade_count==0, not halted, not stale
+      - daily_trade_count: int
+      - trade_date:        str
+      - canonical_trade_date: str
+      - trade_date_stale:  bool
+      - halt_active:       bool | None
+      - halt_source:       str – which key provided the halt value
+      - guard_hash:        str | None
+      - guard_section:     dict – ready-to-embed section for the output
+    """
+    import hashlib
+    import json as _json
+
+    guard_path = OPENCLAW_DIR / "guard-state.json"
+    guard_state_ok = False
+    guard_hash = None
+    daily_trade_count = -1
+    trade_date = "?"
+    canonical_trade_date_val = "?"
+    trade_date_stale = True
+    halt_active = None
+    halt_source = "none"
+
+    # --- canonical trade date ---
+    try:
+        from guard import canonical_trade_date
+        canonical_trade_date_val = canonical_trade_date(now_utc)
+    except Exception:
+        canonical_trade_date_val = now_utc.strftime("%Y-%m-%d")
+
+    # --- parse guard-state.json ---
+    try:
+        if guard_path.exists():
+            raw = guard_path.read_bytes()
+            guard_hash = hashlib.sha256(raw).hexdigest()
+            gs_data = _json.loads(raw.decode())
+            guard_state_ok = True
+
+            # Trade count
+            daily_trade_count = int(gs_data.get("daily_trade_count", 0))
+
+            # Trade date
+            trade_date = gs_data.get("trade_date", "?")
+
+            # Trade-date staleness — respect explicit field when present
+            if "trade_date_stale" in gs_data and isinstance(gs_data["trade_date_stale"], bool):
+                trade_date_stale = gs_data["trade_date_stale"]
+            else:
+                trade_date_stale = (trade_date != canonical_trade_date_val)
+
+            # Halt flag compatibility — prefer "halt_active", else "daily_halt_active"
+            if "halt_active" in gs_data and isinstance(gs_data["halt_active"], bool):
+                halt_active = gs_data["halt_active"]
+                halt_source = "halt_active"
+            elif "daily_halt_active" in gs_data and isinstance(gs_data["daily_halt_active"], bool):
+                halt_active = gs_data["daily_halt_active"]
+                halt_source = "daily_halt_active"
+            # else: halt_active stays None — unknown (treated conservatively)
+    except Exception:
+        pass
+
+    # --- cleanliness ---
+    # guard_state_clean is true only when:
+    #   - guard file was found
+    #   - daily_trade_count == 0
+    #   - halt_active is definitively false (explicit false, not None)
+    #   - trade_date is NOT stale
+    guard_state_clean = (
+        guard_state_ok
+        and daily_trade_count == 0
+        and halt_active is False  # only clean when explicitly false
+        and not trade_date_stale
+    )
+
+    guard_section = {
+        "daily_trade_count": daily_trade_count,
+        "trade_date": trade_date,
+        "canonical_trade_date": canonical_trade_date_val,
+        "trade_date_stale": trade_date_stale,
+        "halt_active": halt_active,
+        "halt_source": halt_source,
+        "hash": guard_hash,
+        "guard_state_found": guard_state_ok,
+        "guard_state_clean": guard_state_clean,
+    }
+
+    return {
+        "guard_state_ok": guard_state_ok,
+        "guard_state_clean": guard_state_clean,
+        "daily_trade_count": daily_trade_count,
+        "trade_date": trade_date,
+        "canonical_trade_date": canonical_trade_date_val,
+        "trade_date_stale": trade_date_stale,
+        "halt_active": halt_active,
+        "halt_source": halt_source,
+        "guard_hash": guard_hash,
+        "guard_section": guard_section,
+    }
+
+
 def _run_phase15_completion_checkpoint() -> dict:
     """Run Phase-15 completion checkpoint / promotion readiness dossier (Step 16A).
 
@@ -14042,45 +14158,17 @@ def _run_phase15_completion_checkpoint() -> dict:
     }
 
     # ------------------------------------------------------------------
-    # 5. Guard state
+    # 5. Guard state — centralized assessor (Phase 16F)
     # ------------------------------------------------------------------
-    guard_path = OPENCLAW_DIR / "guard-state.json"
-    guard_state_ok = False
-    guard_hash = None
-    daily_trade_count = -1
-    trade_date = "?"
-    canonical_trade_date_val = "?"
-    trade_date_stale = True
-    halt_active = None
-
-    try:
-        from guard import canonical_trade_date
-        canonical_trade_date_val = canonical_trade_date(now_utc)
-    except Exception:
-        canonical_trade_date_val = now_utc.strftime("%Y-%m-%d")
-
-    try:
-        if guard_path.exists():
-            raw = guard_path.read_bytes()
-            guard_hash = hashlib.sha256(raw).hexdigest()
-            gs_data = _json.loads(raw.decode())
-            daily_trade_count = gs_data.get("daily_trade_count", -1)
-            trade_date = gs_data.get("trade_date", "?")
-            trade_date_stale = (trade_date != canonical_trade_date_val)
-            halt_active = gs_data.get("daily_halt_active", False)
-            guard_state_ok = True
-    except Exception:
-        pass
-
-    guard_section = {
-        "daily_trade_count": daily_trade_count,
-        "trade_date": trade_date,
-        "canonical_trade_date": canonical_trade_date_val,
-        "trade_date_stale": trade_date_stale,
-        "halt_active": halt_active,
-        "hash": guard_hash,
-        "guard_state_found": guard_state_ok,
-    }
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_ok = gs_assessment["guard_state_ok"]
+    guard_hash = gs_assessment["guard_hash"]
+    daily_trade_count = gs_assessment["daily_trade_count"]
+    trade_date = gs_assessment["trade_date"]
+    canonical_trade_date_val = gs_assessment["canonical_trade_date"]
+    trade_date_stale = gs_assessment["trade_date_stale"]
+    halt_active = gs_assessment["halt_active"]
+    guard_section = gs_assessment["guard_section"]
 
     # ------------------------------------------------------------------
     # 6. Doctor / KPI
@@ -14182,7 +14270,7 @@ def _run_phase15_completion_checkpoint() -> dict:
         and active_alerts_count == 0
     )
     safety_ok = safety_locked_expected
-    guard_ok = (daily_trade_count == 0 and not halt_active and guard_state_ok and not trade_date_stale)
+    guard_ok = gs_assessment["guard_state_clean"]
     doctor_acceptable_val = doctor_section.get("acceptable", False)
     kpi_acceptable_val = kpi_section.get("acceptable_hold", False)
     policy_ok = policy_result["hermes_policy_exists"] and policy_result["execution_path_ok"]
@@ -14890,43 +14978,17 @@ def _run_manual_level1_promotion_review() -> dict:
     }
 
     # ------------------------------------------------------------------
-    # 5. Guard state
+    # 5. Guard state — centralized assessor (Phase 16F)
     # ------------------------------------------------------------------
-    guard_path = OPENCLAW_DIR / "guard-state.json"
-    guard_state_ok = False
-    guard_hash = None
-    daily_trade_count = -1
-    trade_date = "?"
-    canonical_trade_date_val = "?"
-    trade_date_stale = True
-    halt_active = None
-
-    try:
-        from guard import canonical_trade_date
-        canonical_trade_date_val = canonical_trade_date(now_utc)
-    except Exception:
-        canonical_trade_date_val = now_utc.strftime("%Y-%m-%d")
-
-    try:
-        if guard_path.exists():
-            raw = guard_path.read_bytes()
-            guard_hash = hashlib.sha256(raw).hexdigest()
-            gs_data = _json.loads(raw.decode())
-            daily_trade_count = gs_data.get("daily_trade_count", -1)
-            trade_date = gs_data.get("trade_date", "?")
-            trade_date_stale = (trade_date != canonical_trade_date_val)
-            halt_active = gs_data.get("daily_halt_active", False)
-            guard_state_ok = True
-    except Exception:
-        pass
-
-    guard_section = {
-        "daily_trade_count": daily_trade_count,
-        "trade_date": trade_date,
-        "canonical_trade_date": canonical_trade_date_val,
-        "trade_date_stale": trade_date_stale,
-        "hash": guard_hash,
-    }
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_ok = gs_assessment["guard_state_ok"]
+    guard_hash = gs_assessment["guard_hash"]
+    daily_trade_count = gs_assessment["daily_trade_count"]
+    trade_date = gs_assessment["trade_date"]
+    canonical_trade_date_val = gs_assessment["canonical_trade_date"]
+    trade_date_stale = gs_assessment["trade_date_stale"]
+    halt_active = gs_assessment["halt_active"]
+    guard_section = gs_assessment["guard_section"]
 
     # ------------------------------------------------------------------
     # 6. Doctor / KPI
@@ -15013,8 +15075,7 @@ def _run_manual_level1_promotion_review() -> dict:
         and active_alerts_count == 0
     )
     safety_locked = current_state_locked
-    guard_clean = (daily_trade_count == 0 and not halt_active
-                   and guard_state_ok and not trade_date_stale)
+    guard_clean = gs_assessment["guard_state_clean"]
     alerts_clean = active_alerts_count == 0
     doctor_acceptable_val = doctor_section.get("acceptable", False)
     kpi_acceptable_val = kpi_section.get("acceptable_hold", False)
@@ -15819,43 +15880,17 @@ def _run_level1_promotion_dry_run_gate() -> dict:
     }
 
     # ------------------------------------------------------------------
-    # 5. Guard state
+    # 5. Guard state — centralized assessor (Phase 16F)
     # ------------------------------------------------------------------
-    guard_path = OPENCLAW_DIR / "guard-state.json"
-    guard_state_ok = False
-    guard_hash = None
-    daily_trade_count = -1
-    trade_date = "?"
-    canonical_trade_date_val = "?"
-    trade_date_stale = True
-    halt_active = None
-
-    try:
-        from guard import canonical_trade_date
-        canonical_trade_date_val = canonical_trade_date(now_utc)
-    except Exception:
-        canonical_trade_date_val = now_utc.strftime("%Y-%m-%d")
-
-    try:
-        if guard_path.exists():
-            raw = guard_path.read_bytes()
-            guard_hash = hashlib.sha256(raw).hexdigest()
-            gs_data = _json.loads(raw.decode())
-            daily_trade_count = gs_data.get("daily_trade_count", -1)
-            trade_date = gs_data.get("trade_date", "?")
-            trade_date_stale = (trade_date != canonical_trade_date_val)
-            halt_active = gs_data.get("daily_halt_active", False)
-            guard_state_ok = True
-    except Exception:
-        pass
-
-    guard_section = {
-        "daily_trade_count": daily_trade_count,
-        "trade_date": trade_date,
-        "canonical_trade_date": canonical_trade_date_val,
-        "trade_date_stale": trade_date_stale,
-        "hash": guard_hash,
-    }
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_ok = gs_assessment["guard_state_ok"]
+    guard_hash = gs_assessment["guard_hash"]
+    daily_trade_count = gs_assessment["daily_trade_count"]
+    trade_date = gs_assessment["trade_date"]
+    canonical_trade_date_val = gs_assessment["canonical_trade_date"]
+    trade_date_stale = gs_assessment["trade_date_stale"]
+    halt_active = gs_assessment["halt_active"]
+    guard_section = gs_assessment["guard_section"]
 
     # ------------------------------------------------------------------
     # 6. Doctor / KPI
@@ -15942,8 +15977,7 @@ def _run_level1_promotion_dry_run_gate() -> dict:
         and active_alerts_count == 0
     )
     safety_locked = current_state_locked
-    guard_clean = (daily_trade_count == 0 and not halt_active
-                   and guard_state_ok and not trade_date_stale)
+    guard_clean = gs_assessment["guard_state_clean"]
     alerts_clean = active_alerts_count == 0
     doctor_acceptable_val = doctor_section.get("acceptable", False)
     kpi_acceptable_val = kpi_section.get("acceptable_hold", False)
@@ -16725,43 +16759,17 @@ def _run_level1_apply_gate(
     }
 
     # ------------------------------------------------------------------
-    # 5. Guard state
+    # 5. Guard state — centralized assessor (Phase 16F)
     # ------------------------------------------------------------------
-    guard_path = OPENCLAW_DIR / "guard-state.json"
-    guard_state_ok = False
-    guard_hash = None
-    daily_trade_count = -1
-    trade_date = "?"
-    canonical_trade_date_val = "?"
-    trade_date_stale = True
-    halt_active = None
-
-    try:
-        from guard import canonical_trade_date
-        canonical_trade_date_val = canonical_trade_date(now_utc)
-    except Exception:
-        canonical_trade_date_val = now_utc.strftime("%Y-%m-%d")
-
-    try:
-        if guard_path.exists():
-            raw = guard_path.read_bytes()
-            guard_hash = hashlib.sha256(raw).hexdigest()
-            gs_data = _json.loads(raw.decode())
-            daily_trade_count = gs_data.get("daily_trade_count", -1)
-            trade_date = gs_data.get("trade_date", "?")
-            trade_date_stale = (trade_date != canonical_trade_date_val)
-            halt_active = gs_data.get("daily_halt_active", False)
-            guard_state_ok = True
-    except Exception:
-        pass
-
-    guard_section = {
-        "daily_trade_count": daily_trade_count,
-        "trade_date": trade_date,
-        "canonical_trade_date": canonical_trade_date_val,
-        "trade_date_stale": trade_date_stale,
-        "hash": guard_hash,
-    }
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_ok = gs_assessment["guard_state_ok"]
+    guard_hash = gs_assessment["guard_hash"]
+    daily_trade_count = gs_assessment["daily_trade_count"]
+    trade_date = gs_assessment["trade_date"]
+    canonical_trade_date_val = gs_assessment["canonical_trade_date"]
+    trade_date_stale = gs_assessment["trade_date_stale"]
+    halt_active = gs_assessment["halt_active"]
+    guard_section = gs_assessment["guard_section"]
 
     # ------------------------------------------------------------------
     # 6. Doctor / KPI
@@ -16848,8 +16856,7 @@ def _run_level1_apply_gate(
         and active_alerts_count == 0
     )
     safety_locked = current_state_locked
-    guard_clean = (daily_trade_count == 0 and not halt_active
-                   and guard_state_ok and not trade_date_stale)
+    guard_clean = gs_assessment["guard_state_clean"]
     alerts_clean = active_alerts_count == 0
     doctor_acceptable_val = doctor_section.get("acceptable", False)
     kpi_acceptable_val = kpi_section.get("acceptable_hold", False)
@@ -17414,7 +17421,7 @@ def _take_stability_sample(
     positions_flat: bool,
     active_alerts_count: int,
     autonomy_level: str,
-    clean_cycles: int,
+    clean_cycles: int | None,
     env_allow_orders: str,
     rules_enforced: str,
     system_locked: bool,
@@ -17605,6 +17612,7 @@ def _run_level1_post_promotion_stability_drill(
     all_alerts_clean = True
     all_guard_count_zero = True
     all_guard_date_current = True
+    all_guard_halt_clean = True
     all_safety_locked = True
     env_stable = True
     rules_stable = True
@@ -17727,28 +17735,21 @@ def _run_level1_post_promotion_stability_drill(
             except Exception:
                 pass
 
-        guard_path = OPENCLAW_DIR / "guard-state.json"
-        g_count = -1
-        g_date = "?"
-        g_stale = True
-        g_hash: Optional[str] = None
-        try:
-            if guard_path.exists():
-                raw = guard_path.read_bytes()
-                g_hash = hashlib.sha256(raw).hexdigest()
-                gd = _json.loads(raw.decode())
-                g_count = gd.get("daily_trade_count", -1)
-                g_date = gd.get("trade_date", "?")
-                g_stale = (g_date != canonical_td)
-        except Exception:
-            pass
+        gs_assessment = _assess_guard_state_cleanliness(sample_now)
+        g_count = gs_assessment["daily_trade_count"]
+        g_date = gs_assessment["trade_date"]
+        g_stale = gs_assessment["trade_date_stale"]
+        g_hash = gs_assessment["guard_hash"]
+        g_halt = gs_assessment["halt_active"]
 
-        clean_cycles = 0
+        clean_cycles = None
         try:
-            lr = _read_ledger(BRIDGE_DIR / "docs" / "TRADE_LEDGER.md")
-            clean_cycles = _count_clean_cycles(lr)
+            ledger_path = OPENCLAW_DIR / "autonomy-cycles" / "clean-cycle-ledger.jsonl"
+            if ledger_path.exists():
+                clean_cycles = _count_clean_cycles(OPENCLAW_DIR)
+            # else: stays None (unknown, not 0)
         except Exception:
-            pass
+            clean_cycles = None
 
         sample = _take_stability_sample(
             sample_now, sample_num, br_reachable, br_connected, br_mode,
@@ -17777,6 +17778,8 @@ def _run_level1_post_promotion_stability_drill(
             all_guard_count_zero = False
         if g_stale:
             all_guard_date_current = False
+        if g_halt is not False:  # only clean when explicitly false
+            all_guard_halt_clean = False
         if not sys_locked:
             system_locked_stable = False
         if env_allow_orders != first_env:
@@ -17808,7 +17811,8 @@ def _run_level1_post_promotion_stability_drill(
     first_sample = samples[0] if samples else {}
     baseline = {
         "autonomy_level": first_sample.get("autonomy_level", "?"),
-        "clean_cycles": first_sample.get("clean_cycles", 0),
+        "clean_cycles": first_sample.get("clean_cycles"),
+        "clean_cycles_source": "openclaw_clean_cycle_ledger",
         "bridge_connected": first_sample.get("bridge_connected", False),
         "mode": first_sample.get("mode", "?"),
         "read_only": first_sample.get("read_only", False),
@@ -17838,6 +17842,7 @@ def _run_level1_post_promotion_stability_drill(
         "alerts_clean_all_samples": all_alerts_clean,
         "guard_trade_count_zero_all_samples": all_guard_count_zero,
         "guard_trade_date_current_all_samples": all_guard_date_current,
+        "guard_halt_clean_all_samples": all_guard_halt_clean,
         "safety_locked_all_samples": all_safety_locked,
         "safety_flags_stable": env_stable and rules_stable and system_locked_stable,
         "guard_hash_stable": guard_hash_stable if len(guard_hashes) > 1 else True,
@@ -17853,6 +17858,7 @@ def _run_level1_post_promotion_stability_drill(
         all_autonomy_level1 and all_bridge_connected and all_paper
         and all_read_only and all_endpoints_ok and all_positions_flat
         and all_alerts_clean and all_guard_count_zero and all_guard_date_current
+        and all_guard_halt_clean
         and all_safety_locked and env_stable and rules_stable and system_locked_stable
     )
 
@@ -17879,7 +17885,7 @@ def _run_level1_post_promotion_stability_drill(
     elif autonomy_level != "1":
         diagnosis = _PHASE16E_DIAGNOSIS["autonomy_not_level1"]
         severity = "NO_GO"
-    elif not all_guard_count_zero or not all_guard_date_current:
+    elif not all_guard_count_zero or not all_guard_date_current or not all_guard_halt_clean:
         diagnosis = _PHASE16E_DIAGNOSIS["guard_state_not_clean"]
         severity = "NO_GO"
     elif not doc_acceptable:
@@ -17950,6 +17956,7 @@ def _run_level1_post_promotion_stability_drill(
         "git": git_section,
         "required_tags": required_tags,
         "baseline": baseline,
+        "clean_cycles_source": "openclaw_clean_cycle_ledger",
         "samples": samples,
         "stability_summary": stability_summary,
         "doctor_summary": doctor_section,
@@ -18046,6 +18053,9 @@ def _print_level1_post_promotion_stability_drill(result: dict) -> None:
     if bl:
         print(f"  {BOLD}Baseline (Sample 1){RESET}")
         print(f"    Autonomy:          {bl.get('autonomy_level', '?')}")
+        cc = bl.get('clean_cycles')
+        cc_display = str(cc) if cc is not None else "null (unknown)"
+        print(f"    Clean cycles:      {cc_display}  source={bl.get('clean_cycles_source', '?')}")
         print(f"    Bridge connected:  {_bool_str(bl.get('bridge_connected'))}")
         print(f"    Mode:              {bl.get('mode', '?')}")
         print(f"    Read-only:         {_bool_str(bl.get('read_only'))}")
@@ -18074,6 +18084,651 @@ def _print_level1_post_promotion_stability_drill(result: dict) -> None:
         print(f"    Doctor: {doc.get('result', '?')}  ok={_bool_str(doc.get('acceptable', False))}")
         kpi = result.get("kpi_summary", {})
         print(f"    KPI:    {kpi.get('verdict', '?')}  ok={_bool_str(kpi.get('acceptable_hold', False))}")
+        print()
+
+    sa = result.get("suggested_operator_actions", [])
+    if sa:
+        print(f"  {BOLD}Suggested Actions{RESET}")
+        for a in sa:
+            print(f"    {YELLOW}→{RESET} {a}")
+        print()
+
+    print(f"  {BOLD}Advisory{RESET}")
+    print(f"    {result.get('advisory', '')}")
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"\n  Evidence hash: {eh[:16]}...")
+
+    ep = result.get("export_path") or result.get("_export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    print()
+
+
+# ===========================================================================
+# Phase 16F — Level 1 Evidence Normalization / Clean-Cycle Consistency
+# ===========================================================================
+
+_PHASE16F_EXPORT_DIR = OPENCLAW_DIR / "evidence-normalization-checks"
+
+_PHASE16F_REQUIRED_TAGS: tuple[str, ...] = (
+    "phase16e_level1_post_promotion_stability_drill",
+    "phase16d_level1_apply_performed_20260626",
+    "phase16d_human_signed_level1_apply_gate",
+)
+
+_PHASE16F_DIAGNOSIS = {
+    "ready": "level1_evidence_normalization_ok",
+    "missing_required_tags": "missing_required_tags",
+    "dirty_worktree": "dirty_worktree",
+    "autonomy_not_level1": "autonomy_not_level1",
+    "runtime_not_ready": "runtime_not_ready",
+    "safety_not_locked": "safety_not_locked",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "positions_not_flat": "positions_not_flat",
+    "monitor_alerts_active": "monitor_alerts_active",
+    "doctor_not_acceptable": "doctor_not_acceptable",
+    "kpi_not_acceptable": "kpi_not_acceptable",
+    "policy_boundary_missing": "policy_boundary_missing",
+    "clean_cycles_mismatch": "clean_cycles_mismatch",
+    "clean_cycles_defaulted_to_zero": "clean_cycles_defaulted_to_zero",
+    "unknown": "unknown",
+}
+
+_PHASE16F_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not open an order window.",
+    "This command did not read H1 token.",
+    "This command did not call trade-window helper.",
+    "This command did not call /order, /order/preflight, /order/approve, or /order/submit.",
+    "This command did not submit orders.",
+    "This command did not restart bridge.",
+    "This command did not reconnect automatically.",
+    "This command did not repair guard-state.",
+    "This command did not mutate broker/account/orders.",
+    "Only allowed write is the export artifact.",
+]
+
+
+def _run_level1_evidence_normalization_check() -> dict:
+    """Run Level 1 evidence normalization / clean-cycle consistency check (Phase 16F).
+
+    Compares KPI clean_cycles against the canonical clean-cycle ledger source
+    used by the Level 1 stability drill. Proves the drill and KPI agree on
+    clean_cycles count and source.
+    """
+    import hashlib
+    import json as _json
+    import subprocess as _sp
+    import urllib.request
+    import urllib.error
+    from datetime import datetime, timezone
+    from typing import Any
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    check_id = f"evidence-normalization-{ts_file}"
+
+    # ------------------------------------------------------------------
+    # 1. Git / worktree
+    # ------------------------------------------------------------------
+    git = _git_metadata(BRIDGE_DIR)
+    full_commit = git.get("commit_short", "?")
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if p.stdout.strip():
+            full_commit = p.stdout.strip()
+    except Exception:
+        pass
+
+    worktree = _get_worktree_state(BRIDGE_DIR)
+    origin_alignment = _get_origin_master_alignment(BRIDGE_DIR)
+
+    git_section = {
+        "branch": git.get("branch", "?"),
+        "commit": full_commit if len(full_commit) > 16 else git.get("commit_short", "?"),
+        "commit_short": git.get("commit_short", "?"),
+        "tag": git.get("tag", "?"),
+        "origin_master_commit": origin_alignment.get("origin_master_commit", "?"),
+        "origin_master_aligned": origin_alignment.get("aligned"),
+        "worktree_clean": worktree.get("clean"),
+        "dirty_files": worktree.get("dirty_files", []),
+    }
+
+    # ------------------------------------------------------------------
+    # 2. Required tags
+    # ------------------------------------------------------------------
+    import subprocess as _sp2
+    required_tags_present: list[str] = []
+    required_tags_missing: list[str] = []
+    try:
+        p = _sp2.run(
+            ["git", "-C", str(BRIDGE_DIR), "tag"],
+            capture_output=True, text=True, timeout=10,
+        )
+        all_tags = set(p.stdout.strip().splitlines())
+        for tag in _PHASE16F_REQUIRED_TAGS:
+            if tag in all_tags:
+                required_tags_present.append(tag)
+            else:
+                required_tags_missing.append(tag)
+    except Exception:
+        required_tags_missing = list(_PHASE16F_REQUIRED_TAGS)
+        required_tags_present = []
+
+    required_tags = {
+        "required_count": len(_PHASE16F_REQUIRED_TAGS),
+        "present_count": len(required_tags_present),
+        "missing": required_tags_missing,
+        "present": required_tags_present,
+    }
+
+    # Early exit: missing tags
+    if len(required_tags_missing) > 0:
+        return _phase16f_no_go(
+            check_id, ts_str, git_section, required_tags,
+            _PHASE16F_DIAGNOSIS["missing_required_tags"],
+            [f"Missing tags: {', '.join(required_tags_missing)}"],
+        )
+
+    # Early exit: dirty worktree
+    if not git_section.get("worktree_clean", False) and git_section.get("worktree_clean") is not None:
+        return _phase16f_no_go(
+            check_id, ts_str, git_section, required_tags,
+            _PHASE16F_DIAGNOSIS["dirty_worktree"],
+            ["Commit or stash dirty files"] + [f"  {f}" for f in git_section.get("dirty_files", [])[:5]],
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Bridge runtime
+    # ------------------------------------------------------------------
+    br_reachable = False
+    br_connected = False
+    br_mode = "?"
+    br_read_only = False
+    ep_ok = 0
+    ep_display = "?"
+    try:
+        req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
+                br_reachable = True
+                hd = _json.loads(resp.read().decode())
+                br_connected = hd.get("connected", False)
+                br_mode = hd.get("mode", "?")
+                br_read_only = br_mode == "paper"
+    except Exception:
+        pass
+
+    # Endpoints
+    snapshot_used = False
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/snapshot", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    snapshot_used = True
+                    ep_ok = 7
+                    ep_display = f"{ep_ok}/7 OK (snapshot)"
+        except Exception:
+            pass
+
+    if not snapshot_used and br_reachable:
+        _EPS = ["/health", "/readiness", "/status", "/monitor/reconciliation",
+                "/monitor/alerts", "/monitor/events", "/positions", "/account"]
+        ep_total = len(_EPS)
+        for ep in _EPS:
+            try:
+                req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        ep_ok += 1
+            except Exception:
+                pass
+        ep_display = f"{ep_ok}/{len(_EPS)} OK"
+
+    # Positions
+    positions_count = 0
+    positions_flat = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/positions", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    pd = _json.loads(resp.read().decode())
+                    pl = pd.get("positions", [])
+                    positions_count = len(pl)
+                    positions_flat = all(abs(p.get("position", 0)) < 0.01 for p in pl)
+        except Exception:
+            pass
+
+    # Alerts
+    active_alerts_count = 0
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/monitor/alerts", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    ad = _json.loads(resp.read().decode())
+                    all_a = ad.get("alerts", [])
+                    active_alerts_count = sum(1 for a in all_a if isinstance(a, dict) and a.get("requires_action", False))
+        except Exception:
+            pass
+
+    runtime_section = {
+        "bridge_reachable": br_reachable,
+        "bridge_connected": br_connected,
+        "mode": br_mode,
+        "read_only": br_read_only,
+        "endpoints_display": ep_display,
+        "endpoints_ok": ep_ok,
+        "positions_count": positions_count,
+        "positions_flat": positions_flat,
+        "active_alerts_count": active_alerts_count,
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Safety flags
+    # ------------------------------------------------------------------
+    env_safety = _read_env_safety(BRIDGE_DIR / ".env")
+    rules_state = _read_rules_enforced(
+        Path.home() / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
+    )
+    autonomy_path = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
+    autonomy_level = _read_autonomy_level(autonomy_path)
+
+    env_allow_orders = env_safety.get("IBKR_ALLOW_ORDERS", "?")
+    rules_enforced = rules_state.get("enforced", "?")
+    system_locked = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/readiness", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    rd = _json.loads(resp.read().decode())
+                    system_locked = rd.get("summary", {}).get("kill_switches", {}).get("system_locked", True)
+        except Exception:
+            pass
+
+    safety_section = {
+        "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+        "rules_enforced": rules_enforced,
+        "system_locked": system_locked,
+    }
+
+    # ------------------------------------------------------------------
+    # 5. Guard state
+    # ------------------------------------------------------------------
+    try:
+        from guard import canonical_trade_date as _canon
+    except Exception:
+        def _canon(dt):
+            return dt.strftime("%Y-%m-%d")
+
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    g_count = gs_assessment["daily_trade_count"]
+    g_date = gs_assessment["trade_date"]
+    g_stale = gs_assessment["trade_date_stale"]
+    g_hash = gs_assessment["guard_hash"]
+    guard_section = gs_assessment["guard_section"]
+
+    # ------------------------------------------------------------------
+    # 6. Doctor / KPI / Policy
+    # ------------------------------------------------------------------
+    doctor_section: dict = {}
+    try:
+        dr = run_doctor()
+        doc_pass = dr.get("passed", 0)
+        doc_total = dr.get("total", 0)
+        doctor_ok = dr.get("pass", False)
+        doc_h1_status = "?"
+        for c in dr.get("checks", []):
+            if c.get("check") == "h1_token_canary":
+                if c.get("status") == "MANUAL_REQUIRED":
+                    doc_h1_status = "MANUAL_REQUIRED"
+                elif c.get("ok"):
+                    doc_h1_status = "PASS"
+                else:
+                    doc_h1_status = "FAIL"
+                break
+        doc_acceptable = doctor_ok or (
+            doc_h1_status == "MANUAL_REQUIRED" and doc_pass >= doc_total - 1
+        )
+        doctor_section = {
+            "result": "PASS" if doctor_ok else ("PASS_WITH_H1_MANUAL" if doc_acceptable else "FAIL"),
+            "h1_canary_status": doc_h1_status,
+            "acceptable": doc_acceptable,
+        }
+    except Exception as e:
+        doctor_section = {"result": "ERROR", "h1_canary_status": "ERROR", "acceptable": False, "error": str(e)[:200]}
+
+    kpi_section: dict = {}
+    kpi_clean_cycles: int | None = None
+    try:
+        kpi_result = run_kpi()
+        kpi_verdict = kpi_result.get("verdict", "ERROR")
+        kpi_blockers = kpi_result.get("blockers", [])
+        no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+        kpi_acceptable_hold = (
+            kpi_verdict == "HOLD" and len(no_go_blockers) == 0
+            and any(b.get("check") in ("autonomy_level_zero", "system_locked")
+                    for b in kpi_blockers if b.get("severity") == "HOLD")
+        )
+        # Extract clean_cycles from KPI result
+        au = kpi_result.get("autonomy", {})
+        if isinstance(au, dict):
+            kpi_clean_cycles = au.get("clean_cycles")
+            if kpi_clean_cycles is None:
+                kpi_clean_cycles = kpi_result.get("clean_cycles")
+        if kpi_clean_cycles is None:
+            kpi_clean_cycles = kpi_result.get("clean_cycles")
+        kpi_section = {
+            "verdict": kpi_verdict,
+            "blockers": [b.get("check", "?") for b in kpi_blockers],
+            "acceptable_hold": kpi_acceptable_hold,
+        }
+    except Exception as e:
+        kpi_section = {"verdict": "ERROR", "blockers": [], "acceptable_hold": False, "error": str(e)[:200]}
+
+    policy_result = _check_hermes_policy()
+    policy_section = {
+        "hermes_policy_exists": policy_result["hermes_policy_exists"],
+        "advisory_boundary_ok": policy_result["advisory_boundary_ok"],
+        "execution_path_ok": policy_result["execution_path_ok"],
+    }
+
+    # ------------------------------------------------------------------
+    # 7. Clean-cycles — canonical source (same as KPI)
+    # ------------------------------------------------------------------
+    canonical_ledger_path = OPENCLAW_DIR / "autonomy-cycles" / "clean-cycle-ledger.jsonl"
+    clean_cycles_source = "openclaw_clean_cycle_ledger"
+    drill_clean_cycles: int | None = None
+    clean_cycles_defaulted_to_zero = False
+    try:
+        if canonical_ledger_path.exists():
+            drill_clean_cycles = _count_clean_cycles(OPENCLAW_DIR)
+        # else: stays None — explicitly unknown, not defaulted to 0
+    except Exception:
+        drill_clean_cycles = None
+
+    # Detect if drill previously defaulted to 0 when unknown
+    # (the bug: calling non-existent _read_ledger and catching the error)
+    # We check if drill_clean_cycles is 0 but the ledger has entries
+    if drill_clean_cycles == 0 and canonical_ledger_path.exists():
+        # Check if ledger has any lines
+        try:
+            with open(canonical_ledger_path, "r", encoding="utf-8") as f:
+                line_count = sum(1 for line in f if line.strip())
+            if line_count > 0:
+                clean_cycles_defaulted_to_zero = True
+        except Exception:
+            pass
+
+    # Compute match
+    clean_cycles_matches_kpi = False
+    if kpi_clean_cycles is not None and drill_clean_cycles is not None:
+        clean_cycles_matches_kpi = (kpi_clean_cycles == drill_clean_cycles)
+    elif kpi_clean_cycles is None and drill_clean_cycles is None:
+        clean_cycles_matches_kpi = True  # both unknown
+
+    # ------------------------------------------------------------------
+    # 8. Normalization summary
+    # ------------------------------------------------------------------
+    evidence_normalized = clean_cycles_matches_kpi and not clean_cycles_defaulted_to_zero
+    clean_cycle_consistency_ok = clean_cycles_matches_kpi
+    stability_drill_source_corrected = True  # drill now uses canonical source
+    unknown_clean_cycles_reported_as_null = (drill_clean_cycles is None and not canonical_ledger_path.exists())
+
+    normalization_summary = {
+        "evidence_normalized": evidence_normalized,
+        "clean_cycle_consistency_ok": clean_cycle_consistency_ok,
+        "stability_drill_source_corrected": stability_drill_source_corrected,
+        "unknown_clean_cycles_reported_as_null": unknown_clean_cycles_reported_as_null,
+    }
+
+    autonomy_section = {
+        "current_level": autonomy_level,
+        "clean_cycles": drill_clean_cycles,
+        "clean_cycles_source": clean_cycles_source,
+        "clean_cycles_matches_kpi": clean_cycles_matches_kpi,
+        "kpi_clean_cycles": kpi_clean_cycles,
+        "drill_clean_cycles": drill_clean_cycles,
+    }
+
+    # ------------------------------------------------------------------
+    # 9. Classification
+    # ------------------------------------------------------------------
+    all_tags_present = len(required_tags_missing) == 0
+    worktree_clean = git_section.get("worktree_clean", False)
+    run_time_ready = br_connected and br_mode == "paper" and br_read_only
+    safety_locked = env_allow_orders in ("false", "?") and rules_enforced in ("false", "?") and system_locked is True
+
+    if not all_tags_present:
+        diagnosis = _PHASE16F_DIAGNOSIS["missing_required_tags"]
+        severity = "NO_GO"
+    elif not worktree_clean and worktree_clean is not None:
+        diagnosis = _PHASE16F_DIAGNOSIS["dirty_worktree"]
+        severity = "NO_GO"
+    elif not positions_flat and positions_count > 0:
+        diagnosis = _PHASE16F_DIAGNOSIS["positions_not_flat"]
+        severity = "NO_GO"
+    elif active_alerts_count > 0:
+        diagnosis = _PHASE16F_DIAGNOSIS["monitor_alerts_active"]
+        severity = "NO_GO"
+    elif not run_time_ready:
+        diagnosis = _PHASE16F_DIAGNOSIS["runtime_not_ready"]
+        severity = "HOLD" if not br_connected else "NO_GO"
+    elif not safety_locked:
+        diagnosis = _PHASE16F_DIAGNOSIS["safety_not_locked"]
+        severity = "NO_GO"
+    elif autonomy_level != "1":
+        diagnosis = _PHASE16F_DIAGNOSIS["autonomy_not_level1"]
+        severity = "NO_GO"
+    elif g_count != 0 or g_stale or gs_assessment["halt_active"] is not False:
+        diagnosis = _PHASE16F_DIAGNOSIS["guard_state_not_clean"]
+        severity = "NO_GO"
+    elif not doc_acceptable:
+        diagnosis = _PHASE16F_DIAGNOSIS["doctor_not_acceptable"]
+        severity = "NO_GO"
+    elif not kpi_acceptable_hold:
+        diagnosis = _PHASE16F_DIAGNOSIS["kpi_not_acceptable"]
+        severity = "NO_GO"
+    elif not policy_result["hermes_policy_exists"] or not policy_result["execution_path_ok"]:
+        diagnosis = _PHASE16F_DIAGNOSIS["policy_boundary_missing"]
+        severity = "NO_GO"
+    elif clean_cycles_defaulted_to_zero:
+        diagnosis = _PHASE16F_DIAGNOSIS["clean_cycles_defaulted_to_zero"]
+        severity = "NO_GO"
+    elif not clean_cycles_matches_kpi:
+        diagnosis = _PHASE16F_DIAGNOSIS["clean_cycles_mismatch"]
+        severity = "NO_GO"
+    else:
+        diagnosis = _PHASE16F_DIAGNOSIS["ready"]
+        severity = "OK"
+
+    check_ok = diagnosis == _PHASE16F_DIAGNOSIS["ready"]
+    operator_action_required = not check_ok
+    suggested_actions: list[str] = []
+    if not check_ok:
+        suggested_actions.append(f"Evidence normalization check failed: {diagnosis}")
+        if not clean_cycles_matches_kpi:
+            suggested_actions.append(f"KPI clean_cycles={kpi_clean_cycles} != drill clean_cycles={drill_clean_cycles}")
+        if clean_cycles_defaulted_to_zero:
+            suggested_actions.append("Drill clean_cycles defaulted to 0 when ledger has entries — source bug")
+
+    # ------------------------------------------------------------------
+    # 10. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "diagnosis": diagnosis, "severity": severity,
+        "clean_cycles_matches_kpi": clean_cycles_matches_kpi,
+        "kpi_clean_cycles": kpi_clean_cycles,
+        "drill_clean_cycles": drill_clean_cycles,
+        "no_broker_mutation": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 11. Assemble result
+    # ------------------------------------------------------------------
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-evidence-normalization-check",
+        "advisory": (
+            "Read-only Level 1 evidence normalization / clean-cycle consistency check (Phase 16F). "
+            "Compares KPI clean_cycles against the canonical openclaw_clean_cycle_ledger source. "
+            "No orders. No mutations. No H1 token. No broker activity. "
+            "No autonomy level change."
+        ),
+        "timestamp": ts_str,
+        "check_id": check_id,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": runtime_section,
+        "autonomy": autonomy_section,
+        "safety": safety_section,
+        "guard_state": guard_section,
+        "normalization_summary": normalization_summary,
+        "kpi_summary": kpi_section,
+        "doctor_summary": doctor_section,
+        "policy_summary": policy_section,
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "h1_token_not_used": True,
+        "evidence_hash": evidence_hash,
+        "explicit_non_actions": _PHASE16F_EXPLICIT_NON_ACTIONS,
+    }
+
+    _PHASE16F_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    export_path = _PHASE16F_EXPORT_DIR / f"{check_id}.json"
+    try:
+        tmp = export_path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, export_path)
+        result["export_path"] = str(export_path)
+        result["_export_path"] = str(export_path)
+    except Exception as e:
+        result["_export_error"] = str(e)[:200]
+        result["export_path"] = None
+
+    return result
+
+
+def _phase16f_no_go(
+    check_id: str, ts_str: str, git_section: dict, required_tags: dict,
+    diagnosis: str, actions: list,
+) -> dict:
+    """Build a NO_GO result for early-exit prerequisite failures."""
+    return {
+        "command": "ibkr-operator level1-evidence-normalization-check",
+        "timestamp": ts_str,
+        "check_id": check_id,
+        "diagnosis": diagnosis,
+        "severity": "NO_GO",
+        "operator_action_required": True,
+        "suggested_operator_actions": actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": {},
+        "autonomy": {},
+        "safety": {},
+        "guard_state": {},
+        "normalization_summary": {},
+        "kpi_summary": {},
+        "doctor_summary": {},
+        "policy_summary": {},
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "h1_token_not_used": True,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16F_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _print_level1_evidence_normalization_check(result: dict) -> None:
+    """Print Phase 16F evidence normalization check in human-readable format."""
+    check_ok = result.get("diagnosis") == _PHASE16F_DIAGNOSIS["ready"]
+    diag_color = GREEN if check_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else (YELLOW if sev == "HOLD" else RED)
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Evidence Normalization Check (16F){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Check ID:        {result.get('check_id', '?')}")
+    print(f"  Timestamp:       {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:       {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:        {sev_color}{sev}{RESET}")
+    print()
+
+    auto = result.get("autonomy", {})
+    if auto:
+        print(f"  {BOLD}Autonomy{RESET}")
+        print(f"    Current Level:          {auto.get('current_level', '?')}")
+        cc = auto.get('clean_cycles')
+        cc_display = str(cc) if cc is not None else "null (unknown)"
+        print(f"    Clean Cycles:           {cc_display}")
+        print(f"    Source:                 {auto.get('clean_cycles_source', '?')}")
+        match_ok = auto.get('clean_cycles_matches_kpi')
+        print(f"    Matches KPI:            {GREEN if match_ok else RED}{match_ok}{RESET}")
+        print(f"    KPI clean_cycles:       {auto.get('kpi_clean_cycles', '?')}")
+        print()
+
+    safety = result.get("safety", {})
+    if safety:
+        print(f"  {BOLD}Safety{RESET}")
+        print(f"    IBKR_ALLOW_ORDERS:      {safety.get('env_IBKR_ALLOW_ORDERS', '?')}")
+        print(f"    rules.enforced:         {safety.get('rules_enforced', '?')}")
+        print(f"    system_locked:          {_bool_str(safety.get('system_locked'))}")
+        print()
+
+    ns = result.get("normalization_summary", {})
+    if ns:
+        print(f"  {BOLD}Normalization Summary{RESET}")
+        for key, val in ns.items():
+            color = GREEN if val else RED
+            print(f"    {key:<42} {color}{val}{RESET}")
+        print()
+
+    runtime = result.get("runtime", {})
+    if runtime:
+        print(f"  {BOLD}Runtime{RESET}")
+        print(f"    Bridge:         connected={_bool_str(runtime.get('bridge_connected'))} mode={runtime.get('mode', '?')}")
+        print(f"    Endpoints:      {runtime.get('endpoints_display', '?')}")
+        print(f"    Positions:      {runtime.get('positions_count', 0)}  flat={_bool_str(runtime.get('positions_flat'))}")
+        print(f"    Alerts:         {runtime.get('active_alerts_count', 0)}")
+        print()
+
+    guard = result.get("guard_state", {})
+    if guard:
+        print(f"  {BOLD}Guard State{RESET}")
+        print(f"    Trade count:    {guard.get('daily_trade_count', '?')}")
+        print(f"    Trade date:     {guard.get('trade_date', '?')}")
+        print(f"    Canonical:      {guard.get('canonical_trade_date', '?')}")
+        print(f"    Stale:          {_bool_str(guard.get('trade_date_stale'))}")
         print()
 
     sa = result.get("suggested_operator_actions", [])
@@ -18881,6 +19536,28 @@ def main() -> None:
     p16e_a3.add_argument("--export", action="store_true")
     p16e_a3.add_argument("--samples", type=int, default=5)
     p16e_a3.add_argument("--interval", type=int, default=10)
+
+    # Phase 16F — Level 1 Evidence Normalization / Clean-Cycle Consistency
+    p16f = sub.add_parser("level1-evidence-normalization-check",
+                          help="Level 1 evidence normalization / clean-cycle consistency check (Phase 16F)")
+    p16f.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16f.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/evidence-normalization-checks/")
+    # Alias: phase16f-evidence-normalization
+    p16f_a1 = sub.add_parser("phase16f-evidence-normalization",
+                             help="Alias for level1-evidence-normalization-check")
+    p16f_a1.add_argument("--json", action="store_true")
+    p16f_a1.add_argument("--export", action="store_true")
+    # Alias: clean-cycle-consistency-check
+    p16f_a2 = sub.add_parser("clean-cycle-consistency-check",
+                             help="Alias for level1-evidence-normalization-check")
+    p16f_a2.add_argument("--json", action="store_true")
+    p16f_a2.add_argument("--export", action="store_true")
+    # Alias: level1-clean-cycle-check
+    p16f_a3 = sub.add_parser("level1-clean-cycle-check",
+                             help="Alias for level1-evidence-normalization-check")
+    p16f_a3.add_argument("--json", action="store_true")
+    p16f_a3.add_argument("--export", action="store_true")
 
     args = parser.parse_args()
 
@@ -19800,6 +20477,61 @@ def main() -> None:
             if ep:
                 print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE16E_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-evidence-normalization-check",
+                        "phase16f-evidence-normalization",
+                        "clean-cycle-consistency-check",
+                        "level1-clean-cycle-check"):
+        try:
+            result = _run_level1_evidence_normalization_check()
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            result = {
+                "command": f"ibkr-operator {args.command}",
+                "timestamp": ts_str,
+                "check_id": f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}",
+                "diagnosis": _PHASE16F_DIAGNOSIS["unknown"],
+                "severity": "NO_GO",
+                "operator_action_required": True,
+                "suggested_operator_actions": [
+                    f"Internal error: {type(exc).__name__}",
+                    "Run ibkr-operator doctor",
+                ],
+                "git": {},
+                "required_tags": {},
+                "runtime": {},
+                "autonomy": {},
+                "safety": {},
+                "guard_state": {},
+                "normalization_summary": {},
+                "kpi_summary": {},
+                "doctor_summary": {},
+                "policy_summary": {},
+                "promotion_allowed_now": False,
+                "order_enablement_allowed_now": False,
+                "order_enablement_performed": False,
+                "promotion_performed": False,
+                "no_broker_mutation": True,
+                "no_order_window_opened": True,
+                "h1_token_not_used": True,
+                "evidence_hash": _compute_evidence_hash({"diagnosis": _PHASE16F_DIAGNOSIS["unknown"]}),
+                "explicit_non_actions": _PHASE16F_EXPLICIT_NON_ACTIONS,
+            }
+            print(f"Evidence normalization check internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_evidence_normalization_check(result)
+        if args.export:
+            ep = result.get("export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE16F_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

@@ -40,10 +40,18 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+# Auto-generated: dynamic date helpers for guard-state fixtures
+from datetime import datetime, timezone, timedelta
+_TODAY_STR = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+_YESTERDAY_STR = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
 BRIDGE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BRIDGE_DIR))
 
 from ibkr_operator import (
+
+
     _run_level1_promotion_dry_run_gate,
     _PHASE16C_DIAGNOSIS,
     _PHASE16C_REQUIRED_TAGS,
@@ -178,7 +186,7 @@ def snapshot_ok():
 @pytest.fixture
 def guard_state_clean():
     return json.dumps({
-        "schema_version": 1, "trade_date": "2026-06-26",
+        "schema_version": 1, "trade_date": _TODAY_STR,
         "daily_trade_count": 0, "daily_halt_active": False,
         "last_updated_utc": "2026-06-26T08:00:00Z",
     })
@@ -187,7 +195,7 @@ def guard_state_clean():
 @pytest.fixture
 def guard_state_stale():
     return json.dumps({
-        "schema_version": 1, "trade_date": "2026-06-25",
+        "schema_version": 1, "trade_date": _YESTERDAY_STR,
         "daily_trade_count": 0, "daily_halt_active": False,
         "last_updated_utc": "2026-06-25T10:00:00Z",
     })
@@ -196,7 +204,7 @@ def guard_state_stale():
 @pytest.fixture
 def guard_state_with_trades():
     return json.dumps({
-        "schema_version": 1, "trade_date": "2026-06-26",
+        "schema_version": 1, "trade_date": _TODAY_STR,
         "daily_trade_count": 3, "daily_halt_active": False,
     })
 

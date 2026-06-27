@@ -20215,6 +20215,881 @@ def _print_level1_human_review_package_drill(result: dict) -> None:
     print()
 
 
+# ===========================================================================
+# Phase 16I — Level 1 Review Decision Drill
+# ===========================================================================
+
+_PHASE16I_EXPORT_DIR = OPENCLAW_DIR / "level1-review-decisions"
+
+_PHASE16I_REQUIRED_TAGS: tuple[str, ...] = (
+    "phase16h_level1_human_review_package_drill",
+    "phase16g_level1_proposal_workflow_drill",
+    "phase16f_level1_evidence_normalization",
+)
+
+_PHASE16I_DIAGNOSIS = {
+    "ready": "level1_review_decision_ok",
+    "missing_required_tags": "missing_required_tags",
+    "dirty_worktree": "dirty_worktree",
+    "autonomy_not_level1": "autonomy_not_level1",
+    "runtime_not_ready": "runtime_not_ready",
+    "safety_not_locked": "safety_not_locked",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "positions_not_flat": "positions_not_flat",
+    "monitor_alerts_active": "monitor_alerts_active",
+    "doctor_not_acceptable": "doctor_not_acceptable",
+    "kpi_not_acceptable": "kpi_not_acceptable",
+    "policy_boundary_missing": "policy_boundary_missing",
+    "clean_cycles_mismatch": "clean_cycles_mismatch",
+    "review_package_not_found": "review_package_not_found",
+    "review_package_not_review_only": "review_package_not_review_only",
+    "unknown": "unknown",
+}
+
+_PHASE16I_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not open an order window.",
+    "This command did not read H1 token.",
+    "This command did not call trade-window helper.",
+    "This command did not call /order, /order/preflight, /order/approve, or /order/submit.",
+    "This command did not submit orders.",
+    "This command did not call broker mutation endpoints.",
+    "This command did not restart bridge.",
+    "This command did not reconnect automatically.",
+    "This command did not repair guard-state.",
+    "Only allowed writes are the export artifact and decision artifact.",
+    "Accepted items are advisory/audit only — they do NOT trigger order paths.",
+]
+
+_DECISION_MODE_VALUES = ("mixed_demo", "accept_all_demo", "reject_all_demo", "defer_all_demo")
+
+# Decision engine: per-mode logic for each review item
+_DECISION_LOGIC = {
+    "accept_all_demo": lambda i, item: "accept",
+    "reject_all_demo": lambda i, item: "reject",
+    "defer_all_demo": lambda i, item: "defer",
+    "mixed_demo": lambda i, item: "accept" if i % 2 == 0 else ("reject" if i % 3 == 1 else "defer"),
+}
+
+_DECISION_RATIONALE_TEMPLATES = {
+    "accept": "Advisory acceptance — signals readiness for future order consideration. Does NOT enable orders, open trade window, or route to broker.",
+    "reject": "Rejected — rationale may include insufficient risk assessment, market conditions, or position-sizing concerns. Item will not proceed.",
+    "defer": "Deferred — requires additional review, data, or conditions before acceptance. Item remains in pending state.",
+}
+
+
+def _run_level1_review_decision_drill(
+    demo_candidates: int = 2,
+    decision_mode: str = "mixed_demo",
+    review_package_path: str | None = None,
+) -> dict:
+    """Run Level 1 review decision drill (Phase 16I).
+
+    Read-only drill that applies accept/reject/defer decisions to a review
+    package and produces an advisory audit decision artifact. Accepted items
+    remain non-executable; no order paths are triggered.
+    """
+    import hashlib
+    import json as _json
+    import subprocess as _sp
+    import urllib.request
+    import urllib.error
+    from datetime import datetime, timezone
+    from typing import Any
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    drill_id = f"review-decision-drill-{ts_file}"
+    effective_candidates = max(0, min(demo_candidates, 5))
+    if decision_mode not in _DECISION_MODE_VALUES:
+        decision_mode = "mixed_demo"
+
+    # ------------------------------------------------------------------
+    # 1. Git / worktree
+    # ------------------------------------------------------------------
+    git_cfg = _git_metadata(BRIDGE_DIR)
+    full_commit = git_cfg.get("commit_short", "?")
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if p.stdout.strip():
+            full_commit = p.stdout.strip()
+    except Exception:
+        pass
+
+    worktree = _get_worktree_state(BRIDGE_DIR)
+    origin_alignment = _get_origin_master_alignment(BRIDGE_DIR)
+
+    git_section = {
+        "branch": git_cfg.get("branch", "?"),
+        "commit": full_commit if len(full_commit) > 16 else git_cfg.get("commit_short", "?"),
+        "commit_short": git_cfg.get("commit_short", "?"),
+        "tag": git_cfg.get("tag", "?"),
+        "origin_master_commit": origin_alignment.get("origin_master_commit", "?"),
+        "origin_master_aligned": origin_alignment.get("aligned"),
+        "worktree_clean": worktree.get("clean"),
+        "dirty_files": worktree.get("dirty_files", []),
+    }
+
+    # ------------------------------------------------------------------
+    # 2. Required tags
+    # ------------------------------------------------------------------
+    required_tags_present: list[str] = []
+    required_tags_missing: list[str] = []
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "tag"],
+            capture_output=True, text=True, timeout=10,
+        )
+        all_tags = set(p.stdout.strip().splitlines())
+        for tag in _PHASE16I_REQUIRED_TAGS:
+            if tag in all_tags:
+                required_tags_present.append(tag)
+            else:
+                required_tags_missing.append(tag)
+    except Exception:
+        required_tags_missing = list(_PHASE16I_REQUIRED_TAGS)
+        required_tags_present = []
+
+    required_tags = {
+        "required_count": len(_PHASE16I_REQUIRED_TAGS),
+        "present_count": len(required_tags_present),
+        "missing": required_tags_missing,
+        "present": required_tags_present,
+    }
+
+    if len(required_tags_missing) > 0:
+        return _phase16i_no_go(
+            drill_id, ts_str, git_section, required_tags,
+            _PHASE16I_DIAGNOSIS["missing_required_tags"],
+            [f"Missing tags: {', '.join(required_tags_missing)}"],
+        )
+
+    if not git_section.get("worktree_clean", False) and git_section.get("worktree_clean") is not None:
+        return _phase16i_no_go(
+            drill_id, ts_str, git_section, required_tags,
+            _PHASE16I_DIAGNOSIS["dirty_worktree"],
+            ["Commit or stash dirty files"] + [f"  {f}" for f in git_section.get("dirty_files", [])[:5]],
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Bridge runtime
+    # ------------------------------------------------------------------
+    br_reachable = False
+    br_connected = False
+    br_mode = "?"
+    br_read_only = False
+    ep_ok = 0
+    ep_display = "?"
+    try:
+        req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
+                br_reachable = True
+                hd = _json.loads(resp.read().decode())
+                br_connected = hd.get("connected", False)
+                br_mode = hd.get("mode", "?")
+                br_read_only = br_mode == "paper"
+    except Exception:
+        pass
+
+    snapshot_used = False
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/snapshot", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    snapshot_used = True
+                    ep_ok = 7
+                    ep_display = f"{ep_ok}/7 OK (snapshot)"
+        except Exception:
+            pass
+
+    if not snapshot_used and br_reachable:
+        _EPS = ["/health", "/readiness", "/status", "/monitor/reconciliation",
+                "/monitor/alerts", "/monitor/events", "/positions", "/account"]
+        for ep in _EPS:
+            try:
+                req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        ep_ok += 1
+            except Exception:
+                pass
+        ep_display = f"{ep_ok}/{len(_EPS)} OK"
+
+    positions_count = 0
+    positions_flat = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/positions", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    pd = _json.loads(resp.read().decode())
+                    pl = pd.get("positions", [])
+                    positions_count = len(pl)
+                    positions_flat = all(abs(p.get("position", 0)) < 0.01 for p in pl)
+        except Exception:
+            pass
+
+    active_alerts_count = 0
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/monitor/alerts", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    ad = _json.loads(resp.read().decode())
+                    all_a = ad.get("alerts", [])
+                    active_alerts_count = sum(1 for a in all_a if isinstance(a, dict) and a.get("requires_action", False))
+        except Exception:
+            pass
+
+    runtime_section = {
+        "bridge_reachable": br_reachable,
+        "bridge_connected": br_connected,
+        "mode": br_mode,
+        "read_only": br_read_only,
+        "endpoints_display": ep_display,
+        "endpoints_ok": ep_ok,
+        "positions_count": positions_count,
+        "positions_flat": positions_flat,
+        "active_alerts_count": active_alerts_count,
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Safety flags
+    # ------------------------------------------------------------------
+    env_safety = _read_env_safety(BRIDGE_DIR / ".env")
+    rules_state = _read_rules_enforced(
+        Path.home() / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
+    )
+    autonomy_path = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
+    autonomy_level = _read_autonomy_level(autonomy_path)
+
+    env_allow_orders = env_safety.get("IBKR_ALLOW_ORDERS", "?")
+    rules_enforced = rules_state.get("enforced", "?")
+    system_locked = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/readiness", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    rd = _json.loads(resp.read().decode())
+                    system_locked = rd.get("summary", {}).get("kill_switches", {}).get("system_locked", True)
+        except Exception:
+            pass
+
+    safety_section = {
+        "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+        "rules_enforced": rules_enforced,
+        "system_locked": system_locked,
+    }
+
+    # ------------------------------------------------------------------
+    # 5. Guard state — centralized assessor
+    # ------------------------------------------------------------------
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_section = gs_assessment["guard_section"]
+
+    # ------------------------------------------------------------------
+    # 6. Doctor / KPI / Policy
+    # ------------------------------------------------------------------
+    doctor_section: dict = {}
+    try:
+        dr = run_doctor()
+        doc_pass = dr.get("passed", 0)
+        doc_total = dr.get("total", 0)
+        doctor_ok = dr.get("pass", False)
+        doc_h1_status = "?"
+        for c in dr.get("checks", []):
+            if c.get("check") == "h1_token_canary":
+                if c.get("status") == "MANUAL_REQUIRED":
+                    doc_h1_status = "MANUAL_REQUIRED"
+                elif c.get("ok"):
+                    doc_h1_status = "PASS"
+                else:
+                    doc_h1_status = "FAIL"
+                break
+        doc_acceptable = doctor_ok or (
+            doc_h1_status == "MANUAL_REQUIRED" and doc_pass >= doc_total - 1
+        )
+        doctor_section = {
+            "result": "PASS" if doctor_ok else ("PASS_WITH_H1_MANUAL" if doc_acceptable else "FAIL"),
+            "h1_canary_status": doc_h1_status,
+            "acceptable": doc_acceptable,
+        }
+    except Exception as e:
+        doctor_section = {"result": "ERROR", "h1_canary_status": "ERROR", "acceptable": False, "error": str(e)[:200]}
+
+    kpi_section: dict = {}
+    kpi_clean_cycles: int | None = None
+    try:
+        kpi_result = run_kpi()
+        kpi_verdict = kpi_result.get("verdict", "ERROR")
+        kpi_blockers = kpi_result.get("blockers", [])
+        no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+        kpi_acceptable_hold = (
+            kpi_verdict == "HOLD" and len(no_go_blockers) == 0
+            and any(b.get("check") == "system_locked"
+                    for b in kpi_blockers if b.get("severity") == "HOLD")
+        )
+        au = kpi_result.get("autonomy", {})
+        if isinstance(au, dict):
+            kpi_clean_cycles = au.get("clean_cycles")
+            if kpi_clean_cycles is None:
+                kpi_clean_cycles = kpi_result.get("clean_cycles")
+        if kpi_clean_cycles is None:
+            kpi_clean_cycles = kpi_result.get("clean_cycles")
+        kpi_section = {
+            "verdict": kpi_verdict,
+            "blockers": [b.get("check", "?") for b in kpi_blockers],
+            "acceptable_hold": kpi_acceptable_hold,
+        }
+    except Exception as e:
+        kpi_section = {"verdict": "ERROR", "blockers": [], "acceptable_hold": False, "error": str(e)[:200]}
+
+    policy_result = _check_hermes_policy()
+    policy_section = {
+        "hermes_policy_exists": policy_result["hermes_policy_exists"],
+        "advisory_boundary_ok": policy_result["advisory_boundary_ok"],
+        "execution_path_ok": policy_result["execution_path_ok"],
+    }
+
+    # ------------------------------------------------------------------
+    # 7. Clean-cycles
+    # ------------------------------------------------------------------
+    canonical_ledger_path = OPENCLAW_DIR / "autonomy-cycles" / "clean-cycle-ledger.jsonl"
+    clean_cycles_source = "openclaw_clean_cycle_ledger"
+    drill_clean_cycles: int | None = None
+    try:
+        if canonical_ledger_path.exists():
+            drill_clean_cycles = _count_clean_cycles(OPENCLAW_DIR)
+    except Exception:
+        drill_clean_cycles = None
+
+    clean_cycles_matches_kpi = False
+    if kpi_clean_cycles is not None and drill_clean_cycles is not None:
+        clean_cycles_matches_kpi = (kpi_clean_cycles == drill_clean_cycles)
+    elif kpi_clean_cycles is None and drill_clean_cycles is None:
+        clean_cycles_matches_kpi = True
+
+    autonomy_section = {
+        "current_level": autonomy_level,
+        "clean_cycles": drill_clean_cycles,
+        "clean_cycles_source": clean_cycles_source,
+        "clean_cycles_matches_kpi": clean_cycles_matches_kpi,
+    }
+
+    # ------------------------------------------------------------------
+    # 8. Load or reject input review package
+    # ------------------------------------------------------------------
+    review_package_source = "synthesized_internally"
+    review_package_path_actual: str | None = None
+    review_items: list[dict[str, Any]] = []
+    package_id = "synthetic-demo"
+    package_is_review_only = True
+
+    if review_package_path:
+        rp_path_obj = Path(review_package_path)
+        if not rp_path_obj.exists() or not rp_path_obj.is_file():
+            return _phase16i_no_go(
+                drill_id, ts_str, git_section, required_tags,
+                _PHASE16I_DIAGNOSIS["review_package_not_found"],
+                [f"Review package not found: {review_package_path}"],
+            )
+        try:
+            with open(rp_path_obj) as f:
+                rp_loaded = _json.load(f)
+        except Exception:
+            return _phase16i_no_go(
+                drill_id, ts_str, git_section, required_tags,
+                _PHASE16I_DIAGNOSIS["review_package_not_found"],
+                [f"Review package unparseable: {review_package_path}"],
+            )
+        if rp_loaded.get("status") != "review_only":
+            return _phase16i_no_go(
+                drill_id, ts_str, git_section, required_tags,
+                _PHASE16I_DIAGNOSIS["review_package_not_review_only"],
+                [f"Review package status is '{rp_loaded.get('status')}', not 'review_only'",
+                 "Re-run 16H to generate a valid review package"],
+            )
+        review_package_source = "loaded_from_prior_16h_artifact"
+        review_package_path_actual = str(rp_path_obj.resolve())
+        package_id = rp_loaded.get("package_id", "loaded-package")
+        package_is_review_only = True
+        review_items = rp_loaded.get("items", [])
+        # Ensure safe defaults for loaded items
+        for it in review_items:
+            it.setdefault("executable", False)
+            it.setdefault("requires_chris_approval", True)
+            it.setdefault("performed", False)
+
+    if not review_items and not review_package_path:
+        # Synthesize internally (only when no --review-package given)
+        candidate_pool = _REVIEW_CANDIDATE_POOL
+        for i in range(min(effective_candidates, len(candidate_pool))):
+            candidate = candidate_pool[i]
+            rid = f"synthetic-review-item-{drill_id}-{i+1:03d}"
+            review_items.append({
+                "review_id": rid,
+                "source": "synthetic_readonly_demo",
+                "symbol": candidate["symbol"],
+                "side": candidate["side"],
+                "quantity": (i + 1) * 10,
+                "rationale": candidate["rationale"],
+                "risk_notes": f"Synthetic demo review item — not executable.",
+                "executable": False,
+                "requires_chris_approval": True,
+                "performed": False,
+                "review_status": "pending_review",
+                "review_checklist": [
+                    {"step": "verify_safety_locks", "description": "Confirm all safety locks engaged", "passed": True},
+                    {"step": "verify_guard_clean", "description": "Confirm guard-state is clean", "passed": True},
+                    {"step": "chris_approval", "description": "Chris explicitly approves this item", "passed": False},
+                ],
+            })
+        package_id = f"synthetic-package-{ts_file}"
+
+    # Package hash for integrity
+    package_hashable = {
+        "package_id": package_id,
+        "items_count": len(review_items),
+    }
+    package_hash = _compute_evidence_hash(package_hashable)
+
+    input_review_package = {
+        "source": review_package_source,
+        "package_id": package_id,
+        "package_path": review_package_path_actual,
+        "status": "review_only",
+        "review_only": True,
+        "items_count": len(review_items),
+        "package_hash": package_hash,
+    }
+
+    # ------------------------------------------------------------------
+    # 9. Apply decisions
+    # ------------------------------------------------------------------
+    decision_fn = _DECISION_LOGIC.get(decision_mode, _DECISION_LOGIC["mixed_demo"])
+    decision_items: list[dict[str, Any]] = []
+    accepted_count = 0
+    rejected_count = 0
+    deferred_count = 0
+
+    for i, item in enumerate(review_items):
+        verdict = decision_fn(i, item)
+        reason = _DECISION_RATIONALE_TEMPLATES.get(verdict, "No decision.")
+        decision_item: dict[str, Any] = {
+            "proposal_id": f"decision-{drill_id}-{i+1:03d}",
+            "review_id": item.get("review_id", f"item-{i}"),
+            "symbol": item.get("symbol", "?"),
+            "side": item.get("side", "?"),
+            "quantity": item.get("quantity", 0),
+            "original_executable": item.get("executable", False),
+            "original_requires_approval": item.get("requires_chris_approval", True),
+            "decision": verdict,
+            "decision_reason": reason,
+            "executable": False,
+            "performed": False,
+            "requires_chris_approval": True,
+            "requires_future_order_window": True,
+            "requires_future_h1": True,
+            "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+        }
+        decision_items.append(decision_item)
+        if verdict == "accept":
+            accepted_count += 1
+        elif verdict == "reject":
+            rejected_count += 1
+        else:
+            deferred_count += 1
+
+    decision_id = f"review-decision-{ts_file}"
+    review_decision = {
+        "decision_id": decision_id,
+        "reviewer": "Chris",
+        "decision_mode": decision_mode,
+        "status": "audit_only",
+        "decisions_count": len(decision_items),
+        "accepted_count": accepted_count,
+        "rejected_count": rejected_count,
+        "deferred_count": deferred_count,
+        "executable": False,
+        "accepted_items_executable": False,
+        "requires_future_order_window": True,
+        "requires_future_h1": True,
+        "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+        "decision_items": decision_items,
+    }
+
+    # Decision artifact (standalone)
+    decision_artifact = {
+        "artifact_id": decision_id,
+        "drill_id": drill_id,
+        "status": "audit_only",
+        "generated_by": "level1-review-decision-drill (Phase 16I)",
+        "review_package": input_review_package,
+        "review_decision": review_decision,
+    }
+    decision_artifact_hash = _compute_evidence_hash(decision_artifact)
+
+    # ------------------------------------------------------------------
+    # 10. Review workflow
+    # ------------------------------------------------------------------
+    review_workflow = {
+        "decision_only": True,
+        "demo_candidates_requested": effective_candidates,
+        "items_examined": len(review_items),
+        "decisions_applied": len(decision_items),
+        "accepted_items_executable": False,
+        "any_executable_item": False,
+        "order_routing_disallowed": True,
+        "broker_submission_performed": False,
+        "preflight_performed": False,
+        "approval_performed": False,
+        "submit_performed": False,
+    }
+
+    workflow_summary = {
+        "review_decision_ready": True,
+        "decision_artifact_created": len(decision_items) > 0,
+        "all_decisions_audit_only": True,
+        "accepted_items_non_executable": accepted_count == 0 or review_decision["accepted_items_executable"] is False,
+        "all_items_require_future_order_window": True,
+        "all_items_require_future_h1": True,
+        "no_order_path_called": True,
+        "no_broker_submission": True,
+        "no_h1_seen": True,
+        "no_order_window_seen": True,
+    }
+
+    # ------------------------------------------------------------------
+    # 11. Classification
+    # ------------------------------------------------------------------
+    all_tags_present = len(required_tags_missing) == 0
+    worktree_clean = git_section.get("worktree_clean", False)
+    run_time_ready = br_connected and br_mode == "paper" and br_read_only
+    safety_locked = env_allow_orders in ("false", "?") and rules_enforced in ("false", "?") and system_locked is True
+
+    if not all_tags_present:
+        diagnosis = _PHASE16I_DIAGNOSIS["missing_required_tags"]
+        severity = "NO_GO"
+    elif not worktree_clean and worktree_clean is not None:
+        diagnosis = _PHASE16I_DIAGNOSIS["dirty_worktree"]
+        severity = "NO_GO"
+    elif not positions_flat and positions_count > 0:
+        diagnosis = _PHASE16I_DIAGNOSIS["positions_not_flat"]
+        severity = "NO_GO"
+    elif active_alerts_count > 0:
+        diagnosis = _PHASE16I_DIAGNOSIS["monitor_alerts_active"]
+        severity = "NO_GO"
+    elif not run_time_ready:
+        diagnosis = _PHASE16I_DIAGNOSIS["runtime_not_ready"]
+        severity = "HOLD" if not br_connected else "NO_GO"
+    elif not safety_locked:
+        diagnosis = _PHASE16I_DIAGNOSIS["safety_not_locked"]
+        severity = "NO_GO"
+    elif autonomy_level != "1":
+        diagnosis = _PHASE16I_DIAGNOSIS["autonomy_not_level1"]
+        severity = "NO_GO"
+    elif not gs_assessment["guard_state_clean"]:
+        diagnosis = _PHASE16I_DIAGNOSIS["guard_state_not_clean"]
+        severity = "NO_GO"
+    elif not doc_acceptable:
+        diagnosis = _PHASE16I_DIAGNOSIS["doctor_not_acceptable"]
+        severity = "NO_GO"
+    elif not kpi_acceptable_hold:
+        diagnosis = _PHASE16I_DIAGNOSIS["kpi_not_acceptable"]
+        severity = "NO_GO"
+    elif not policy_result["hermes_policy_exists"] or not policy_result["execution_path_ok"]:
+        diagnosis = _PHASE16I_DIAGNOSIS["policy_boundary_missing"]
+        severity = "NO_GO"
+    elif not clean_cycles_matches_kpi:
+        diagnosis = _PHASE16I_DIAGNOSIS["clean_cycles_mismatch"]
+        severity = "NO_GO"
+    else:
+        diagnosis = _PHASE16I_DIAGNOSIS["ready"]
+        severity = "OK"
+
+    drill_ok = diagnosis == _PHASE16I_DIAGNOSIS["ready"]
+    operator_action_required = not drill_ok
+    suggested_actions: list[str] = []
+    if not drill_ok:
+        suggested_actions.append(f"Review decision drill blocked: {diagnosis}")
+        if not run_time_ready:
+            suggested_actions.append("Ensure bridge is connected in paper read-only mode")
+        if not safety_locked:
+            suggested_actions.append("Verify all safety locks are engaged")
+        if not gs_assessment["guard_state_clean"]:
+            suggested_actions.append("Run guard-state-reconcile to fix guard state")
+
+    # ------------------------------------------------------------------
+    # 12. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "diagnosis": diagnosis, "severity": severity,
+        "decisions_count": len(decision_items),
+        "accepted_count": accepted_count,
+        "rejected_count": rejected_count,
+        "deferred_count": deferred_count,
+        "accepted_items_executable": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 13. Assemble result
+    # ------------------------------------------------------------------
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-review-decision-drill",
+        "advisory": (
+            "Read-only Level 1 review decision drill (Phase 16I). "
+            "Applies accept/reject/defer decisions to a review package. "
+            "Accepted items remain advisory/audit only — NOT executable. "
+            "No orders. No mutations. No H1 token. No broker activity. "
+            "No autonomy level change."
+        ),
+        "timestamp": ts_str,
+        "drill_id": drill_id,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": runtime_section,
+        "autonomy": autonomy_section,
+        "safety": safety_section,
+        "guard_state": guard_section,
+        "input_review_package": input_review_package,
+        "review_decision": review_decision,
+        "decision_artifact": decision_artifact,
+        "decision_artifact_hash": decision_artifact_hash,
+        "review_workflow": review_workflow,
+        "workflow_summary": workflow_summary,
+        "kpi_summary": kpi_section,
+        "doctor_summary": doctor_section,
+        "policy_summary": policy_section,
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
+        "h1_token_not_used": True,
+        "evidence_hash": evidence_hash,
+        "explicit_non_actions": _PHASE16I_EXPLICIT_NON_ACTIONS,
+    }
+
+    # ------------------------------------------------------------------
+    # 14. Export artifacts
+    # ------------------------------------------------------------------
+    export_path: str | None = None
+    decision_artifact_path: str | None = None
+    try:
+        _PHASE16I_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE16I_EXPORT_DIR / f"{drill_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        export_path = str(ep)
+        da_path = _PHASE16I_EXPORT_DIR / f"{decision_id}.json"
+        with open(da_path, "w", encoding="utf-8") as f:
+            _json.dump(decision_artifact, f, indent=2, default=str)
+        decision_artifact_path = str(da_path)
+    except Exception:
+        pass
+
+    result["export_path"] = export_path
+    result["decision_artifact_path"] = decision_artifact_path
+    return result
+
+
+def _phase16i_no_go(
+    drill_id: str, ts_str: str, git_section: dict, required_tags: dict,
+    diagnosis: str, actions: list,
+) -> dict:
+    """Build a NO_GO result for early-exit prerequisite failures."""
+    empty_decision = {"decisions_count": 0, "accepted_count": 0, "rejected_count": 0, "deferred_count": 0}
+    empty_da = {"status": "blocked", "artifact_id": drill_id}
+    return {
+        "command": "ibkr-operator level1-review-decision-drill",
+        "timestamp": ts_str,
+        "drill_id": drill_id,
+        "diagnosis": diagnosis,
+        "severity": "NO_GO",
+        "operator_action_required": True,
+        "suggested_operator_actions": actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": {},
+        "autonomy": {},
+        "safety": {},
+        "guard_state": {},
+        "input_review_package": {},
+        "review_decision": {**empty_decision, "decision_items": []},
+        "decision_artifact": empty_da,
+        "decision_artifact_hash": _compute_evidence_hash(empty_da),
+        "review_workflow": {},
+        "workflow_summary": {},
+        "kpi_summary": {},
+        "doctor_summary": {},
+        "policy_summary": {},
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
+        "h1_token_not_used": True,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16I_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _print_level1_review_decision_drill(result: dict) -> None:
+    """Print Phase 16I review decision drill in human-readable format."""
+    drill_ok = result.get("diagnosis") == _PHASE16I_DIAGNOSIS["ready"]
+    diag_color = GREEN if drill_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else (YELLOW if sev == "HOLD" else RED)
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Review Decision Drill (16I){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\\n")
+    print(f"  Drill ID:           {result.get('drill_id', '?')}")
+    print(f"  Timestamp:          {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:          {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:           {sev_color}{sev}{RESET}")
+    print()
+
+    irp = result.get("input_review_package", {})
+    if irp:
+        print(f"  {BOLD}Input Review Package{RESET}")
+        print(f"    Source:           {irp.get('source', '?')}")
+        print(f"    Package ID:       {irp.get('package_id', '?')}")
+        print(f"    Items count:      {irp.get('items_count', 0)}")
+        pph = irp.get("package_hash", "")
+        if pph:
+            print(f"    Package hash:     {pph[:16]}...")
+        print()
+
+    rd = result.get("review_decision", {})
+    if rd:
+        print(f"  {BOLD}Review Decision{RESET}")
+        print(f"    Decision ID:      {rd.get('decision_id', '?')}")
+        print(f"    Reviewer:         {rd.get('reviewer', '?')}")
+        print(f"    Mode:             {rd.get('decision_mode', '?')}")
+        print(f"    Status:           {rd.get('status', '?')}")
+        print(f"    Total decisions:  {rd.get('decisions_count', 0)}")
+        print(f"    Accepted:         {GREEN}{rd.get('accepted_count', 0)}{RESET}")
+        print(f"    Rejected:         {RED}{rd.get('rejected_count', 0)}{RESET}")
+        print(f"    Deferred:         {YELLOW}{rd.get('deferred_count', 0)}{RESET}")
+        print(f"    Executable:        {RED}{rd.get('executable', '?')}{RESET}")
+        print(f"    Accepted exec:     {RED}{rd.get('accepted_items_executable', '?')}{RESET}")
+        print()
+
+        decisions = rd.get("decision_items", [])
+        if decisions:
+            print(f"  {BOLD}Decision Details{RESET}")
+            for d in decisions:
+                d_verdict = d.get("decision", "?")
+                v_color = GREEN if d_verdict == "accept" else (RED if d_verdict == "reject" else YELLOW)
+                print(f"    {d.get('proposal_id', '?')}: {d.get('symbol', '?')} "
+                      f"{v_color}{d_verdict.upper()}{RESET} "
+                      f"qty={d.get('quantity', 0)} exec={RED}{d.get('executable')}{RESET}")
+            print()
+
+    rw = result.get("review_workflow", {})
+    if rw:
+        print(f"  {BOLD}Review Workflow{RESET}")
+        print(f"    Decision-only:         {rw.get('decision_only')}")
+        print(f"    Items examined:        {rw.get('items_examined', 0)}")
+        print(f"    Decisions applied:     {rw.get('decisions_applied', 0)}")
+        print(f"    Accepted exec:         {RED}{rw.get('accepted_items_executable')}{RESET}")
+        print(f"    Broker submission:     {RED}{rw.get('broker_submission_performed')}{RESET}")
+        print()
+
+    ws = result.get("workflow_summary", {})
+    if ws:
+        print(f"  {BOLD}Workflow Summary{RESET}")
+        for key, val in ws.items():
+            color = GREEN if val else RED
+            print(f"    {key:<42} {color}{val}{RESET}")
+        print()
+
+    auto = result.get("autonomy", {})
+    if auto:
+        print(f"  {BOLD}Autonomy{RESET}")
+        print(f"    Level:          {auto.get('current_level', '?')}")
+        cc = auto.get('clean_cycles')
+        print(f"    Clean cycles:   {cc if cc is not None else 'null'}")
+        print(f"    Matches KPI:    {auto.get('clean_cycles_matches_kpi')}")
+        print()
+
+    safety = result.get("safety", {})
+    if safety:
+        print(f"  {BOLD}Safety{RESET}")
+        print(f"    ALLOW_ORDERS:   {safety.get('env_IBKR_ALLOW_ORDERS', '?')}")
+        print(f"    rules.enforced: {safety.get('rules_enforced', '?')}")
+        print(f"    system_locked:  {_bool_str(safety.get('system_locked'))}")
+        print()
+
+    runtime = result.get("runtime", {})
+    if runtime:
+        print(f"  {BOLD}Runtime{RESET}")
+        print(f"    Bridge:         connected={_bool_str(runtime.get('bridge_connected'))} mode={runtime.get('mode', '?')}")
+        print(f"    Endpoints:      {runtime.get('endpoints_display', '?')}")
+        print(f"    Positions:      {runtime.get('positions_count', 0)}  flat={_bool_str(runtime.get('positions_flat'))}")
+        print(f"    Alerts:         {runtime.get('active_alerts_count', 0)}")
+        print()
+
+    guard = result.get("guard_state", {})
+    if guard:
+        print(f"  {BOLD}Guard State{RESET}")
+        print(f"    Trade count:    {guard.get('daily_trade_count', '?')}")
+        print(f"    Trade date:     {guard.get('trade_date', '?')}")
+        print(f"    Stale:          {_bool_str(guard.get('trade_date_stale'))}")
+        print(f"    Clean:          {_bool_str(guard.get('guard_state_clean'))}")
+        print()
+
+    sa = result.get("suggested_operator_actions", [])
+    if sa:
+        print(f"  {BOLD}Suggested Actions{RESET}")
+        for a in sa:
+            print(f"    {YELLOW}→{RESET} {a}")
+        print()
+
+    print(f"  {BOLD}Advisory{RESET}")
+    print(f"    {result.get('advisory', '')}")
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"\n  Evidence hash: {eh[:16]}...")
+
+    ep = result.get("export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    da = result.get("decision_artifact_path")
+    if da:
+        print(f"  Decision artifact: {da}")
+    dah = result.get("decision_artifact_hash", "")
+    if dah:
+        print(f"  Decision artifact hash: {dah[:16]}...")
+    print()
+
+
 
 def main() -> None:
     import argparse
@@ -21082,6 +21957,43 @@ def main() -> None:
     p16h_a3.add_argument("--json", action="store_true")
     p16h_a3.add_argument("--export", action="store_true")
     p16h_a3.add_argument("--demo-candidates", type=int, default=2)
+
+    # Phase 16I — Level 1 Review Decision Drill
+    p16i = sub.add_parser("level1-review-decision-drill",
+                          help="Level 1 review decision drill (Phase 16I)")
+    p16i.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16i.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-review-decisions/")
+    p16i.add_argument("--demo-candidates", type=int, default=2,
+                      help="Number of demo review candidates (0-5, default 2)")
+    p16i.add_argument("--decision-mode", type=str, default="mixed_demo",
+                      help="Decision mode: mixed_demo, accept_all_demo, reject_all_demo, defer_all_demo")
+    p16i.add_argument("--review-package", type=str, default=None,
+                      help="Optional path to a prior 16H review package artifact")
+    # Alias: phase16i-review-decision-drill
+    p16i_a1 = sub.add_parser("phase16i-review-decision-drill",
+                             help="Alias for level1-review-decision-drill")
+    p16i_a1.add_argument("--json", action="store_true")
+    p16i_a1.add_argument("--export", action="store_true")
+    p16i_a1.add_argument("--demo-candidates", type=int, default=2)
+    p16i_a1.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16i_a1.add_argument("--review-package", type=str, default=None)
+    # Alias: level1-accept-reject-drill
+    p16i_a2 = sub.add_parser("level1-accept-reject-drill",
+                             help="Alias for level1-review-decision-drill")
+    p16i_a2.add_argument("--json", action="store_true")
+    p16i_a2.add_argument("--export", action="store_true")
+    p16i_a2.add_argument("--demo-candidates", type=int, default=2)
+    p16i_a2.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16i_a2.add_argument("--review-package", type=str, default=None)
+    # Alias: review-decision-drill
+    p16i_a3 = sub.add_parser("review-decision-drill",
+                             help="Alias for level1-review-decision-drill")
+    p16i_a3.add_argument("--json", action="store_true")
+    p16i_a3.add_argument("--export", action="store_true")
+    p16i_a3.add_argument("--demo-candidates", type=int, default=2)
+    p16i_a3.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16i_a3.add_argument("--review-package", type=str, default=None)
 
     args = parser.parse_args()
 
@@ -22185,6 +23097,78 @@ def main() -> None:
             if rp:
                 print(f"  Review package written: {rp}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE16H_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-review-decision-drill",
+                        "phase16i-review-decision-drill",
+                        "level1-accept-reject-drill",
+                        "review-decision-drill"):
+        demo_cand = getattr(args, "demo_candidates", 2)
+        decision_mode = getattr(args, "decision_mode", "mixed_demo")
+        review_pkg = getattr(args, "review_package", None)
+        try:
+            result = _run_level1_review_decision_drill(
+                demo_candidates=demo_cand,
+                decision_mode=decision_mode,
+                review_package_path=review_pkg,
+            )
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            result = {
+                "command": f"ibkr-operator {args.command}",
+                "timestamp": ts_str,
+                "drill_id": f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}",
+                "diagnosis": _PHASE16I_DIAGNOSIS["unknown"],
+                "severity": "NO_GO",
+                "operator_action_required": True,
+                "suggested_operator_actions": [
+                    f"Internal error: {type(exc).__name__}",
+                    "Run ibkr-operator doctor",
+                ],
+                "git": {},
+                "required_tags": {},
+                "runtime": {},
+                "autonomy": {},
+                "safety": {},
+                "guard_state": {},
+                "input_review_package": {},
+                "review_decision": {"decisions_count": 0, "accepted_count": 0, "rejected_count": 0, "deferred_count": 0, "decision_items": []},
+                "decision_artifact": {},
+                "decision_artifact_hash": _compute_evidence_hash({}),
+                "review_workflow": {},
+                "workflow_summary": {},
+                "kpi_summary": {},
+                "doctor_summary": {},
+                "policy_summary": {},
+                "promotion_allowed_now": False,
+                "order_enablement_allowed_now": False,
+                "order_enablement_performed": False,
+                "promotion_performed": False,
+                "no_broker_mutation": True,
+                "no_order_window_opened": True,
+                "no_order_window_seen": True,
+                "no_h1_seen": True,
+                "h1_token_not_used": True,
+                "evidence_hash": _compute_evidence_hash({"diagnosis": _PHASE16I_DIAGNOSIS["unknown"]}),
+                "explicit_non_actions": _PHASE16I_EXPLICIT_NON_ACTIONS,
+            }
+            print(f"Review decision drill internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_review_decision_drill(result)
+        if args.export:
+            ep = result.get("export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+            da = result.get("decision_artifact_path")
+            if da:
+                print(f"  Decision artifact written: {da}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE16I_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

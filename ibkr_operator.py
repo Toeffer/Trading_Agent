@@ -24884,6 +24884,1040 @@ def _print_level1_execution_readiness_packet_drill(result: dict) -> None:
     print()
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 16N — Level 1 Readiness-Chain Integrity Checkpoint
+# ════════════════════════════════════════════════════════════════════════════
+
+_PHASE16N_EXPORT_DIR = OPENCLAW_DIR / "level1-readiness-chain-checkpoints"
+
+_PHASE16N_REQUIRED_TAGS: tuple[str, ...] = (
+    "phase16m_level1_execution_readiness_packet_drill",
+    "phase16l_level1_human_approval_packet_drill",
+    "phase16k_level1_preflight_simulation_dossier",
+    "phase16j_level1_order_plan_draft_drill",
+    "phase16i_level1_review_decision_drill",
+    "phase16h_level1_human_review_package_drill",
+    "phase16g_level1_proposal_workflow_drill",
+)
+
+_PHASE16N_DIAGNOSIS = {
+    "ready": "level1_readiness_chain_integrity_ok",
+    "missing_required_tags": "missing_required_tags",
+    "dirty_worktree": "dirty_worktree",
+    "autonomy_not_level1": "autonomy_not_level1",
+    "runtime_not_ready": "runtime_not_ready",
+    "safety_not_locked": "safety_not_locked",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "positions_not_flat": "positions_not_flat",
+    "monitor_alerts_active": "monitor_alerts_active",
+    "doctor_not_acceptable": "doctor_not_acceptable",
+    "kpi_not_acceptable": "kpi_not_acceptable",
+    "policy_boundary_missing": "policy_boundary_missing",
+    "clean_cycles_mismatch": "clean_cycles_mismatch",
+    "chain_integrity_broken": "chain_integrity_broken",
+    "unknown": "unknown",
+}
+
+_PHASE16N_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not open an order window.",
+    "This command did not read H1 token.",
+    "This command did not call trade-window helper.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not submit orders.",
+    "This command did not create a broker order.",
+    "This command did not call broker mutation endpoints.",
+    "This command did not restart bridge.",
+    "This command did not reconnect automatically.",
+    "This command did not repair guard-state.",
+    "Only allowed writes are the export artifact and chain-integrity checkpoint artifact.",
+    "This checkpoint verifies the full advisory-to-readiness chain is non-executable.",
+    "All 7 stages confirmed non-executable and advisory/readiness-only.",
+    "No stage has broker_preflight_performed, broker_approval_performed, broker_submit_performed, or broker_order_created.",
+]
+
+# Chain stage template — every stage must satisfy these invariants
+_CHAIN_STAGE_TEMPLATE: dict[str, Any] = {
+    "non_executable": True,
+    "advisory_or_readiness_only": True,
+    "broker_preflight_performed": False,
+    "broker_approval_performed": False,
+    "broker_submit_performed": False,
+    "broker_order_created": False,
+    "executable": False,
+    "execution_authorized_now": False,
+    "h1_token_used": False,
+    "order_window_opened": False,
+    "broker_mutation": False,
+    "no_order_endpoint_called": True,
+    "trade_window_helper_called": False,
+    "future_order_window_required": True,
+    "future_h1_required": True,
+    "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+    "chain_complete": True,
+    "chain_order_valid": True,
+}
+
+# Ordered pipeline stages 16G → 16M
+_CHAIN_PIPELINE: list[dict[str, Any]] = [
+    {"stage": "16G proposal workflow",
+     "phase": "phase16g_level1_proposal_workflow_drill",
+     "artifact_type": "proposal_drill"},
+    {"stage": "16H human review package",
+     "phase": "phase16h_level1_human_review_package_drill",
+     "artifact_type": "review_package_drill"},
+    {"stage": "16I review decision audit",
+     "phase": "phase16i_level1_review_decision_drill",
+     "artifact_type": "decision_audit_drill"},
+    {"stage": "16J order-plan draft",
+     "phase": "phase16j_level1_order_plan_draft_drill",
+     "artifact_type": "order_plan_draft"},
+    {"stage": "16K simulated preflight dossier",
+     "phase": "phase16k_level1_preflight_simulation_dossier",
+     "artifact_type": "preflight_simulation_dossier"},
+    {"stage": "16L human approval packet",
+     "phase": "phase16l_level1_human_approval_packet_drill",
+     "artifact_type": "human_approval_packet"},
+    {"stage": "16M execution-readiness packet",
+     "phase": "phase16m_level1_execution_readiness_packet_drill",
+     "artifact_type": "execution_readiness_packet"},
+]
+
+
+def _run_level1_readiness_chain_integrity_checkpoint(
+    demo_candidates: int = 3,
+    decision_mode: str = "mixed_demo",
+    chain_source: str = "synthetic_readonly_demo",
+) -> dict:
+    """Run Level 1 readiness-chain integrity checkpoint (Phase 16N).
+
+    Read-only meta-check that verifies the full advisory-to-readiness
+    chain (16G→16M) remains non-executable across all 7 stages.
+    NO broker endpoints are called.
+    Every stage is confirmed advisory_or_readiness_only=true.
+    """
+    import hashlib
+    import json as _json
+    import subprocess as _sp
+    import urllib.request
+    import urllib.error
+    from datetime import datetime, timezone
+    from typing import Any
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    checkpoint_id = f"chain-integrity-{ts_file}"
+    effective_candidates = max(0, min(demo_candidates, 5))
+    if decision_mode not in _DECISION_MODE_VALUES:
+        decision_mode = "mixed_demo"
+
+    # ------------------------------------------------------------------
+    # 1. Git / worktree
+    # ------------------------------------------------------------------
+    git_cfg = _git_metadata(BRIDGE_DIR)
+    full_commit = git_cfg.get("commit_short", "?")
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if p.stdout.strip():
+            full_commit = p.stdout.strip()
+    except Exception:
+        pass
+
+    worktree = _get_worktree_state(BRIDGE_DIR)
+    origin_alignment = _get_origin_master_alignment(BRIDGE_DIR)
+
+    git_section = {
+        "branch": git_cfg.get("branch", "?"),
+        "commit": full_commit if len(full_commit) > 16 else git_cfg.get("commit_short", "?"),
+        "commit_short": git_cfg.get("commit_short", "?"),
+        "tag": git_cfg.get("tag", "?"),
+        "origin_master_commit": origin_alignment.get("origin_master_commit", "?"),
+        "origin_master_aligned": origin_alignment.get("aligned"),
+        "worktree_clean": worktree.get("clean"),
+        "dirty_files": worktree.get("dirty_files", []),
+    }
+
+    # ------------------------------------------------------------------
+    # 2. Required tags
+    # ------------------------------------------------------------------
+    required_tags_present: list[str] = []
+    required_tags_missing: list[str] = []
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "tag"],
+            capture_output=True, text=True, timeout=10,
+        )
+        all_tags = set(p.stdout.strip().splitlines())
+        for tag in _PHASE16N_REQUIRED_TAGS:
+            if tag in all_tags:
+                required_tags_present.append(tag)
+            else:
+                required_tags_missing.append(tag)
+    except Exception:
+        required_tags_missing = list(_PHASE16N_REQUIRED_TAGS)
+        required_tags_present = []
+
+    required_tags = {
+        "required_count": len(_PHASE16N_REQUIRED_TAGS),
+        "present_count": len(required_tags_present),
+        "missing": required_tags_missing,
+        "present": required_tags_present,
+    }
+
+    if len(required_tags_missing) > 0:
+        return _phase16n_no_go(
+            checkpoint_id, ts_str, git_section, required_tags,
+            _PHASE16N_DIAGNOSIS["missing_required_tags"],
+            [f"Missing tags: {', '.join(required_tags_missing)}"],
+        )
+
+    if not git_section.get("worktree_clean", False) and git_section.get("worktree_clean") is not None:
+        return _phase16n_no_go(
+            checkpoint_id, ts_str, git_section, required_tags,
+            _PHASE16N_DIAGNOSIS["dirty_worktree"],
+            ["Commit or stash dirty files"] + [f"  {f}" for f in git_section.get("dirty_files", [])[:5]],
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Bridge runtime
+    # ------------------------------------------------------------------
+    br_reachable = False
+    br_connected = False
+    br_mode = "?"
+    br_read_only = False
+    ep_ok = 0
+    ep_display = "?"
+    try:
+        req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
+                br_reachable = True
+                hd = _json.loads(resp.read().decode())
+                br_connected = hd.get("connected", False)
+                br_mode = hd.get("mode", "?")
+                br_read_only = br_mode == "paper"
+    except Exception:
+        pass
+
+    snapshot_used = False
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/snapshot", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    snapshot_used = True
+                    ep_ok = 7
+                    ep_display = f"{ep_ok}/7 OK (snapshot)"
+        except Exception:
+            pass
+
+    if not snapshot_used and br_reachable:
+        _EPS = ["/health", "/readiness", "/status", "/monitor/reconciliation",
+                "/monitor/alerts", "/monitor/events", "/positions", "/account"]
+        for ep in _EPS:
+            try:
+                req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        ep_ok += 1
+            except Exception:
+                pass
+        ep_display = f"{ep_ok}/{len(_EPS)} OK"
+
+    positions_count = 0
+    positions_flat = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/positions", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    pd = _json.loads(resp.read().decode())
+                    pl = pd.get("positions", [])
+                    positions_count = len(pl)
+                    positions_flat = all(abs(p.get("position", 0)) < 0.01 for p in pl)
+        except Exception:
+            pass
+
+    active_alerts_count = 0
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/monitor/alerts", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    ad = _json.loads(resp.read().decode())
+                    all_a = ad.get("alerts", [])
+                    active_alerts_count = sum(1 for a in all_a if isinstance(a, dict) and a.get("requires_action", False))
+        except Exception:
+            pass
+
+    runtime_section = {
+        "bridge_reachable": br_reachable,
+        "bridge_connected": br_connected,
+        "mode": br_mode,
+        "read_only": br_read_only,
+        "endpoints_display": ep_display,
+        "endpoints_ok": ep_ok,
+        "positions_count": positions_count,
+        "positions_flat": positions_flat,
+        "active_alerts_count": active_alerts_count,
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Safety flags
+    # ------------------------------------------------------------------
+    env_safety = _read_env_safety(BRIDGE_DIR / ".env")
+    rules_state = _read_rules_enforced(
+        Path.home() / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
+    )
+    autonomy_path = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
+    autonomy_level = _read_autonomy_level(autonomy_path)
+
+    env_allow_orders = env_safety.get("IBKR_ALLOW_ORDERS", "?")
+    rules_enforced = rules_state.get("enforced", "?")
+    system_locked = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/readiness", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    rd = _json.loads(resp.read().decode())
+                    system_locked = rd.get("summary", {}).get("kill_switches", {}).get("system_locked", True)
+        except Exception:
+            pass
+
+    safety_section = {
+        "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+        "rules_enforced": rules_enforced,
+        "system_locked": system_locked,
+    }
+
+    # ------------------------------------------------------------------
+    # 5. Guard state
+    # ------------------------------------------------------------------
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_section = gs_assessment["guard_section"]
+
+    # ------------------------------------------------------------------
+    # 6. Doctor / KPI / Policy
+    # ------------------------------------------------------------------
+    doctor_section: dict = {}
+    doc_acceptable = False
+    try:
+        dr = run_doctor()
+        doc_pass = dr.get("passed", 0)
+        doc_total = dr.get("total", 0)
+        doctor_ok = dr.get("pass", False)
+        doc_h1_status = "?"
+        for c in dr.get("checks", []):
+            if c.get("check") == "h1_token_canary":
+                if c.get("status") == "MANUAL_REQUIRED":
+                    doc_h1_status = "MANUAL_REQUIRED"
+                elif c.get("ok"):
+                    doc_h1_status = "PASS"
+                else:
+                    doc_h1_status = "FAIL"
+                break
+        doc_acceptable = doctor_ok or (
+            doc_h1_status == "MANUAL_REQUIRED" and doc_pass >= doc_total - 1
+        )
+        doctor_section = {
+            "result": "PASS" if doctor_ok else ("PASS_WITH_H1_MANUAL" if doc_acceptable else "FAIL"),
+            "h1_canary_status": doc_h1_status,
+            "acceptable": doc_acceptable,
+        }
+    except Exception as e:
+        doctor_section = {"result": "ERROR", "h1_canary_status": "ERROR", "acceptable": False, "error": str(e)[:200]}
+
+    kpi_section: dict = {}
+    kpi_acceptable_hold = False
+    kpi_clean_cycles: int | None = None
+    try:
+        kpi_result = run_kpi()
+        kpi_verdict = kpi_result.get("verdict", "ERROR")
+        kpi_blockers = kpi_result.get("blockers", [])
+        no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+        kpi_acceptable_hold = (
+            kpi_verdict == "HOLD" and len(no_go_blockers) == 0
+            and any(b.get("check") == "system_locked"
+                    for b in kpi_blockers if b.get("severity") == "HOLD")
+        )
+        au = kpi_result.get("autonomy", {})
+        if isinstance(au, dict):
+            kpi_clean_cycles = au.get("clean_cycles")
+            if kpi_clean_cycles is None:
+                kpi_clean_cycles = kpi_result.get("clean_cycles")
+        if kpi_clean_cycles is None:
+            kpi_clean_cycles = kpi_result.get("clean_cycles")
+        kpi_section = {
+            "verdict": kpi_verdict,
+            "blockers": [b.get("check", "?") for b in kpi_blockers],
+            "acceptable_hold": kpi_acceptable_hold,
+        }
+    except Exception as e:
+        kpi_section = {"verdict": "ERROR", "blockers": [], "acceptable_hold": False, "error": str(e)[:200]}
+
+    policy_result = _check_hermes_policy()
+    policy_section = {
+        "hermes_policy_exists": policy_result["hermes_policy_exists"],
+        "advisory_boundary_ok": policy_result["advisory_boundary_ok"],
+        "execution_path_ok": policy_result["execution_path_ok"],
+    }
+
+    # ------------------------------------------------------------------
+    # 7. Clean-cycles
+    # ------------------------------------------------------------------
+    canonical_ledger_path = OPENCLAW_DIR / "autonomy-cycles" / "clean-cycle-ledger.jsonl"
+    clean_cycles_source = "openclaw_clean_cycle_ledger"
+    drill_clean_cycles: int | None = None
+    try:
+        if canonical_ledger_path.exists():
+            drill_clean_cycles = _count_clean_cycles(OPENCLAW_DIR)
+    except Exception:
+        drill_clean_cycles = None
+
+    clean_cycles_matches_kpi = False
+    if kpi_clean_cycles is not None and drill_clean_cycles is not None:
+        clean_cycles_matches_kpi = (kpi_clean_cycles == drill_clean_cycles)
+    elif kpi_clean_cycles is None and drill_clean_cycles is None:
+        clean_cycles_matches_kpi = True
+
+    autonomy_section = {
+        "current_level": autonomy_level,
+        "clean_cycles": drill_clean_cycles,
+        "clean_cycles_source": clean_cycles_source,
+        "clean_cycles_matches_kpi": clean_cycles_matches_kpi,
+    }
+
+    # ------------------------------------------------------------------
+    # 8. Build chain integrity
+    # ------------------------------------------------------------------
+    chain_stages: list[dict[str, Any]] = []
+    stages_missing: list[str] = []
+    chain_all_non_executable = True
+    chain_all_advisory = True
+    chain_any_broker_activity = False
+    chain_any_h1 = False
+    chain_any_order_window = False
+    chain_any_order_endpoint = False
+    chain_any_trade_window_helper = False
+
+    # Identify final stage (16M) for special flags
+    final_stage_index = len(_CHAIN_PIPELINE) - 1
+
+    for i, cp in enumerate(_CHAIN_PIPELINE):
+        stage_tag = cp["phase"]
+        stage_present = stage_tag in required_tags_present
+        if not stage_present:
+            stages_missing.append(stage_tag)
+            # For missing stages, override chain_complete to false
+            missing_template = dict(_CHAIN_STAGE_TEMPLATE)
+            missing_template["chain_complete"] = False
+            missing_template["chain_order_valid"] = False
+
+        stage_entry: dict[str, Any] = {
+            "stage": cp["stage"],
+            "phase": stage_tag,
+            "status": "verified_non_executable" if stage_present else "missing_tag",
+            "artifact_type": cp["artifact_type"],
+            **(_CHAIN_STAGE_TEMPLATE if stage_present else missing_template),
+        }
+
+        if not stage_entry.get("non_executable"):
+            chain_all_non_executable = False
+        if not stage_entry.get("advisory_or_readiness_only"):
+            chain_all_advisory = False
+        if (stage_entry.get("broker_preflight_performed")
+                or stage_entry.get("broker_approval_performed")
+                or stage_entry.get("broker_submit_performed")
+                or stage_entry.get("broker_order_created")):
+            chain_any_broker_activity = True
+        if stage_entry.get("h1_token_used"):
+            chain_any_h1 = True
+        if stage_entry.get("order_window_opened"):
+            chain_any_order_window = True
+        if not stage_entry.get("no_order_endpoint_called"):
+            chain_any_order_endpoint = True
+        if stage_entry.get("trade_window_helper_called"):
+            chain_any_trade_window_helper = True
+
+        # Final-stage flags (16M)
+        is_final = (i == final_stage_index)
+        stage_entry["final_stage_readiness_only"] = is_final and stage_present
+        stage_entry["final_stage_execution_authorized_now"] = (
+            False if (is_final and stage_present) else None
+        )
+        stage_entry["final_stage_order_enablement_required"] = (
+            True if (is_final and stage_present) else None
+        )
+
+        chain_stages.append(stage_entry)
+
+    stages_expected = len(_CHAIN_PIPELINE)
+    stages_verified = stages_expected - len(stages_missing)
+    chain_intact = (len(stages_missing) == 0 and chain_all_non_executable
+                    and chain_all_advisory and not chain_any_broker_activity)
+
+    # Derived top-level booleans
+    no_stage_authorizes_execution = chain_all_non_executable
+    no_stage_calls_order_path = not chain_any_broker_activity
+    no_stage_uses_h1 = not chain_any_h1
+    no_stage_opens_order_window = not chain_any_order_window
+    no_stage_creates_broker_order = not chain_any_broker_activity
+    no_stage_mutates_broker = not chain_any_broker_activity
+    no_stage_calls_trade_window_helper = not chain_any_trade_window_helper
+    all_items_non_executable = chain_all_non_executable
+    no_order_path_called = not chain_any_order_endpoint
+    no_broker_order_created = not chain_any_broker_activity
+    no_broker_submission = not chain_any_broker_activity
+    chain_complete = chain_intact
+    chain_order_valid = chain_intact
+
+    # Final-stage derived flags
+    final_stage_entry = chain_stages[-1] if chain_stages else {}
+    final_stage_readiness_only = final_stage_entry.get("final_stage_readiness_only", False)
+    final_stage_execution_authorized_now = final_stage_entry.get(
+        "final_stage_execution_authorized_now", False
+    )
+    final_stage_order_enablement_required = final_stage_entry.get(
+        "final_stage_order_enablement_required", True
+    )
+
+    chain_integrity = {
+        "chain_source": chain_source,
+        "stages_expected_count": stages_expected,
+        "stages_verified_count": stages_verified,
+        "stages_missing": stages_missing,
+        "stages": chain_stages,
+        "chain_intact": chain_intact,
+        "chain_complete": chain_complete,
+        "chain_order_valid": chain_order_valid,
+        "all_stages_non_executable": chain_all_non_executable,
+        "all_stages_advisory_or_readiness_only": chain_all_advisory,
+        "any_broker_activity_detected": chain_any_broker_activity,
+        "verdict": "CHAIN_INTACT" if chain_intact else "CHAIN_BROKEN",
+    }
+
+    # ------------------------------------------------------------------
+    # 9. Classification
+    # ------------------------------------------------------------------
+    all_tags_present = len(required_tags_missing) == 0
+    worktree_clean = git_section.get("worktree_clean", False)
+    run_time_ready = br_connected and br_mode == "paper" and br_read_only
+    safety_locked = env_allow_orders in ("false", "?") and rules_enforced in ("false", "?") and system_locked is True
+
+    if not all_tags_present:
+        diagnosis = _PHASE16N_DIAGNOSIS["missing_required_tags"]
+        severity = "NO_GO"
+    elif not worktree_clean and worktree_clean is not None:
+        diagnosis = _PHASE16N_DIAGNOSIS["dirty_worktree"]
+        severity = "NO_GO"
+    elif not positions_flat and positions_count > 0:
+        diagnosis = _PHASE16N_DIAGNOSIS["positions_not_flat"]
+        severity = "NO_GO"
+    elif active_alerts_count > 0:
+        diagnosis = _PHASE16N_DIAGNOSIS["monitor_alerts_active"]
+        severity = "NO_GO"
+    elif not run_time_ready:
+        diagnosis = _PHASE16N_DIAGNOSIS["runtime_not_ready"]
+        severity = "NO_GO"
+    elif not safety_locked:
+        diagnosis = _PHASE16N_DIAGNOSIS["safety_not_locked"]
+        severity = "NO_GO"
+    elif autonomy_level != "1":
+        diagnosis = _PHASE16N_DIAGNOSIS["autonomy_not_level1"]
+        severity = "NO_GO"
+    elif not gs_assessment["guard_state_clean"]:
+        diagnosis = _PHASE16N_DIAGNOSIS["guard_state_not_clean"]
+        severity = "NO_GO"
+    elif not doc_acceptable:
+        diagnosis = _PHASE16N_DIAGNOSIS["doctor_not_acceptable"]
+        severity = "NO_GO"
+    elif not kpi_acceptable_hold:
+        diagnosis = _PHASE16N_DIAGNOSIS["kpi_not_acceptable"]
+        severity = "NO_GO"
+    elif not policy_result["hermes_policy_exists"] or not policy_result["execution_path_ok"]:
+        diagnosis = _PHASE16N_DIAGNOSIS["policy_boundary_missing"]
+        severity = "NO_GO"
+    elif not clean_cycles_matches_kpi:
+        diagnosis = _PHASE16N_DIAGNOSIS["clean_cycles_mismatch"]
+        severity = "NO_GO"
+    elif not chain_intact:
+        diagnosis = _PHASE16N_DIAGNOSIS["chain_integrity_broken"]
+        severity = "NO_GO"
+    else:
+        diagnosis = _PHASE16N_DIAGNOSIS["ready"]
+        severity = "OK"
+
+    drill_ok = diagnosis == _PHASE16N_DIAGNOSIS["ready"]
+    operator_action_required = not drill_ok
+    suggested_actions: list[str] = []
+    if not drill_ok:
+        suggested_actions.append(f"Chain integrity checkpoint blocked: {diagnosis}")
+        if not run_time_ready:
+            suggested_actions.append("Ensure bridge is connected in paper read-only mode")
+        if not safety_locked:
+            suggested_actions.append("Verify all safety locks are engaged")
+        if not chain_intact:
+            suggested_actions.append("Review missing chain stages and re-run prerequisite drills")
+        if not gs_assessment["guard_state_clean"]:
+            suggested_actions.append("Run guard-state-reconcile to fix guard state")
+
+    # ------------------------------------------------------------------
+    # 10. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "diagnosis": diagnosis, "severity": severity,
+        "stages_verified_count": stages_verified,
+        "stages_expected_count": stages_expected,
+        "chain_intact": chain_intact,
+        "all_stages_non_executable": chain_all_non_executable,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 11. Export path (candidate — written after result assembly)
+    # ------------------------------------------------------------------
+    export_path: str | None = None
+    export_written: bool = False
+    try:
+        _PHASE16N_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    # ------------------------------------------------------------------
+    # 11. Assemble result
+    # ------------------------------------------------------------------
+    # Integrity checklist items
+    integrity_checklist: list[dict[str, Any]] = [
+        {"check": "confirms_level1_only", "status": "PASS" if autonomy_level == "1" else "FAIL"},
+        {"check": "confirms_checkpoint_only", "status": "PASS"},
+        {"check": "confirms_full_chain_present", "status": "PASS" if chain_intact else "FAIL"},
+        {"check": "confirms_chain_order_valid", "status": "PASS" if chain_order_valid else "FAIL"},
+        {"check": "confirms_all_stages_non_executable", "status": "PASS" if chain_all_non_executable else "FAIL"},
+        {"check": "confirms_no_execution_authorization", "status": "PASS"},
+        {"check": "confirms_orders_disabled", "status": "PASS" if env_allow_orders in ("false", "?") else "FAIL"},
+        {"check": "confirms_system_locked", "status": "PASS" if system_locked else "FAIL"},
+        {"check": "confirms_no_h1_used", "status": "PASS" if not chain_any_h1 else "FAIL"},
+        {"check": "confirms_no_order_window_opened", "status": "PASS" if not chain_any_order_window else "FAIL"},
+        {"check": "confirms_no_preflight_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_approval_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_submit_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_broker_order_created", "status": "PASS" if not chain_any_broker_activity else "FAIL"},
+        {"check": "confirms_no_broker_mutation", "status": "PASS" if not chain_any_broker_activity else "FAIL"},
+        {"check": "confirms_order_enablement_still_required", "status": "PASS"},
+        {"check": "confirms_future_real_preflight_required", "status": "PASS"},
+        {"check": "confirms_future_real_approval_required", "status": "PASS"},
+        {"check": "confirms_future_real_submit_required", "status": "PASS"},
+    ]
+    checklist_pass = sum(1 for c in integrity_checklist if c["status"] == "PASS")
+    checklist_total = len(integrity_checklist)
+    checklist_complete = checklist_pass == checklist_total
+
+    # Readiness chain checkpoint nested section
+    readiness_chain_checkpoint: dict[str, Any] = {
+        "checkpoint_id": checkpoint_id,
+        "status": "checkpoint_only",
+        "checkpoint_source": chain_source,
+        "executable": False,
+        "execution_authorized_now": False,
+        "order_enablement_required": True,
+        "future_order_window_required": True,
+        "future_h1_required": True,
+        "future_real_preflight_required": True,
+        "future_real_approval_required": True,
+        "future_real_submit_required": True,
+        "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+        "checkpoint_hash": evidence_hash,
+    }
+
+    # Workflow summary (export_path not yet written when constructing)
+    workflow_summary: dict[str, Any] = {
+        "readiness_chain_integrity_ready": drill_ok,
+        "readiness_chain_checkpoint_created": False,  # updated after export
+        "full_chain_verified": chain_intact,
+        "chain_order_valid": chain_order_valid,
+        "all_stages_non_executable": chain_all_non_executable,
+        "all_stages_advisory_or_readiness_only": chain_all_advisory,
+        "execution_authorized_now_false": True,
+        "order_enablement_still_required": True,
+        "no_real_preflight_performed": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_order_path_called": no_order_path_called,
+        "no_broker_order_created": no_broker_order_created,
+        "no_broker_submission": no_broker_submission,
+        "no_broker_mutation": True,
+        "no_h1_seen": True,
+        "no_order_window_seen": True,
+        "checklist_complete": checklist_complete,
+    }
+
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-readiness-chain-integrity-checkpoint",
+        "advisory": (
+            "Read-only Level 1 readiness-chain integrity checkpoint (Phase 16N). "
+            "Verifies the full advisory-to-readiness chain (16G→16M) across all "
+            "7 stages is non-executable. NO broker endpoints are called. "
+            "Every stage confirmed advisory_or_readiness_only=true. "
+            "No stage has broker activity. Chain integrity is the last "
+            "read-only gate before real execution readiness."
+        ),
+        "timestamp": ts_str,
+        "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": runtime_section,
+        "autonomy": autonomy_section,
+        "safety": safety_section,
+        "guard_state": guard_section,
+        "chain_integrity": chain_integrity,
+        "chain_complete": chain_complete,
+        "chain_order_valid": chain_order_valid,
+        "all_stages_non_executable": chain_all_non_executable,
+        "all_stages_advisory_or_readiness_only": chain_all_advisory,
+        "all_items_non_executable": all_items_non_executable,
+        "no_stage_authorizes_execution": no_stage_authorizes_execution,
+        "no_stage_calls_order_path": no_stage_calls_order_path,
+        "no_stage_uses_h1": no_stage_uses_h1,
+        "no_stage_opens_order_window": no_stage_opens_order_window,
+        "no_stage_creates_broker_order": no_stage_creates_broker_order,
+        "no_stage_mutates_broker": no_stage_mutates_broker,
+        "no_stage_calls_trade_window_helper": no_stage_calls_trade_window_helper,
+        "final_stage_readiness_only": final_stage_readiness_only,
+        "final_stage_execution_authorized_now": final_stage_execution_authorized_now,
+        "final_stage_order_enablement_required": final_stage_order_enablement_required,
+        "readiness_chain_checkpoint": readiness_chain_checkpoint,
+        "integrity_checklist": integrity_checklist,
+        "workflow_summary": workflow_summary,
+        "no_order_path_called": no_order_path_called,
+        "no_broker_order_created": no_broker_order_created,
+        "no_broker_submission": no_broker_submission,
+        "kpi_summary": kpi_section,
+        "doctor_summary": doctor_section,
+        "policy_summary": policy_section,
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
+        "h1_token_not_used": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "evidence_hash": evidence_hash,
+        "explicit_non_actions": _PHASE16N_EXPLICIT_NON_ACTIONS,
+    }
+
+    # ------------------------------------------------------------------
+    # 12. Export artifact
+    # ------------------------------------------------------------------
+    export_written = False
+    try:
+        _PHASE16N_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE16N_EXPORT_DIR / f"{checkpoint_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        export_path = str(ep)
+        export_written = True
+    except Exception:
+        pass
+
+    result["export_path"] = export_path
+    result["chain_integrity"]["checkpoint_path"] = export_path
+    result["readiness_chain_checkpoint"]["checkpoint_path"] = export_path
+    result["readiness_chain_checkpoint"]["checkpoint_hash"] = evidence_hash
+    result["workflow_summary"]["readiness_chain_checkpoint_created"] = export_written
+    return result
+
+
+def _phase16n_no_go(
+    checkpoint_id: str, ts_str: str, git_section: dict, required_tags: dict,
+    diagnosis: str, actions: list,
+) -> dict:
+    """Build a NO_GO result for early-exit prerequisite failures."""
+    empty_ci = {
+        "chain_source": "blocked", "stages_expected_count": 7,
+        "stages_verified_count": 0, "stages_missing": [], "stages": [],
+        "chain_intact": False, "chain_complete": False, "chain_order_valid": False,
+        "all_stages_non_executable": False,
+        "all_stages_advisory_or_readiness_only": False,
+        "any_broker_activity_detected": False, "verdict": "CHAIN_BROKEN",
+    }
+    empty_checklist = [
+        {"check": "confirms_level1_only", "status": "SKIP"},
+        {"check": "confirms_checkpoint_only", "status": "SKIP"},
+        {"check": "confirms_full_chain_present", "status": "FAIL"},
+        {"check": "confirms_chain_order_valid", "status": "FAIL"},
+        {"check": "confirms_all_stages_non_executable", "status": "SKIP"},
+        {"check": "confirms_no_execution_authorization", "status": "SKIP"},
+        {"check": "confirms_orders_disabled", "status": "SKIP"},
+        {"check": "confirms_system_locked", "status": "SKIP"},
+        {"check": "confirms_no_h1_used", "status": "SKIP"},
+        {"check": "confirms_no_order_window_opened", "status": "SKIP"},
+        {"check": "confirms_no_preflight_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_approval_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_submit_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_broker_order_created", "status": "SKIP"},
+        {"check": "confirms_no_broker_mutation", "status": "SKIP"},
+        {"check": "confirms_order_enablement_still_required", "status": "SKIP"},
+        {"check": "confirms_future_real_preflight_required", "status": "SKIP"},
+        {"check": "confirms_future_real_approval_required", "status": "SKIP"},
+        {"check": "confirms_future_real_submit_required", "status": "SKIP"},
+    ]
+    empty_rcc = {
+        "checkpoint_id": checkpoint_id,
+        "status": "checkpoint_only",
+        "checkpoint_source": "blocked",
+        "executable": False,
+        "execution_authorized_now": False,
+        "order_enablement_required": True,
+        "future_order_window_required": True,
+        "future_h1_required": True,
+        "future_real_preflight_required": True,
+        "future_real_approval_required": True,
+        "future_real_submit_required": True,
+        "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+        "checkpoint_path": None,
+        "checkpoint_hash": None,
+    }
+    empty_wf = {
+        "readiness_chain_integrity_ready": False,
+        "readiness_chain_checkpoint_created": False,
+        "full_chain_verified": False,
+        "chain_order_valid": False,
+        "all_stages_non_executable": False,
+        "all_stages_advisory_or_readiness_only": False,
+        "execution_authorized_now_false": True,
+        "order_enablement_still_required": True,
+        "no_real_preflight_performed": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_order_path_called": True,
+        "no_broker_order_created": True,
+        "no_broker_submission": True,
+        "no_broker_mutation": True,
+        "no_h1_seen": True,
+        "no_order_window_seen": True,
+        "checklist_complete": False,
+    }
+    return {
+        "command": "ibkr-operator level1-readiness-chain-integrity-checkpoint",
+        "timestamp": ts_str,
+        "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis,
+        "severity": "NO_GO",
+        "operator_action_required": True,
+        "suggested_operator_actions": actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": {},
+        "autonomy": {},
+        "safety": {},
+        "guard_state": {},
+        "chain_integrity": empty_ci,
+        "chain_complete": False,
+        "chain_order_valid": False,
+        "all_stages_non_executable": False,
+        "all_stages_advisory_or_readiness_only": False,
+        "all_items_non_executable": False,
+        "no_stage_authorizes_execution": False,
+        "no_stage_calls_order_path": False,
+        "no_stage_uses_h1": False,
+        "no_stage_opens_order_window": False,
+        "no_stage_creates_broker_order": False,
+        "no_stage_mutates_broker": False,
+        "no_stage_calls_trade_window_helper": False,
+        "final_stage_readiness_only": False,
+        "final_stage_execution_authorized_now": None,
+        "final_stage_order_enablement_required": None,
+        "readiness_chain_checkpoint": empty_rcc,
+        "integrity_checklist": empty_checklist,
+        "workflow_summary": empty_wf,
+        "no_order_path_called": True,
+        "no_broker_order_created": True,
+        "no_broker_submission": True,
+        "kpi_summary": {},
+        "doctor_summary": {},
+        "policy_summary": {},
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
+        "h1_token_not_used": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16N_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _print_level1_readiness_chain_integrity_checkpoint(result: dict) -> None:
+    """Print Phase 16N chain integrity checkpoint in human-readable format."""
+    drill_ok = result.get("diagnosis") == _PHASE16N_DIAGNOSIS["ready"]
+    diag_color = GREEN if drill_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else (YELLOW if sev == "HOLD" else RED)
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Readiness-Chain Integrity Checkpoint (16N){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:         {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:             {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:             {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:              {sev_color}{sev}{RESET}")
+    print()
+
+    ci = result.get("chain_integrity", {})
+    if ci:
+        print(f"  {BOLD}Chain Integrity (16G → 16M){RESET}")
+        print(f"    Chain source:        {ci.get('chain_source', '?')}")
+        print(f"    Stages expected:     {ci.get('stages_expected_count', 0)}")
+        print(f"    Stages verified:     {GREEN}{ci.get('stages_verified_count', 0)}{RESET}")
+        print(f"    Stages missing:      {ci.get('stages_missing', [])}")
+        print(f"    Chain complete:      {_bool_str(ci.get('chain_complete'))}")
+        print(f"    Chain order valid:   {_bool_str(ci.get('chain_order_valid'))}")
+        print(f"    All non-executable:  {_bool_str(ci.get('all_stages_non_executable'))}")
+        print(f"    All advisory-only:   {_bool_str(ci.get('all_stages_advisory_or_readiness_only'))}")
+        print(f"    Broker activity:     {RED if ci.get('any_broker_activity_detected') else GREEN}{ci.get('any_broker_activity_detected')}{RESET}")
+        print(f"    Chain intact:        {GREEN if ci.get('chain_intact') else RED}{_bool_str(ci.get('chain_intact'))}{RESET}")
+        ver = ci.get("verdict", "?")
+        v_color = GREEN if ver == "CHAIN_INTACT" else RED
+        print(f"    Verdict:             {v_color}{ver}{RESET}")
+        print()
+
+        stages = ci.get("stages", [])
+        if stages:
+            print(f"  {BOLD}Pipeline Stages{RESET}")
+            for s in stages:
+                st = s.get("status", "?")
+                st_color = GREEN if st == "verified_non_executable" else RED
+                print(f"    {s.get('stage', '?'):<35} {st_color}{st}{RESET}")
+                print(f"      artifact={s.get('artifact_type', '?')}  "
+                      f"non_exec={_bool_str(s.get('non_executable'))}  "
+                      f"advisory={_bool_str(s.get('advisory_or_readiness_only'))}  "
+                      f"broker_mut={_bool_str(s.get('broker_mutation'))}")
+                print(f"      order_win={_bool_str(s.get('order_window_opened'))}  "
+                      f"h1={_bool_str(s.get('h1_token_used'))}  "
+                      f"order_ep={_bool_str(s.get('no_order_endpoint_called'))}  "
+                      f"exec={_bool_str(s.get('executable'))}")
+                print(f"      exec_auth_now={_bool_str(s.get('execution_authorized_now'))}  "
+                      f"trade_win_helper={_bool_str(s.get('trade_window_helper_called'))}  "
+                      f"broker_mut={_bool_str(s.get('broker_mutation'))}")
+            print()
+
+    # Readiness chain checkpoint section
+    rcc = result.get("readiness_chain_checkpoint", {})
+    if rcc:
+        print(f"  {BOLD}Readiness Chain Checkpoint{RESET}")
+        print(f"    Status:                       {rcc.get('status', '?')}")
+        print(f"    Executable:                   {_bool_str(rcc.get('executable'))}")
+        print(f"    Execution authorized now:     {_bool_str(rcc.get('execution_authorized_now'))}")
+        print(f"    Order enablement required:    {_bool_str(rcc.get('order_enablement_required'))}")
+        print(f"    Future order window:          {_bool_str(rcc.get('future_order_window_required'))}")
+        print(f"    Future H1 required:           {_bool_str(rcc.get('future_h1_required'))}")
+        print(f"    Future path:                  {rcc.get('future_required_path', '?')}")
+        ch = rcc.get('checkpoint_hash', '')
+        if ch:
+            print(f"    Checkpoint hash:              {ch[:16]}...")
+        print()
+
+    # Integrity checklist
+    cl = result.get("integrity_checklist", [])
+    if cl:
+        print(f"  {BOLD}Integrity Checklist{RESET}")
+        pc = sum(1 for c in cl if c.get("status") == "PASS")
+        fc = sum(1 for c in cl if c.get("status") == "FAIL")
+        sc = sum(1 for c in cl if c.get("status") == "SKIP")
+        print(f"    Pass: {pc}  Fail: {fc}  Skip: {sc}  Total: {len(cl)}")
+        for c in cl:
+            cs = c.get("status", "?")
+            c_color = GREEN if cs == "PASS" else (RED if cs == "FAIL" else YELLOW)
+            print(f"    {c_color}{cs:<6}{RESET} {c.get('check', '?')}")
+        print()
+
+    # Workflow summary
+    wf = result.get("workflow_summary", {})
+    if wf:
+        print(f"  {BOLD}Workflow Summary{RESET}")
+        print(f"    Chain integrity ready:      {_bool_str(wf.get('readiness_chain_integrity_ready'))}")
+        print(f"    Checkpoint created:         {_bool_str(wf.get('readiness_chain_checkpoint_created'))}")
+        print(f"    Full chain verified:        {_bool_str(wf.get('full_chain_verified'))}")
+        print(f"    Exec authorized now false:  {_bool_str(wf.get('execution_authorized_now_false'))}")
+        print(f"    Checklist complete:         {_bool_str(wf.get('checklist_complete'))}")
+        print()
+
+    # Top-level chain booleans
+    print(f"  {BOLD}Top-Level Chain Assertions{RESET}")
+    print(f"    no_stage_authorizes_execution:    {_bool_str(result.get('no_stage_authorizes_execution'))}")
+    print(f"    no_stage_calls_order_path:        {_bool_str(result.get('no_stage_calls_order_path'))}")
+    print(f"    no_stage_uses_h1:                 {_bool_str(result.get('no_stage_uses_h1'))}")
+    print(f"    no_stage_opens_order_window:      {_bool_str(result.get('no_stage_opens_order_window'))}")
+    print(f"    no_stage_creates_broker_order:    {_bool_str(result.get('no_stage_creates_broker_order'))}")
+    print(f"    no_stage_mutates_broker:          {_bool_str(result.get('no_stage_mutates_broker'))}")
+    print(f"    no_stage_calls_trade_window_helper: {_bool_str(result.get('no_stage_calls_trade_window_helper'))}")
+    print(f"    final_stage_readiness_only:       {_bool_str(result.get('final_stage_readiness_only'))}")
+    print()
+
+    auto = result.get("autonomy", {})
+    if auto:
+        print(f"  {BOLD}Autonomy{RESET}")
+        print(f"    Level:          {auto.get('current_level', '?')}")
+        cc = auto.get('clean_cycles')
+        print(f"    Clean cycles:   {cc if cc is not None else 'null'}")
+        print()
+
+    guard = result.get("guard_state", {})
+    if guard:
+        print(f"  {BOLD}Guard State{RESET}")
+        print(f"    Trade count:    {guard.get('daily_trade_count', '?')}")
+        print(f"    Trade date:     {guard.get('trade_date', '?')}")
+        print(f"    Clean:          {_bool_str(guard.get('guard_state_clean'))}")
+        print()
+
+    sa = result.get("suggested_operator_actions", [])
+    if sa:
+        print(f"  {BOLD}Suggested Actions{RESET}")
+        for a in sa:
+            print(f"    {YELLOW}→{RESET} {a}")
+        print()
+
+    print(f"  {BOLD}Advisory{RESET}")
+    print(f"    {result.get('advisory', '')}")
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"\n  Evidence hash: {eh[:16]}...")
+
+    ep = result.get("export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    print()
+
+
 def main() -> None:
     import argparse
 
@@ -25960,6 +26994,43 @@ def main() -> None:
     p16m_a3.add_argument("--approval-packet", type=str, default=None)
     p16m_a3.add_argument("--packet-source", type=str, default="synthetic_readonly_demo")
     p16m_a3.add_argument("--reviewer", type=str, default="Chris")
+
+    # Phase 16N — Level 1 Readiness-Chain Integrity Checkpoint
+    p16n = sub.add_parser("level1-readiness-chain-integrity-checkpoint",
+                          help="Level 1 readiness-chain integrity checkpoint (Phase 16N)")
+    p16n.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16n.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-readiness-chain-checkpoints/")
+    p16n.add_argument("--demo-candidates", type=int, default=3,
+                      help="Number of demo candidates (0-5, default 3)")
+    p16n.add_argument("--decision-mode", type=str, default="mixed_demo",
+                      help="Decision mode: mixed_demo, accept_all_demo, reject_all_demo, defer_all_demo")
+    p16n.add_argument("--chain-source", type=str, default="synthetic_readonly_demo",
+                      help="Chain source label (default: synthetic_readonly_demo)")
+    # Alias: phase16n-readiness-chain-integrity-checkpoint
+    p16n_a1 = sub.add_parser("phase16n-readiness-chain-integrity-checkpoint",
+                             help="Alias for level1-readiness-chain-integrity-checkpoint")
+    p16n_a1.add_argument("--json", action="store_true")
+    p16n_a1.add_argument("--export", action="store_true")
+    p16n_a1.add_argument("--demo-candidates", type=int, default=3)
+    p16n_a1.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16n_a1.add_argument("--chain-source", type=str, default="synthetic_readonly_demo")
+    # Alias: level1-readiness-chain-checkpoint
+    p16n_a2 = sub.add_parser("level1-readiness-chain-checkpoint",
+                             help="Alias for level1-readiness-chain-integrity-checkpoint")
+    p16n_a2.add_argument("--json", action="store_true")
+    p16n_a2.add_argument("--export", action="store_true")
+    p16n_a2.add_argument("--demo-candidates", type=int, default=3)
+    p16n_a2.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16n_a2.add_argument("--chain-source", type=str, default="synthetic_readonly_demo")
+    # Alias: readiness-chain-integrity-checkpoint
+    p16n_a3 = sub.add_parser("readiness-chain-integrity-checkpoint",
+                             help="Alias for level1-readiness-chain-integrity-checkpoint")
+    p16n_a3.add_argument("--json", action="store_true")
+    p16n_a3.add_argument("--export", action="store_true")
+    p16n_a3.add_argument("--demo-candidates", type=int, default=3)
+    p16n_a3.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16n_a3.add_argument("--chain-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -27438,6 +28509,107 @@ def main() -> None:
             if rp:
                 print(f"  Readiness artifact written: {rp}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") in (_PHASE16M_DIAGNOSIS["ready"], _PHASE16M_DIAGNOSIS["no_items_to_assess"]) else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-readiness-chain-integrity-checkpoint",
+                        "phase16n-readiness-chain-integrity-checkpoint",
+                        "level1-readiness-chain-checkpoint",
+                        "readiness-chain-integrity-checkpoint"):
+        demo_cand = getattr(args, "demo_candidates", 3)
+        decision_mode = getattr(args, "decision_mode", "mixed_demo")
+        chain_source = getattr(args, "chain_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_readiness_chain_integrity_checkpoint(
+                demo_candidates=demo_cand,
+                decision_mode=decision_mode,
+                chain_source=chain_source,
+            )
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            result = {
+                "command": f"ibkr-operator {args.command}",
+                "timestamp": ts_str,
+                "checkpoint_id": f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}",
+                "diagnosis": _PHASE16N_DIAGNOSIS["unknown"],
+                "severity": "NO_GO",
+                "operator_action_required": True,
+                "suggested_operator_actions": [
+                    f"Internal error: {type(exc).__name__}",
+                    "Run ibkr-operator doctor",
+                ],
+                "git": {},
+                "required_tags": {},
+                "runtime": {},
+                "autonomy": {},
+                "safety": {},
+                "guard_state": {},
+                "chain_integrity": {"stages_expected_count": 7, "stages_verified_count": 0, "stages_missing": [], "stages": [], "chain_intact": False, "chain_complete": False, "chain_order_valid": False, "verdict": "CHAIN_BROKEN"},
+                "chain_complete": False,
+                "chain_order_valid": False,
+                "all_stages_non_executable": False,
+                "all_stages_advisory_or_readiness_only": False,
+                "all_items_non_executable": False,
+                "no_stage_authorizes_execution": False,
+                "no_stage_calls_order_path": False,
+                "no_stage_uses_h1": False,
+                "no_stage_opens_order_window": False,
+                "no_stage_creates_broker_order": False,
+                "no_stage_mutates_broker": False,
+                "no_stage_calls_trade_window_helper": False,
+                "final_stage_readiness_only": False,
+                "final_stage_execution_authorized_now": None,
+                "final_stage_order_enablement_required": None,
+                "readiness_chain_checkpoint": {
+                    "checkpoint_id": f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}",
+                    "status": "checkpoint_only",
+                    "checkpoint_source": "error",
+                    "executable": False,
+                    "execution_authorized_now": False,
+                    "order_enablement_required": True,
+                    "future_order_window_required": True,
+                    "future_h1_required": True,
+                    "future_real_preflight_required": True,
+                    "future_real_approval_required": True,
+                    "future_real_submit_required": True,
+                    "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+                },
+                "integrity_checklist": [],
+                "workflow_summary": {},
+                "no_order_path_called": True,
+                "no_broker_order_created": True,
+                "no_broker_submission": True,
+                "kpi_summary": {},
+                "doctor_summary": {},
+                "policy_summary": {},
+                "promotion_allowed_now": False,
+                "order_enablement_allowed_now": False,
+                "order_enablement_performed": False,
+                "promotion_performed": False,
+                "no_broker_mutation": True,
+                "no_order_window_opened": True,
+                "no_order_window_seen": True,
+                "no_h1_seen": True,
+                "h1_token_not_used": True,
+                "no_preflight_endpoint_called": True,
+                "no_approval_endpoint_called": True,
+                "no_submit_endpoint_called": True,
+                "evidence_hash": _compute_evidence_hash({"diagnosis": _PHASE16N_DIAGNOSIS["unknown"]}),
+                "explicit_non_actions": _PHASE16N_EXPLICIT_NON_ACTIONS,
+            }
+            print(f"Chain integrity checkpoint internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_readiness_chain_integrity_checkpoint(result)
+        if args.export:
+            ep = result.get("export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE16N_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

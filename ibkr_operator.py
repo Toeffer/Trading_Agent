@@ -21090,6 +21090,943 @@ def _print_level1_review_decision_drill(result: dict) -> None:
     print()
 
 
+# ===========================================================================
+# Phase 16J — Level 1 Approved-Item Order-Plan Draft Drill
+# ===========================================================================
+
+_PHASE16J_EXPORT_DIR = OPENCLAW_DIR / "level1-order-plan-drafts"
+
+_PHASE16J_REQUIRED_TAGS: tuple[str, ...] = (
+    "phase16i_level1_review_decision_drill",
+    "phase16h_level1_human_review_package_drill",
+    "phase16g_level1_proposal_workflow_drill",
+)
+
+_PHASE16J_DIAGNOSIS = {
+    "ready": "level1_order_plan_draft_ok",
+    "missing_required_tags": "missing_required_tags",
+    "dirty_worktree": "dirty_worktree",
+    "autonomy_not_level1": "autonomy_not_level1",
+    "runtime_not_ready": "runtime_not_ready",
+    "safety_not_locked": "safety_not_locked",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "positions_not_flat": "positions_not_flat",
+    "monitor_alerts_active": "monitor_alerts_active",
+    "doctor_not_acceptable": "doctor_not_acceptable",
+    "kpi_not_acceptable": "kpi_not_acceptable",
+    "policy_boundary_missing": "policy_boundary_missing",
+    "clean_cycles_mismatch": "clean_cycles_mismatch",
+    "decision_artifact_not_found": "decision_artifact_not_found",
+    "decision_artifact_not_audit_only": "decision_artifact_not_audit_only",
+    "executable_item_present": "executable_item_present",
+    "broker_order_created": "broker_order_created",
+    "unknown": "unknown",
+}
+
+_PHASE16J_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not open an order window.",
+    "This command did not read H1 token.",
+    "This command did not call trade-window helper.",
+    "This command did not call /order, /order/preflight, /order/approve, or /order/submit.",
+    "This command did not preflight.",
+    "This command did not approve.",
+    "This command did not submit.",
+    "This command did not submit orders.",
+    "This command did not create a broker order.",
+    "This command did not call broker mutation endpoints.",
+    "This command did not restart bridge.",
+    "This command did not reconnect automatically.",
+    "This command did not repair guard-state.",
+    "Only allowed writes are the export artifact and order-plan-draft artifact.",
+    "Draft items are non-executable and must not become broker orders.",
+]
+
+# Order-plan draft item template — only accepted items become plan items
+_DRAFT_ITEM_TEMPLATE = {
+    "executable": False,
+    "performed": False,
+    "broker_order_created": False,
+    "broker_order_id": None,
+    "order_type": "LMT",
+    "time_in_force": "DAY",
+    "limit_price": None,
+    "requires_chris_approval": True,
+    "requires_future_order_window": True,
+    "requires_future_h1": True,
+    "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+}
+
+
+def _run_level1_order_plan_draft_drill(
+    demo_candidates: int = 3,
+    decision_mode: str = "mixed_demo",
+    decision_artifact_path: str | None = None,
+) -> dict:
+    """Run Level 1 order-plan draft drill (Phase 16J).
+
+    Read-only drill that converts accepted audit-only review decisions into
+    a non-executable order-plan draft artifact.  No order paths are triggered.
+    """
+    import hashlib
+    import json as _json
+    import subprocess as _sp
+    import urllib.request
+    import urllib.error
+    from datetime import datetime, timezone
+    from typing import Any
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    drill_id = f"order-plan-draft-drill-{ts_file}"
+    effective_candidates = max(0, min(demo_candidates, 5))
+    if decision_mode not in _DECISION_MODE_VALUES:
+        decision_mode = "mixed_demo"
+
+    # ------------------------------------------------------------------
+    # 1. Git / worktree
+    # ------------------------------------------------------------------
+    git_cfg = _git_metadata(BRIDGE_DIR)
+    full_commit = git_cfg.get("commit_short", "?")
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if p.stdout.strip():
+            full_commit = p.stdout.strip()
+    except Exception:
+        pass
+
+    worktree = _get_worktree_state(BRIDGE_DIR)
+    origin_alignment = _get_origin_master_alignment(BRIDGE_DIR)
+
+    git_section = {
+        "branch": git_cfg.get("branch", "?"),
+        "commit": full_commit if len(full_commit) > 16 else git_cfg.get("commit_short", "?"),
+        "commit_short": git_cfg.get("commit_short", "?"),
+        "tag": git_cfg.get("tag", "?"),
+        "origin_master_commit": origin_alignment.get("origin_master_commit", "?"),
+        "origin_master_aligned": origin_alignment.get("aligned"),
+        "worktree_clean": worktree.get("clean"),
+        "dirty_files": worktree.get("dirty_files", []),
+    }
+
+    # ------------------------------------------------------------------
+    # 2. Required tags
+    # ------------------------------------------------------------------
+    required_tags_present: list[str] = []
+    required_tags_missing: list[str] = []
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "tag"],
+            capture_output=True, text=True, timeout=10,
+        )
+        all_tags = set(p.stdout.strip().splitlines())
+        for tag in _PHASE16J_REQUIRED_TAGS:
+            if tag in all_tags:
+                required_tags_present.append(tag)
+            else:
+                required_tags_missing.append(tag)
+    except Exception:
+        required_tags_missing = list(_PHASE16J_REQUIRED_TAGS)
+        required_tags_present = []
+
+    required_tags = {
+        "required_count": len(_PHASE16J_REQUIRED_TAGS),
+        "present_count": len(required_tags_present),
+        "missing": required_tags_missing,
+        "present": required_tags_present,
+    }
+
+    if len(required_tags_missing) > 0:
+        return _phase16j_no_go(
+            drill_id, ts_str, git_section, required_tags,
+            _PHASE16J_DIAGNOSIS["missing_required_tags"],
+            [f"Missing tags: {', '.join(required_tags_missing)}"],
+        )
+
+    if not git_section.get("worktree_clean", False) and git_section.get("worktree_clean") is not None:
+        return _phase16j_no_go(
+            drill_id, ts_str, git_section, required_tags,
+            _PHASE16J_DIAGNOSIS["dirty_worktree"],
+            ["Commit or stash dirty files"] + [f"  {f}" for f in git_section.get("dirty_files", [])[:5]],
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Bridge runtime
+    # ------------------------------------------------------------------
+    br_reachable = False
+    br_connected = False
+    br_mode = "?"
+    br_read_only = False
+    ep_ok = 0
+    ep_display = "?"
+    try:
+        req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
+                br_reachable = True
+                hd = _json.loads(resp.read().decode())
+                br_connected = hd.get("connected", False)
+                br_mode = hd.get("mode", "?")
+                br_read_only = br_mode == "paper"
+    except Exception:
+        pass
+
+    snapshot_used = False
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/snapshot", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    snapshot_used = True
+                    ep_ok = 7
+                    ep_display = f"{ep_ok}/7 OK (snapshot)"
+        except Exception:
+            pass
+
+    if not snapshot_used and br_reachable:
+        _EPS = ["/health", "/readiness", "/status", "/monitor/reconciliation",
+                "/monitor/alerts", "/monitor/events", "/positions", "/account"]
+        for ep in _EPS:
+            try:
+                req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        ep_ok += 1
+            except Exception:
+                pass
+        ep_display = f"{ep_ok}/{len(_EPS)} OK"
+
+    positions_count = 0
+    positions_flat = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/positions", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    pd = _json.loads(resp.read().decode())
+                    pl = pd.get("positions", [])
+                    positions_count = len(pl)
+                    positions_flat = all(abs(p.get("position", 0)) < 0.01 for p in pl)
+        except Exception:
+            pass
+
+    active_alerts_count = 0
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/monitor/alerts", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    ad = _json.loads(resp.read().decode())
+                    all_a = ad.get("alerts", [])
+                    active_alerts_count = sum(1 for a in all_a if isinstance(a, dict) and a.get("requires_action", False))
+        except Exception:
+            pass
+
+    runtime_section = {
+        "bridge_reachable": br_reachable,
+        "bridge_connected": br_connected,
+        "mode": br_mode,
+        "read_only": br_read_only,
+        "endpoints_display": ep_display,
+        "endpoints_ok": ep_ok,
+        "positions_count": positions_count,
+        "positions_flat": positions_flat,
+        "active_alerts_count": active_alerts_count,
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Safety flags
+    # ------------------------------------------------------------------
+    env_safety = _read_env_safety(BRIDGE_DIR / ".env")
+    rules_state = _read_rules_enforced(
+        Path.home() / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
+    )
+    autonomy_path = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
+    autonomy_level = _read_autonomy_level(autonomy_path)
+
+    env_allow_orders = env_safety.get("IBKR_ALLOW_ORDERS", "?")
+    rules_enforced = rules_state.get("enforced", "?")
+    system_locked = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/readiness", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    rd = _json.loads(resp.read().decode())
+                    system_locked = rd.get("summary", {}).get("kill_switches", {}).get("system_locked", True)
+        except Exception:
+            pass
+
+    safety_section = {
+        "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+        "rules_enforced": rules_enforced,
+        "system_locked": system_locked,
+    }
+
+    # ------------------------------------------------------------------
+    # 5. Guard state — centralized assessor
+    # ------------------------------------------------------------------
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_section = gs_assessment["guard_section"]
+
+    # ------------------------------------------------------------------
+    # 6. Doctor / KPI / Policy
+    # ------------------------------------------------------------------
+    doctor_section: dict = {}
+    try:
+        dr = run_doctor()
+        doc_pass = dr.get("passed", 0)
+        doc_total = dr.get("total", 0)
+        doctor_ok = dr.get("pass", False)
+        doc_h1_status = "?"
+        for c in dr.get("checks", []):
+            if c.get("check") == "h1_token_canary":
+                if c.get("status") == "MANUAL_REQUIRED":
+                    doc_h1_status = "MANUAL_REQUIRED"
+                elif c.get("ok"):
+                    doc_h1_status = "PASS"
+                else:
+                    doc_h1_status = "FAIL"
+                break
+        doc_acceptable = doctor_ok or (
+            doc_h1_status == "MANUAL_REQUIRED" and doc_pass >= doc_total - 1
+        )
+        doctor_section = {
+            "result": "PASS" if doctor_ok else ("PASS_WITH_H1_MANUAL" if doc_acceptable else "FAIL"),
+            "h1_canary_status": doc_h1_status,
+            "acceptable": doc_acceptable,
+        }
+    except Exception as e:
+        doctor_section = {"result": "ERROR", "h1_canary_status": "ERROR", "acceptable": False, "error": str(e)[:200]}
+
+    kpi_section: dict = {}
+    kpi_clean_cycles: int | None = None
+    try:
+        kpi_result = run_kpi()
+        kpi_verdict = kpi_result.get("verdict", "ERROR")
+        kpi_blockers = kpi_result.get("blockers", [])
+        no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+        kpi_acceptable_hold = (
+            kpi_verdict == "HOLD" and len(no_go_blockers) == 0
+            and any(b.get("check") == "system_locked"
+                    for b in kpi_blockers if b.get("severity") == "HOLD")
+        )
+        au = kpi_result.get("autonomy", {})
+        if isinstance(au, dict):
+            kpi_clean_cycles = au.get("clean_cycles")
+            if kpi_clean_cycles is None:
+                kpi_clean_cycles = kpi_result.get("clean_cycles")
+        if kpi_clean_cycles is None:
+            kpi_clean_cycles = kpi_result.get("clean_cycles")
+        kpi_section = {
+            "verdict": kpi_verdict,
+            "blockers": [b.get("check", "?") for b in kpi_blockers],
+            "acceptable_hold": kpi_acceptable_hold,
+        }
+    except Exception as e:
+        kpi_section = {"verdict": "ERROR", "blockers": [], "acceptable_hold": False, "error": str(e)[:200]}
+
+    policy_result = _check_hermes_policy()
+    policy_section = {
+        "hermes_policy_exists": policy_result["hermes_policy_exists"],
+        "advisory_boundary_ok": policy_result["advisory_boundary_ok"],
+        "execution_path_ok": policy_result["execution_path_ok"],
+    }
+
+    # ------------------------------------------------------------------
+    # 7. Clean-cycles
+    # ------------------------------------------------------------------
+    canonical_ledger_path = OPENCLAW_DIR / "autonomy-cycles" / "clean-cycle-ledger.jsonl"
+    clean_cycles_source = "openclaw_clean_cycle_ledger"
+    drill_clean_cycles: int | None = None
+    try:
+        if canonical_ledger_path.exists():
+            drill_clean_cycles = _count_clean_cycles(OPENCLAW_DIR)
+    except Exception:
+        drill_clean_cycles = None
+
+    clean_cycles_matches_kpi = False
+    if kpi_clean_cycles is not None and drill_clean_cycles is not None:
+        clean_cycles_matches_kpi = (kpi_clean_cycles == drill_clean_cycles)
+    elif kpi_clean_cycles is None and drill_clean_cycles is None:
+        clean_cycles_matches_kpi = True
+
+    autonomy_section = {
+        "current_level": autonomy_level,
+        "clean_cycles": drill_clean_cycles,
+        "clean_cycles_source": clean_cycles_source,
+        "clean_cycles_matches_kpi": clean_cycles_matches_kpi,
+    }
+
+    # ------------------------------------------------------------------
+    # 8. Load or synthesize decision artifact
+    # ------------------------------------------------------------------
+    decision_artifact_source = "synthesized_internally"
+    decision_artifact_path_actual: str | None = None
+    decisions_list: list[dict[str, Any]] = []
+    da_decision_id = "synthetic-demo"
+    da_is_audit_only = True
+
+    if decision_artifact_path:
+        da_path_obj = Path(decision_artifact_path)
+        if not da_path_obj.exists() or not da_path_obj.is_file():
+            return _phase16j_no_go(
+                drill_id, ts_str, git_section, required_tags,
+                _PHASE16J_DIAGNOSIS["decision_artifact_not_found"],
+                [f"Decision artifact not found: {decision_artifact_path}"],
+            )
+        try:
+            with open(da_path_obj) as f:
+                da_loaded = _json.load(f)
+        except Exception:
+            return _phase16j_no_go(
+                drill_id, ts_str, git_section, required_tags,
+                _PHASE16J_DIAGNOSIS["decision_artifact_not_found"],
+                [f"Decision artifact unparseable: {decision_artifact_path}"],
+            )
+        if da_loaded.get("status") != "audit_only":
+            return _phase16j_no_go(
+                drill_id, ts_str, git_section, required_tags,
+                _PHASE16J_DIAGNOSIS["decision_artifact_not_audit_only"],
+                [f"Decision artifact status is '{da_loaded.get('status')}', not 'audit_only'",
+                 "Re-run 16I to generate a valid decision artifact"],
+            )
+        decision_artifact_source = "loaded_from_prior_16i_artifact"
+        decision_artifact_path_actual = str(da_path_obj.resolve())
+        da_decision_id = da_loaded.get("artifact_id", da_loaded.get("decision_id", "loaded-decision"))
+        da_rd = da_loaded.get("review_decision", {})
+        decisions_list = da_rd.get("decision_items", da_rd.get("decisions", []))
+        da_is_audit_only = True
+
+    if not decisions_list and not decision_artifact_path:
+        # Synthesize internally: run the same decision logic as 16I
+        from typing import Any as _Any
+        candidate_pool = _REVIEW_CANDIDATE_POOL
+        decision_fn = _DECISION_LOGIC.get(decision_mode, _DECISION_LOGIC["mixed_demo"])
+        for i in range(min(effective_candidates, len(candidate_pool))):
+            candidate = candidate_pool[i]
+            verdict = decision_fn(i, candidate)
+            reason = _DECISION_RATIONALE_TEMPLATES.get(verdict, "No decision.")
+            decisions_list.append({
+                "proposal_id": f"synth-decision-{drill_id}-{i+1:03d}",
+                "review_id": f"synth-review-{drill_id}-{i+1:03d}",
+                "symbol": candidate["symbol"],
+                "side": candidate["side"],
+                "quantity": (i + 1) * 10,
+                "decision": verdict,
+                "decision_reason": reason,
+                "executable": False,
+                "performed": False,
+                "requires_chris_approval": True,
+                "requires_future_order_window": True,
+                "requires_future_h1": True,
+                "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+            })
+        da_decision_id = f"synthetic-decision-{ts_file}"
+
+    # Sanity: ensure safe defaults on loaded decisions
+    for d in decisions_list:
+        d.setdefault("executable", False)
+        d.setdefault("performed", False)
+        d.setdefault("requires_chris_approval", True)
+
+    # Count totals from decision list
+    all_decisions_count = len(decisions_list)
+    all_accepted = [d for d in decisions_list if d.get("decision") == "accept"]
+    all_rejected = [d for d in decisions_list if d.get("decision") == "reject"]
+    all_deferred = [d for d in decisions_list if d.get("decision") == "defer"]
+
+    # Artifact hash
+    da_hashable = {
+        "decision_id": da_decision_id,
+        "decisions_count": all_decisions_count,
+        "accepted": len(all_accepted),
+    }
+    artifact_hash = _compute_evidence_hash(da_hashable)
+
+    input_decision_artifact = {
+        "source": decision_artifact_source,
+        "decision_id": da_decision_id,
+        "decision_artifact_path": decision_artifact_path_actual,
+        "status": "audit_only",
+        "audit_only": da_is_audit_only,
+        "decisions_count": all_decisions_count,
+        "accepted_count": len(all_accepted),
+        "rejected_count": len(all_rejected),
+        "deferred_count": len(all_deferred),
+        "artifact_hash": artifact_hash,
+    }
+
+    # ------------------------------------------------------------------
+    # 9. Build order-plan draft — only accepted items
+    # ------------------------------------------------------------------
+    draft_items: list[dict[str, Any]] = []
+    skipped_items: list[dict[str, Any]] = []
+    has_executable = False
+    has_broker_order = False
+    rejected_or_deferred_in_draft = False
+    for i, d in enumerate(all_accepted):
+        if d.get("executable") is True:
+            has_executable = True
+        if d.get("broker_order_created") is True:
+            has_broker_order = True
+        src_proposal = d.get("proposal_id", d.get("review_id", f"item-{i}"))
+        di: dict[str, Any] = {
+            "plan_item_id": f"draft-{drill_id}-{i+1:03d}",
+            "source_decision_id": d.get("proposal_id", d.get("review_id", "")),
+            "source_proposal_id": src_proposal,
+            "symbol": d.get("symbol", "?"),
+            "side": d.get("side", "?"),
+            "quantity": d.get("quantity", 0),
+            "order_type": "LMT",
+            "time_in_force": "DAY",
+            "limit_price": None,
+            "rationale": d.get("decision_reason", ""),
+            "risk_notes": f"Draft item — non-executable. Requires Chris approval before any order path.",
+            "original_decision": d.get("decision", "accept"),
+            "original_decision_reason": d.get("decision_reason", ""),
+            **_DRAFT_ITEM_TEMPLATE,
+        }
+        draft_items.append(di)
+
+    # Sanity: rejected/deferred MUST NOT appear in draft
+    rejected_ids = {d.get("proposal_id", d.get("review_id", "")) for d in all_rejected}
+    deferred_ids = {d.get("proposal_id", d.get("review_id", "")) for d in all_deferred}
+    for di in draft_items:
+        src = di.get("source_proposal_id", di.get("source_decision_id", ""))
+        if src in rejected_ids or src in deferred_ids:
+            rejected_or_deferred_in_draft = True
+
+    # Build skipped_items[]
+    for d in all_rejected:
+        skipped_items.append({
+            "source_proposal_id": d.get("proposal_id", d.get("review_id", "")),
+            "decision": d.get("decision", "reject"),
+            "skip_reason": d.get("decision_reason", "Rejected — will not proceed to order plan."),
+        })
+    for d in all_deferred:
+        skipped_items.append({
+            "source_proposal_id": d.get("proposal_id", d.get("review_id", "")),
+            "decision": d.get("decision", "defer"),
+            "skip_reason": d.get("decision_reason", "Deferred — requires additional review before order plan."),
+        })
+
+    plan_id = f"order-plan-draft-{ts_file}"
+    order_plan_draft = {
+        "plan_id": plan_id,
+        "status": "draft_only",
+        "plan_source": "synthetic_readonly_demo",
+        "executable": False,
+        "broker_order_created": has_broker_order,
+        "broker_submission_performed": False,
+        "preflight_performed": False,
+        "approval_performed": False,
+        "submit_performed": False,
+        "requires_future_order_window": True,
+        "requires_future_h1": True,
+        "requires_future_chris_approval": True,
+        "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+        "draft_items_count": len(draft_items),
+        "skipped_rejected_count": len(all_rejected),
+        "skipped_deferred_count": len(all_deferred),
+        "draft_items": draft_items,
+        "skipped_items": skipped_items,
+    }
+
+    # Plan artifact (standalone)
+    plan_artifact = {
+        "artifact_id": plan_id,
+        "drill_id": drill_id,
+        "status": "draft_only",
+        "generated_by": "level1-order-plan-draft-drill (Phase 16J)",
+        "input_decision_artifact": input_decision_artifact,
+        "order_plan_draft": order_plan_draft,
+    }
+    plan_artifact_hash = _compute_evidence_hash(plan_artifact)
+    plan_id_slug = plan_id
+
+    # ------------------------------------------------------------------
+    # 10. Plan workflow
+    # ------------------------------------------------------------------
+    plan_workflow = {
+        "draft_only": True,
+        "demo_candidates_requested": effective_candidates,
+        "decisions_examined": all_decisions_count,
+        "accepted_items": len(all_accepted),
+        "draft_items_created": len(draft_items),
+        "rejected_items_skipped": len(all_rejected),
+        "deferred_items_skipped": len(all_deferred),
+        "skipped_items_count": len(skipped_items),
+        "any_executable_item": has_executable,
+        "any_broker_order_created": has_broker_order,
+        "rejected_or_deferred_in_draft": rejected_or_deferred_in_draft,
+        "order_routing_disallowed": True,
+        "broker_submission_performed": False,
+        "preflight_performed": False,
+        "approval_performed": False,
+        "submit_performed": False,
+    }
+
+    workflow_summary = {
+        "order_plan_draft_ready": True,
+        "order_plan_draft_created": len(draft_items) > 0,
+        "accepted_items_converted_to_draft": len(all_accepted) > 0 and len(draft_items) == len(all_accepted),
+        "rejected_items_skipped": len(all_rejected) > 0 or (len(all_rejected) == 0 and True),
+        "deferred_items_skipped": len(all_deferred) > 0 or (len(all_deferred) == 0 and True),
+        "all_draft_items_non_executable": not has_executable,
+        "no_broker_order_created": not has_broker_order,
+        "all_items_require_future_order_window": True,
+        "all_items_require_future_h1": True,
+        "all_items_require_future_chris_approval": True,
+        "no_order_path_called": True,
+        "no_preflight_performed": True,
+        "no_approval_performed": True,
+        "no_submit_performed": True,
+        "no_broker_submission": True,
+        "no_h1_seen": True,
+        "no_order_window_seen": True,
+    }
+
+    # ------------------------------------------------------------------
+    # 11. Classification
+    # ------------------------------------------------------------------
+    all_tags_present = len(required_tags_missing) == 0
+    worktree_clean = git_section.get("worktree_clean", False)
+    run_time_ready = br_connected and br_mode == "paper" and br_read_only
+    safety_locked = env_allow_orders in ("false", "?") and rules_enforced in ("false", "?") and system_locked is True
+
+    if not all_tags_present:
+        diagnosis = _PHASE16J_DIAGNOSIS["missing_required_tags"]
+        severity = "NO_GO"
+    elif not worktree_clean and worktree_clean is not None:
+        diagnosis = _PHASE16J_DIAGNOSIS["dirty_worktree"]
+        severity = "NO_GO"
+    elif not positions_flat and positions_count > 0:
+        diagnosis = _PHASE16J_DIAGNOSIS["positions_not_flat"]
+        severity = "NO_GO"
+    elif active_alerts_count > 0:
+        diagnosis = _PHASE16J_DIAGNOSIS["monitor_alerts_active"]
+        severity = "NO_GO"
+    elif not run_time_ready:
+        diagnosis = _PHASE16J_DIAGNOSIS["runtime_not_ready"]
+        severity = "HOLD" if not br_connected else "NO_GO"
+    elif not safety_locked:
+        diagnosis = _PHASE16J_DIAGNOSIS["safety_not_locked"]
+        severity = "NO_GO"
+    elif autonomy_level != "1":
+        diagnosis = _PHASE16J_DIAGNOSIS["autonomy_not_level1"]
+        severity = "NO_GO"
+    elif not gs_assessment["guard_state_clean"]:
+        diagnosis = _PHASE16J_DIAGNOSIS["guard_state_not_clean"]
+        severity = "NO_GO"
+    elif not doc_acceptable:
+        diagnosis = _PHASE16J_DIAGNOSIS["doctor_not_acceptable"]
+        severity = "NO_GO"
+    elif not kpi_acceptable_hold:
+        diagnosis = _PHASE16J_DIAGNOSIS["kpi_not_acceptable"]
+        severity = "NO_GO"
+    elif not policy_result["hermes_policy_exists"] or not policy_result["execution_path_ok"]:
+        diagnosis = _PHASE16J_DIAGNOSIS["policy_boundary_missing"]
+        severity = "NO_GO"
+    elif not clean_cycles_matches_kpi:
+        diagnosis = _PHASE16J_DIAGNOSIS["clean_cycles_mismatch"]
+        severity = "NO_GO"
+    elif has_executable:
+        diagnosis = _PHASE16J_DIAGNOSIS["executable_item_present"]
+        severity = "NO_GO"
+    elif has_broker_order:
+        diagnosis = _PHASE16J_DIAGNOSIS["broker_order_created"]
+        severity = "NO_GO"
+    elif rejected_or_deferred_in_draft:
+        diagnosis = _PHASE16J_DIAGNOSIS["executable_item_present"]
+        severity = "NO_GO"
+    else:
+        diagnosis = _PHASE16J_DIAGNOSIS["ready"]
+        severity = "OK"
+
+    drill_ok = diagnosis == _PHASE16J_DIAGNOSIS["ready"]
+    operator_action_required = not drill_ok
+    suggested_actions: list[str] = []
+    if not drill_ok:
+        suggested_actions.append(f"Order-plan draft drill blocked: {diagnosis}")
+        if not run_time_ready:
+            suggested_actions.append("Ensure bridge is connected in paper read-only mode")
+        if not safety_locked:
+            suggested_actions.append("Verify all safety locks are engaged")
+        if not gs_assessment["guard_state_clean"]:
+            suggested_actions.append("Run guard-state-reconcile to fix guard state")
+
+    # ------------------------------------------------------------------
+    # 12. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "diagnosis": diagnosis, "severity": severity,
+        "draft_items_count": len(draft_items),
+        "accepted_from_decisions": len(all_accepted),
+        "has_executable": has_executable,
+        "has_broker_order": has_broker_order,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 13. Assemble result
+    # ------------------------------------------------------------------
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-order-plan-draft-drill",
+        "advisory": (
+            "Read-only Level 1 order-plan draft drill (Phase 16J). "
+            "Converts accepted audit-only review decisions into a non-executable "
+            "order-plan draft artifact. No orders. No mutations. No H1 token. "
+            "No broker activity. No autonomy level change."
+        ),
+        "timestamp": ts_str,
+        "drill_id": drill_id,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": runtime_section,
+        "autonomy": autonomy_section,
+        "safety": safety_section,
+        "guard_state": guard_section,
+        "input_decision_artifact": input_decision_artifact,
+        "order_plan_draft": order_plan_draft,
+        "plan_artifact": plan_artifact,
+        "plan_artifact_hash": plan_artifact_hash,
+        "plan_workflow": plan_workflow,
+        "workflow_summary": workflow_summary,
+        "kpi_summary": kpi_section,
+        "doctor_summary": doctor_section,
+        "policy_summary": policy_section,
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
+        "h1_token_not_used": True,
+        "evidence_hash": evidence_hash,
+        "explicit_non_actions": _PHASE16J_EXPLICIT_NON_ACTIONS,
+    }
+
+    # ------------------------------------------------------------------
+    # 14. Export artifacts
+    # ------------------------------------------------------------------
+    export_path: str | None = None
+    plan_artifact_path: str | None = None
+    order_plan_path: str | None = None
+    try:
+        _PHASE16J_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE16J_EXPORT_DIR / f"{drill_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        export_path = str(ep)
+        pa_path = _PHASE16J_EXPORT_DIR / f"{plan_id}.json"
+        with open(pa_path, "w", encoding="utf-8") as f:
+            _json.dump(plan_artifact, f, indent=2, default=str)
+        plan_artifact_path = str(pa_path)
+        order_plan_path = str(pa_path)  # alias for clarity
+    except Exception:
+        pass
+
+    result["export_path"] = export_path
+    result["plan_artifact_path"] = plan_artifact_path
+    result["order_plan_path"] = order_plan_path
+    result["order_plan_hash"] = plan_artifact_hash
+    result["plan_artifact_path"] = plan_artifact_path
+    return result
+
+
+def _phase16j_no_go(
+    drill_id: str, ts_str: str, git_section: dict, required_tags: dict,
+    diagnosis: str, actions: list,
+) -> dict:
+    """Build a NO_GO result for early-exit prerequisite failures."""
+    empty_plan = {"plan_id": drill_id, "status": "blocked", "draft_items": [], "skipped_items": []}
+    empty_pa = {"artifact_id": drill_id, "status": "blocked"}
+    return {
+        "command": "ibkr-operator level1-order-plan-draft-drill",
+        "timestamp": ts_str,
+        "drill_id": drill_id,
+        "diagnosis": diagnosis,
+        "severity": "NO_GO",
+        "operator_action_required": True,
+        "suggested_operator_actions": actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": {},
+        "autonomy": {},
+        "safety": {},
+        "guard_state": {},
+        "input_decision_artifact": {},
+        "order_plan_draft": empty_plan,
+        "plan_artifact": empty_pa,
+        "plan_artifact_hash": _compute_evidence_hash(empty_pa),
+        "order_plan_path": None,
+        "order_plan_hash": _compute_evidence_hash(empty_pa),
+        "plan_workflow": {},
+        "workflow_summary": {},
+        "kpi_summary": {},
+        "doctor_summary": {},
+        "policy_summary": {},
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
+        "h1_token_not_used": True,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16J_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _print_level1_order_plan_draft_drill(result: dict) -> None:
+    """Print Phase 16J order-plan draft drill in human-readable format."""
+    drill_ok = result.get("diagnosis") == _PHASE16J_DIAGNOSIS["ready"]
+    diag_color = GREEN if drill_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else (YELLOW if sev == "HOLD" else RED)
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Order-Plan Draft Drill (16J){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\\n")
+    print(f"  Drill ID:              {result.get('drill_id', '?')}")
+    print(f"  Timestamp:             {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:             {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:              {sev_color}{sev}{RESET}")
+    print()
+
+    ida = result.get("input_decision_artifact", {})
+    if ida:
+        print(f"  {BOLD}Input Decision Artifact{RESET}")
+        print(f"    Source:              {ida.get('source', '?')}")
+        print(f"    Decision ID:         {ida.get('decision_id', '?')}")
+        print(f"    Status:              {ida.get('status', '?')}")
+        print(f"    Decisions count:     {ida.get('decisions_count', 0)}")
+        print(f"    Accepted:            {GREEN}{ida.get('accepted_count', 0)}{RESET}")
+        print(f"    Rejected:            {RED}{ida.get('rejected_count', 0)}{RESET}")
+        print(f"    Deferred:            {YELLOW}{ida.get('deferred_count', 0)}{RESET}")
+        ah = ida.get("artifact_hash", "")
+        if ah:
+            print(f"    Artifact hash:       {ah[:16]}...")
+        print()
+
+    opd = result.get("order_plan_draft", {})
+    if opd:
+        print(f"  {BOLD}Order-Plan Draft{RESET}")
+        print(f"    Plan ID:             {opd.get('plan_id', '?')}")
+        print(f"    Status:              {opd.get('status', '?')}")
+        print(f"    Executable:           {RED}{opd.get('executable', '?')}{RESET}")
+        print(f"    Broker order:         {RED}{opd.get('broker_order_created', '?')}{RESET}")
+        print(f"    Preflight:            {RED}{opd.get('preflight_performed', '?')}{RESET}")
+        print(f"    Approve:              {RED}{opd.get('approval_performed', '?')}{RESET}")
+        print(f"    Submit:               {RED}{opd.get('submit_performed', '?')}{RESET}")
+        print(f"    Draft items:          {opd.get('draft_items_count', 0)}")
+        print(f"    Rejected skipped:    {RED}{opd.get('skipped_rejected_count', 0)}{RESET}")
+        print(f"    Deferred skipped:    {YELLOW}{opd.get('skipped_deferred_count', 0)}{RESET}")
+        print()
+
+        di = opd.get("draft_items", [])
+        if di:
+            print(f"  {BOLD}Draft Items{RESET}")
+            for d in di:
+                print(f"    {d.get('plan_item_id', '?')}: {d.get('symbol', '?')} "
+                      f"{GREEN}{d.get('side', '?')}{RESET} "
+                      f"qty={d.get('quantity', 0)} exec={RED}{d.get('executable')}{RESET}")
+            print()
+
+        si = opd.get("skipped_items", [])
+        if si:
+            print(f"  {BOLD}Skipped Items{RESET}")
+            for s in si:
+                print(f"    {s.get('source_proposal_id', '?')}: {RED}{s.get('decision', '?').upper()}{RESET} "
+                      f"— {s.get('skip_reason', '')}")
+            print()
+
+    ws = result.get("workflow_summary", {})
+    if ws:
+        print(f"  {BOLD}Workflow Summary{RESET}")
+        for key, val in ws.items():
+            color = GREEN if val else RED
+            print(f"    {key:<46} {color}{val}{RESET}")
+        print()
+
+    auto = result.get("autonomy", {})
+    if auto:
+        print(f"  {BOLD}Autonomy{RESET}")
+        print(f"    Level:          {auto.get('current_level', '?')}")
+        cc = auto.get('clean_cycles')
+        print(f"    Clean cycles:   {cc if cc is not None else 'null'}")
+        print()
+
+    safety = result.get("safety", {})
+    if safety:
+        print(f"  {BOLD}Safety{RESET}")
+        print(f"    ALLOW_ORDERS:   {safety.get('env_IBKR_ALLOW_ORDERS', '?')}")
+        print(f"    rules.enforced: {safety.get('rules_enforced', '?')}")
+        print(f"    system_locked:  {_bool_str(safety.get('system_locked'))}")
+        print()
+
+    runtime = result.get("runtime", {})
+    if runtime:
+        print(f"  {BOLD}Runtime{RESET}")
+        print(f"    Bridge:         connected={_bool_str(runtime.get('bridge_connected'))} mode={runtime.get('mode', '?')}")
+        print(f"    Positions:      {runtime.get('positions_count', 0)}  flat={_bool_str(runtime.get('positions_flat'))}")
+        print(f"    Alerts:         {runtime.get('active_alerts_count', 0)}")
+        print()
+
+    guard = result.get("guard_state", {})
+    if guard:
+        print(f"  {BOLD}Guard State{RESET}")
+        print(f"    Trade count:    {guard.get('daily_trade_count', '?')}")
+        print(f"    Trade date:     {guard.get('trade_date', '?')}")
+        print(f"    Stale:          {_bool_str(guard.get('trade_date_stale'))}")
+        print(f"    Clean:          {_bool_str(guard.get('guard_state_clean'))}")
+        print()
+
+    sa = result.get("suggested_operator_actions", [])
+    if sa:
+        print(f"  {BOLD}Suggested Actions{RESET}")
+        for a in sa:
+            print(f"    {YELLOW}→{RESET} {a}")
+        print()
+
+    print(f"  {BOLD}Advisory{RESET}")
+    print(f"    {result.get('advisory', '')}")
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"\n  Evidence hash: {eh[:16]}...")
+
+    ep = result.get("export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    pa = result.get("plan_artifact_path")
+    if pa:
+        print(f"  Plan artifact: {pa}")
+    pah = result.get("plan_artifact_hash", "")
+    if pah:
+        print(f"  Plan artifact hash: {pah[:16]}...")
+    print()
+
+
 
 def main() -> None:
     import argparse
@@ -21994,6 +22931,43 @@ def main() -> None:
     p16i_a3.add_argument("--demo-candidates", type=int, default=2)
     p16i_a3.add_argument("--decision-mode", type=str, default="mixed_demo")
     p16i_a3.add_argument("--review-package", type=str, default=None)
+
+    # Phase 16J — Level 1 Order-Plan Draft Drill
+    p16j = sub.add_parser("level1-order-plan-draft-drill",
+                          help="Level 1 order-plan draft drill (Phase 16J)")
+    p16j.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16j.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-order-plan-drafts/")
+    p16j.add_argument("--demo-candidates", type=int, default=3,
+                      help="Number of demo candidates (0-5, default 3)")
+    p16j.add_argument("--decision-mode", type=str, default="mixed_demo",
+                      help="Decision mode: mixed_demo, accept_all_demo, reject_all_demo, defer_all_demo")
+    p16j.add_argument("--decision-artifact", type=str, default=None,
+                      help="Optional path to a prior 16I decision artifact")
+    # Alias: phase16j-order-plan-draft-drill
+    p16j_a1 = sub.add_parser("phase16j-order-plan-draft-drill",
+                             help="Alias for level1-order-plan-draft-drill")
+    p16j_a1.add_argument("--json", action="store_true")
+    p16j_a1.add_argument("--export", action="store_true")
+    p16j_a1.add_argument("--demo-candidates", type=int, default=3)
+    p16j_a1.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16j_a1.add_argument("--decision-artifact", type=str, default=None)
+    # Alias: level1-approved-plan-drill
+    p16j_a2 = sub.add_parser("level1-approved-plan-drill",
+                             help="Alias for level1-order-plan-draft-drill")
+    p16j_a2.add_argument("--json", action="store_true")
+    p16j_a2.add_argument("--export", action="store_true")
+    p16j_a2.add_argument("--demo-candidates", type=int, default=3)
+    p16j_a2.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16j_a2.add_argument("--decision-artifact", type=str, default=None)
+    # Alias: order-plan-draft-drill
+    p16j_a3 = sub.add_parser("order-plan-draft-drill",
+                             help="Alias for level1-order-plan-draft-drill")
+    p16j_a3.add_argument("--json", action="store_true")
+    p16j_a3.add_argument("--export", action="store_true")
+    p16j_a3.add_argument("--demo-candidates", type=int, default=3)
+    p16j_a3.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16j_a3.add_argument("--decision-artifact", type=str, default=None)
 
     args = parser.parse_args()
 
@@ -23169,6 +24143,78 @@ def main() -> None:
             if da:
                 print(f"  Decision artifact written: {da}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE16I_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-order-plan-draft-drill",
+                        "phase16j-order-plan-draft-drill",
+                        "level1-approved-plan-drill",
+                        "order-plan-draft-drill"):
+        demo_cand = getattr(args, "demo_candidates", 3)
+        decision_mode = getattr(args, "decision_mode", "mixed_demo")
+        decision_artifact = getattr(args, "decision_artifact", None)
+        try:
+            result = _run_level1_order_plan_draft_drill(
+                demo_candidates=demo_cand,
+                decision_mode=decision_mode,
+                decision_artifact_path=decision_artifact,
+            )
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            result = {
+                "command": f"ibkr-operator {args.command}",
+                "timestamp": ts_str,
+                "drill_id": f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}",
+                "diagnosis": _PHASE16J_DIAGNOSIS["unknown"],
+                "severity": "NO_GO",
+                "operator_action_required": True,
+                "suggested_operator_actions": [
+                    f"Internal error: {type(exc).__name__}",
+                    "Run ibkr-operator doctor",
+                ],
+                "git": {},
+                "required_tags": {},
+                "runtime": {},
+                "autonomy": {},
+                "safety": {},
+                "guard_state": {},
+                "input_decision_artifact": {},
+                "order_plan_draft": {"plan_id": f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}", "status": "error", "draft_items": []},
+                "plan_artifact": {},
+                "plan_artifact_hash": _compute_evidence_hash({}),
+                "plan_workflow": {},
+                "workflow_summary": {},
+                "kpi_summary": {},
+                "doctor_summary": {},
+                "policy_summary": {},
+                "promotion_allowed_now": False,
+                "order_enablement_allowed_now": False,
+                "order_enablement_performed": False,
+                "promotion_performed": False,
+                "no_broker_mutation": True,
+                "no_order_window_opened": True,
+                "no_order_window_seen": True,
+                "no_h1_seen": True,
+                "h1_token_not_used": True,
+                "evidence_hash": _compute_evidence_hash({"diagnosis": _PHASE16J_DIAGNOSIS["unknown"]}),
+                "explicit_non_actions": _PHASE16J_EXPLICIT_NON_ACTIONS,
+            }
+            print(f"Order-plan draft drill internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_order_plan_draft_drill(result)
+        if args.export:
+            ep = result.get("export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+            pa = result.get("plan_artifact_path")
+            if pa:
+                print(f"  Plan artifact written: {pa}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE16J_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

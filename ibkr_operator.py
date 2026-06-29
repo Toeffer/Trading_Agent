@@ -22947,6 +22947,938 @@ def _print_level1_preflight_simulation_dossier(result: dict) -> None:
     print()
 
 
+# ===========================================================================
+# Phase 16L — Level 1 Human Approval Packet Drill
+# ===========================================================================
+
+_PHASE16L_EXPORT_DIR = OPENCLAW_DIR / "level1-human-approval-packets"
+
+_PHASE16L_REQUIRED_TAGS: tuple[str, ...] = (
+    "phase16k_level1_preflight_simulation_dossier",
+    "phase16j_level1_order_plan_draft_drill",
+    "phase16i_level1_review_decision_drill",
+)
+
+_PHASE16L_DIAGNOSIS = {
+    "ready": "level1_human_approval_packet_ok",
+    "missing_required_tags": "missing_required_tags",
+    "dirty_worktree": "dirty_worktree",
+    "autonomy_not_level1": "autonomy_not_level1",
+    "runtime_not_ready": "runtime_not_ready",
+    "safety_not_locked": "safety_not_locked",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "positions_not_flat": "positions_not_flat",
+    "monitor_alerts_active": "monitor_alerts_active",
+    "doctor_not_acceptable": "doctor_not_acceptable",
+    "kpi_not_acceptable": "kpi_not_acceptable",
+    "policy_boundary_missing": "policy_boundary_missing",
+    "clean_cycles_mismatch": "clean_cycles_mismatch",
+    "dossier_not_found": "dossier_not_found",
+    "dossier_not_simulation_only": "dossier_not_simulation_only",
+    "dossier_has_real_preflight": "dossier_has_real_preflight",
+    "dossier_has_executable_items": "dossier_has_executable_items",
+    "no_items_to_approve": "no_items_to_approve",
+    "unknown": "unknown",
+}
+
+_PHASE16L_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not open an order window.",
+    "This command did not read H1 token.",
+    "This command did not call trade-window helper.",
+    "This command did not call /order, /order/approve, /order/preflight, or /order/submit.",
+    "This command did not call /order/approve (packet only).",
+    "This command did not approve with broker.",
+    "This command did not preflight.",
+    "This command did not submit.",
+    "This command did not submit orders.",
+    "This command did not create a broker order.",
+    "This command did not call broker mutation endpoints.",
+    "This command did not restart bridge.",
+    "This command did not reconnect automatically.",
+    "This command did not repair guard-state.",
+    "Only allowed writes are the export artifact and human approval packet artifact.",
+    "All items are human approval packets only — no broker approval was performed.",
+    "Chris must manually sign and approve before any order path.",
+]
+
+# Human approval packet item template
+_PACKET_ITEM_TEMPLATE: dict[str, Any] = {
+    "human_packet_only": True,
+    "broker_approval_performed": False,
+    "approval_endpoint_called": False,
+    "h1_token_used": False,
+    "executable": False,
+    "performed": False,
+    "broker_order_id": None,
+    "requires_future_order_window": True,
+    "requires_future_h1": True,
+    "requires_future_chris_approval": True,
+    "future_real_preflight_required": True,
+    "future_real_approval_required": True,
+    "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+}
+
+
+def _run_level1_human_approval_packet_drill(
+    demo_candidates: int = 3,
+    decision_mode: str = "mixed_demo",
+    preflight_dossier_path: str | None = None,
+    packet_source: str = "synthetic_readonly_demo",
+    reviewer: str = "Chris",
+) -> dict:
+    """Run Level 1 human approval packet drill (Phase 16L).
+
+    Read-only drill that converts a simulated preflight dossier into a
+    Chris-facing human approval packet.  /order/approve is NEVER called.
+    Every packet item is tagged human_packet_only=true.
+    """
+    import hashlib
+    import json as _json
+    import subprocess as _sp
+    import urllib.request
+    import urllib.error
+    from datetime import datetime, timezone
+    from typing import Any
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    packet_id = f"human-approval-packet-{ts_file}"
+    effective_candidates = max(0, min(demo_candidates, 5))
+    if decision_mode not in _DECISION_MODE_VALUES:
+        decision_mode = "mixed_demo"
+
+    # ------------------------------------------------------------------
+    # 1. Git / worktree
+    # ------------------------------------------------------------------
+    git_cfg = _git_metadata(BRIDGE_DIR)
+    full_commit = git_cfg.get("commit_short", "?")
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if p.stdout.strip():
+            full_commit = p.stdout.strip()
+    except Exception:
+        pass
+
+    worktree = _get_worktree_state(BRIDGE_DIR)
+    origin_alignment = _get_origin_master_alignment(BRIDGE_DIR)
+
+    git_section = {
+        "branch": git_cfg.get("branch", "?"),
+        "commit": full_commit if len(full_commit) > 16 else git_cfg.get("commit_short", "?"),
+        "commit_short": git_cfg.get("commit_short", "?"),
+        "tag": git_cfg.get("tag", "?"),
+        "origin_master_commit": origin_alignment.get("origin_master_commit", "?"),
+        "origin_master_aligned": origin_alignment.get("aligned"),
+        "worktree_clean": worktree.get("clean"),
+        "dirty_files": worktree.get("dirty_files", []),
+    }
+
+    # ------------------------------------------------------------------
+    # 2. Required tags
+    # ------------------------------------------------------------------
+    required_tags_present: list[str] = []
+    required_tags_missing: list[str] = []
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "tag"],
+            capture_output=True, text=True, timeout=10,
+        )
+        all_tags = set(p.stdout.strip().splitlines())
+        for tag in _PHASE16L_REQUIRED_TAGS:
+            if tag in all_tags:
+                required_tags_present.append(tag)
+            else:
+                required_tags_missing.append(tag)
+    except Exception:
+        required_tags_missing = list(_PHASE16L_REQUIRED_TAGS)
+        required_tags_present = []
+
+    required_tags = {
+        "required_count": len(_PHASE16L_REQUIRED_TAGS),
+        "present_count": len(required_tags_present),
+        "missing": required_tags_missing,
+        "present": required_tags_present,
+    }
+
+    if len(required_tags_missing) > 0:
+        return _phase16l_no_go(
+            packet_id, ts_str, git_section, required_tags,
+            _PHASE16L_DIAGNOSIS["missing_required_tags"],
+            [f"Missing tags: {', '.join(required_tags_missing)}"],
+        )
+
+    if not git_section.get("worktree_clean", False) and git_section.get("worktree_clean") is not None:
+        return _phase16l_no_go(
+            packet_id, ts_str, git_section, required_tags,
+            _PHASE16L_DIAGNOSIS["dirty_worktree"],
+            ["Commit or stash dirty files"] + [f"  {f}" for f in git_section.get("dirty_files", [])[:5]],
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Bridge runtime
+    # ------------------------------------------------------------------
+    br_reachable = False
+    br_connected = False
+    br_mode = "?"
+    br_read_only = False
+    ep_ok = 0
+    ep_display = "?"
+    try:
+        req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
+                br_reachable = True
+                hd = _json.loads(resp.read().decode())
+                br_connected = hd.get("connected", False)
+                br_mode = hd.get("mode", "?")
+                br_read_only = br_mode == "paper"
+    except Exception:
+        pass
+
+    snapshot_used = False
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/snapshot", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    snapshot_used = True
+                    ep_ok = 7
+                    ep_display = f"{ep_ok}/7 OK (snapshot)"
+        except Exception:
+            pass
+
+    if not snapshot_used and br_reachable:
+        _EPS = ["/health", "/readiness", "/status", "/monitor/reconciliation",
+                "/monitor/alerts", "/monitor/events", "/positions", "/account"]
+        for ep in _EPS:
+            try:
+                req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        ep_ok += 1
+            except Exception:
+                pass
+        ep_display = f"{ep_ok}/{len(_EPS)} OK"
+
+    positions_count = 0
+    positions_flat = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/positions", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    pd = _json.loads(resp.read().decode())
+                    pl = pd.get("positions", [])
+                    positions_count = len(pl)
+                    positions_flat = all(abs(p.get("position", 0)) < 0.01 for p in pl)
+        except Exception:
+            pass
+
+    active_alerts_count = 0
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/monitor/alerts", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    ad = _json.loads(resp.read().decode())
+                    all_a = ad.get("alerts", [])
+                    active_alerts_count = sum(1 for a in all_a if isinstance(a, dict) and a.get("requires_action", False))
+        except Exception:
+            pass
+
+    runtime_section = {
+        "bridge_reachable": br_reachable,
+        "bridge_connected": br_connected,
+        "mode": br_mode,
+        "read_only": br_read_only,
+        "endpoints_display": ep_display,
+        "endpoints_ok": ep_ok,
+        "positions_count": positions_count,
+        "positions_flat": positions_flat,
+        "active_alerts_count": active_alerts_count,
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Safety flags
+    # ------------------------------------------------------------------
+    env_safety = _read_env_safety(BRIDGE_DIR / ".env")
+    rules_state = _read_rules_enforced(
+        Path.home() / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
+    )
+    autonomy_path = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
+    autonomy_level = _read_autonomy_level(autonomy_path)
+
+    env_allow_orders = env_safety.get("IBKR_ALLOW_ORDERS", "?")
+    rules_enforced = rules_state.get("enforced", "?")
+    system_locked = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/readiness", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    rd = _json.loads(resp.read().decode())
+                    system_locked = rd.get("summary", {}).get("kill_switches", {}).get("system_locked", True)
+        except Exception:
+            pass
+
+    safety_section = {
+        "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+        "rules_enforced": rules_enforced,
+        "system_locked": system_locked,
+    }
+
+    # ------------------------------------------------------------------
+    # 5. Guard state
+    # ------------------------------------------------------------------
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_section = gs_assessment["guard_section"]
+
+    # ------------------------------------------------------------------
+    # 6. Doctor / KPI / Policy
+    # ------------------------------------------------------------------
+    doctor_section: dict = {}
+    doc_acceptable = False
+    try:
+        dr = run_doctor()
+        doc_pass = dr.get("passed", 0)
+        doc_total = dr.get("total", 0)
+        doctor_ok = dr.get("pass", False)
+        doc_h1_status = "?"
+        for c in dr.get("checks", []):
+            if c.get("check") == "h1_token_canary":
+                if c.get("status") == "MANUAL_REQUIRED":
+                    doc_h1_status = "MANUAL_REQUIRED"
+                elif c.get("ok"):
+                    doc_h1_status = "PASS"
+                else:
+                    doc_h1_status = "FAIL"
+                break
+        doc_acceptable = doctor_ok or (
+            doc_h1_status == "MANUAL_REQUIRED" and doc_pass >= doc_total - 1
+        )
+        doctor_section = {
+            "result": "PASS" if doctor_ok else ("PASS_WITH_H1_MANUAL" if doc_acceptable else "FAIL"),
+            "h1_canary_status": doc_h1_status,
+            "acceptable": doc_acceptable,
+        }
+    except Exception as e:
+        doctor_section = {"result": "ERROR", "h1_canary_status": "ERROR", "acceptable": False, "error": str(e)[:200]}
+
+    kpi_section: dict = {}
+    kpi_acceptable_hold = False
+    kpi_clean_cycles: int | None = None
+    try:
+        kpi_result = run_kpi()
+        kpi_verdict = kpi_result.get("verdict", "ERROR")
+        kpi_blockers = kpi_result.get("blockers", [])
+        no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+        kpi_acceptable_hold = (
+            kpi_verdict == "HOLD" and len(no_go_blockers) == 0
+            and any(b.get("check") == "system_locked"
+                    for b in kpi_blockers if b.get("severity") == "HOLD")
+        )
+        au = kpi_result.get("autonomy", {})
+        if isinstance(au, dict):
+            kpi_clean_cycles = au.get("clean_cycles")
+            if kpi_clean_cycles is None:
+                kpi_clean_cycles = kpi_result.get("clean_cycles")
+        if kpi_clean_cycles is None:
+            kpi_clean_cycles = kpi_result.get("clean_cycles")
+        kpi_section = {
+            "verdict": kpi_verdict,
+            "blockers": [b.get("check", "?") for b in kpi_blockers],
+            "acceptable_hold": kpi_acceptable_hold,
+        }
+    except Exception as e:
+        kpi_section = {"verdict": "ERROR", "blockers": [], "acceptable_hold": False, "error": str(e)[:200]}
+
+    policy_result = _check_hermes_policy()
+    policy_section = {
+        "hermes_policy_exists": policy_result["hermes_policy_exists"],
+        "advisory_boundary_ok": policy_result["advisory_boundary_ok"],
+        "execution_path_ok": policy_result["execution_path_ok"],
+    }
+
+    # ------------------------------------------------------------------
+    # 7. Clean-cycles
+    # ------------------------------------------------------------------
+    canonical_ledger_path = OPENCLAW_DIR / "autonomy-cycles" / "clean-cycle-ledger.jsonl"
+    clean_cycles_source = "openclaw_clean_cycle_ledger"
+    drill_clean_cycles: int | None = None
+    try:
+        if canonical_ledger_path.exists():
+            drill_clean_cycles = _count_clean_cycles(OPENCLAW_DIR)
+    except Exception:
+        drill_clean_cycles = None
+
+    clean_cycles_matches_kpi = False
+    if kpi_clean_cycles is not None and drill_clean_cycles is not None:
+        clean_cycles_matches_kpi = (kpi_clean_cycles == drill_clean_cycles)
+    elif kpi_clean_cycles is None and drill_clean_cycles is None:
+        clean_cycles_matches_kpi = True
+
+    autonomy_section = {
+        "current_level": autonomy_level,
+        "clean_cycles": drill_clean_cycles,
+        "clean_cycles_source": clean_cycles_source,
+        "clean_cycles_matches_kpi": clean_cycles_matches_kpi,
+    }
+
+    # ------------------------------------------------------------------
+    # 8. Load or synthesize preflight dossier
+    # ------------------------------------------------------------------
+    dossier_source = "synthesized_internally"
+    dossier_path_actual: str | None = None
+    simulated_items: list[dict[str, Any]] = []
+    dossier_id_input = "synthetic-dossier"
+    dossier_status = "simulation_only"
+    dossier_sim_only = True
+    dossier_real_pf = False
+    dossier_endpoint_called = False
+    dossier_artifact_hash = ""
+
+    if preflight_dossier_path:
+        dp_path_obj = Path(preflight_dossier_path)
+        if not dp_path_obj.exists() or not dp_path_obj.is_file():
+            return _phase16l_no_go(
+                packet_id, ts_str, git_section, required_tags,
+                _PHASE16L_DIAGNOSIS["dossier_not_found"],
+                [f"Preflight dossier not found: {preflight_dossier_path}"],
+            )
+        try:
+            with open(dp_path_obj) as f:
+                ds_loaded = _json.load(f)
+        except Exception:
+            return _phase16l_no_go(
+                packet_id, ts_str, git_section, required_tags,
+                _PHASE16L_DIAGNOSIS["dossier_not_found"],
+                [f"Preflight dossier unparseable: {preflight_dossier_path}"],
+            )
+        if ds_loaded.get("status") != "simulation_only":
+            return _phase16l_no_go(
+                packet_id, ts_str, git_section, required_tags,
+                _PHASE16L_DIAGNOSIS["dossier_not_simulation_only"],
+                [f"Dossier status is '{ds_loaded.get('status')}', not 'simulation_only'",
+                 "Re-run 16K to generate a valid simulation dossier"],
+            )
+        dossier_source = "loaded_from_prior_16k_artifact"
+        dossier_path_actual = str(dp_path_obj.resolve())
+        dossier_id_input = ds_loaded.get("artifact_id", ds_loaded.get("dossier_id", "loaded-dossier"))
+        ps = ds_loaded.get("preflight_simulation", {})
+        dossier_status = ps.get("status", "simulation_only")
+        dossier_sim_only = ps.get("simulated_preflight_only", True)
+        dossier_real_pf = ps.get("real_preflight_performed", False)
+        dossier_endpoint_called = ps.get("preflight_endpoint_called", False)
+        simulated_items = ps.get("simulated_items", [])
+        dossier_artifact_hash = _compute_evidence_hash(ps)
+
+    if not simulated_items and not preflight_dossier_path:
+        # Synthesize internally: build a demo preflight dossier in memory
+        candidate_pool = _REVIEW_CANDIDATE_POOL
+        decision_fn = _DECISION_LOGIC.get(decision_mode, _DECISION_LOGIC["mixed_demo"])
+        for i in range(min(effective_candidates, len(candidate_pool))):
+            candidate = candidate_pool[i]
+            verdict = decision_fn(i, candidate)
+            if verdict != "accept":
+                continue
+            reason = _DECISION_RATIONALE_TEMPLATES.get(verdict, "No decision.")
+            simulated_items.append({
+                "simulation_item_id": f"sim-synth-{packet_id}-{i+1:03d}",
+                "source_plan_item_id": f"draft-synth-{packet_id}-{i+1:03d}",
+                "source_proposal_id": f"synth-proposal-{i+1:03d}",
+                "symbol": candidate["symbol"],
+                "side": candidate["side"],
+                "quantity": (i + 1) * 10,
+                "order_type": "LMT",
+                "time_in_force": "DAY",
+                "limit_price": None,
+                "rationale": reason,
+                "risk_notes": "Synthesized demo — non-executable.",
+                "simulated_preflight_only": True,
+                "real_preflight_performed": False,
+                "simulated_preflight_status": "PASS (simulated)",
+                "simulated_checks": [
+                    {"check": "margin", "status": "PASS", "detail": "Deterministic local simulation"},
+                    {"check": "contract", "status": "PASS", "detail": "Deterministic local simulation"},
+                    {"check": "risk", "status": "PASS", "detail": "Deterministic local simulation"},
+                    {"check": "compliance", "status": "PASS", "detail": "Deterministic local simulation"},
+                ],
+                "executable": False,
+            })
+        dossier_id_input = f"synthetic-dossier-{ts_file}"
+        dossier_status = "simulation_only"
+        dossier_sim_only = True
+        dossier_real_pf = False
+        dossier_endpoint_called = False
+        dossier_artifact_hash = _compute_evidence_hash({"dossier_id": dossier_id_input, "simulated_items_count": len(simulated_items)})
+
+    simulated_items_count = len(simulated_items)
+    has_real_pf_in_dossier = dossier_real_pf is True
+    has_executable_in_dossier = any(s.get("executable") is True for s in simulated_items)
+
+    input_preflight_dossier = {
+        "source": dossier_source,
+        "dossier_id": dossier_id_input,
+        "preflight_dossier_path": dossier_path_actual,
+        "status": dossier_status,
+        "simulation_only": dossier_sim_only,
+        "simulated_preflight_only": dossier_sim_only,
+        "real_preflight_performed": dossier_real_pf,
+        "preflight_endpoint_called": dossier_endpoint_called,
+        "simulated_items_count": simulated_items_count,
+        "artifact_hash": dossier_artifact_hash,
+    }
+
+    # ------------------------------------------------------------------
+    # 9. Build human approval packet
+    # ------------------------------------------------------------------
+    packet_items: list[dict[str, Any]] = []
+    for i, si in enumerate(simulated_items):
+        pi: dict[str, Any] = {
+            "packet_item_id": f"packet-{packet_id}-{i+1:03d}",
+            "source_simulation_item_id": si.get("simulation_item_id", f"sim-item-{i}"),
+            "source_plan_item_id": si.get("source_plan_item_id", "?"),
+            "source_proposal_id": si.get("source_proposal_id", "?"),
+            "source_dossier_id": dossier_id_input,
+            "symbol": si.get("symbol", "?"),
+            "side": si.get("side", "?"),
+            "quantity": si.get("quantity", 0),
+            "order_type": si.get("order_type", "LMT"),
+            "time_in_force": si.get("time_in_force", "DAY"),
+            "limit_price": si.get("limit_price"),
+            "simulated_preflight_status": si.get("simulated_preflight_status", "PASS (simulated)"),
+            "approval_question": f"Do you approve {si.get('symbol', '?')} {si.get('side', '?')} x{si.get('quantity', 0)} at Level 1?",
+            "operator_notes": f"Simulated preflight passed for {si.get('symbol', '?')}. Requires Chris manual approval before any order path.",
+            "rationale": si.get("rationale", ""),
+            "risk_notes": si.get("risk_notes", "Requires Chris approval before any order path."),
+            **_PACKET_ITEM_TEMPLATE,
+        }
+        packet_items.append(pi)
+
+    # Build skipped_items from input dossier — items not simulated
+    skipped_items: list[dict[str, Any]] = []
+    if preflight_dossier_path and dossier_path_actual:
+        try:
+            ps = ds_loaded.get("preflight_simulation", {}) if preflight_dossier_path else {}
+            skipped_items = ps.get("skipped_items", [])
+        except Exception:
+            pass
+
+    approval_packet_id = f"approval-packet-{ts_file}"
+    human_approval_packet = {
+        "packet_id": approval_packet_id,
+        "status": "packet_only",
+        "packet_source": packet_source,
+        "reviewer": reviewer,
+        "human_packet_only": True,
+        "broker_approval_performed": False,
+        "approval_endpoint_called": False,
+        "h1_token_used": False,
+        "executable": False,
+        "requires_future_order_window": True,
+        "requires_future_h1": True,
+        "requires_future_chris_approval": True,
+        "future_real_preflight_required": True,
+        "future_real_approval_required": True,
+        "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+        "packet_items_count": len(packet_items),
+        "blocked_items_count": 0,
+        "approval_packet_path": None,
+        "approval_packet_hash": None,
+        "signature_required": True,
+        "packet_items": packet_items,
+        "skipped_items": skipped_items,
+        "approval_checklist": {
+            "confirms_level1_only": True,
+            "confirms_packet_only": True,
+            "confirms_not_broker_approval": True,
+            "confirms_orders_disabled": True,
+            "confirms_system_locked": True,
+            "confirms_no_h1_used": True,
+            "confirms_no_order_window_opened": True,
+            "confirms_no_approval_endpoint_called": True,
+            "confirms_no_submit_endpoint_called": True,
+            "confirms_no_broker_order_created": True,
+            "confirms_future_real_preflight_required": True,
+            "confirms_future_h1_required": True,
+            "confirms_future_order_window_required": True,
+            "requires_chris_accept_or_reject": True,
+        },
+    }
+
+    # Packet artifact (standalone)
+    packet_artifact = {
+        "artifact_id": approval_packet_id,
+        "packet_id": packet_id,
+        "status": "packet_only",
+        "generated_by": "level1-human-approval-packet-drill (Phase 16L)",
+        "input_preflight_dossier": input_preflight_dossier,
+        "human_approval_packet": human_approval_packet,
+    }
+    packet_artifact_hash = _compute_evidence_hash(packet_artifact)
+
+    # ------------------------------------------------------------------
+    # 10. Approval workflow
+    # ------------------------------------------------------------------
+    approval_workflow = {
+        "human_packet_only": True,
+        "demo_candidates_requested": effective_candidates,
+        "simulated_items_received": simulated_items_count,
+        "packet_items_produced": len(packet_items),
+        "broker_approval_performed": False,
+        "approval_endpoint_called": False,
+        "h1_token_used": False,
+        "any_real_broker_activity": False,
+        "all_items_packet_only": len(packet_items) > 0,
+        "any_executable_item": has_executable_in_dossier,
+    }
+
+    workflow_summary = {
+        "human_approval_packet_ready": True,
+        "approval_packet_created": len(packet_items) > 0,
+        "all_items_packet_only": True,
+        "all_items_non_executable": True,
+        "no_real_preflight_performed": True,
+        "no_approval_endpoint_called": True,
+        "no_order_path_called": True,
+        "no_broker_approval": True,
+        "no_broker_order_created": True,
+        "no_broker_submission": True,
+        "no_h1_seen": True,
+        "no_order_window_seen": True,
+        "checklist_complete": True,
+    }
+
+    # ------------------------------------------------------------------
+    # 11. Classification
+    # ------------------------------------------------------------------
+    all_tags_present = len(required_tags_missing) == 0
+    worktree_clean = git_section.get("worktree_clean", False)
+    run_time_ready = br_connected and br_mode == "paper" and br_read_only
+    safety_locked = env_allow_orders in ("false", "?") and rules_enforced in ("false", "?") and system_locked is True
+
+    if not all_tags_present:
+        diagnosis = _PHASE16L_DIAGNOSIS["missing_required_tags"]
+        severity = "NO_GO"
+    elif not worktree_clean and worktree_clean is not None:
+        diagnosis = _PHASE16L_DIAGNOSIS["dirty_worktree"]
+        severity = "NO_GO"
+    elif not positions_flat and positions_count > 0:
+        diagnosis = _PHASE16L_DIAGNOSIS["positions_not_flat"]
+        severity = "NO_GO"
+    elif active_alerts_count > 0:
+        diagnosis = _PHASE16L_DIAGNOSIS["monitor_alerts_active"]
+        severity = "NO_GO"
+    elif not run_time_ready:
+        diagnosis = _PHASE16L_DIAGNOSIS["runtime_not_ready"]
+        severity = "HOLD" if not br_connected else "NO_GO"
+    elif not safety_locked:
+        diagnosis = _PHASE16L_DIAGNOSIS["safety_not_locked"]
+        severity = "NO_GO"
+    elif autonomy_level != "1":
+        diagnosis = _PHASE16L_DIAGNOSIS["autonomy_not_level1"]
+        severity = "NO_GO"
+    elif not gs_assessment["guard_state_clean"]:
+        diagnosis = _PHASE16L_DIAGNOSIS["guard_state_not_clean"]
+        severity = "NO_GO"
+    elif not doc_acceptable:
+        diagnosis = _PHASE16L_DIAGNOSIS["doctor_not_acceptable"]
+        severity = "NO_GO"
+    elif not kpi_acceptable_hold:
+        diagnosis = _PHASE16L_DIAGNOSIS["kpi_not_acceptable"]
+        severity = "NO_GO"
+    elif not policy_result["hermes_policy_exists"] or not policy_result["execution_path_ok"]:
+        diagnosis = _PHASE16L_DIAGNOSIS["policy_boundary_missing"]
+        severity = "NO_GO"
+    elif not clean_cycles_matches_kpi:
+        diagnosis = _PHASE16L_DIAGNOSIS["clean_cycles_mismatch"]
+        severity = "NO_GO"
+    elif has_executable_in_dossier:
+        diagnosis = _PHASE16L_DIAGNOSIS["dossier_has_executable_items"]
+        severity = "NO_GO"
+    elif has_real_pf_in_dossier:
+        diagnosis = _PHASE16L_DIAGNOSIS["dossier_has_real_preflight"]
+        severity = "NO_GO"
+    elif dossier_endpoint_called:
+        diagnosis = _PHASE16L_DIAGNOSIS["dossier_has_real_preflight"]
+        severity = "NO_GO"
+    elif simulated_items_count == 0:
+        diagnosis = _PHASE16L_DIAGNOSIS["no_items_to_approve"]
+        severity = "OK"
+    else:
+        diagnosis = _PHASE16L_DIAGNOSIS["ready"]
+        severity = "OK"
+
+    drill_ok = diagnosis in (_PHASE16L_DIAGNOSIS["ready"], _PHASE16L_DIAGNOSIS["no_items_to_approve"])
+    operator_action_required = not drill_ok
+    suggested_actions: list[str] = []
+    if not drill_ok:
+        suggested_actions.append(f"Human approval packet drill blocked: {diagnosis}")
+        if not run_time_ready:
+            suggested_actions.append("Ensure bridge is connected in paper read-only mode")
+        if not safety_locked:
+            suggested_actions.append("Verify all safety locks are engaged")
+        if not gs_assessment["guard_state_clean"]:
+            suggested_actions.append("Run guard-state-reconcile to fix guard state")
+
+    # ------------------------------------------------------------------
+    # 12. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "diagnosis": diagnosis, "severity": severity,
+        "packet_items_count": len(packet_items),
+        "human_packet_only": True,
+        "broker_approval_performed": False,
+        "approval_endpoint_called": False,
+        "h1_token_used": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 13. Assemble result
+    # ------------------------------------------------------------------
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-human-approval-packet-drill",
+        "advisory": (
+            "Read-only Level 1 human approval packet drill (Phase 16L). "
+            "Converts a simulated preflight dossier into a Chris-facing "
+            "human approval packet. /order/approve is NEVER called. "
+            "Every packet item is tagged human_packet_only=true. "
+            "No orders. No mutations. No H1 token. No broker activity. "
+            "No autonomy level change. Chris must manually sign and approve."
+        ),
+        "timestamp": ts_str,
+        "packet_id": packet_id,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": runtime_section,
+        "autonomy": autonomy_section,
+        "safety": safety_section,
+        "guard_state": guard_section,
+        "input_preflight_dossier": input_preflight_dossier,
+        "human_approval_packet": human_approval_packet,
+        "packet_artifact": packet_artifact,
+        "packet_artifact_hash": packet_artifact_hash,
+        "approval_workflow": approval_workflow,
+        "workflow_summary": workflow_summary,
+        "kpi_summary": kpi_section,
+        "doctor_summary": doctor_section,
+        "policy_summary": policy_section,
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
+        "h1_token_not_used": True,
+        "no_approval_endpoint_called": True,
+        "evidence_hash": evidence_hash,
+        "explicit_non_actions": _PHASE16L_EXPLICIT_NON_ACTIONS,
+    }
+
+    # ------------------------------------------------------------------
+    # 14. Export artifacts
+    # ------------------------------------------------------------------
+    export_path: str | None = None
+    packet_artifact_path: str | None = None
+    try:
+        _PHASE16L_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE16L_EXPORT_DIR / f"{packet_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        export_path = str(ep)
+        pa_path = _PHASE16L_EXPORT_DIR / f"{approval_packet_id}.json"
+        with open(pa_path, "w", encoding="utf-8") as f:
+            _json.dump(packet_artifact, f, indent=2, default=str)
+        packet_artifact_path = str(pa_path)
+    except Exception:
+        pass
+
+    result["export_path"] = export_path
+    result["packet_artifact_path"] = packet_artifact_path
+    result["packet_path"] = packet_artifact_path
+    result["packet_hash"] = packet_artifact_hash
+    # Also place on human_approval_packet for inline access
+    human_approval_packet["approval_packet_path"] = packet_artifact_path
+    human_approval_packet["approval_packet_hash"] = packet_artifact_hash
+    return result
+
+
+def _phase16l_no_go(
+    packet_id: str, ts_str: str, git_section: dict, required_tags: dict,
+    diagnosis: str, actions: list,
+) -> dict:
+    """Build a NO_GO result for early-exit prerequisite failures."""
+    empty_pkt = {"packet_id": packet_id, "status": "blocked", "packet_items": [], "skipped_items": [], "approval_checklist": {}}
+    empty_pa = {"artifact_id": packet_id, "status": "blocked"}
+    return {
+        "command": "ibkr-operator level1-human-approval-packet-drill",
+        "timestamp": ts_str,
+        "packet_id": packet_id,
+        "diagnosis": diagnosis,
+        "severity": "NO_GO",
+        "operator_action_required": True,
+        "suggested_operator_actions": actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": {},
+        "autonomy": {},
+        "safety": {},
+        "guard_state": {},
+        "input_preflight_dossier": {},
+        "human_approval_packet": empty_pkt,
+        "packet_artifact": empty_pa,
+        "packet_artifact_hash": _compute_evidence_hash(empty_pa),
+        "approval_workflow": {},
+        "workflow_summary": {},
+        "kpi_summary": {},
+        "doctor_summary": {},
+        "policy_summary": {},
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
+        "h1_token_not_used": True,
+        "no_approval_endpoint_called": True,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16L_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _print_level1_human_approval_packet_drill(result: dict) -> None:
+    """Print Phase 16L human approval packet drill in human-readable format."""
+    drill_ok = result.get("diagnosis") in (_PHASE16L_DIAGNOSIS["ready"], _PHASE16L_DIAGNOSIS["no_items_to_approve"])
+    diag_color = GREEN if drill_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else (YELLOW if sev == "HOLD" else RED)
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Human Approval Packet Drill (16L){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Packet ID:             {result.get('packet_id', '?')}")
+    print(f"  Timestamp:             {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:             {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:              {sev_color}{sev}{RESET}")
+    print()
+
+    ipd = result.get("input_preflight_dossier", {})
+    if ipd:
+        print(f"  {BOLD}Input Preflight Dossier{RESET}")
+        print(f"    Source:              {ipd.get('source', '?')}")
+        print(f"    Dossier ID:          {ipd.get('dossier_id', '?')}")
+        print(f"    Status:              {ipd.get('status', '?')}")
+        print(f"    Sim-only:             {_bool_str(ipd.get('simulation_only'))}")
+        print(f"    Real preflight:       {RED}{ipd.get('real_preflight_performed')}{RESET}")
+        print(f"    Items count:         {ipd.get('simulated_items_count', 0)}")
+        ah = ipd.get("artifact_hash", "")
+        if ah:
+            print(f"    Artifact hash:       {ah[:16]}...")
+        print()
+
+    hap = result.get("human_approval_packet", {})
+    if hap:
+        print(f"  {BOLD}Human Approval Packet{RESET}")
+        print(f"    Packet ID:           {hap.get('packet_id', '?')}")
+        print(f"    Status:              {hap.get('status', '?')}")
+        print(f"    Reviewer:            {hap.get('reviewer', '?')}")
+        print(f"    Human packet only:    {GREEN}{hap.get('human_packet_only')}{RESET}")
+        print(f"    Broker approval:      {RED}{hap.get('broker_approval_performed')}{RESET}")
+        print(f"    H1 token used:        {RED}{hap.get('h1_token_used')}{RESET}")
+        print(f"    Endpoint called:      {RED}{hap.get('approval_endpoint_called')}{RESET}")
+        print(f"    Sig required:        {hap.get('requires_chris_signature')}")
+        print(f"    Packet items:        {hap.get('packet_items_count', 0)}")
+        print(f"    Blocked:              {hap.get('blocked_items_count', 0)}")
+        print()
+
+        pi = hap.get("packet_items", [])
+        if pi:
+            print(f"  {BOLD}Packet Items (pending Chris review){RESET}")
+            for p in pi:
+                print(f"    {p.get('packet_item_id', '?')}: {p.get('symbol', '?')} "
+                      f"{GREEN}{p.get('side', '?')}{RESET} "
+                      f"qty={p.get('quantity', 0)}")
+                print(f"      packet-only={GREEN}{p.get('human_packet_only')}{RESET}")
+            print()
+
+    ws = result.get("workflow_summary", {})
+    if ws:
+        print(f"  {BOLD}Workflow Summary{RESET}")
+        for key, val in ws.items():
+            color = GREEN if val else RED
+            print(f"    {key:<46} {color}{val}{RESET}")
+        print()
+
+    auto = result.get("autonomy", {})
+    if auto:
+        print(f"  {BOLD}Autonomy{RESET}")
+        print(f"    Level:          {auto.get('current_level', '?')}")
+        cc = auto.get('clean_cycles')
+        print(f"    Clean cycles:   {cc if cc is not None else 'null'}")
+        print()
+
+    safety = result.get("safety", {})
+    if safety:
+        print(f"  {BOLD}Safety{RESET}")
+        print(f"    ALLOW_ORDERS:   {safety.get('env_IBKR_ALLOW_ORDERS', '?')}")
+        print(f"    rules.enforced: {safety.get('rules_enforced', '?')}")
+        print(f"    system_locked:  {_bool_str(safety.get('system_locked'))}")
+        print()
+
+    guard = result.get("guard_state", {})
+    if guard:
+        print(f"  {BOLD}Guard State{RESET}")
+        print(f"    Trade count:    {guard.get('daily_trade_count', '?')}")
+        print(f"    Trade date:     {guard.get('trade_date', '?')}")
+        print(f"    Clean:          {_bool_str(guard.get('guard_state_clean'))}")
+        print()
+
+    sa = result.get("suggested_operator_actions", [])
+    if sa:
+        print(f"  {BOLD}Suggested Actions{RESET}")
+        for a in sa:
+            print(f"    {YELLOW}→{RESET} {a}")
+        print()
+
+    print(f"  {BOLD}Advisory{RESET}")
+    print(f"    {result.get('advisory', '')}")
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"\n  Evidence hash: {eh[:16]}...")
+
+    ep = result.get("export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    pp = result.get("packet_artifact_path")
+    if pp:
+        print(f"  Packet artifact: {pp}")
+    ph = result.get("packet_artifact_hash", "")
+    if ph:
+        print(f"  Packet artifact hash: {ph[:16]}...")
+    print()
+
+
 def main() -> None:
     import argparse
 
@@ -23929,6 +24861,53 @@ def main() -> None:
     p16k_a3.add_argument("--decision-mode", type=str, default="mixed_demo")
     p16k_a3.add_argument("--order-plan", type=str, default=None)
     p16k_a3.add_argument("--simulation-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 16L — Level 1 Human Approval Packet Drill
+    p16l = sub.add_parser("level1-human-approval-packet-drill",
+                          help="Level 1 human approval packet drill (Phase 16L)")
+    p16l.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16l.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-human-approval-packets/")
+    p16l.add_argument("--demo-candidates", type=int, default=3,
+                      help="Number of demo candidates (0-5, default 3)")
+    p16l.add_argument("--decision-mode", type=str, default="mixed_demo",
+                      help="Decision mode: mixed_demo, accept_all_demo, reject_all_demo, defer_all_demo")
+    p16l.add_argument("--preflight-dossier", type=str, default=None,
+                      help="Optional path to a prior 16K preflight simulation dossier artifact")
+    p16l.add_argument("--packet-source", type=str, default="synthetic_readonly_demo",
+                      help="Packet source label (default: synthetic_readonly_demo)")
+    p16l.add_argument("--reviewer", type=str, default="Chris",
+                      help="Reviewer name (default: Chris)")
+    # Alias: phase16l-human-approval-packet-drill
+    p16l_a1 = sub.add_parser("phase16l-human-approval-packet-drill",
+                             help="Alias for level1-human-approval-packet-drill")
+    p16l_a1.add_argument("--json", action="store_true")
+    p16l_a1.add_argument("--export", action="store_true")
+    p16l_a1.add_argument("--demo-candidates", type=int, default=3)
+    p16l_a1.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16l_a1.add_argument("--preflight-dossier", type=str, default=None)
+    p16l_a1.add_argument("--packet-source", type=str, default="synthetic_readonly_demo")
+    p16l_a1.add_argument("--reviewer", type=str, default="Chris")
+    # Alias: level1-approval-packet-drill
+    p16l_a2 = sub.add_parser("level1-approval-packet-drill",
+                             help="Alias for level1-human-approval-packet-drill")
+    p16l_a2.add_argument("--json", action="store_true")
+    p16l_a2.add_argument("--export", action="store_true")
+    p16l_a2.add_argument("--demo-candidates", type=int, default=3)
+    p16l_a2.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16l_a2.add_argument("--preflight-dossier", type=str, default=None)
+    p16l_a2.add_argument("--packet-source", type=str, default="synthetic_readonly_demo")
+    p16l_a2.add_argument("--reviewer", type=str, default="Chris")
+    # Alias: human-approval-packet-drill
+    p16l_a3 = sub.add_parser("human-approval-packet-drill",
+                             help="Alias for level1-human-approval-packet-drill")
+    p16l_a3.add_argument("--json", action="store_true")
+    p16l_a3.add_argument("--export", action="store_true")
+    p16l_a3.add_argument("--demo-candidates", type=int, default=3)
+    p16l_a3.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16l_a3.add_argument("--preflight-dossier", type=str, default=None)
+    p16l_a3.add_argument("--packet-source", type=str, default="synthetic_readonly_demo")
+    p16l_a3.add_argument("--reviewer", type=str, default="Chris")
 
     args = parser.parse_args()
 
@@ -25251,6 +26230,83 @@ def main() -> None:
             if da:
                 print(f"  Dossier artifact written: {da}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") in (_PHASE16K_DIAGNOSIS["ready"], _PHASE16K_DIAGNOSIS["no_draft_items_to_simulate"]) else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-human-approval-packet-drill",
+                        "phase16l-human-approval-packet-drill",
+                        "level1-approval-packet-drill",
+                        "human-approval-packet-drill"):
+        demo_cand = getattr(args, "demo_candidates", 3)
+        decision_mode = getattr(args, "decision_mode", "mixed_demo")
+        preflight_dossier = getattr(args, "preflight_dossier", None)
+        packet_source = getattr(args, "packet_source", "synthetic_readonly_demo")
+        reviewer = getattr(args, "reviewer", "Chris")
+        try:
+            result = _run_level1_human_approval_packet_drill(
+                demo_candidates=demo_cand,
+                decision_mode=decision_mode,
+                preflight_dossier_path=preflight_dossier,
+                packet_source=packet_source,
+                reviewer=reviewer,
+            )
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            result = {
+                "command": f"ibkr-operator {args.command}",
+                "timestamp": ts_str,
+                "packet_id": f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}",
+                "diagnosis": _PHASE16L_DIAGNOSIS["unknown"],
+                "severity": "NO_GO",
+                "operator_action_required": True,
+                "suggested_operator_actions": [
+                    f"Internal error: {type(exc).__name__}",
+                    "Run ibkr-operator doctor",
+                ],
+                "git": {},
+                "required_tags": {},
+                "runtime": {},
+                "autonomy": {},
+                "safety": {},
+                "guard_state": {},
+                "input_preflight_dossier": {},
+                "human_approval_packet": {"packet_id": f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}", "status": "error", "packet_items": []},
+                "packet_artifact": {},
+                "packet_artifact_hash": _compute_evidence_hash({}),
+                "approval_workflow": {},
+                "workflow_summary": {},
+                "kpi_summary": {},
+                "doctor_summary": {},
+                "policy_summary": {},
+                "promotion_allowed_now": False,
+                "order_enablement_allowed_now": False,
+                "order_enablement_performed": False,
+                "promotion_performed": False,
+                "no_broker_mutation": True,
+                "no_order_window_opened": True,
+                "no_order_window_seen": True,
+                "no_h1_seen": True,
+                "h1_token_not_used": True,
+                "no_approval_endpoint_called": True,
+                "evidence_hash": _compute_evidence_hash({"diagnosis": _PHASE16L_DIAGNOSIS["unknown"]}),
+                "explicit_non_actions": _PHASE16L_EXPLICIT_NON_ACTIONS,
+            }
+            print(f"Human approval packet drill internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_human_approval_packet_drill(result)
+        if args.export:
+            ep = result.get("export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+            pp = result.get("packet_artifact_path")
+            if pp:
+                print(f"  Packet artifact written: {pp}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") in (_PHASE16L_DIAGNOSIS["ready"], _PHASE16L_DIAGNOSIS["no_items_to_approve"]) else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

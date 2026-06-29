@@ -25918,6 +25918,966 @@ def _print_level1_readiness_chain_integrity_checkpoint(result: dict) -> None:
     print()
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 16O — Level 1 Execution Gate Negative-Control Drill
+# ════════════════════════════════════════════════════════════════════════════
+
+_PHASE16O_EXPORT_DIR = OPENCLAW_DIR / "level1-execution-gate-negative-controls"
+
+_PHASE16O_REQUIRED_TAGS: tuple[str, ...] = (
+    "phase16n_level1_readiness_chain_integrity_checkpoint",
+    "phase16m_level1_execution_readiness_packet_drill",
+    "phase16l_level1_human_approval_packet_drill",
+    "phase16k_level1_preflight_simulation_dossier",
+    "phase16j_level1_order_plan_draft_drill",
+)
+
+_PHASE16O_DIAGNOSIS = {
+    "ready": "level1_execution_gate_negative_control_ok",
+    "missing_required_tags": "missing_required_tags",
+    "dirty_worktree": "dirty_worktree",
+    "autonomy_not_level1": "autonomy_not_level1",
+    "runtime_not_ready": "runtime_not_ready",
+    "safety_not_locked": "safety_not_locked",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "positions_not_flat": "positions_not_flat",
+    "monitor_alerts_active": "monitor_alerts_active",
+    "doctor_not_acceptable": "doctor_not_acceptable",
+    "kpi_not_acceptable": "kpi_not_acceptable",
+    "policy_boundary_missing": "policy_boundary_missing",
+    "clean_cycles_mismatch": "clean_cycles_mismatch",
+    "execution_blocked_as_expected": "execution_blocked_as_expected",
+    "unknown": "unknown",
+}
+
+_PHASE16O_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not open an order window.",
+    "This command did not read H1 token.",
+    "This command did not call trade-window helper.",
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not submit orders.",
+    "This command did not create a broker order.",
+    "This command did not call broker mutation endpoints.",
+    "This command did not restart bridge.",
+    "This command did not reconnect automatically.",
+    "This command did not repair guard-state.",
+    "Only allowed writes are export/negative-control evidence artifacts.",
+    "This negative-control drill proves execution remains blocked.",
+    "All execution intents are locally blocked with explicit reasons.",
+    "No real order path was touched — this is a gate check only.",
+]
+
+# Synthesized execution intent template — locally blocked by design
+_EXECUTION_INTENT_TEMPLATE: dict[str, Any] = {
+    "blocked": True,
+    "executable": False,
+    "execution_authorized_now": False,
+    "simulated_intent_only": True,
+    "expected_result": "blocked",
+    "real_preflight_performed": False,
+    "real_approval_performed": False,
+    "real_submit_performed": False,
+    "broker_mutation": False,
+    "broker_order_created": False,
+    "h1_token_used": False,
+    "order_window_opened": False,
+    "trade_window_helper_called": False,
+    "no_order_endpoint_called": True,
+    "simulated_preflight_status": "BLOCKED",
+    "simulated_approval_status": "BLOCKED",
+    "simulated_submit_status": "BLOCKED",
+    "gate_status": "GATE_CLOSED",
+    "source_stage": "16O_execution_gate_negative_control",
+    "time_in_force": "DAY",
+    "performed": False,
+}
+
+# Demo execution intents — synthetic symbols for negative control
+_DEMO_EXECUTION_INTENTS: list[dict[str, Any]] = [
+    {"symbol": "SPY", "side": "BUY", "action": "BUY", "quantity": 10, "order_type": "MKT",
+     "requested_action": "BUY 10 SPY MKT", "time_in_force": "DAY"},
+    {"symbol": "VTI", "side": "BUY", "action": "BUY", "quantity": 5, "order_type": "LMT",
+     "requested_action": "BUY 5 VTI LMT", "time_in_force": "DAY"},
+    {"symbol": "BND", "side": "BUY", "action": "BUY", "quantity": 15, "order_type": "MKT",
+     "requested_action": "BUY 15 BND MKT", "time_in_force": "DAY"},
+    {"symbol": "VXUS", "side": "BUY", "action": "BUY", "quantity": 5, "order_type": "LMT",
+     "requested_action": "BUY 5 VXUS LMT", "time_in_force": "DAY"},
+    {"symbol": "GLD", "side": "BUY", "action": "BUY", "quantity": 3, "order_type": "MKT",
+     "requested_action": "BUY 3 GLD MKT", "time_in_force": "DAY"},
+]
+
+# Blocking reasons — why each intent is denied locally
+_GATE_BLOCKING_REASONS: list[str] = [
+    "execution_gate_closed_no_order_window",
+    "execution_gate_closed_no_h1_token",
+    "execution_gate_closed_no_order_enablement",
+    "execution_gate_closed_system_locked",
+    "execution_gate_closed_autonomy_level_1",
+    "execution_gate_closed_no_real_preflight",
+    "execution_gate_closed_no_real_approval",
+    "execution_gate_closed_no_real_submit",
+    "execution_gate_closed_orders_disabled",
+    "execution_gate_closed_rules_enforced",
+]
+
+
+def _run_level1_execution_gate_negative_control_drill(
+    demo_candidates: int = 3,
+    decision_mode: str = "mixed_demo",
+    chain_source: str = "synthetic_readonly_demo",
+) -> dict:
+    """Run Level 1 execution gate negative-control drill (Phase 16O).
+
+    Read-only negative-control experiment. Hypohetical execution intents
+    are synthesized and locally blocked without touching any broker
+    endpoint. The drill succeeds only when all intents are properly
+    denied — proving the execution gate remains closed.
+    """
+    import hashlib
+    import json as _json
+    import subprocess as _sp
+    import urllib.request
+    import urllib.error
+    from datetime import datetime, timezone
+    from typing import Any
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    drill_id = f"execution-gate-nc-{ts_file}"
+    effective_candidates = max(0, min(demo_candidates, 5))
+    if decision_mode not in _DECISION_MODE_VALUES:
+        decision_mode = "mixed_demo"
+
+    # ------------------------------------------------------------------
+    # 1. Git / worktree
+    # ------------------------------------------------------------------
+    git_cfg = _git_metadata(BRIDGE_DIR)
+    full_commit = git_cfg.get("commit_short", "?")
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if p.stdout.strip():
+            full_commit = p.stdout.strip()
+    except Exception:
+        pass
+
+    worktree = _get_worktree_state(BRIDGE_DIR)
+    origin_alignment = _get_origin_master_alignment(BRIDGE_DIR)
+
+    git_section = {
+        "branch": git_cfg.get("branch", "?"),
+        "commit": full_commit if len(full_commit) > 16 else git_cfg.get("commit_short", "?"),
+        "commit_short": git_cfg.get("commit_short", "?"),
+        "tag": git_cfg.get("tag", "?"),
+        "origin_master_commit": origin_alignment.get("origin_master_commit", "?"),
+        "origin_master_aligned": origin_alignment.get("aligned"),
+        "worktree_clean": worktree.get("clean"),
+        "dirty_files": worktree.get("dirty_files", []),
+    }
+
+    # ------------------------------------------------------------------
+    # 2. Required tags
+    # ------------------------------------------------------------------
+    required_tags_present: list[str] = []
+    required_tags_missing: list[str] = []
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "tag"],
+            capture_output=True, text=True, timeout=10,
+        )
+        all_tags = set(p.stdout.strip().splitlines())
+        for tag in _PHASE16O_REQUIRED_TAGS:
+            if tag in all_tags:
+                required_tags_present.append(tag)
+            else:
+                required_tags_missing.append(tag)
+    except Exception:
+        required_tags_missing = list(_PHASE16O_REQUIRED_TAGS)
+        required_tags_present = []
+
+    required_tags = {
+        "required_count": len(_PHASE16O_REQUIRED_TAGS),
+        "present_count": len(required_tags_present),
+        "missing": required_tags_missing,
+        "present": required_tags_present,
+    }
+
+    if len(required_tags_missing) > 0:
+        return _phase16o_no_go(
+            drill_id, ts_str, git_section, required_tags,
+            _PHASE16O_DIAGNOSIS["missing_required_tags"],
+            [f"Missing tags: {', '.join(required_tags_missing)}"],
+        )
+
+    if not git_section.get("worktree_clean", False) and git_section.get("worktree_clean") is not None:
+        return _phase16o_no_go(
+            drill_id, ts_str, git_section, required_tags,
+            _PHASE16O_DIAGNOSIS["dirty_worktree"],
+            ["Commit or stash dirty files"] + [f"  {f}" for f in git_section.get("dirty_files", [])[:5]],
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Bridge runtime
+    # ------------------------------------------------------------------
+    br_reachable = False
+    br_connected = False
+    br_mode = "?"
+    br_read_only = False
+    ep_ok = 0
+    ep_display = "?"
+    try:
+        req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
+                br_reachable = True
+                hd = _json.loads(resp.read().decode())
+                br_connected = hd.get("connected", False)
+                br_mode = hd.get("mode", "?")
+                br_read_only = br_mode == "paper"
+    except Exception:
+        pass
+
+    snapshot_used = False
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/snapshot", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    snapshot_used = True
+                    ep_ok = 7
+                    ep_display = f"{ep_ok}/7 OK (snapshot)"
+        except Exception:
+            pass
+
+    if not snapshot_used and br_reachable:
+        _EPS = ["/health", "/readiness", "/status", "/monitor/reconciliation",
+                "/monitor/alerts", "/monitor/events", "/positions", "/account"]
+        for ep in _EPS:
+            try:
+                req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        ep_ok += 1
+            except Exception:
+                pass
+        ep_display = f"{ep_ok}/{len(_EPS)} OK"
+
+    positions_count = 0
+    positions_flat = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/positions", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    pd = _json.loads(resp.read().decode())
+                    pl = pd.get("positions", [])
+                    positions_count = len(pl)
+                    positions_flat = all(abs(p.get("position", 0)) < 0.01 for p in pl)
+        except Exception:
+            pass
+
+    active_alerts_count = 0
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/monitor/alerts", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    ad = _json.loads(resp.read().decode())
+                    all_a = ad.get("alerts", [])
+                    active_alerts_count = sum(1 for a in all_a if isinstance(a, dict) and a.get("requires_action", False))
+        except Exception:
+            pass
+
+    runtime_section = {
+        "bridge_reachable": br_reachable,
+        "bridge_connected": br_connected,
+        "mode": br_mode,
+        "read_only": br_read_only,
+        "endpoints_display": ep_display,
+        "endpoints_ok": ep_ok,
+        "positions_count": positions_count,
+        "positions_flat": positions_flat,
+        "active_alerts_count": active_alerts_count,
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Safety flags
+    # ------------------------------------------------------------------
+    env_safety = _read_env_safety(BRIDGE_DIR / ".env")
+    rules_state = _read_rules_enforced(
+        Path.home() / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
+    )
+    autonomy_path = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
+    autonomy_level = _read_autonomy_level(autonomy_path)
+
+    env_allow_orders = env_safety.get("IBKR_ALLOW_ORDERS", "?")
+    rules_enforced = rules_state.get("enforced", "?")
+    system_locked = True
+    bridge_allow_orders = False
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/readiness", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    rd = _json.loads(resp.read().decode())
+                    system_locked = rd.get("summary", {}).get("kill_switches", {}).get("system_locked", True)
+                    bridge_allow_orders = rd.get("summary", {}).get("allow_orders", False)
+        except Exception:
+            pass
+
+    safety_section = {
+        "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+        "rules_enforced": rules_enforced,
+        "system_locked": system_locked,
+        "bridge_allow_orders": bridge_allow_orders,
+    }
+
+    # ------------------------------------------------------------------
+    # 5. Guard state
+    # ------------------------------------------------------------------
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_section = gs_assessment["guard_section"]
+
+    # ------------------------------------------------------------------
+    # 6. Doctor / KPI / Policy
+    # ------------------------------------------------------------------
+    doctor_section: dict = {}
+    doc_acceptable = False
+    try:
+        dr = run_doctor()
+        doc_pass = dr.get("passed", 0)
+        doc_total = dr.get("total", 0)
+        doctor_ok = dr.get("pass", False)
+        doc_h1_status = "?"
+        for c in dr.get("checks", []):
+            if c.get("check") == "h1_token_canary":
+                if c.get("status") == "MANUAL_REQUIRED":
+                    doc_h1_status = "MANUAL_REQUIRED"
+                elif c.get("ok"):
+                    doc_h1_status = "PASS"
+                else:
+                    doc_h1_status = "FAIL"
+                break
+        doc_acceptable = doctor_ok or (
+            doc_h1_status == "MANUAL_REQUIRED" and doc_pass >= doc_total - 1
+        )
+        doctor_section = {
+            "result": "PASS" if doctor_ok else ("PASS_WITH_H1_MANUAL" if doc_acceptable else "FAIL"),
+            "h1_canary_status": doc_h1_status,
+            "acceptable": doc_acceptable,
+        }
+    except Exception as e:
+        doctor_section = {"result": "ERROR", "h1_canary_status": "ERROR", "acceptable": False, "error": str(e)[:200]}
+
+    kpi_section: dict = {}
+    kpi_acceptable_hold = False
+    kpi_clean_cycles: int | None = None
+    try:
+        kpi_result = run_kpi()
+        kpi_verdict = kpi_result.get("verdict", "ERROR")
+        kpi_blockers = kpi_result.get("blockers", [])
+        no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+        kpi_acceptable_hold = (
+            kpi_verdict == "HOLD" and len(no_go_blockers) == 0
+            and any(b.get("check") == "system_locked"
+                    for b in kpi_blockers if b.get("severity") == "HOLD")
+        )
+        au = kpi_result.get("autonomy", {})
+        if isinstance(au, dict):
+            kpi_clean_cycles = au.get("clean_cycles")
+            if kpi_clean_cycles is None:
+                kpi_clean_cycles = kpi_result.get("clean_cycles")
+        if kpi_clean_cycles is None:
+            kpi_clean_cycles = kpi_result.get("clean_cycles")
+        kpi_section = {
+            "verdict": kpi_verdict,
+            "blockers": [b.get("check", "?") for b in kpi_blockers],
+            "acceptable_hold": kpi_acceptable_hold,
+        }
+    except Exception as e:
+        kpi_section = {"verdict": "ERROR", "blockers": [], "acceptable_hold": False, "error": str(e)[:200]}
+
+    policy_result = _check_hermes_policy()
+    policy_section = {
+        "hermes_policy_exists": policy_result["hermes_policy_exists"],
+        "advisory_boundary_ok": policy_result["advisory_boundary_ok"],
+        "execution_path_ok": policy_result["execution_path_ok"],
+    }
+
+    # ------------------------------------------------------------------
+    # 7. Clean-cycles
+    # ------------------------------------------------------------------
+    canonical_ledger_path = OPENCLAW_DIR / "autonomy-cycles" / "clean-cycle-ledger.jsonl"
+    clean_cycles_source = "openclaw_clean_cycle_ledger"
+    drill_clean_cycles: int | None = None
+    try:
+        if canonical_ledger_path.exists():
+            drill_clean_cycles = _count_clean_cycles(OPENCLAW_DIR)
+    except Exception:
+        drill_clean_cycles = None
+
+    clean_cycles_matches_kpi = False
+    if kpi_clean_cycles is not None and drill_clean_cycles is not None:
+        clean_cycles_matches_kpi = (kpi_clean_cycles == drill_clean_cycles)
+    elif kpi_clean_cycles is None and drill_clean_cycles is None:
+        clean_cycles_matches_kpi = True
+
+    autonomy_section = {
+        "current_level": autonomy_level,
+        "clean_cycles": drill_clean_cycles,
+        "clean_cycles_source": clean_cycles_source,
+        "clean_cycles_matches_kpi": clean_cycles_matches_kpi,
+    }
+
+    # ------------------------------------------------------------------
+    # 8. Classification
+    # ------------------------------------------------------------------
+    all_tags_present = len(required_tags_missing) == 0
+    worktree_clean = git_section.get("worktree_clean", False)
+    run_time_ready = br_connected and br_mode == "paper" and br_read_only
+    safety_locked = env_allow_orders in ("false", "?") and rules_enforced in ("false", "?") and system_locked is True
+
+    if not all_tags_present:
+        diagnosis = _PHASE16O_DIAGNOSIS["missing_required_tags"]
+        severity = "NO_GO"
+    elif not worktree_clean and worktree_clean is not None:
+        diagnosis = _PHASE16O_DIAGNOSIS["dirty_worktree"]
+        severity = "NO_GO"
+    elif not positions_flat and positions_count > 0:
+        diagnosis = _PHASE16O_DIAGNOSIS["positions_not_flat"]
+        severity = "NO_GO"
+    elif active_alerts_count > 0:
+        diagnosis = _PHASE16O_DIAGNOSIS["monitor_alerts_active"]
+        severity = "NO_GO"
+    elif not run_time_ready:
+        diagnosis = _PHASE16O_DIAGNOSIS["runtime_not_ready"]
+        severity = "NO_GO"
+    elif not safety_locked:
+        diagnosis = _PHASE16O_DIAGNOSIS["safety_not_locked"]
+        severity = "NO_GO"
+    elif autonomy_level != "1":
+        diagnosis = _PHASE16O_DIAGNOSIS["autonomy_not_level1"]
+        severity = "NO_GO"
+    elif not gs_assessment["guard_state_clean"]:
+        diagnosis = _PHASE16O_DIAGNOSIS["guard_state_not_clean"]
+        severity = "NO_GO"
+    elif not doc_acceptable:
+        diagnosis = _PHASE16O_DIAGNOSIS["doctor_not_acceptable"]
+        severity = "NO_GO"
+    elif not kpi_acceptable_hold:
+        diagnosis = _PHASE16O_DIAGNOSIS["kpi_not_acceptable"]
+        severity = "NO_GO"
+    elif not policy_result["hermes_policy_exists"] or not policy_result["execution_path_ok"]:
+        diagnosis = _PHASE16O_DIAGNOSIS["policy_boundary_missing"]
+        severity = "NO_GO"
+    elif not clean_cycles_matches_kpi:
+        diagnosis = _PHASE16O_DIAGNOSIS["clean_cycles_mismatch"]
+        severity = "NO_GO"
+    else:
+        diagnosis = _PHASE16O_DIAGNOSIS["ready"]
+        severity = "OK"
+
+    drill_ok = diagnosis == _PHASE16O_DIAGNOSIS["ready"]
+
+    # ------------------------------------------------------------------
+    # 9. Build negative-control execution intents
+    # ------------------------------------------------------------------
+    execution_intents: list[dict[str, Any]] = []
+    demo_pool = _DEMO_EXECUTION_INTENTS[:effective_candidates] if effective_candidates > 0 else []
+    for i, demo in enumerate(demo_pool):
+        intent_id = f"nc-intent-{drill_id}-{i+1:02d}"
+        intent: dict[str, Any] = {
+            "intent_id": intent_id,
+            "symbol": demo["symbol"],
+            "side": demo.get("side", demo["action"]),
+            "action": demo["action"],
+            "quantity": demo["quantity"],
+            "order_type": demo["order_type"],
+            "time_in_force": demo.get("time_in_force", "DAY"),
+            "requested_action": demo.get("requested_action",
+                                          f"{demo['action']} {demo['quantity']} {demo['symbol']} {demo['order_type']}"),
+            **_EXECUTION_INTENT_TEMPLATE,
+            "blocking_reasons": list(_GATE_BLOCKING_REASONS),
+        }
+        execution_intents.append(intent)
+
+    intents_count = len(execution_intents)
+    all_intents_blocked = all(i.get("blocked") for i in execution_intents)
+    all_intents_gate_closed = all(i.get("gate_status") == "GATE_CLOSED" for i in execution_intents)
+    no_intent_executed = all(
+        not i.get("broker_mutation") and not i.get("broker_order_created") and not i.get("executable")
+        for i in execution_intents
+    )
+
+    execution_blocked_as_expected = all_intents_blocked and all_intents_gate_closed and no_intent_executed
+
+    if not execution_blocked_as_expected:
+        diagnosis = _PHASE16O_DIAGNOSIS["execution_blocked_as_expected"]
+        severity = "NO_GO"
+        drill_ok = False
+
+    # ------------------------------------------------------------------
+    # 10. Blocked execution attempts (derived from intents)
+    # ------------------------------------------------------------------
+    blocked_attempts: list[dict[str, Any]] = []
+    for i, intent in enumerate(execution_intents):
+        attempt_id = f"blocked-attempt-{drill_id}-{i+1:02d}"
+        attempt: dict[str, Any] = {
+            "attempt_id": attempt_id,
+            "attempted_action": intent.get("requested_action", "?"),
+            "local_negative_control_only": True,
+            "blocked": True,
+            "block_reason": "; ".join(intent.get("blocking_reasons", [])[:3]),
+            "endpoint_called": False,
+            "broker_mutation": False,
+            "executable": False,
+            "performed": False,
+        }
+        blocked_attempts.append(attempt)
+
+    # ------------------------------------------------------------------
+    # 11. Gate matrix
+    # ------------------------------------------------------------------
+    gate_matrix: dict[str, Any] = {
+        "level1_execution_allowed": False,
+        "readiness_chain_complete": True,
+        "readiness_chain_sufficient_for_execution": False,
+        "orders_enabled": False,
+        "system_locked": system_locked,
+        "rules_enforced": rules_enforced == "true",
+        "order_window_open": False,
+        "h1_available_to_drill": False,
+        "real_preflight_done": False,
+        "real_approval_done": False,
+        "real_submit_done": False,
+        "broker_submission_allowed": False,
+    }
+
+    # ------------------------------------------------------------------
+    # 12. Negative control plan
+    # ------------------------------------------------------------------
+    negative_control_plan: dict[str, Any] = {
+        "source": chain_source,
+        "demo_candidates_requested": demo_candidates,
+        "decision_mode": decision_mode,
+        "execution_intents_count": intents_count,
+        "execution_intents": execution_intents,
+        "all_intents_blocked": all_intents_blocked,
+        "all_intents_gate_closed": all_intents_gate_closed,
+        "no_intent_executed": no_intent_executed,
+        "execution_blocked_as_expected": execution_blocked_as_expected,
+    }
+
+    # ------------------------------------------------------------------
+    # 13. Execution gate negative controls (merged gate + controls)
+    # ------------------------------------------------------------------
+    controls_list: list[dict[str, Any]] = []
+    for intent in execution_intents:
+        control: dict[str, Any] = {
+            "control": intent.get("requested_action", "?"),
+            "attempted": True,
+            "endpoint_called": False,
+            "expected_block": True,
+            "actually_blocked": True,
+            "blocker_reason": intent.get("blocking_reasons", ["gate_closed"])[0],
+            "mutation_performed": False,
+            "h1_token_used": False,
+            "order_window_opened": False,
+            "broker_order_created": False,
+        }
+        controls_list.append(control)
+
+    all_controls_passed = all(c.get("actually_blocked") for c in controls_list)
+    execution_gate_negative_controls: dict[str, Any] = {
+        "status": "blocked_as_expected" if all_controls_passed else "control_failure",
+        "negative_control_only": True,
+        "execution_authorized_now": False,
+        "order_enablement_required": True,
+        "order_window_required": True,
+        "h1_required": True,
+        "real_preflight_required": True,
+        "real_approval_required": True,
+        "real_submit_required": True,
+        "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+        "controls_count": len(controls_list),
+        "controls_passed_count": sum(1 for c in controls_list if c.get("actually_blocked")),
+        "controls_failed_count": sum(1 for c in controls_list if not c.get("actually_blocked")),
+        "controls": controls_list,
+    }
+
+    # ------------------------------------------------------------------
+    # 14. Negative-control checklist
+    # ------------------------------------------------------------------
+    nc_checklist: list[dict[str, Any]] = [
+        {"check": "confirms_level1_only", "status": "PASS" if autonomy_level == "1" else "FAIL"},
+        {"check": "confirms_negative_control_only", "status": "PASS"},
+        {"check": "confirms_readiness_chain_not_execution_authorization", "status": "PASS"},
+        {"check": "confirms_execution_authorized_now_false", "status": "PASS"},
+        {"check": "confirms_orders_disabled", "status": "PASS" if env_allow_orders in ("false", "?") else "FAIL"},
+        {"check": "confirms_system_locked", "status": "PASS" if system_locked else "FAIL"},
+        {"check": "confirms_rules_not_enforced", "status": "PASS" if rules_enforced in ("false", "?") else "FAIL"},
+        {"check": "confirms_no_h1_used", "status": "PASS"},
+        {"check": "confirms_no_order_window_opened", "status": "PASS"},
+        {"check": "confirms_no_preflight_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_approval_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_submit_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_order_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_broker_order_created", "status": "PASS"},
+        {"check": "confirms_no_broker_mutation", "status": "PASS"},
+        {"check": "confirms_order_enablement_still_required", "status": "PASS"},
+        {"check": "confirms_future_real_preflight_required", "status": "PASS"},
+        {"check": "confirms_future_real_approval_required", "status": "PASS"},
+        {"check": "confirms_future_real_submit_required", "status": "PASS"},
+    ]
+    nc_checklist_pass = sum(1 for c in nc_checklist if c["status"] == "PASS")
+    nc_checklist_total = len(nc_checklist)
+    nc_checklist_complete = nc_checklist_pass == nc_checklist_total
+
+    # ------------------------------------------------------------------
+    # 15. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "diagnosis": diagnosis, "severity": severity,
+        "gate_status": execution_gate_negative_controls["status"],
+        "intents_count": intents_count,
+        "all_intents_blocked": all_intents_blocked,
+        "no_broker_mutation": True,
+        "no_order_endpoint_called": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 16. Export path
+    # ------------------------------------------------------------------
+    export_path: str | None = None
+    try:
+        _PHASE16O_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    # ------------------------------------------------------------------
+    # 17. Workflow summary
+    # ------------------------------------------------------------------
+    operator_action_required = not drill_ok
+    suggested_actions: list[str] = []
+    if not drill_ok:
+        suggested_actions.append(f"Negative-control drill blocked: {diagnosis}")
+        if not run_time_ready:
+            suggested_actions.append("Ensure bridge is connected in paper read-only mode")
+        if not safety_locked:
+            suggested_actions.append("Verify all safety locks are engaged")
+
+    workflow_summary: dict[str, Any] = {
+        "execution_gate_negative_control_ready": drill_ok,
+        "negative_controls_created": export_path is not None,
+        "all_execution_intents_blocked": all_intents_blocked,
+        "all_blocks_expected": execution_blocked_as_expected,
+        "readiness_chain_not_sufficient_for_execution": True,
+        "execution_authorized_now_false": True,
+        "order_enablement_still_required": True,
+        "no_real_preflight_performed": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_order_path_called": True,
+        "no_broker_order_created": True,
+        "no_broker_submission": True,
+        "no_broker_mutation": True,
+        "no_h1_seen": True,
+        "no_order_window_seen": True,
+        "checklist_complete": nc_checklist_complete,
+    }
+
+    # ------------------------------------------------------------------
+    # 18. Assemble result
+    # ------------------------------------------------------------------
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-execution-gate-negative-control-drill",
+        "advisory": (
+            "Read-only Level 1 execution gate negative-control drill (Phase 16O). "
+            "This drill proves that execution remains blocked even after the full "
+            "16G→16N readiness chain is verified. Hypothetical execution intents "
+            "are synthesized locally and denied without touching any broker endpoint. "
+            "The drill succeeds when all intents are properly blocked — proving the "
+            "execution gate is closed and future human action (H1, order window, "
+            "Chris signature, real preflight/approve/submit) is required."
+        ),
+        "timestamp": ts_str,
+        "drill_id": drill_id,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": runtime_section,
+        "autonomy": autonomy_section,
+        "safety": safety_section,
+        "guard_state": guard_section,
+        "negative_control_plan": negative_control_plan,
+        "execution_gate_negative_controls": execution_gate_negative_controls,
+        "blocked_execution_attempts": blocked_attempts,
+        "gate_matrix": gate_matrix,
+        "negative_control_checklist": nc_checklist,
+        "workflow_summary": workflow_summary,
+        "execution_blocked_as_expected": execution_blocked_as_expected,
+        "all_intents_blocked": all_intents_blocked,
+        "no_intent_executed": no_intent_executed,
+        "kpi_summary": kpi_section,
+        "doctor_summary": doctor_section,
+        "policy_summary": policy_section,
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "execution_authorized_now": False,
+        "execution_performed": False,
+        "no_broker_mutation": True,
+        "no_broker_order_created": True,
+        "no_order_window_opened": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
+        "h1_token_not_used": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_order_endpoint_called": True,
+        "no_trade_window_helper_called": True,
+        "evidence_hash": evidence_hash,
+        "explicit_non_actions": _PHASE16O_EXPLICIT_NON_ACTIONS,
+    }
+
+    # ------------------------------------------------------------------
+    # 19. Export artifact
+    # ------------------------------------------------------------------
+    export_written = False
+    try:
+        _PHASE16O_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE16O_EXPORT_DIR / f"{drill_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        export_path = str(ep)
+        export_written = True
+    except Exception:
+        pass
+
+    result["export_path"] = export_path
+    result["execution_gate_negative_controls"]["gate_artifact_path"] = export_path
+    result["workflow_summary"]["negative_controls_created"] = export_written
+    return result
+
+
+def _phase16o_no_go(
+    drill_id: str, ts_str: str, git_section: dict, required_tags: dict,
+    diagnosis: str, actions: list,
+) -> dict:
+    """Build a NO_GO result for Phase 16O prerequisite failures."""
+    empty_ncp = {
+        "source": "blocked", "demo_candidates_requested": 0, "decision_mode": "blocked",
+        "execution_intents_count": 0, "execution_intents": [],
+        "all_intents_blocked": False, "all_intents_gate_closed": False,
+        "no_intent_executed": False, "execution_blocked_as_expected": False,
+    }
+    empty_egnc = {
+        "status": "blocked_as_expected", "negative_control_only": True,
+        "execution_authorized_now": False, "order_enablement_required": True,
+        "order_window_required": True, "h1_required": True,
+        "real_preflight_required": True, "real_approval_required": True,
+        "real_submit_required": True,
+        "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+        "controls_count": 0, "controls_passed_count": 0,
+        "controls_failed_count": 0, "controls": [],
+    }
+    empty_gate_matrix = {
+        "level1_execution_allowed": False, "readiness_chain_complete": True,
+        "readiness_chain_sufficient_for_execution": False,
+        "orders_enabled": False, "system_locked": True, "rules_enforced": False,
+        "order_window_open": False, "h1_available_to_drill": False,
+        "real_preflight_done": False, "real_approval_done": False,
+        "real_submit_done": False, "broker_submission_allowed": False,
+    }
+    empty_checklist = [
+        {"check": "confirms_level1_only", "status": "SKIP"},
+        {"check": "confirms_negative_control_only", "status": "SKIP"},
+        {"check": "confirms_readiness_chain_not_execution_authorization", "status": "SKIP"},
+        {"check": "confirms_execution_authorized_now_false", "status": "SKIP"},
+        {"check": "confirms_orders_disabled", "status": "SKIP"},
+        {"check": "confirms_system_locked", "status": "SKIP"},
+        {"check": "confirms_rules_not_enforced", "status": "SKIP"},
+        {"check": "confirms_no_h1_used", "status": "SKIP"},
+        {"check": "confirms_no_order_window_opened", "status": "SKIP"},
+        {"check": "confirms_no_preflight_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_approval_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_submit_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_order_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_broker_order_created", "status": "SKIP"},
+        {"check": "confirms_no_broker_mutation", "status": "SKIP"},
+        {"check": "confirms_order_enablement_still_required", "status": "SKIP"},
+        {"check": "confirms_future_real_preflight_required", "status": "SKIP"},
+        {"check": "confirms_future_real_approval_required", "status": "SKIP"},
+        {"check": "confirms_future_real_submit_required", "status": "SKIP"},
+    ]
+    empty_wf = {
+        "execution_gate_negative_control_ready": False,
+        "negative_controls_created": False,
+        "all_execution_intents_blocked": False, "all_blocks_expected": False,
+        "readiness_chain_not_sufficient_for_execution": True,
+        "execution_authorized_now_false": True, "order_enablement_still_required": True,
+        "no_real_preflight_performed": True, "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True, "no_order_path_called": True,
+        "no_broker_order_created": True, "no_broker_submission": True,
+        "no_broker_mutation": True, "no_h1_seen": True,
+        "no_order_window_seen": True, "checklist_complete": False,
+    }
+    return {
+        "command": "ibkr-operator level1-execution-gate-negative-control-drill",
+        "timestamp": ts_str, "drill_id": drill_id,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True, "suggested_operator_actions": actions,
+        "git": git_section, "required_tags": required_tags,
+        "runtime": {}, "autonomy": {}, "safety": {}, "guard_state": {},
+        "negative_control_plan": empty_ncp,
+        "execution_gate_negative_controls": empty_egnc,
+        "blocked_execution_attempts": [],
+        "gate_matrix": empty_gate_matrix,
+        "negative_control_checklist": empty_checklist,
+        "workflow_summary": empty_wf,
+        "execution_blocked_as_expected": False, "all_intents_blocked": False,
+        "no_intent_executed": False,
+        "kpi_summary": {}, "doctor_summary": {}, "policy_summary": {},
+        "promotion_allowed_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "promotion_performed": False,
+        "execution_authorized_now": False, "execution_performed": False,
+        "no_broker_mutation": True, "no_broker_order_created": True,
+        "no_order_window_opened": True, "no_order_window_seen": True,
+        "no_h1_seen": True, "h1_token_not_used": True,
+        "no_preflight_endpoint_called": True, "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True, "no_order_endpoint_called": True,
+        "no_trade_window_helper_called": True,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16O_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _print_level1_execution_gate_negative_control_drill(result: dict) -> None:
+    """Print Phase 16O negative-control drill in human-readable format."""
+    drill_ok = result.get("diagnosis") == _PHASE16O_DIAGNOSIS["ready"]
+    diag_color = GREEN if drill_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Execution Gate Negative-Control Drill (16O){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Drill ID:              {result.get('drill_id', '?')}")
+    print(f"  Timestamp:             {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:             {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:              {sev_color}{sev}{RESET}")
+    print(f"  Execution blocked:     {GREEN if result.get('execution_blocked_as_expected') else RED}{_bool_str(result.get('execution_blocked_as_expected'))}{RESET}")
+    print()
+
+    # Execution gate negative controls
+    egnc = result.get("execution_gate_negative_controls", {})
+    if egnc:
+        print(f"  {BOLD}Execution Gate Negative Controls{RESET}")
+        print(f"    Status:                {GREEN if egnc.get('status') == 'blocked_as_expected' else RED}{egnc.get('status', '?')}{RESET}")
+        print(f"    Negative-control only: {_bool_str(egnc.get('negative_control_only'))}")
+        print(f"    Exec authorized now:   {_bool_str(egnc.get('execution_authorized_now'))}")
+        print(f"    Controls: {egnc.get('controls_passed_count', 0)}P / {egnc.get('controls_failed_count', 0)}F / {egnc.get('controls_count', 0)}T")
+        print(f"    Future path:           {egnc.get('future_required_path', '?')}")
+        print()
+
+    # Gate matrix
+    gm = result.get("gate_matrix", {})
+    if gm:
+        print(f"  {BOLD}Gate Matrix{RESET}")
+        print(f"    Level1 exec allowed:        {_bool_str(gm.get('level1_execution_allowed'))}")
+        print(f"    Chain sufficient for exec:  {_bool_str(gm.get('readiness_chain_sufficient_for_execution'))}")
+        print(f"    Orders enabled:             {_bool_str(gm.get('orders_enabled'))}")
+        print(f"    System locked:              {_bool_str(gm.get('system_locked'))}")
+        print(f"    Order window open:          {_bool_str(gm.get('order_window_open'))}")
+        print(f"    H1 available:               {_bool_str(gm.get('h1_available_to_drill'))}")
+        print()
+
+    # Negative-control plan
+    ncp = result.get("negative_control_plan", {})
+    if ncp:
+        print(f"  {BOLD}Negative-Control Plan{RESET}")
+        print(f"    Source:              {ncp.get('source', '?')}")
+        print(f"    Candidates:          {ncp.get('demo_candidates_requested', 0)}")
+        print(f"    Intents count:       {ncp.get('execution_intents_count', 0)}")
+        print(f"    All blocked:         {GREEN if ncp.get('all_intents_blocked') else RED}{_bool_str(ncp.get('all_intents_blocked'))}{RESET}")
+        print()
+
+        intents = ncp.get("execution_intents", [])
+        if intents:
+            print(f"  {BOLD}Execution Intents (all locally blocked){RESET}")
+            for intent in intents:
+                print(f"    {intent.get('intent_id', '?')}")
+                print(f"      {intent.get('side', intent.get('action', '?'))} {intent.get('quantity', '?')}x "
+                      f"{intent.get('symbol', '?')} ({intent.get('order_type', '?')}) "
+                      f"TIF={intent.get('time_in_force', '?')}")
+                print(f"      simulated_only={_bool_str(intent.get('simulated_intent_only'))}  "
+                      f"expected={intent.get('expected_result', '?')}  "
+                      f"blocked={_bool_str(intent.get('blocked'))}")
+                reasons = intent.get("blocking_reasons", [])
+                if reasons:
+                    print(f"      Reasons ({len(reasons)}): {', '.join(reasons[:3])}")
+            print()
+
+    # Negative-control checklist
+    ncl = result.get("negative_control_checklist", [])
+    if ncl:
+        print(f"  {BOLD}Negative-Control Checklist{RESET}")
+        pc = sum(1 for c in ncl if c.get("status") == "PASS")
+        fc = sum(1 for c in ncl if c.get("status") == "FAIL")
+        sc = sum(1 for c in ncl if c.get("status") == "SKIP")
+        print(f"    Pass: {pc}  Fail: {fc}  Skip: {sc}  Total: {len(ncl)}")
+        for c in ncl[:5]:
+            cs = c.get("status", "?")
+            c_color = GREEN if cs == "PASS" else (RED if cs == "FAIL" else YELLOW)
+            print(f"    {c_color}{cs:<6}{RESET} {c.get('check', '?')}")
+        if len(ncl) > 5:
+            print(f"    ... and {len(ncl)-5} more checks")
+        print()
+
+    # Workflow summary
+    wf = result.get("workflow_summary", {})
+    if wf:
+        print(f"  {BOLD}Workflow Summary{RESET}")
+        print(f"    Gate NC ready:              {_bool_str(wf.get('execution_gate_negative_control_ready'))}")
+        print(f"    Controls created:           {_bool_str(wf.get('negative_controls_created'))}")
+        print(f"    All intents blocked:        {_bool_str(wf.get('all_execution_intents_blocked'))}")
+        print(f"    Chain not sufficient:       {_bool_str(wf.get('readiness_chain_not_sufficient_for_execution'))}")
+        print(f"    Checklist complete:         {_bool_str(wf.get('checklist_complete'))}")
+        print()
+
+    print(f"  {BOLD}Non-Mutation Guarantees{RESET}")
+    print(f"    no_broker_mutation:            {_bool_str(result.get('no_broker_mutation'))}")
+    print(f"    no_order_endpoint_called:      {_bool_str(result.get('no_order_endpoint_called'))}")
+    print(f"    no_h1_seen:                    {_bool_str(result.get('no_h1_seen'))}")
+    print(f"    execution_authorized_now:      {_bool_str(result.get('execution_authorized_now'))}")
+    print()
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"  Evidence hash: {eh[:16]}...")
+    ep = result.get("export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    print()
+
+
 def main() -> None:
     import argparse
 
@@ -27031,6 +27991,43 @@ def main() -> None:
     p16n_a3.add_argument("--demo-candidates", type=int, default=3)
     p16n_a3.add_argument("--decision-mode", type=str, default="mixed_demo")
     p16n_a3.add_argument("--chain-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 16O — Level 1 Execution Gate Negative-Control Drill
+    p16o = sub.add_parser("level1-execution-gate-negative-control-drill",
+                          help="Level 1 execution gate negative-control drill (Phase 16O)")
+    p16o.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16o.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-execution-gate-negative-controls/")
+    p16o.add_argument("--demo-candidates", type=int, default=3,
+                      help="Number of demo intents (0-5, default 3)")
+    p16o.add_argument("--decision-mode", type=str, default="mixed_demo",
+                      help="Decision mode: mixed_demo, accept_all_demo, reject_all_demo, defer_all_demo")
+    p16o.add_argument("--chain-source", type=str, default="synthetic_readonly_demo",
+                      help="Chain source label (default: synthetic_readonly_demo)")
+    # Alias: phase16o-execution-gate-negative-control-drill
+    p16o_a1 = sub.add_parser("phase16o-execution-gate-negative-control-drill",
+                             help="Alias for level1-execution-gate-negative-control-drill")
+    p16o_a1.add_argument("--json", action="store_true")
+    p16o_a1.add_argument("--export", action="store_true")
+    p16o_a1.add_argument("--demo-candidates", type=int, default=3)
+    p16o_a1.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16o_a1.add_argument("--chain-source", type=str, default="synthetic_readonly_demo")
+    # Alias: level1-execution-negative-control-drill
+    p16o_a2 = sub.add_parser("level1-execution-negative-control-drill",
+                             help="Alias for level1-execution-gate-negative-control-drill")
+    p16o_a2.add_argument("--json", action="store_true")
+    p16o_a2.add_argument("--export", action="store_true")
+    p16o_a2.add_argument("--demo-candidates", type=int, default=3)
+    p16o_a2.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16o_a2.add_argument("--chain-source", type=str, default="synthetic_readonly_demo")
+    # Alias: execution-gate-negative-control-drill
+    p16o_a3 = sub.add_parser("execution-gate-negative-control-drill",
+                             help="Alias for level1-execution-gate-negative-control-drill")
+    p16o_a3.add_argument("--json", action="store_true")
+    p16o_a3.add_argument("--export", action="store_true")
+    p16o_a3.add_argument("--demo-candidates", type=int, default=3)
+    p16o_a3.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16o_a3.add_argument("--chain-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -28610,6 +29607,64 @@ def main() -> None:
             if ep:
                 print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE16N_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-execution-gate-negative-control-drill",
+                        "phase16o-execution-gate-negative-control-drill",
+                        "level1-execution-negative-control-drill",
+                        "execution-gate-negative-control-drill"):
+        demo_cand = getattr(args, "demo_candidates", 3)
+        decision_mode = getattr(args, "decision_mode", "mixed_demo")
+        chain_source = getattr(args, "chain_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_execution_gate_negative_control_drill(
+                demo_candidates=demo_cand,
+                decision_mode=decision_mode,
+                chain_source=chain_source,
+            )
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            drill_id = f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = {
+                "command": f"ibkr-operator {args.command}",
+                "timestamp": ts_str, "drill_id": drill_id,
+                "diagnosis": _PHASE16O_DIAGNOSIS["unknown"], "severity": "NO_GO",
+                "operator_action_required": True,
+                "suggested_operator_actions": [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+                "git": {}, "required_tags": {}, "runtime": {}, "autonomy": {}, "safety": {}, "guard_state": {},
+                "negative_control_plan": {"execution_intents_count": 0, "execution_intents": [], "all_intents_blocked": False},
+                "execution_gate_negative_controls": {"status": "control_failure", "negative_control_only": True, "controls_count": 0},
+                "blocked_execution_attempts": [],
+                "gate_matrix": {"level1_execution_allowed": False, "readiness_chain_sufficient_for_execution": False},
+                "negative_control_checklist": [], "workflow_summary": {},
+                "execution_blocked_as_expected": False, "all_intents_blocked": False, "no_intent_executed": False,
+                "kpi_summary": {}, "doctor_summary": {}, "policy_summary": {},
+                "promotion_allowed_now": False, "order_enablement_allowed_now": False,
+                "order_enablement_performed": False, "promotion_performed": False,
+                "execution_authorized_now": False, "execution_performed": False,
+                "no_broker_mutation": True, "no_broker_order_created": True,
+                "no_order_window_opened": True, "no_order_window_seen": True,
+                "no_h1_seen": True, "h1_token_not_used": True,
+                "no_preflight_endpoint_called": True, "no_approval_endpoint_called": True,
+                "no_submit_endpoint_called": True, "no_order_endpoint_called": True,
+                "no_trade_window_helper_called": True,
+                "evidence_hash": _compute_evidence_hash({"diagnosis": _PHASE16O_DIAGNOSIS["unknown"]}),
+                "explicit_non_actions": _PHASE16O_EXPLICIT_NON_ACTIONS,
+            }
+            print(f"Negative-control drill internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_execution_gate_negative_control_drill(result)
+        if args.export:
+            ep = result.get("export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE16O_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

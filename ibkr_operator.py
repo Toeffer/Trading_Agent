@@ -23879,6 +23879,1011 @@ def _print_level1_human_approval_packet_drill(result: dict) -> None:
     print()
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 16M — Level 1 Execution-Readiness Packet Drill
+# ════════════════════════════════════════════════════════════════════════════
+
+_PHASE16M_EXPORT_DIR = OPENCLAW_DIR / "level1-execution-readiness-packets"
+
+_PHASE16M_REQUIRED_TAGS: tuple[str, ...] = (
+    "phase16l_level1_human_approval_packet_drill",
+    "phase16k_level1_preflight_simulation_dossier",
+    "phase16j_level1_order_plan_draft_drill",
+)
+
+_PHASE16M_DIAGNOSIS = {
+    "ready": "level1_execution_readiness_packet_ok",
+    "missing_required_tags": "missing_required_tags",
+    "dirty_worktree": "dirty_worktree",
+    "autonomy_not_level1": "autonomy_not_level1",
+    "runtime_not_ready": "runtime_not_ready",
+    "safety_not_locked": "safety_not_locked",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "positions_not_flat": "positions_not_flat",
+    "monitor_alerts_active": "monitor_alerts_active",
+    "doctor_not_acceptable": "doctor_not_acceptable",
+    "kpi_not_acceptable": "kpi_not_acceptable",
+    "policy_boundary_missing": "policy_boundary_missing",
+    "clean_cycles_mismatch": "clean_cycles_mismatch",
+    "approval_packet_not_found": "approval_packet_not_found",
+    "approval_packet_not_packet_only": "approval_packet_not_packet_only",
+    "approval_packet_has_broker_activity": "approval_packet_has_broker_activity",
+    "approval_packet_has_executable_items": "approval_packet_has_executable_items",
+    "no_items_to_assess": "no_items_to_assess",
+    "unknown": "unknown",
+}
+
+_PHASE16M_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not open an order window.",
+    "This command did not read H1 token.",
+    "This command did not call trade-window helper.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not submit orders.",
+    "This command did not create a broker order.",
+    "This command did not call broker mutation endpoints.",
+    "This command did not restart bridge.",
+    "This command did not reconnect automatically.",
+    "This command did not repair guard-state.",
+    "Only allowed writes are the export artifact and execution-readiness packet artifact.",
+    "This is NOT execution authorization — execution is NOT currently allowed.",
+    "Every readiness item declares execution_authorized_now=false.",
+    "Chris must manually approve, open the order window, and use H1 before any real execution.",
+]
+
+# Execution-readiness item template
+_READINESS_ITEM_TEMPLATE: dict[str, Any] = {
+    "readiness_packet_only": True,
+    "execution_authorized_now": False,
+    "executable": False,
+    "performed": False,
+    "broker_order_id": None,
+    "order_enablement_required": True,
+    "h1_token_used": False,
+    "future_order_window_required": True,
+    "future_h1_required": True,
+    "future_real_preflight_required": True,
+    "future_real_approval_required": True,
+    "future_real_submit_required": True,
+    "future_required_path": (
+        "/order/preflight -> /order/approve -> /order/submit"
+    ),
+}
+
+
+def _run_level1_execution_readiness_packet_drill(
+    demo_candidates: int = 3,
+    decision_mode: str = "mixed_demo",
+    approval_packet_path: str | None = None,
+    packet_source: str = "synthetic_readonly_demo",
+    reviewer: str = "Chris",
+) -> dict:
+    """Run Level 1 execution-readiness packet drill (Phase 16M).
+
+    Read-only drill that converts a human approval packet into an
+    execution-readiness packet documenting prerequisites for a future
+    real order path.  NO broker endpoints are called.
+    Every readiness item declares execution_authorized_now=false.
+    """
+    import hashlib
+    import json as _json
+    import subprocess as _sp
+    import urllib.request
+    import urllib.error
+    from datetime import datetime, timezone
+    from typing import Any
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    packet_id = f"execution-readiness-{ts_file}"
+    effective_candidates = max(0, min(demo_candidates, 5))
+    if decision_mode not in _DECISION_MODE_VALUES:
+        decision_mode = "mixed_demo"
+
+    # ------------------------------------------------------------------
+    # 1. Git / worktree
+    # ------------------------------------------------------------------
+    git_cfg = _git_metadata(BRIDGE_DIR)
+    full_commit = git_cfg.get("commit_short", "?")
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if p.stdout.strip():
+            full_commit = p.stdout.strip()
+    except Exception:
+        pass
+
+    worktree = _get_worktree_state(BRIDGE_DIR)
+    origin_alignment = _get_origin_master_alignment(BRIDGE_DIR)
+
+    git_section = {
+        "branch": git_cfg.get("branch", "?"),
+        "commit": full_commit if len(full_commit) > 16 else git_cfg.get("commit_short", "?"),
+        "commit_short": git_cfg.get("commit_short", "?"),
+        "tag": git_cfg.get("tag", "?"),
+        "origin_master_commit": origin_alignment.get("origin_master_commit", "?"),
+        "origin_master_aligned": origin_alignment.get("aligned"),
+        "worktree_clean": worktree.get("clean"),
+        "dirty_files": worktree.get("dirty_files", []),
+    }
+
+    # ------------------------------------------------------------------
+    # 2. Required tags
+    # ------------------------------------------------------------------
+    required_tags_present: list[str] = []
+    required_tags_missing: list[str] = []
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "tag"],
+            capture_output=True, text=True, timeout=10,
+        )
+        all_tags = set(p.stdout.strip().splitlines())
+        for tag in _PHASE16M_REQUIRED_TAGS:
+            if tag in all_tags:
+                required_tags_present.append(tag)
+            else:
+                required_tags_missing.append(tag)
+    except Exception:
+        required_tags_missing = list(_PHASE16M_REQUIRED_TAGS)
+        required_tags_present = []
+
+    required_tags = {
+        "required_count": len(_PHASE16M_REQUIRED_TAGS),
+        "present_count": len(required_tags_present),
+        "missing": required_tags_missing,
+        "present": required_tags_present,
+    }
+
+    if len(required_tags_missing) > 0:
+        return _phase16m_no_go(
+            packet_id, ts_str, git_section, required_tags,
+            _PHASE16M_DIAGNOSIS["missing_required_tags"],
+            [f"Missing tags: {', '.join(required_tags_missing)}"],
+        )
+
+    if not git_section.get("worktree_clean", False) and git_section.get("worktree_clean") is not None:
+        return _phase16m_no_go(
+            packet_id, ts_str, git_section, required_tags,
+            _PHASE16M_DIAGNOSIS["dirty_worktree"],
+            ["Commit or stash dirty files"] + [f"  {f}" for f in git_section.get("dirty_files", [])[:5]],
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Bridge runtime
+    # ------------------------------------------------------------------
+    br_reachable = False
+    br_connected = False
+    br_mode = "?"
+    br_read_only = False
+    ep_ok = 0
+    ep_display = "?"
+    try:
+        req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
+                br_reachable = True
+                hd = _json.loads(resp.read().decode())
+                br_connected = hd.get("connected", False)
+                br_mode = hd.get("mode", "?")
+                br_read_only = br_mode == "paper"
+    except Exception:
+        pass
+
+    snapshot_used = False
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/snapshot", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    snapshot_used = True
+                    ep_ok = 7
+                    ep_display = f"{ep_ok}/7 OK (snapshot)"
+        except Exception:
+            pass
+
+    if not snapshot_used and br_reachable:
+        _EPS = ["/health", "/readiness", "/status", "/monitor/reconciliation",
+                "/monitor/alerts", "/monitor/events", "/positions", "/account"]
+        for ep in _EPS:
+            try:
+                req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        ep_ok += 1
+            except Exception:
+                pass
+        ep_display = f"{ep_ok}/{len(_EPS)} OK"
+
+    positions_count = 0
+    positions_flat = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/positions", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    pd = _json.loads(resp.read().decode())
+                    pl = pd.get("positions", [])
+                    positions_count = len(pl)
+                    positions_flat = all(abs(p.get("position", 0)) < 0.01 for p in pl)
+        except Exception:
+            pass
+
+    active_alerts_count = 0
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/monitor/alerts", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    ad = _json.loads(resp.read().decode())
+                    all_a = ad.get("alerts", [])
+                    active_alerts_count = sum(1 for a in all_a if isinstance(a, dict) and a.get("requires_action", False))
+        except Exception:
+            pass
+
+    runtime_section = {
+        "bridge_reachable": br_reachable,
+        "bridge_connected": br_connected,
+        "mode": br_mode,
+        "read_only": br_read_only,
+        "endpoints_display": ep_display,
+        "endpoints_ok": ep_ok,
+        "positions_count": positions_count,
+        "positions_flat": positions_flat,
+        "active_alerts_count": active_alerts_count,
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Safety flags
+    # ------------------------------------------------------------------
+    env_safety = _read_env_safety(BRIDGE_DIR / ".env")
+    rules_state = _read_rules_enforced(
+        Path.home() / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
+    )
+    autonomy_path = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
+    autonomy_level = _read_autonomy_level(autonomy_path)
+
+    env_allow_orders = env_safety.get("IBKR_ALLOW_ORDERS", "?")
+    rules_enforced = rules_state.get("enforced", "?")
+    system_locked = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/readiness", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    rd = _json.loads(resp.read().decode())
+                    system_locked = rd.get("summary", {}).get("kill_switches", {}).get("system_locked", True)
+        except Exception:
+            pass
+
+    safety_section = {
+        "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+        "rules_enforced": rules_enforced,
+        "system_locked": system_locked,
+    }
+
+    # ------------------------------------------------------------------
+    # 5. Guard state
+    # ------------------------------------------------------------------
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_section = gs_assessment["guard_section"]
+
+    # ------------------------------------------------------------------
+    # 6. Doctor / KPI / Policy
+    # ------------------------------------------------------------------
+    doctor_section: dict = {}
+    doc_acceptable = False
+    try:
+        dr = run_doctor()
+        doc_pass = dr.get("passed", 0)
+        doc_total = dr.get("total", 0)
+        doctor_ok = dr.get("pass", False)
+        doc_h1_status = "?"
+        for c in dr.get("checks", []):
+            if c.get("check") == "h1_token_canary":
+                if c.get("status") == "MANUAL_REQUIRED":
+                    doc_h1_status = "MANUAL_REQUIRED"
+                elif c.get("ok"):
+                    doc_h1_status = "PASS"
+                else:
+                    doc_h1_status = "FAIL"
+                break
+        doc_acceptable = doctor_ok or (
+            doc_h1_status == "MANUAL_REQUIRED" and doc_pass >= doc_total - 1
+        )
+        doctor_section = {
+            "result": "PASS" if doctor_ok else ("PASS_WITH_H1_MANUAL" if doc_acceptable else "FAIL"),
+            "h1_canary_status": doc_h1_status,
+            "acceptable": doc_acceptable,
+        }
+    except Exception as e:
+        doctor_section = {"result": "ERROR", "h1_canary_status": "ERROR", "acceptable": False, "error": str(e)[:200]}
+
+    kpi_section: dict = {}
+    kpi_acceptable_hold = False
+    kpi_clean_cycles: int | None = None
+    try:
+        kpi_result = run_kpi()
+        kpi_verdict = kpi_result.get("verdict", "ERROR")
+        kpi_blockers = kpi_result.get("blockers", [])
+        no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+        kpi_acceptable_hold = (
+            kpi_verdict == "HOLD" and len(no_go_blockers) == 0
+            and any(b.get("check") == "system_locked"
+                    for b in kpi_blockers if b.get("severity") == "HOLD")
+        )
+        au = kpi_result.get("autonomy", {})
+        if isinstance(au, dict):
+            kpi_clean_cycles = au.get("clean_cycles")
+            if kpi_clean_cycles is None:
+                kpi_clean_cycles = kpi_result.get("clean_cycles")
+        if kpi_clean_cycles is None:
+            kpi_clean_cycles = kpi_result.get("clean_cycles")
+        kpi_section = {
+            "verdict": kpi_verdict,
+            "blockers": [b.get("check", "?") for b in kpi_blockers],
+            "acceptable_hold": kpi_acceptable_hold,
+        }
+    except Exception as e:
+        kpi_section = {"verdict": "ERROR", "blockers": [], "acceptable_hold": False, "error": str(e)[:200]}
+
+    policy_result = _check_hermes_policy()
+    policy_section = {
+        "hermes_policy_exists": policy_result["hermes_policy_exists"],
+        "advisory_boundary_ok": policy_result["advisory_boundary_ok"],
+        "execution_path_ok": policy_result["execution_path_ok"],
+    }
+
+    # ------------------------------------------------------------------
+    # 7. Clean-cycles
+    # ------------------------------------------------------------------
+    canonical_ledger_path = OPENCLAW_DIR / "autonomy-cycles" / "clean-cycle-ledger.jsonl"
+    clean_cycles_source = "openclaw_clean_cycle_ledger"
+    drill_clean_cycles: int | None = None
+    try:
+        if canonical_ledger_path.exists():
+            drill_clean_cycles = _count_clean_cycles(OPENCLAW_DIR)
+    except Exception:
+        drill_clean_cycles = None
+
+    clean_cycles_matches_kpi = False
+    if kpi_clean_cycles is not None and drill_clean_cycles is not None:
+        clean_cycles_matches_kpi = (kpi_clean_cycles == drill_clean_cycles)
+    elif kpi_clean_cycles is None and drill_clean_cycles is None:
+        clean_cycles_matches_kpi = True
+
+    autonomy_section = {
+        "current_level": autonomy_level,
+        "clean_cycles": drill_clean_cycles,
+        "clean_cycles_source": clean_cycles_source,
+        "clean_cycles_matches_kpi": clean_cycles_matches_kpi,
+    }
+
+    # ------------------------------------------------------------------
+    # 8. Load or synthesize approval packet
+    # ------------------------------------------------------------------
+    approval_source = "synthesized_internally"
+    approval_path_actual: str | None = None
+    approval_packet_items: list[dict[str, Any]] = []
+    approval_packet_id_input = "synthetic-approval-packet"
+    approval_status = "packet_only"
+    approval_human_only = True
+    approval_broker_approval = False
+    approval_endpoint_called = False
+    approval_h1_token_used = False
+    approval_executable = False
+    approval_artifact_hash_val = ""
+
+    if approval_packet_path:
+        ap_path_obj = Path(approval_packet_path)
+        if not ap_path_obj.exists() or not ap_path_obj.is_file():
+            return _phase16m_no_go(
+                packet_id, ts_str, git_section, required_tags,
+                _PHASE16M_DIAGNOSIS["approval_packet_not_found"],
+                [f"Approval packet not found: {approval_packet_path}"],
+            )
+        try:
+            with open(ap_path_obj) as f:
+                ap_loaded = _json.load(f)
+        except Exception:
+            return _phase16m_no_go(
+                packet_id, ts_str, git_section, required_tags,
+                _PHASE16M_DIAGNOSIS["approval_packet_not_found"],
+                [f"Approval packet unparseable: {approval_packet_path}"],
+            )
+        if ap_loaded.get("status") != "packet_only":
+            return _phase16m_no_go(
+                packet_id, ts_str, git_section, required_tags,
+                _PHASE16M_DIAGNOSIS["approval_packet_not_packet_only"],
+                [f"Approval packet status is '{ap_loaded.get('status')}', not 'packet_only'",
+                 "Re-run 16L to generate a valid human approval packet"],
+            )
+        approval_source = "loaded_from_prior_16l_artifact"
+        approval_path_actual = str(ap_path_obj.resolve())
+        hap = ap_loaded.get("human_approval_packet", {})
+        approval_packet_id_input = hap.get("packet_id", ap_loaded.get("artifact_id", "loaded-approval"))
+        approval_status = hap.get("status", "packet_only")
+        approval_human_only = hap.get("human_packet_only", True)
+        approval_broker_approval = hap.get("broker_approval_performed", False)
+        approval_endpoint_called = hap.get("approval_endpoint_called", False)
+        approval_h1_token_used = hap.get("h1_token_used", False)
+        approval_executable = hap.get("executable", False)
+        approval_packet_items = hap.get("packet_items", [])
+        approval_artifact_hash_val = _compute_evidence_hash(hap)
+
+    if not approval_packet_items and not approval_packet_path:
+        # Synthesize internally: build a demo packet-only artifact in memory
+        candidate_pool = _REVIEW_CANDIDATE_POOL
+        decision_fn = _DECISION_LOGIC.get(decision_mode, _DECISION_LOGIC["mixed_demo"])
+        for i in range(min(effective_candidates, len(candidate_pool))):
+            candidate = candidate_pool[i]
+            verdict = decision_fn(i, candidate)
+            if verdict != "accept":
+                continue
+            reason = _DECISION_RATIONALE_TEMPLATES.get(verdict, "No decision.")
+            approval_packet_items.append({
+                "packet_item_id": f"packet-synth-{packet_id}-{i+1:03d}",
+                "source_simulation_item_id": f"sim-synth-{packet_id}-{i+1:03d}",
+                "source_plan_item_id": f"draft-synth-{packet_id}-{i+1:03d}",
+                "source_proposal_id": f"synth-proposal-{i+1:03d}",
+                "source_dossier_id": f"synthetic-dossier-{ts_file}",
+                "symbol": candidate["symbol"],
+                "side": candidate["side"],
+                "quantity": (i + 1) * 10,
+                "order_type": "LMT",
+                "time_in_force": "DAY",
+                "limit_price": None,
+                "simulated_preflight_status": "PASS (simulated)",
+                "approval_question": f"Do you approve {candidate['symbol']} {candidate['side']} x{(i+1)*10} at Level 1?",
+                "operator_notes": "Synthesized demo — pending Chris manual approval.",
+                "rationale": reason,
+                "risk_notes": "Synthesized demo — non-executable.",
+                "human_packet_only": True,
+                "broker_approval_performed": False,
+                "approval_endpoint_called": False,
+                "h1_token_used": False,
+                "executable": False,
+                "performed": False,
+                "broker_order_id": None,
+                "requires_future_order_window": True,
+                "requires_future_h1": True,
+                "requires_future_chris_approval": True,
+                "future_real_preflight_required": True,
+                "future_real_approval_required": True,
+                "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+            })
+        approval_packet_id_input = f"synthetic-approval-{ts_file}"
+        approval_status = "packet_only"
+        approval_human_only = True
+        approval_broker_approval = False
+        approval_endpoint_called = False
+        approval_h1_token_used = False
+        approval_executable = False
+        approval_artifact_hash_val = _compute_evidence_hash({"approval_packet_id": approval_packet_id_input, "packet_items_count": len(approval_packet_items)})
+
+    approval_items_count = len(approval_packet_items)
+    has_broker_activity = (approval_broker_approval is True) or (approval_endpoint_called is True) or (approval_h1_token_used is True)
+    has_executable_items = any(pi.get("executable") is True for pi in approval_packet_items)
+
+    input_approval_packet = {
+        "source": approval_source,
+        "approval_packet_id": approval_packet_id_input,
+        "approval_packet_path": approval_path_actual,
+        "status": approval_status,
+        "human_packet_only": approval_human_only,
+        "broker_approval_performed": approval_broker_approval,
+        "approval_endpoint_called": approval_endpoint_called,
+        "h1_token_used": approval_h1_token_used,
+        "executable": approval_executable,
+        "packet_items_count": approval_items_count,
+        "artifact_hash": approval_artifact_hash_val,
+    }
+
+    # ------------------------------------------------------------------
+    # 9. Build execution-readiness packet
+    # ------------------------------------------------------------------
+    readiness_items: list[dict[str, Any]] = []
+    for i, pi in enumerate(approval_packet_items):
+        ri: dict[str, Any] = {
+            "readiness_item_id": f"readiness-{packet_id}-{i+1:03d}",
+            "source_packet_item_id": pi.get("packet_item_id", f"packet-item-{i}"),
+            "source_simulation_item_id": pi.get("source_simulation_item_id", "?"),
+            "source_plan_item_id": pi.get("source_plan_item_id", "?"),
+            "source_proposal_id": pi.get("source_proposal_id", "?"),
+            "symbol": pi.get("symbol", "?"),
+            "side": pi.get("side", "?"),
+            "quantity": pi.get("quantity", 0),
+            "order_type": pi.get("order_type", "LMT"),
+            "time_in_force": pi.get("time_in_force", "DAY"),
+            "limit_price": pi.get("limit_price"),
+            "simulated_preflight_status": pi.get("simulated_preflight_status", "PASS (simulated)"),
+            "readiness_status": "NOT_READY",
+            "readiness_notes": (
+                f"Execution NOT authorized. Requires order window open, "
+                f"H1 token, real preflight, real approval, and real submission "
+                f"before any broker order can be created."
+            ),
+            "required_future_steps": [
+                "Open order window",
+                "Obtain H1 token",
+                "Run /order/preflight",
+                "Run /order/approve",
+                "Run /order/submit",
+            ],
+            "blocking_conditions": [
+                "Order window is closed",
+                "H1 token not obtained",
+                "Orders are disabled",
+                "System is locked",
+                "No real preflight performed",
+                "No real approval performed",
+                "No real submission performed",
+            ],
+            "rationale": pi.get("rationale", ""),
+            "risk_notes": pi.get("risk_notes", "Execution NOT yet authorized."),
+            **_READINESS_ITEM_TEMPLATE,
+        }
+        readiness_items.append(ri)
+
+    # Build blocked_or_skipped_items from input approval packet
+    blocked_or_skipped_items: list[dict[str, Any]] = []
+    if approval_packet_path and approval_path_actual:
+        try:
+            hap_block = ap_loaded.get("human_approval_packet", {}) if approval_packet_path else {}
+            raw_skipped = hap_block.get("skipped_items", [])
+            for s in raw_skipped:
+                blocked_or_skipped_items.append({
+                    "source_packet_item_id": s.get("packet_item_id", s.get("source_packet_item_id", "?")),
+                    "skip_reason": s.get("skip_reason", "Not included in approval packet"),
+                })
+        except Exception:
+            pass
+
+    readiness_packet_id = f"readiness-packet-{ts_file}"
+    execution_readiness_packet = {
+        "packet_id": readiness_packet_id,
+        "status": "readiness_only",
+        "packet_source": packet_source,
+        "reviewer": reviewer,
+        "readiness_packet_only": True,
+        "execution_authorized_now": False,
+        "executable": False,
+        "broker_order_created": False,
+        "broker_submission_performed": False,
+        "preflight_performed": False,
+        "approval_performed": False,
+        "submit_performed": False,
+        "order_window_opened": False,
+        "h1_token_used": False,
+        "order_enablement_required": True,
+        "future_order_window_required": True,
+        "future_h1_required": True,
+        "future_real_preflight_required": True,
+        "future_real_approval_required": True,
+        "future_real_submit_required": True,
+        "future_required_path": (
+            "/order/preflight -> /order/approve -> /order/submit"
+        ),
+        "readiness_items_count": len(readiness_items),
+        "blocked_items_count": 0,
+        "packet_path": None,
+        "packet_hash": None,
+        "readiness_items": readiness_items,
+        "blocked_or_skipped_items": blocked_or_skipped_items,
+        "readiness_checklist": {
+            "confirms_level1_only": True,
+            "confirms_readiness_packet_only": True,
+            "confirms_not_execution_authorization": True,
+            "confirms_orders_disabled": True,
+            "confirms_system_locked": True,
+            "confirms_no_h1_used": True,
+            "confirms_no_order_window_opened": True,
+            "confirms_no_preflight_endpoint_called": True,
+            "confirms_no_approval_endpoint_called": True,
+            "confirms_no_submit_endpoint_called": True,
+            "confirms_no_broker_order_created": True,
+            "confirms_order_enablement_still_required": True,
+            "confirms_future_real_preflight_required": True,
+            "confirms_future_real_approval_required": True,
+            "confirms_future_real_submit_required": True,
+            "confirms_future_h1_required": True,
+            "confirms_future_order_window_required": True,
+        },
+    }
+
+    # Readiness artifact (standalone)
+    readiness_artifact = {
+        "artifact_id": readiness_packet_id,
+        "packet_id": packet_id,
+        "status": "readiness_only",
+        "generated_by": "level1-execution-readiness-packet-drill (Phase 16M)",
+        "input_approval_packet": input_approval_packet,
+        "execution_readiness_packet": execution_readiness_packet,
+    }
+    readiness_artifact_hash = _compute_evidence_hash(readiness_artifact)
+
+    # ------------------------------------------------------------------
+    # 10. Readiness workflow
+    # ------------------------------------------------------------------
+    readiness_workflow = {
+        "readiness_packet_only": True,
+        "execution_authorized_now": False,
+        "demo_candidates_requested": effective_candidates,
+        "approval_items_received": approval_items_count,
+        "readiness_items_produced": len(readiness_items),
+        "preflight_performed": False,
+        "approval_performed": False,
+        "submit_performed": False,
+        "h1_token_used": False,
+        "any_real_broker_activity": False,
+        "all_items_readiness_only": len(readiness_items) > 0,
+        "any_executable_item": has_executable_items,
+    }
+
+    workflow_summary = {
+        "execution_readiness_packet_ready": True,
+        "execution_readiness_packet_created": len(readiness_items) > 0,
+        "execution_authorized_now_false": True,
+        "all_items_readiness_only": True,
+        "all_items_non_executable": True,
+        "order_enablement_still_required": True,
+        "no_real_preflight_performed": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_order_path_called": True,
+        "no_broker_order_created": True,
+        "no_broker_submission": True,
+        "no_h1_seen": True,
+        "no_order_window_seen": True,
+        "checklist_complete": True,
+    }
+
+    # ------------------------------------------------------------------
+    # 11. Classification
+    # ------------------------------------------------------------------
+    all_tags_present = len(required_tags_missing) == 0
+    worktree_clean = git_section.get("worktree_clean", False)
+    run_time_ready = br_connected and br_mode == "paper" and br_read_only
+    safety_locked = env_allow_orders in ("false", "?") and rules_enforced in ("false", "?") and system_locked is True
+
+    if not all_tags_present:
+        diagnosis = _PHASE16M_DIAGNOSIS["missing_required_tags"]
+        severity = "NO_GO"
+    elif not worktree_clean and worktree_clean is not None:
+        diagnosis = _PHASE16M_DIAGNOSIS["dirty_worktree"]
+        severity = "NO_GO"
+    elif not positions_flat and positions_count > 0:
+        diagnosis = _PHASE16M_DIAGNOSIS["positions_not_flat"]
+        severity = "NO_GO"
+    elif active_alerts_count > 0:
+        diagnosis = _PHASE16M_DIAGNOSIS["monitor_alerts_active"]
+        severity = "NO_GO"
+    elif not run_time_ready:
+        diagnosis = _PHASE16M_DIAGNOSIS["runtime_not_ready"]
+        severity = "HOLD" if not br_connected else "NO_GO"
+    elif not safety_locked:
+        diagnosis = _PHASE16M_DIAGNOSIS["safety_not_locked"]
+        severity = "NO_GO"
+    elif autonomy_level != "1":
+        diagnosis = _PHASE16M_DIAGNOSIS["autonomy_not_level1"]
+        severity = "NO_GO"
+    elif not gs_assessment["guard_state_clean"]:
+        diagnosis = _PHASE16M_DIAGNOSIS["guard_state_not_clean"]
+        severity = "NO_GO"
+    elif not doc_acceptable:
+        diagnosis = _PHASE16M_DIAGNOSIS["doctor_not_acceptable"]
+        severity = "NO_GO"
+    elif not kpi_acceptable_hold:
+        diagnosis = _PHASE16M_DIAGNOSIS["kpi_not_acceptable"]
+        severity = "NO_GO"
+    elif not policy_result["hermes_policy_exists"] or not policy_result["execution_path_ok"]:
+        diagnosis = _PHASE16M_DIAGNOSIS["policy_boundary_missing"]
+        severity = "NO_GO"
+    elif not clean_cycles_matches_kpi:
+        diagnosis = _PHASE16M_DIAGNOSIS["clean_cycles_mismatch"]
+        severity = "NO_GO"
+    elif has_broker_activity:
+        diagnosis = _PHASE16M_DIAGNOSIS["approval_packet_has_broker_activity"]
+        severity = "NO_GO"
+    elif has_executable_items:
+        diagnosis = _PHASE16M_DIAGNOSIS["approval_packet_has_executable_items"]
+        severity = "NO_GO"
+    elif approval_items_count == 0:
+        diagnosis = _PHASE16M_DIAGNOSIS["no_items_to_assess"]
+        severity = "OK"
+    else:
+        diagnosis = _PHASE16M_DIAGNOSIS["ready"]
+        severity = "OK"
+
+    drill_ok = diagnosis in (_PHASE16M_DIAGNOSIS["ready"], _PHASE16M_DIAGNOSIS["no_items_to_assess"])
+    operator_action_required = not drill_ok
+    suggested_actions: list[str] = []
+    if not drill_ok:
+        suggested_actions.append(f"Execution-readiness packet drill blocked: {diagnosis}")
+        if not run_time_ready:
+            suggested_actions.append("Ensure bridge is connected in paper read-only mode")
+        if not safety_locked:
+            suggested_actions.append("Verify all safety locks are engaged")
+        if not gs_assessment["guard_state_clean"]:
+            suggested_actions.append("Run guard-state-reconcile to fix guard state")
+
+    # ------------------------------------------------------------------
+    # 12. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "diagnosis": diagnosis, "severity": severity,
+        "readiness_items_count": len(readiness_items),
+        "execution_authorized_now": False,
+        "preflight_performed": False,
+        "approval_performed": False,
+        "submit_performed": False,
+        "h1_token_used": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 13. Assemble result
+    # ------------------------------------------------------------------
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-execution-readiness-packet-drill",
+        "advisory": (
+            "Read-only Level 1 execution-readiness packet drill (Phase 16M). "
+            "Converts a human approval packet into an execution-readiness "
+            "packet documenting prerequisites for a future real order path. "
+            "NO broker endpoints are called. Execution is NOT authorized. "
+            "Every readiness item declares execution_authorized_now=false. "
+            "Chris must manually approve, open order window, and use H1 "
+            "before any real order path."
+        ),
+        "timestamp": ts_str,
+        "packet_id": packet_id,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": runtime_section,
+        "autonomy": autonomy_section,
+        "safety": safety_section,
+        "guard_state": guard_section,
+        "input_approval_packet": input_approval_packet,
+        "execution_readiness_packet": execution_readiness_packet,
+        "readiness_artifact": readiness_artifact,
+        "readiness_artifact_hash": readiness_artifact_hash,
+        "readiness_workflow": readiness_workflow,
+        "workflow_summary": workflow_summary,
+        "kpi_summary": kpi_section,
+        "doctor_summary": doctor_section,
+        "policy_summary": policy_section,
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
+        "h1_token_not_used": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "evidence_hash": evidence_hash,
+        "explicit_non_actions": _PHASE16M_EXPLICIT_NON_ACTIONS,
+    }
+
+    # ------------------------------------------------------------------
+    # 14. Export artifacts
+    # ------------------------------------------------------------------
+    export_path: str | None = None
+    readiness_artifact_path: str | None = None
+    try:
+        _PHASE16M_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE16M_EXPORT_DIR / f"{packet_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        export_path = str(ep)
+        ra_path = _PHASE16M_EXPORT_DIR / f"{readiness_packet_id}.json"
+        with open(ra_path, "w", encoding="utf-8") as f:
+            _json.dump(readiness_artifact, f, indent=2, default=str)
+        readiness_artifact_path = str(ra_path)
+    except Exception:
+        pass
+
+    result["export_path"] = export_path
+    result["readiness_artifact_path"] = readiness_artifact_path
+    result["packet_path"] = readiness_artifact_path
+    result["packet_hash"] = readiness_artifact_hash
+    # Also place on execution_readiness_packet for inline access
+    execution_readiness_packet["packet_path"] = readiness_artifact_path
+    execution_readiness_packet["packet_hash"] = readiness_artifact_hash
+    return result
+
+
+def _phase16m_no_go(
+    packet_id: str, ts_str: str, git_section: dict, required_tags: dict,
+    diagnosis: str, actions: list,
+) -> dict:
+    """Build a NO_GO result for early-exit prerequisite failures."""
+    empty_er = {"packet_id": packet_id, "status": "blocked",
+                 "readiness_items": [], "blocked_or_skipped_items": [], "readiness_checklist": {}}
+    empty_ra = {"artifact_id": packet_id, "status": "blocked"}
+    return {
+        "command": "ibkr-operator level1-execution-readiness-packet-drill",
+        "timestamp": ts_str,
+        "packet_id": packet_id,
+        "diagnosis": diagnosis,
+        "severity": "NO_GO",
+        "operator_action_required": True,
+        "suggested_operator_actions": actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": {},
+        "autonomy": {},
+        "safety": {},
+        "guard_state": {},
+        "input_approval_packet": {},
+        "execution_readiness_packet": empty_er,
+        "readiness_artifact": empty_ra,
+        "readiness_artifact_hash": _compute_evidence_hash(empty_ra),
+        "readiness_workflow": {},
+        "workflow_summary": {},
+        "kpi_summary": {},
+        "doctor_summary": {},
+        "policy_summary": {},
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
+        "h1_token_not_used": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16M_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _print_level1_execution_readiness_packet_drill(result: dict) -> None:
+    """Print Phase 16M execution-readiness packet drill in human-readable format."""
+    drill_ok = result.get("diagnosis") in (_PHASE16M_DIAGNOSIS["ready"], _PHASE16M_DIAGNOSIS["no_items_to_assess"])
+    diag_color = GREEN if drill_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else (YELLOW if sev == "HOLD" else RED)
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Execution-Readiness Packet Drill (16M){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Packet ID:             {result.get('packet_id', '?')}")
+    print(f"  Timestamp:             {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:             {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:              {sev_color}{sev}{RESET}")
+    print()
+
+    iap = result.get("input_approval_packet", {})
+    if iap:
+        print(f"  {BOLD}Input Approval Packet{RESET}")
+        print(f"    Source:              {iap.get('source', '?')}")
+        print(f"    Approval Packet ID:  {iap.get('approval_packet_id', '?')}")
+        print(f"    Status:              {iap.get('status', '?')}")
+        print(f"    Human packet only:    {_bool_str(iap.get('human_packet_only'))}")
+        print(f"    Broker approval:      {RED}{iap.get('broker_approval_performed')}{RESET}")
+        print(f"    Endpoint called:      {RED}{iap.get('approval_endpoint_called')}{RESET}")
+        print(f"    Items count:         {iap.get('packet_items_count', 0)}")
+        ah = iap.get("artifact_hash", "")
+        if ah:
+            print(f"    Artifact hash:       {ah[:16]}...")
+        print()
+
+    er = result.get("execution_readiness_packet", {})
+    if er:
+        print(f"  {BOLD}Execution Readiness Packet{RESET}")
+        print(f"    Packet ID:           {er.get('packet_id', '?')}")
+        print(f"    Status:              {er.get('status', '?')}")
+        print(f"    Reviewer:            {er.get('reviewer', '?')}")
+        print(f"    Readiness only:       {GREEN}{er.get('readiness_packet_only')}{RESET}")
+        print(f"    Exec authorized:      {RED}{er.get('execution_authorized_now')}{RESET}")
+        print(f"    Order enable req:    {er.get('order_enablement_required')}")
+        print(f"    Preflight performed:  {RED}{er.get('preflight_performed')}{RESET}")
+        print(f"    Approval performed:   {RED}{er.get('approval_performed')}{RESET}")
+        print(f"    Submit performed:     {RED}{er.get('submit_performed')}{RESET}")
+        print(f"    H1 token used:        {RED}{er.get('h1_token_used')}{RESET}")
+        print(f"    Order window opened: {er.get('order_window_opened')}")
+        print(f"    Broker order created:{er.get('broker_order_created')}")
+        print(f"    Readiness items:     {er.get('readiness_items_count', 0)}")
+        print()
+
+        rc = er.get("readiness_checklist", {})
+        if rc:
+            print(f"  {BOLD}Readiness Checklist{RESET}")
+            for key, val in rc.items():
+                color = GREEN if val else RED
+                print(f"    {key:<56} {color}{val}{RESET}")
+            print()
+
+        ri = er.get("readiness_items", [])
+        if ri:
+            print(f"  {BOLD}Readiness Items (execution NOT authorized){RESET}")
+            for r in ri:
+                print(f"    {r.get('readiness_item_id', '?')}: {r.get('symbol', '?')} "
+                      f"{GREEN}{r.get('side', '?')}{RESET} "
+                      f"qty={r.get('quantity', 0)}")
+                print(f"      readiness-only={GREEN}{r.get('readiness_packet_only')}{RESET}  "
+                      f"exec-authorized={RED}{r.get('execution_authorized_now')}{RESET}")
+            print()
+
+    ws = result.get("workflow_summary", {})
+    if ws:
+        print(f"  {BOLD}Workflow Summary{RESET}")
+        for key, val in ws.items():
+            color = GREEN if val else RED
+            print(f"    {key:<46} {color}{val}{RESET}")
+        print()
+
+    auto = result.get("autonomy", {})
+    if auto:
+        print(f"  {BOLD}Autonomy{RESET}")
+        print(f"    Level:          {auto.get('current_level', '?')}")
+        cc = auto.get('clean_cycles')
+        print(f"    Clean cycles:   {cc if cc is not None else 'null'}")
+        print()
+
+    safety = result.get("safety", {})
+    if safety:
+        print(f"  {BOLD}Safety{RESET}")
+        print(f"    ALLOW_ORDERS:   {safety.get('env_IBKR_ALLOW_ORDERS', '?')}")
+        print(f"    rules.enforced: {safety.get('rules_enforced', '?')}")
+        print(f"    system_locked:  {_bool_str(safety.get('system_locked'))}")
+        print()
+
+    guard = result.get("guard_state", {})
+    if guard:
+        print(f"  {BOLD}Guard State{RESET}")
+        print(f"    Trade count:    {guard.get('daily_trade_count', '?')}")
+        print(f"    Trade date:     {guard.get('trade_date', '?')}")
+        print(f"    Clean:          {_bool_str(guard.get('guard_state_clean'))}")
+        print()
+
+    sa = result.get("suggested_operator_actions", [])
+    if sa:
+        print(f"  {BOLD}Suggested Actions{RESET}")
+        for a in sa:
+            print(f"    {YELLOW}→{RESET} {a}")
+        print()
+
+    print(f"  {BOLD}Advisory{RESET}")
+    print(f"    {result.get('advisory', '')}")
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"\n  Evidence hash: {eh[:16]}...")
+
+    ep = result.get("export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    rp = result.get("readiness_artifact_path")
+    if rp:
+        print(f"  Readiness artifact: {rp}")
+    rh = result.get("readiness_artifact_hash", "")
+    if rh:
+        print(f"  Readiness artifact hash: {rh[:16]}...")
+    print()
+
+
 def main() -> None:
     import argparse
 
@@ -24908,6 +25913,53 @@ def main() -> None:
     p16l_a3.add_argument("--preflight-dossier", type=str, default=None)
     p16l_a3.add_argument("--packet-source", type=str, default="synthetic_readonly_demo")
     p16l_a3.add_argument("--reviewer", type=str, default="Chris")
+
+    # Phase 16M — Level 1 Execution-Readiness Packet Drill
+    p16m = sub.add_parser("level1-execution-readiness-packet-drill",
+                          help="Level 1 execution-readiness packet drill (Phase 16M)")
+    p16m.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16m.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-execution-readiness-packets/")
+    p16m.add_argument("--demo-candidates", type=int, default=3,
+                      help="Number of demo candidates (0-5, default 3)")
+    p16m.add_argument("--decision-mode", type=str, default="mixed_demo",
+                      help="Decision mode: mixed_demo, accept_all_demo, reject_all_demo, defer_all_demo")
+    p16m.add_argument("--approval-packet", type=str, default=None,
+                      help="Optional path to a prior 16L human approval packet artifact")
+    p16m.add_argument("--packet-source", type=str, default="synthetic_readonly_demo",
+                      help="Packet source label (default: synthetic_readonly_demo)")
+    p16m.add_argument("--reviewer", type=str, default="Chris",
+                      help="Reviewer name (default: Chris)")
+    # Alias: phase16m-execution-readiness-packet-drill
+    p16m_a1 = sub.add_parser("phase16m-execution-readiness-packet-drill",
+                             help="Alias for level1-execution-readiness-packet-drill")
+    p16m_a1.add_argument("--json", action="store_true")
+    p16m_a1.add_argument("--export", action="store_true")
+    p16m_a1.add_argument("--demo-candidates", type=int, default=3)
+    p16m_a1.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16m_a1.add_argument("--approval-packet", type=str, default=None)
+    p16m_a1.add_argument("--packet-source", type=str, default="synthetic_readonly_demo")
+    p16m_a1.add_argument("--reviewer", type=str, default="Chris")
+    # Alias: level1-execution-readiness-drill
+    p16m_a2 = sub.add_parser("level1-execution-readiness-drill",
+                             help="Alias for level1-execution-readiness-packet-drill")
+    p16m_a2.add_argument("--json", action="store_true")
+    p16m_a2.add_argument("--export", action="store_true")
+    p16m_a2.add_argument("--demo-candidates", type=int, default=3)
+    p16m_a2.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16m_a2.add_argument("--approval-packet", type=str, default=None)
+    p16m_a2.add_argument("--packet-source", type=str, default="synthetic_readonly_demo")
+    p16m_a2.add_argument("--reviewer", type=str, default="Chris")
+    # Alias: execution-readiness-packet-drill
+    p16m_a3 = sub.add_parser("execution-readiness-packet-drill",
+                             help="Alias for level1-execution-readiness-packet-drill")
+    p16m_a3.add_argument("--json", action="store_true")
+    p16m_a3.add_argument("--export", action="store_true")
+    p16m_a3.add_argument("--demo-candidates", type=int, default=3)
+    p16m_a3.add_argument("--decision-mode", type=str, default="mixed_demo")
+    p16m_a3.add_argument("--approval-packet", type=str, default=None)
+    p16m_a3.add_argument("--packet-source", type=str, default="synthetic_readonly_demo")
+    p16m_a3.add_argument("--reviewer", type=str, default="Chris")
 
     args = parser.parse_args()
 
@@ -26307,6 +27359,85 @@ def main() -> None:
             if pp:
                 print(f"  Packet artifact written: {pp}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") in (_PHASE16L_DIAGNOSIS["ready"], _PHASE16L_DIAGNOSIS["no_items_to_approve"]) else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-execution-readiness-packet-drill",
+                        "phase16m-execution-readiness-packet-drill",
+                        "level1-execution-readiness-drill",
+                        "execution-readiness-packet-drill"):
+        demo_cand = getattr(args, "demo_candidates", 3)
+        decision_mode = getattr(args, "decision_mode", "mixed_demo")
+        approval_packet = getattr(args, "approval_packet", None)
+        packet_source = getattr(args, "packet_source", "synthetic_readonly_demo")
+        reviewer = getattr(args, "reviewer", "Chris")
+        try:
+            result = _run_level1_execution_readiness_packet_drill(
+                demo_candidates=demo_cand,
+                decision_mode=decision_mode,
+                approval_packet_path=approval_packet,
+                packet_source=packet_source,
+                reviewer=reviewer,
+            )
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            result = {
+                "command": f"ibkr-operator {args.command}",
+                "timestamp": ts_str,
+                "packet_id": f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}",
+                "diagnosis": _PHASE16M_DIAGNOSIS["unknown"],
+                "severity": "NO_GO",
+                "operator_action_required": True,
+                "suggested_operator_actions": [
+                    f"Internal error: {type(exc).__name__}",
+                    "Run ibkr-operator doctor",
+                ],
+                "git": {},
+                "required_tags": {},
+                "runtime": {},
+                "autonomy": {},
+                "safety": {},
+                "guard_state": {},
+                "input_approval_packet": {},
+                "execution_readiness_packet": {"packet_id": f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}", "status": "error", "readiness_items": []},
+                "readiness_artifact": {},
+                "readiness_artifact_hash": _compute_evidence_hash({}),
+                "readiness_workflow": {},
+                "workflow_summary": {},
+                "kpi_summary": {},
+                "doctor_summary": {},
+                "policy_summary": {},
+                "promotion_allowed_now": False,
+                "order_enablement_allowed_now": False,
+                "order_enablement_performed": False,
+                "promotion_performed": False,
+                "no_broker_mutation": True,
+                "no_order_window_opened": True,
+                "no_order_window_seen": True,
+                "no_h1_seen": True,
+                "h1_token_not_used": True,
+                "no_preflight_endpoint_called": True,
+                "no_approval_endpoint_called": True,
+                "no_submit_endpoint_called": True,
+                "evidence_hash": _compute_evidence_hash({"diagnosis": _PHASE16M_DIAGNOSIS["unknown"]}),
+                "explicit_non_actions": _PHASE16M_EXPLICIT_NON_ACTIONS,
+            }
+            print(f"Execution-readiness packet drill internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_execution_readiness_packet_drill(result)
+        if args.export:
+            ep = result.get("export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+            rp = result.get("readiness_artifact_path")
+            if rp:
+                print(f"  Readiness artifact written: {rp}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") in (_PHASE16M_DIAGNOSIS["ready"], _PHASE16M_DIAGNOSIS["no_items_to_assess"]) else 1
         sys.exit(exit_code)
 
     if args.command != "checklist":

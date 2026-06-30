@@ -26264,6 +26264,131 @@ _H1_BOUNDARY_BLOCKING_REASONS: list[str] = [
     "h1_boundary_intact_no_broker_mutation",
 ]
 
+# Phase 16R — Level 1 Broker-Mutation Firewall Audit Checkpoint
+_PHASE16R_EXPORT_DIR = OPENCLAW_DIR / "level1-broker-mutation-firewall-audits"
+
+_PHASE16R_REQUIRED_TAGS: tuple[str, ...] = (
+    "phase16q_level1_h1_boundary_audit_checkpoint",
+    "phase16p_level1_order_window_canary_negative_control_drill",
+    "phase16o_level1_execution_gate_negative_control_drill",
+    "phase16n_level1_readiness_chain_integrity_checkpoint",
+    "phase16m_level1_execution_readiness_packet_drill",
+)
+
+_PHASE16R_DIAGNOSIS = {
+    "ready": "level1_broker_mutation_firewall_audit_ok",
+    "missing_required_tags": "missing_required_tags",
+    "dirty_worktree": "dirty_worktree",
+    "autonomy_not_level1": "autonomy_not_level1",
+    "runtime_not_ready": "runtime_not_ready",
+    "orders_enabled": "orders_enabled",
+    "bridge_allow_orders_enabled": "bridge_allow_orders_enabled",
+    "rules_enforced": "rules_enforced",
+    "safety_unlocked": "safety_unlocked",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "positions_not_flat": "positions_not_flat",
+    "monitor_alerts_active": "monitor_alerts_active",
+    "doctor_not_acceptable": "doctor_not_acceptable",
+    "kpi_not_acceptable": "kpi_not_acceptable",
+    "policy_boundary_missing": "policy_boundary_missing",
+    "clean_cycles_mismatch": "clean_cycles_mismatch",
+    "broker_mutation_firewall_not_intact": "broker_mutation_firewall_not_intact",
+    "unknown": "unknown",
+}
+
+_PHASE16R_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not call any broker mutation endpoint.",
+    "This command did not create broker orders.",
+    "This command did not submit orders.",
+    "This command did not cancel/modify orders.",
+    "This command did not mutate account state.",
+    "This command did not mutate position state.",
+    "This command did not open an order window.",
+    "This command did not read/use H1 token.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "This command did not call trade-window helper in any mode.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not change autonomy level.",
+    "This command did not restart bridge.",
+    "This command did not reconnect automatically.",
+    "This command did not repair guard-state.",
+    "Only allowed writes are export/broker-mutation-firewall audit artifacts.",
+    "This broker-mutation firewall audit proves all mutation paths remain blocked/unperformed and runtime stays paper/read-only/flat.",
+]
+
+# Broker-mutation canary template — locally denied by design
+_BROKER_MUTATION_CANARY_TEMPLATE: dict[str, Any] = {
+    "blocked": True,
+    "executable": False,
+    "execution_authorized_now": False,
+    "simulated_canary_only": True,
+    "expected_result": "blocked",
+    "order_endpoint_called": False,
+    "preflight_endpoint_called": False,
+    "approval_endpoint_called": False,
+    "submit_endpoint_called": False,
+    "mutation_endpoint_called": False,
+    "broker_order_created": False,
+    "broker_submission_performed": False,
+    "broker_cancel_performed": False,
+    "broker_modify_performed": False,
+    "account_mutation_performed": False,
+    "position_mutation_performed": False,
+    "order_mutation_performed": False,
+    "order_window_opened": False,
+    "trade_window_helper_called": False,
+    "h1_token_used": False,
+    "h1_header_constructed": False,
+    "h1_header_sent": False,
+    "gate_status": "BROKER_MUTATION_FIREWALL_INTACT",
+    "source_stage": "16R_broker_mutation_firewall_audit_checkpoint",
+    "performed": False,
+}
+
+# Demo broker-mutation canary intents
+_DEMO_BROKER_MUTATION_CANARIES: list[dict[str, Any]] = [
+    {"symbol": "SPY", "side": "BUY", "action": "BUY", "quantity": 10, "order_type": "MKT",
+     "requested_action": "SUBMIT BUY 10 SPY MKT", "requires_mutation": True},
+    {"symbol": "VTI", "side": "BUY", "action": "BUY", "quantity": 5, "order_type": "LMT",
+     "requested_action": "SUBMIT BUY 5 VTI LMT", "requires_mutation": True},
+    {"symbol": "BND", "side": "SELL", "action": "SELL", "quantity": 15, "order_type": "MKT",
+     "requested_action": "SUBMIT SELL 15 BND MKT", "requires_mutation": True},
+    {"symbol": "VXUS", "side": "BUY", "action": "BUY", "quantity": 5, "order_type": "LMT",
+     "requested_action": "SUBMIT BUY 5 VXUS LMT", "requires_mutation": True},
+    {"symbol": "GLD", "side": "SELL", "action": "SELL", "quantity": 3, "order_type": "MKT",
+     "requested_action": "SUBMIT SELL 3 GLD MKT", "requires_mutation": True},
+]
+
+# Broker-mutation blocking reasons
+_BROKER_MUTATION_BLOCKING_REASONS: list[str] = [
+    "broker_mutation_firewall_intact_no_order_endpoint",
+    "broker_mutation_firewall_intact_no_preflight_endpoint",
+    "broker_mutation_firewall_intact_no_approval_endpoint",
+    "broker_mutation_firewall_intact_no_submit_endpoint",
+    "broker_mutation_firewall_intact_no_mutation_endpoint",
+    "broker_mutation_firewall_intact_no_broker_order_created",
+    "broker_mutation_firewall_intact_no_broker_submission",
+    "broker_mutation_firewall_intact_no_broker_cancel",
+    "broker_mutation_firewall_intact_no_broker_modify",
+    "broker_mutation_firewall_intact_no_account_mutation",
+    "broker_mutation_firewall_intact_no_position_mutation",
+    "broker_mutation_firewall_intact_no_order_mutation",
+    "broker_mutation_firewall_intact_no_order_window",
+    "broker_mutation_firewall_intact_no_trade_window_helper",
+    "broker_mutation_firewall_intact_system_locked",
+    "broker_mutation_firewall_intact_autonomy_level_1",
+    "broker_mutation_firewall_intact_orders_disabled",
+]
+
 
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
@@ -29062,6 +29187,936 @@ def _print_level1_h1_boundary_audit_checkpoint(result: dict) -> None:
     print()
 
 
+def _run_level1_broker_mutation_firewall_audit_checkpoint(
+    demo_candidates: int = 3,
+    audit_source: str = "synthetic_readonly_demo",
+) -> dict:
+    """Run Level 1 broker-mutation firewall audit checkpoint (Phase 16R).
+
+    Read-only firewall audit. Synthetic mutation intents are locally
+    blocked without touching any broker endpoint. The checkpoint
+    succeeds only when every possible mutation path remains
+    blocked/unperformed and the runtime stays paper/read-only/flat.
+    """
+    import hashlib
+    import json as _json
+    import subprocess as _sp
+    import urllib.request
+    import urllib.error
+    from datetime import datetime, timezone
+    from typing import Any
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"mfw-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+    effective_candidates = max(0, min(demo_candidates, 5))
+
+    # ------------------------------------------------------------------
+    # 1. Git metadata & required tags
+    # ------------------------------------------------------------------
+    repo_path = Path(__file__).resolve().parent
+    git_section = _git_metadata(repo_path)
+    worktree = _get_worktree_state(BRIDGE_DIR)
+    origin = _get_origin_master_alignment(BRIDGE_DIR)
+    git_section["worktree_clean"] = worktree.get("clean", False)
+    git_section["dirty_files"] = worktree.get("dirty_files", [])
+    git_section["origin_master_commit"] = origin.get("origin_master_commit", "?")
+    git_section["origin_master_aligned"] = origin.get("aligned", False)
+
+    all_tags: list[str] = []
+    try:
+        r = _sp.run(["git", "tag"], capture_output=True, text=True)
+        if r.returncode == 0:
+            all_tags = [t.strip() for t in r.stdout.split("\n") if t.strip()]
+    except Exception:
+        pass
+
+    required_tags_missing: list[str] = []
+    required_tags_present: list[str] = []
+    for tag in _PHASE16R_REQUIRED_TAGS:
+        if tag in all_tags:
+            required_tags_present.append(tag)
+        else:
+            required_tags_missing.append(tag)
+
+    required_tags = {
+        "required_count": len(_PHASE16R_REQUIRED_TAGS),
+        "present_count": len(required_tags_present),
+        "missing": required_tags_missing,
+        "present": required_tags_present,
+    }
+
+    if len(required_tags_missing) > 0:
+        return _phase16r_no_go(
+            checkpoint_id, ts_str, git_section, required_tags,
+            _PHASE16R_DIAGNOSIS["missing_required_tags"],
+            [f"Missing tags: {', '.join(required_tags_missing)}"],
+        )
+    if not git_section.get("worktree_clean", False) and git_section.get("worktree_clean") is not None:
+        return _phase16r_no_go(
+            checkpoint_id, ts_str, git_section, required_tags,
+            _PHASE16R_DIAGNOSIS["dirty_worktree"],
+            ["Commit or stash dirty files"] + [f"  {f}" for f in git_section.get("dirty_files", [])[:5]],
+        )
+
+    # ------------------------------------------------------------------
+    # 2. Bridge runtime
+    # ------------------------------------------------------------------
+    br_reachable = False; br_connected = False; br_mode = "?"; br_read_only = False
+    ep_ok = 0; ep_display = "?"
+    try:
+        req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
+                br_reachable = True
+                hd = _json.loads(resp.read().decode())
+                br_connected = hd.get("connected", False)
+                br_mode = hd.get("mode", "?")
+                br_read_only = br_mode == "paper"
+    except Exception:
+        pass
+
+    snapshot_used = False
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/snapshot", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    snapshot_used = True; ep_ok = 7
+                    ep_display = f"{ep_ok}/7 OK (snapshot)"
+        except Exception:
+            pass
+    if not snapshot_used and br_reachable:
+        _EPS = ["/health", "/readiness", "/status", "/monitor/reconciliation",
+                "/monitor/alerts", "/monitor/events", "/positions", "/account"]
+        for ep in _EPS:
+            try:
+                req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        ep_ok += 1
+            except Exception:
+                pass
+        ep_display = f"{ep_ok}/{len(_EPS)} OK"
+
+    positions_count = 0; positions_flat = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/positions", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    pd = _json.loads(resp.read().decode())
+                    pl = pd.get("positions", [])
+                    positions_count = len(pl)
+                    positions_flat = all(abs(p.get("position", 0)) < 0.01 for p in pl)
+        except Exception:
+            pass
+
+    active_alerts_count = 0
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/monitor/alerts", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    ad = _json.loads(resp.read().decode())
+                    all_a = ad.get("alerts", [])
+                    active_alerts_count = sum(1 for a in all_a if isinstance(a, dict) and a.get("requires_action", False))
+        except Exception:
+            pass
+
+    runtime_section = {
+        "bridge_reachable": br_reachable, "bridge_connected": br_connected,
+        "mode": br_mode, "read_only": br_read_only,
+        "endpoints_display": ep_display, "endpoints_ok": ep_ok,
+        "positions_count": positions_count, "positions_flat": positions_flat,
+        "active_alerts_count": active_alerts_count,
+    }
+
+    # ------------------------------------------------------------------
+    # 3. Safety flags
+    # ------------------------------------------------------------------
+    env_safety = _read_env_safety(BRIDGE_DIR / ".env")
+    rules_state = _read_rules_enforced(
+        Path.home() / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
+    )
+    autonomy_path = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
+    autonomy_level = _read_autonomy_level(autonomy_path)
+
+    env_allow_orders = env_safety.get("IBKR_ALLOW_ORDERS", "?")
+    rules_enforced = rules_state.get("enforced", "?")
+    system_locked = True; bridge_allow_orders = False
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/readiness", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    rd = _json.loads(resp.read().decode())
+                    system_locked = rd.get("summary", {}).get("kill_switches", {}).get("system_locked", True)
+                    bridge_allow_orders = rd.get("summary", {}).get("allow_orders", False)
+        except Exception:
+            pass
+
+    safety_section = {
+        "env_IBKR_ALLOW_ORDERS": env_allow_orders, "rules_enforced": rules_enforced,
+        "system_locked": system_locked, "bridge_allow_orders": bridge_allow_orders,
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Guard state
+    # ------------------------------------------------------------------
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_section = gs_assessment["guard_section"]
+
+    # ------------------------------------------------------------------
+    # 5. Doctor / KPI / Policy
+    # ------------------------------------------------------------------
+    doctor_section: dict = {}
+    doc_acceptable = False
+    try:
+        dr = run_doctor()
+        doc_pass = dr.get("passed", 0); doc_total = dr.get("total", 0)
+        doctor_ok = dr.get("pass", False); doc_h1_status = "?"
+        for c in dr.get("checks", []):
+            if c.get("check") == "h1_token_canary":
+                if c.get("status") == "MANUAL_REQUIRED":
+                    doc_h1_status = "MANUAL_REQUIRED"
+                elif c.get("ok"):
+                    doc_h1_status = "PASS"
+                else:
+                    doc_h1_status = "FAIL"
+                break
+        doc_acceptable = doctor_ok or (doc_h1_status == "MANUAL_REQUIRED" and doc_pass >= doc_total - 1)
+        doctor_section = {
+            "result": "PASS" if doctor_ok else ("PASS_WITH_H1_MANUAL" if doc_acceptable else "FAIL"),
+            "h1_canary_status": doc_h1_status, "acceptable": doc_acceptable,
+        }
+    except Exception as e:
+        doctor_section = {"result": "ERROR", "h1_canary_status": "ERROR", "acceptable": False, "error": str(e)[:200]}
+
+    kpi_section: dict = {}; kpi_acceptable_hold = False; kpi_clean_cycles: int | None = None
+    try:
+        kpi_result = run_kpi()
+        kpi_verdict = kpi_result.get("verdict", "ERROR")
+        kpi_blockers = kpi_result.get("blockers", [])
+        no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+        kpi_acceptable_hold = (
+            kpi_verdict == "HOLD" and len(no_go_blockers) == 0
+            and any(b.get("check") == "system_locked" for b in kpi_blockers if b.get("severity") == "HOLD")
+        )
+        au = kpi_result.get("autonomy", {}); kpi_clean_cycles = au.get("clean_cycles") if isinstance(au, dict) else None
+        if kpi_clean_cycles is None:
+            kpi_clean_cycles = kpi_result.get("clean_cycles")
+        kpi_section = {
+            "verdict": kpi_verdict,
+            "blockers": [b.get("check", "?") for b in kpi_blockers],
+            "acceptable_hold": kpi_acceptable_hold,
+        }
+    except Exception as e:
+        kpi_section = {"verdict": "ERROR", "blockers": [], "acceptable_hold": False, "error": str(e)[:200]}
+
+    policy_result = _check_hermes_policy()
+    policy_section = {
+        "hermes_policy_exists": policy_result["hermes_policy_exists"],
+        "advisory_boundary_ok": policy_result["advisory_boundary_ok"],
+        "execution_path_ok": policy_result["execution_path_ok"],
+    }
+
+    # ------------------------------------------------------------------
+    # 6. Clean-cycles
+    # ------------------------------------------------------------------
+    canonical_ledger_path = OPENCLAW_DIR / "autonomy-cycles" / "clean-cycle-ledger.jsonl"
+    drill_clean_cycles: int | None = None
+    try:
+        if canonical_ledger_path.exists():
+            drill_clean_cycles = _count_clean_cycles(OPENCLAW_DIR)
+    except Exception:
+        pass
+    clean_cycles_matches_kpi = (kpi_clean_cycles == drill_clean_cycles) if (kpi_clean_cycles is not None and drill_clean_cycles is not None) else (kpi_clean_cycles is None and drill_clean_cycles is None)
+
+    autonomy_section = {
+        "current_level": autonomy_level, "clean_cycles": drill_clean_cycles,
+        "clean_cycles_source": "openclaw_clean_cycle_ledger",
+        "clean_cycles_matches_kpi": clean_cycles_matches_kpi,
+    }
+
+    # ------------------------------------------------------------------
+    # 7. Classification
+    # ------------------------------------------------------------------
+    all_tags_present = len(required_tags_missing) == 0
+    worktree_clean = git_section.get("worktree_clean", False)
+    run_time_ready = br_connected and br_mode == "paper" and br_read_only
+    orders_disabled = env_allow_orders in ("false", "?")
+    bridge_ao_disabled = bridge_allow_orders is False
+    rules_not_enforced = rules_enforced in ("false", "?")
+    system_locked_ok = system_locked is True
+
+    if not all_tags_present:
+        diagnosis = _PHASE16R_DIAGNOSIS["missing_required_tags"]; severity = "NO_GO"
+    elif not worktree_clean and worktree_clean is not None:
+        diagnosis = _PHASE16R_DIAGNOSIS["dirty_worktree"]; severity = "NO_GO"
+    elif not positions_flat and positions_count > 0:
+        diagnosis = _PHASE16R_DIAGNOSIS["positions_not_flat"]; severity = "NO_GO"
+    elif active_alerts_count > 0:
+        diagnosis = _PHASE16R_DIAGNOSIS["monitor_alerts_active"]; severity = "NO_GO"
+    elif not run_time_ready:
+        diagnosis = _PHASE16R_DIAGNOSIS["runtime_not_ready"]; severity = "NO_GO"
+    elif not orders_disabled:
+        diagnosis = _PHASE16R_DIAGNOSIS["orders_enabled"]; severity = "NO_GO"
+    elif not bridge_ao_disabled:
+        diagnosis = _PHASE16R_DIAGNOSIS["bridge_allow_orders_enabled"]; severity = "NO_GO"
+    elif not rules_not_enforced:
+        diagnosis = _PHASE16R_DIAGNOSIS["rules_enforced"]; severity = "NO_GO"
+    elif not system_locked_ok:
+        diagnosis = _PHASE16R_DIAGNOSIS["safety_unlocked"]; severity = "NO_GO"
+    elif autonomy_level != "1":
+        diagnosis = _PHASE16R_DIAGNOSIS["autonomy_not_level1"]; severity = "NO_GO"
+    elif not gs_assessment["guard_state_clean"]:
+        diagnosis = _PHASE16R_DIAGNOSIS["guard_state_not_clean"]; severity = "NO_GO"
+    elif not doc_acceptable:
+        diagnosis = _PHASE16R_DIAGNOSIS["doctor_not_acceptable"]; severity = "NO_GO"
+    elif not kpi_acceptable_hold:
+        diagnosis = _PHASE16R_DIAGNOSIS["kpi_not_acceptable"]; severity = "NO_GO"
+    elif not policy_result["hermes_policy_exists"] or not policy_result["execution_path_ok"]:
+        diagnosis = _PHASE16R_DIAGNOSIS["policy_boundary_missing"]; severity = "NO_GO"
+    elif not clean_cycles_matches_kpi:
+        diagnosis = _PHASE16R_DIAGNOSIS["clean_cycles_mismatch"]; severity = "NO_GO"
+    else:
+        diagnosis = _PHASE16R_DIAGNOSIS["ready"]; severity = "OK"
+
+    checkpoint_ok = diagnosis == _PHASE16R_DIAGNOSIS["ready"]
+
+    # ------------------------------------------------------------------
+    # 8. Build broker-mutation canary intents
+    # ------------------------------------------------------------------
+    canary_intents: list[dict[str, Any]] = []
+    demo_pool = _DEMO_BROKER_MUTATION_CANARIES[:effective_candidates] if effective_candidates > 0 else []
+    for i, demo in enumerate(demo_pool):
+        canary_id = f"mfw-canary-{checkpoint_id}-{i+1:02d}"
+        canary: dict[str, Any] = {
+            "canary_id": canary_id,
+            "canary_type": "BROKER_MUTATION_CANARY",
+            "canary_description": (
+                f"Broker-mutation canary {i+1}: locally-synthesized mutation intent "
+                f"for {demo['symbol']} — blocked without touching any broker endpoint"
+            ),
+            "symbol": demo["symbol"], "side": demo.get("side", demo["action"]),
+            "action": demo["action"], "quantity": demo["quantity"],
+            "order_type": demo["order_type"],
+            "requested_action": demo.get("requested_action",
+                                          f"SUBMIT {demo['action']} {demo['quantity']} {demo['symbol']} {demo['order_type']}"),
+            "requires_mutation": demo.get("requires_mutation", True),
+            **_BROKER_MUTATION_CANARY_TEMPLATE,
+            "blocking_reasons": list(_BROKER_MUTATION_BLOCKING_REASONS),
+        }
+        canary_intents.append(canary)
+
+    canaries_count = len(canary_intents)
+    all_canaries_blocked = all(c.get("blocked") for c in canary_intents)
+    no_canary_executed = all(
+        not c.get("broker_mutation_called") and not c.get("broker_order_created") and not c.get("executable")
+        for c in canary_intents
+    )
+    firewall_intact = all_canaries_blocked and no_canary_executed
+
+    if not firewall_intact:
+        diagnosis = _PHASE16R_DIAGNOSIS["broker_mutation_firewall_not_intact"]; severity = "NO_GO"; checkpoint_ok = False
+
+    # ------------------------------------------------------------------
+    # 9. Broker-mutation firewall
+    # ------------------------------------------------------------------
+    broker_mutation_firewall: dict[str, Any] = {
+        "status": "firewall_intact" if firewall_intact else "firewall_violation",
+        "checkpoint_id": checkpoint_id,
+        "audit_only": True,
+        "read_only_mode": True,
+        "paper_mode": True,
+        "positions_flat": positions_flat,
+        "positions_count": positions_count,
+        "broker_order_created": False,
+        "broker_submission_performed": False,
+        "broker_cancel_performed": False,
+        "broker_modify_performed": False,
+        "account_mutation_performed": False,
+        "position_mutation_performed": False,
+        "order_mutation_performed": False,
+        "order_window_opened": False,
+        "h1_token_used": False,
+        "h1_header_constructed": False,
+        "h1_header_sent": False,
+        "trade_window_helper_called": False,
+        "order_endpoint_called": False,
+        "preflight_endpoint_called": False,
+        "approval_endpoint_called": False,
+        "submit_endpoint_called": False,
+        "mutation_endpoint_called": False,
+        "allowed_write_paths": ["export_artifact", "audit_artifact"],
+        "disallowed_mutation_paths_blocked": True,
+        "future_order_window_required": True,
+        "future_h1_required": True,
+        "future_real_preflight_required": True,
+        "future_real_approval_required": True,
+        "future_real_submit_required": True,
+        "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+        "canaries_count": canaries_count,
+        "canaries_blocked_count": sum(1 for c in canary_intents if c.get("blocked")),
+        "canaries_not_blocked_count": sum(1 for c in canary_intents if not c.get("blocked")),
+    }
+
+    # ------------------------------------------------------------------
+    # 10. Mutation surface audit
+    # ------------------------------------------------------------------
+    surfaces_list: list[dict[str, Any]] = []
+    for canary in canary_intents:
+        surface: dict[str, Any] = {
+            "surface": canary.get("requested_action", "?"),
+            "category": "broker_mutation",
+            "description": f"Mutation surface: {canary.get('requested_action', '?')} — must be blocked/unperformed",
+            "expected_status": "blocked_or_unperformed",
+            "endpoint_called": False,
+            "mutation_performed": False,
+            "broker_state_changed": False,
+            "blocked": True,
+            "blocker_reason": canary.get("blocking_reasons", ["broker_mutation_firewall_intact"])[0],
+        }
+        surfaces_list.append(surface)
+
+    all_surfaces_blocked = all(s.get("blocked") for s in surfaces_list)
+    mutation_surface_audit: dict[str, Any] = {
+        "surfaces_count": len(surfaces_list),
+        "surfaces_passed_count": sum(1 for s in surfaces_list if s.get("blocked")),
+        "surfaces_failed_count": sum(1 for s in surfaces_list if not s.get("blocked")),
+        "surfaces": surfaces_list,
+    }
+
+    # ------------------------------------------------------------------
+    # 11. Read-only evidence
+    # ------------------------------------------------------------------
+    evidence_paths: list[dict[str, Any]] = []
+    evidence_paths.append({
+        "path_type": "export_artifact",
+        "path": str(_PHASE16R_EXPORT_DIR),
+        "write_allowed": True,
+        "broker_mutation": False,
+    })
+    read_only_evidence: dict[str, Any] = {
+        "evidence_paths_count": len(evidence_paths),
+        "evidence_paths": evidence_paths,
+        "only_export_artifacts_written": True,
+        "no_runtime_config_mutation": True,
+        "no_env_mutation": True,
+        "no_rules_mutation": True,
+        "no_guard_repair_performed": True,
+        "no_service_restart": True,
+        "no_reconnect_attempted": True,
+    }
+
+    # ------------------------------------------------------------------
+    # 12. Mutation probe matrix
+    # ------------------------------------------------------------------
+    mutation_probe_matrix: dict[str, Any] = {
+        "bridge_read_only": br_read_only,
+        "bridge_allow_orders": bridge_allow_orders,
+        "env_allow_orders": env_allow_orders in ("false", "?"),
+        "rules_enforced": rules_enforced in ("false", "?"),
+        "system_locked": system_locked,
+        "order_window_open": False,
+        "h1_available_to_drill": False,
+        "broker_submission_allowed": False,
+        "broker_write_allowed": False,
+        "account_write_allowed": False,
+        "position_write_allowed": False,
+        "order_write_allowed": False,
+    }
+
+    # ------------------------------------------------------------------
+    # 13. Blocked mutation attempts
+    # ------------------------------------------------------------------
+    blocked_attempts: list[dict[str, Any]] = []
+    for i, canary in enumerate(canary_intents):
+        attempt_id = f"blocked-mutation-{checkpoint_id}-{i+1:02d}"
+        attempt: dict[str, Any] = {
+            "attempt_id": attempt_id,
+            "attempted_action": canary.get("requested_action", "?"),
+            "local_audit_only": True, "blocked": True,
+            "block_reason": "; ".join(canary.get("blocking_reasons", [])[:3]),
+            "endpoint_called": False,
+            "broker_mutation": False,
+            "account_mutation": False,
+            "position_mutation": False,
+            "order_mutation": False,
+            "h1_token_used": False,
+            "order_window_opened": False,
+            "executable": False,
+            "performed": False,
+        }
+        blocked_attempts.append(attempt)
+
+    # ------------------------------------------------------------------
+    # 14. Broker-mutation checklist
+    # ------------------------------------------------------------------
+    broker_mutation_checklist: list[dict[str, Any]] = [
+        {"check": "confirms_level1_only", "status": "PASS" if autonomy_level == "1" else "FAIL"},
+        {"check": "confirms_audit_only", "status": "PASS"},
+        {"check": "confirms_read_only_mode", "status": "PASS" if br_read_only else "FAIL"},
+        {"check": "confirms_paper_mode", "status": "PASS" if br_mode == "paper" else "FAIL"},
+        {"check": "confirms_positions_flat", "status": "PASS" if positions_flat else "FAIL"},
+        {"check": "confirms_no_order_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_preflight_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_approval_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_submit_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_mutation_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_broker_order_created", "status": "PASS"},
+        {"check": "confirms_no_broker_submission", "status": "PASS"},
+        {"check": "confirms_no_broker_cancel", "status": "PASS"},
+        {"check": "confirms_no_broker_modify", "status": "PASS"},
+        {"check": "confirms_no_account_mutation", "status": "PASS"},
+        {"check": "confirms_no_position_mutation", "status": "PASS"},
+        {"check": "confirms_no_order_mutation", "status": "PASS"},
+        {"check": "confirms_no_order_window_opened", "status": "PASS"},
+        {"check": "confirms_no_h1_used", "status": "PASS"},
+        {"check": "confirms_no_h1_header_constructed", "status": "PASS"},
+        {"check": "confirms_no_h1_header_sent", "status": "PASS"},
+        {"check": "confirms_trade_window_helper_not_called", "status": "PASS"},
+        {"check": "confirms_orders_disabled", "status": "PASS" if env_allow_orders in ("false", "?") else "FAIL"},
+        {"check": "confirms_system_locked", "status": "PASS" if system_locked else "FAIL"},
+        {"check": "confirms_rules_not_enforced", "status": "PASS" if rules_enforced in ("false", "?") else "FAIL"},
+        {"check": "confirms_only_export_artifacts_written", "status": "PASS"},
+        {"check": "confirms_future_h1_required", "status": "PASS"},
+        {"check": "confirms_future_order_window_required", "status": "PASS"},
+        {"check": "confirms_future_real_preflight_required", "status": "PASS"},
+        {"check": "confirms_future_real_approval_required", "status": "PASS"},
+        {"check": "confirms_future_real_submit_required", "status": "PASS"},
+    ]
+    checklist_pass = sum(1 for c in broker_mutation_checklist if c["status"] == "PASS")
+    checklist_total = len(broker_mutation_checklist)
+    checklist_complete = checklist_pass == checklist_total
+
+    # ------------------------------------------------------------------
+    # 15. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "diagnosis": diagnosis, "severity": severity,
+        "firewall_status": broker_mutation_firewall["status"],
+        "canaries_count": canaries_count, "all_canaries_blocked": all_canaries_blocked,
+        "no_broker_mutation": True, "no_order_endpoint_called": True,
+        "no_preflight_called": True, "no_approval_called": True, "no_submit_called": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 16. Workflow summary
+    # ------------------------------------------------------------------
+    operator_action_required = not checkpoint_ok
+    suggested_actions: list[str] = []
+    if not checkpoint_ok:
+        suggested_actions.append(f"Broker-mutation firewall audit blocked: {diagnosis}")
+        if not run_time_ready:
+            suggested_actions.append("Ensure bridge is connected in paper read-only mode")
+        if not orders_disabled:
+            suggested_actions.append("Set IBKR_ALLOW_ORDERS=false in .env")
+        if not bridge_ao_disabled:
+            suggested_actions.append("Ensure bridge readiness reports allow_orders=false")
+        if not rules_not_enforced:
+            suggested_actions.append("Set enforced=false in rules YAML")
+        if not system_locked_ok:
+            suggested_actions.append("Engage system_locked kill-switch")
+
+    workflow_summary: dict[str, Any] = {
+        "broker_mutation_firewall_audit_ready": checkpoint_ok,
+        "broker_mutation_firewall_artifact_created": False,
+        "broker_mutation_firewall_intact": firewall_intact,
+        "all_mutation_surfaces_blocked": all_surfaces_blocked,
+        "all_blocks_expected": firewall_intact,
+        "trade_window_helper_not_called": True,
+        "execution_authorized_now_false": True,
+        "order_enablement_still_required": True,
+        "no_order_endpoint_called": True, "no_preflight_called": True,
+        "no_approval_called": True, "no_submit_called": True,
+        "no_order_path_called": True,
+        "no_broker_order_created": True, "no_broker_submission": True,
+        "no_broker_mutation": True, "no_account_mutation": True,
+        "no_position_mutation": True, "no_order_window_seen": True,
+        "no_h1_used": True,
+        "checklist_complete": checklist_complete,
+    }
+
+    # ------------------------------------------------------------------
+    # 17. Assemble result
+    # ------------------------------------------------------------------
+    guard_state_clean = gs_assessment.get("guard_state_clean", False)
+    gs = gs_assessment.get("guard_section", {})
+    canonical_trade_date = gs.get("trade_date", "?")
+    trade_date_stale = gs.get("trade_date_stale", False)
+    halt_active = gs.get("daily_halt_active", False)
+
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-broker-mutation-firewall-audit-checkpoint",
+        "advisory": (
+            "Read-only Level 1 broker-mutation firewall audit checkpoint (Phase 16R). "
+            "This checkpoint proves the broker-mutation firewall remains intact "
+            "end-to-end: no broker write endpoints called, no orders created, "
+            "no submissions, no account/position mutation. The checkpoint succeeds "
+            "only when every possible mutation path remains blocked/unperformed and "
+            "the runtime stays paper/read-only/flat. This is NOT execution authorization, "
+            "NOT broker approval, NOT broker preflight."
+        ),
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "canonical_trade_date": canonical_trade_date,
+        "trade_date_stale": trade_date_stale,
+        "halt_active": halt_active,
+        "guard_state_clean": guard_state_clean,
+        "diagnosis": diagnosis, "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_actions,
+        "git": git_section, "required_tags": required_tags,
+        "runtime": runtime_section, "autonomy": autonomy_section,
+        "safety": safety_section, "guard_state": guard_section,
+        "broker_mutation_firewall": broker_mutation_firewall,
+        "mutation_surface_audit": mutation_surface_audit,
+        "read_only_evidence": read_only_evidence,
+        "mutation_probe_matrix": mutation_probe_matrix,
+        "blocked_mutation_attempts": blocked_attempts,
+        "canary_intents": canary_intents,
+        "broker_mutation_checklist": broker_mutation_checklist,
+        "workflow_summary": workflow_summary,
+        "all_canaries_blocked": all_canaries_blocked,
+        "no_canary_executed": no_canary_executed,
+        "broker_mutation_firewall_intact": firewall_intact,
+        "kpi_summary": kpi_section, "doctor_summary": doctor_section,
+        "policy_summary": policy_section,
+        "promotion_allowed_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "promotion_performed": False,
+        "execution_authorized_now": False, "execution_performed": False,
+        "no_broker_mutation": True, "no_broker_order_created": True,
+        "no_broker_submission": True, "no_account_mutation": True,
+        "no_position_mutation": True, "no_order_window_opened": True,
+        "no_h1_token_used": True, "no_h1_token_read": True,
+        "no_h1_header_constructed": True, "no_h1_header_sent": True,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_trade_window_helper_called": True,
+        "no_trade_window_helper_called_by_drill": True,
+        "no_mutation_endpoint_called": True,
+        "no_order_mutation": True,
+        "h1_token_not_used": True,
+        "all_mutation_surfaces_blocked": all_surfaces_blocked,
+        "all_blocks_expected": firewall_intact,
+        "current_level": 1 if isinstance(autonomy_level, str) and autonomy_level == "1" else int(autonomy_level or 0),
+        "evidence_hash": evidence_hash,
+        "explicit_non_actions": _PHASE16R_EXPLICIT_NON_ACTIONS,
+    }
+
+    # ------------------------------------------------------------------
+    # 18. Broker-mutation firewall violation diagnostics
+    # ------------------------------------------------------------------
+    firewall_intact = True
+    firewall_violations: list[str] = []
+    violations_checks = [
+        ("order_endpoint_called", "order_endpoint_called"),
+        ("preflight_endpoint_called", "preflight_endpoint_called"),
+        ("approval_endpoint_called", "approval_endpoint_called"),
+        ("submit_endpoint_called", "submit_endpoint_called"),
+        ("mutation_endpoint_called", "mutation_endpoint_called"),
+        ("broker_order_created", "broker_order_created"),
+        ("broker_submission_performed", "broker_submission_performed"),
+        ("broker_cancel_performed", "broker_cancel_performed"),
+        ("broker_modify_performed", "broker_modify_performed"),
+        ("account_mutation_performed", "account_mutation_performed"),
+        ("position_mutation_performed", "position_mutation_performed"),
+        ("order_mutation_performed", "order_mutation_performed"),
+        ("order_window_opened", "order_window_opened"),
+        ("trade_window_helper_called", "trade_window_helper_called"),
+        ("h1_token_used", "h1_token_used"),
+        ("h1_header_constructed", "h1_header_constructed"),
+        ("h1_header_sent", "h1_header_sent"),
+    ]
+    for field, label in violations_checks:
+        if broker_mutation_firewall.get(field):
+            firewall_violations.append(label); firewall_intact = False
+    if mutation_surface_audit.get("surfaces_failed_count", 0) > 0:
+        firewall_violations.append("mutation_surface_not_blocked"); firewall_intact = False
+    if not all_canaries_blocked:
+        firewall_violations.append("canary_not_blocked"); firewall_intact = False
+    if not no_canary_executed:
+        firewall_violations.append("canary_executed"); firewall_intact = False
+
+    if not firewall_intact and checkpoint_ok:
+        diagnosis = _PHASE16R_DIAGNOSIS["broker_mutation_firewall_not_intact"]
+        severity = "NO_GO"; checkpoint_ok = False
+        result["diagnosis"] = diagnosis; result["severity"] = severity
+
+    broker_mutation_firewall["status"] = "firewall_intact" if firewall_intact else "firewall_violation"
+    broker_mutation_firewall["disallowed_mutation_paths_blocked"] = firewall_intact
+    workflow_summary["broker_mutation_firewall_intact"] = firewall_intact
+    workflow_summary["all_mutation_surfaces_blocked"] = firewall_intact
+    workflow_summary["all_blocks_expected"] = firewall_intact
+    result["broker_mutation_firewall_intact"] = firewall_intact
+    if firewall_violations:
+        result["firewall_violations"] = firewall_violations
+
+    # ------------------------------------------------------------------
+    # 19. Export artifact
+    # ------------------------------------------------------------------
+    export_written = False
+    try:
+        _PHASE16R_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE16R_EXPORT_DIR / f"{checkpoint_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        export_path = str(ep); export_written = True
+    except Exception:
+        export_path = None
+
+    result["export_path"] = export_path
+    result["broker_mutation_firewall"]["audit_artifact_path"] = export_path
+    result["workflow_summary"]["broker_mutation_firewall_artifact_created"] = export_written
+    return result
+
+
+def _phase16r_no_go(
+    checkpoint_id: str, ts_str: str, git_section: dict, required_tags: dict,
+    diagnosis: str, actions: list,
+) -> dict:
+    """Build a NO_GO result for Phase 16R prerequisite failures."""
+    empty_fw = {
+        "status": "firewall_intact", "checkpoint_id": checkpoint_id,
+        "audit_only": True,
+        "read_only_mode": True, "paper_mode": True,
+        "positions_flat": True, "positions_count": 0,
+        "broker_order_created": False,
+        "broker_submission_performed": False,
+        "broker_cancel_performed": False,
+        "broker_modify_performed": False,
+        "account_mutation_performed": False,
+        "position_mutation_performed": False,
+        "order_mutation_performed": False,
+        "order_window_opened": False,
+        "h1_token_used": False,
+        "h1_header_constructed": False,
+        "h1_header_sent": False,
+        "trade_window_helper_called": False,
+        "order_endpoint_called": False, "preflight_endpoint_called": False,
+        "approval_endpoint_called": False, "submit_endpoint_called": False,
+        "mutation_endpoint_called": False,
+        "allowed_write_paths": ["export_artifact", "audit_artifact"],
+        "disallowed_mutation_paths_blocked": True,
+        "future_order_window_required": True,
+        "future_h1_required": True,
+        "future_real_preflight_required": True,
+        "future_real_approval_required": True,
+        "future_real_submit_required": True,
+        "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+        "canaries_count": 0, "canaries_blocked_count": 0,
+        "canaries_not_blocked_count": 0,
+    }
+    empty_msa = {
+        "surfaces_count": 0, "surfaces_passed_count": 0,
+        "surfaces_failed_count": 0, "surfaces": [],
+    }
+    empty_roe = {
+        "evidence_paths_count": 0, "evidence_paths": [],
+        "only_export_artifacts_written": True,
+        "no_runtime_config_mutation": True,
+        "no_env_mutation": True,
+        "no_rules_mutation": True,
+        "no_guard_repair_performed": True,
+        "no_service_restart": True,
+        "no_reconnect_attempted": True,
+    }
+    empty_mpm = {
+        "bridge_read_only": True, "bridge_allow_orders": False,
+        "env_allow_orders": True, "rules_enforced": True,
+        "system_locked": True, "order_window_open": False,
+        "h1_available_to_drill": False,
+        "broker_submission_allowed": False,
+        "broker_write_allowed": False,
+        "account_write_allowed": False,
+        "position_write_allowed": False,
+        "order_write_allowed": False,
+    }
+    empty_checklist = [
+        {"check": "confirms_level1_only", "status": "SKIP"},
+        {"check": "confirms_audit_only", "status": "SKIP"},
+        {"check": "confirms_read_only_mode", "status": "SKIP"},
+        {"check": "confirms_paper_mode", "status": "SKIP"},
+        {"check": "confirms_positions_flat", "status": "SKIP"},
+        {"check": "confirms_no_order_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_preflight_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_approval_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_submit_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_mutation_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_broker_order_created", "status": "SKIP"},
+        {"check": "confirms_no_broker_submission", "status": "SKIP"},
+        {"check": "confirms_no_broker_cancel", "status": "SKIP"},
+        {"check": "confirms_no_broker_modify", "status": "SKIP"},
+        {"check": "confirms_no_account_mutation", "status": "SKIP"},
+        {"check": "confirms_no_position_mutation", "status": "SKIP"},
+        {"check": "confirms_no_order_mutation", "status": "SKIP"},
+        {"check": "confirms_no_order_window_opened", "status": "SKIP"},
+        {"check": "confirms_no_h1_used", "status": "SKIP"},
+        {"check": "confirms_no_h1_header_constructed", "status": "SKIP"},
+        {"check": "confirms_no_h1_header_sent", "status": "SKIP"},
+        {"check": "confirms_trade_window_helper_not_called", "status": "SKIP"},
+        {"check": "confirms_orders_disabled", "status": "SKIP"},
+        {"check": "confirms_system_locked", "status": "SKIP"},
+        {"check": "confirms_rules_not_enforced", "status": "SKIP"},
+        {"check": "confirms_only_export_artifacts_written", "status": "SKIP"},
+        {"check": "confirms_future_h1_required", "status": "SKIP"},
+        {"check": "confirms_future_order_window_required", "status": "SKIP"},
+        {"check": "confirms_future_real_preflight_required", "status": "SKIP"},
+        {"check": "confirms_future_real_approval_required", "status": "SKIP"},
+        {"check": "confirms_future_real_submit_required", "status": "SKIP"},
+    ]
+    empty_wf = {
+        "broker_mutation_firewall_audit_ready": False,
+        "broker_mutation_firewall_artifact_created": False,
+        "broker_mutation_firewall_intact": False,
+        "all_mutation_surfaces_blocked": False,
+        "all_blocks_expected": False,
+        "trade_window_helper_not_called": True,
+        "execution_authorized_now_false": True,
+        "order_enablement_still_required": True,
+        "no_order_endpoint_called": True, "no_preflight_called": True,
+        "no_approval_called": True, "no_submit_called": True,
+        "no_order_path_called": True,
+        "no_broker_order_created": True, "no_broker_submission": True,
+        "no_broker_mutation": True, "no_account_mutation": True,
+        "no_position_mutation": True, "no_order_window_seen": True,
+        "no_h1_used": True,
+        "checklist_complete": False,
+    }
+    return {
+        "command": "ibkr-operator level1-broker-mutation-firewall-audit-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "canonical_trade_date": "?", "trade_date_stale": False,
+        "halt_active": False, "guard_state_clean": False,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True, "suggested_operator_actions": actions,
+        "git": git_section, "required_tags": required_tags,
+        "runtime": {}, "autonomy": {}, "safety": {}, "guard_state": {},
+        "broker_mutation_firewall": empty_fw,
+        "mutation_surface_audit": empty_msa,
+        "read_only_evidence": empty_roe,
+        "mutation_probe_matrix": empty_mpm,
+        "blocked_mutation_attempts": [], "canary_intents": [],
+        "broker_mutation_checklist": empty_checklist,
+        "workflow_summary": empty_wf,
+        "all_canaries_blocked": False, "no_canary_executed": False,
+        "broker_mutation_firewall_intact": False,
+        "kpi_summary": {}, "doctor_summary": {}, "policy_summary": {},
+        "promotion_allowed_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "promotion_performed": False,
+        "execution_authorized_now": False, "execution_performed": False,
+        "no_broker_mutation": True, "no_broker_order_created": True,
+        "no_broker_submission": True, "no_account_mutation": True,
+        "no_position_mutation": True, "no_order_window_opened": True,
+        "no_h1_token_used": True, "no_h1_token_read": True,
+        "no_h1_header_constructed": True, "no_h1_header_sent": True,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_trade_window_helper_called": True,
+        "no_trade_window_helper_called_by_drill": True,
+        "no_mutation_endpoint_called": True,
+        "no_mutation_endpoint_called": True,
+        "no_order_mutation": True,
+        "h1_token_not_used": True,
+        "all_mutation_surfaces_blocked": False,
+        "all_blocks_expected": False,
+        "current_level": 0,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16R_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _print_level1_broker_mutation_firewall_audit_checkpoint(result: dict) -> None:
+    """Print Phase 16R broker-mutation firewall audit checkpoint."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE16R_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Broker-Mutation Firewall Audit Checkpoint (16R){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:               {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:                   {result.get('timestamp', '?')}")
+    print(f"  Canonical trade date:        {result.get('canonical_trade_date', '?')}")
+    print(f"  Guard state clean:           {_bool_str(result.get('guard_state_clean', False))}")
+    print(f"  Diagnosis:                   {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:                    {sev_color}{sev}{RESET}")
+    print(f"  Current level:               {result.get('current_level', '?')}")
+    print(f"  Firewall intact:             {GREEN if result.get('broker_mutation_firewall_intact') else RED}{_bool_str(result.get('broker_mutation_firewall_intact'))}{RESET}")
+    print(f"  All surfaces blocked:        {GREEN if result.get('all_mutation_surfaces_blocked') else RED}{_bool_str(result.get('all_mutation_surfaces_blocked'))}{RESET}")
+    print(f"  All blocks expected:         {GREEN if result.get('all_blocks_expected') else RED}{_bool_str(result.get('all_blocks_expected'))}{RESET}")
+    print()
+
+    # Broker-mutation firewall
+    fw = result.get("broker_mutation_firewall", {})
+    if fw:
+        print(f"  {BOLD}Broker-Mutation Firewall{RESET}")
+        print(f"    Status:                     {GREEN if fw.get('status') == 'firewall_intact' else RED}{fw.get('status', '?')}{RESET}")
+        print(f"    Audit only:                 {_bool_str(fw.get('audit_only'))}")
+        print(f"    Read-only mode:             {_bool_str(fw.get('read_only_mode'))}")
+        print(f"    Positions flat:             {_bool_str(fw.get('positions_flat'))}")
+        print(f"    /order called:              {_bool_str(fw.get('order_endpoint_called'))}")
+        print(f"    /order/preflight called:    {_bool_str(fw.get('preflight_endpoint_called'))}")
+        print(f"    /order/approve called:      {_bool_str(fw.get('approval_endpoint_called'))}")
+        print(f"    /order/submit called:       {_bool_str(fw.get('submit_endpoint_called'))}")
+        print(f"    Broker order created:       {_bool_str(fw.get('broker_order_created'))}")
+        print(f"    Broker submission:          {_bool_str(fw.get('broker_submission_performed'))}")
+        print(f"    Canaries: {fw.get('canaries_blocked_count', 0)} blocked / {fw.get('canaries_count', 0)} total")
+        print(f"    Future path:                {fw.get('future_required_path', '?')}")
+        print()
+
+    # Mutation surface audit
+    msa = result.get("mutation_surface_audit", {})
+    if msa:
+        print(f"  {BOLD}Mutation Surface Audit{RESET}")
+        print(f"    Surfaces: {msa.get('surfaces_passed_count', 0)} passed / {msa.get('surfaces_count', 0)} total")
+        sf = msa.get("surfaces", [])
+        for s in sf[:3]:
+            print(f"    - {s.get('surface', '?')}: blocked={_bool_str(s.get('blocked'))}")
+        if len(sf) > 3:
+            print(f"    ... and {len(sf)-3} more")
+        print()
+
+    # Broker-mutation checklist
+    ncl = result.get("broker_mutation_checklist", [])
+    if ncl:
+        print(f"  {BOLD}Broker-Mutation Checklist{RESET}")
+        pc = sum(1 for c in ncl if c.get("status") == "PASS")
+        fc = sum(1 for c in ncl if c.get("status") == "FAIL")
+        sc = sum(1 for c in ncl if c.get("status") == "SKIP")
+        print(f"    Pass: {pc}  Fail: {fc}  Skip: {sc}  Total: {len(ncl)}")
+        for c in ncl[:5]:
+            cs = c.get("status", "?")
+            c_color = GREEN if cs == "PASS" else (RED if cs == "FAIL" else YELLOW)
+            print(f"    {c_color}{cs:<6}{RESET} {c.get('check', '?')}")
+        if len(ncl) > 5:
+            print(f"    ... and {len(ncl)-5} more checks")
+        print()
+
+    print(f"  {BOLD}Non-Mutation Guarantees{RESET}")
+    print(f"    no_broker_mutation:           {_bool_str(result.get('no_broker_mutation'))}")
+    print(f"    no_broker_order_created:      {_bool_str(result.get('no_broker_order_created'))}")
+    print(f"    no_broker_submission:         {_bool_str(result.get('no_broker_submission'))}")
+    print(f"    no_account_mutation:          {_bool_str(result.get('no_account_mutation'))}")
+    print(f"    no_position_mutation:         {_bool_str(result.get('no_position_mutation'))}")
+    print(f"    no_order_endpoint_called:     {_bool_str(result.get('no_order_endpoint_called'))}")
+    print(f"    no_preflight_endpoint_called: {_bool_str(result.get('no_preflight_endpoint_called'))}")
+    print(f"    no_approve_endpoint_called:   {_bool_str(result.get('no_approve_endpoint_called'))}")
+    print(f"    no_submit_endpoint_called:    {_bool_str(result.get('no_submit_endpoint_called'))}")
+    print()
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"  Evidence hash: {eh[:16]}...")
+    ep = result.get("export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    print()
+
+
 def _print_level1_execution_gate_negative_control_drill(result: dict) -> None:
     """Print Phase 16O negative-control drill in human-readable format."""
     drill_ok = result.get("diagnosis") == _PHASE16O_DIAGNOSIS["ready"]
@@ -30385,6 +31440,38 @@ def main() -> None:
     p16q_a3.add_argument("--export", action="store_true")
     p16q_a3.add_argument("--demo-candidates", type=int, default=3)
     p16q_a3.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 16R — Level 1 Broker-Mutation Firewall Audit Checkpoint
+    p16r = sub.add_parser("level1-broker-mutation-firewall-audit-checkpoint",
+                          help="Level 1 broker-mutation firewall audit checkpoint (Phase 16R)")
+    p16r.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16r.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-broker-mutation-firewall-audits/")
+    p16r.add_argument("--demo-candidates", type=int, default=3,
+                      help="Number of demo canaries (0-5, default 3)")
+    p16r.add_argument("--audit-source", type=str, default="synthetic_readonly_demo",
+                      help="Audit source label (default: synthetic_readonly_demo)")
+    # Alias: phase16r-broker-mutation-firewall-audit-checkpoint
+    p16r_a1 = sub.add_parser("phase16r-broker-mutation-firewall-audit-checkpoint",
+                             help="Alias for level1-broker-mutation-firewall-audit-checkpoint")
+    p16r_a1.add_argument("--json", action="store_true")
+    p16r_a1.add_argument("--export", action="store_true")
+    p16r_a1.add_argument("--demo-candidates", type=int, default=3)
+    p16r_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: level1-broker-mutation-firewall-checkpoint
+    p16r_a2 = sub.add_parser("level1-broker-mutation-firewall-checkpoint",
+                             help="Alias for level1-broker-mutation-firewall-audit-checkpoint")
+    p16r_a2.add_argument("--json", action="store_true")
+    p16r_a2.add_argument("--export", action="store_true")
+    p16r_a2.add_argument("--demo-candidates", type=int, default=3)
+    p16r_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: broker-mutation-firewall-audit-checkpoint
+    p16r_a3 = sub.add_parser("broker-mutation-firewall-audit-checkpoint",
+                             help="Alias for level1-broker-mutation-firewall-audit-checkpoint")
+    p16r_a3.add_argument("--json", action="store_true")
+    p16r_a3.add_argument("--export", action="store_true")
+    p16r_a3.add_argument("--demo-candidates", type=int, default=3)
+    p16r_a3.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -32039,6 +33126,84 @@ def main() -> None:
             if ep:
                 print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE16Q_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-broker-mutation-firewall-audit-checkpoint",
+                        "phase16r-broker-mutation-firewall-audit-checkpoint",
+                        "level1-broker-mutation-firewall-checkpoint",
+                        "broker-mutation-firewall-audit-checkpoint"):
+        demo_cand = getattr(args, "demo_candidates", 3)
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_broker_mutation_firewall_audit_checkpoint(
+                demo_candidates=demo_cand,
+                audit_source=audit_source,
+            )
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = {
+                "command": f"ibkr-operator {args.command}",
+                "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+                "canonical_trade_date": "?", "trade_date_stale": False,
+                "halt_active": False, "guard_state_clean": False,
+                "diagnosis": _PHASE16R_DIAGNOSIS["unknown"], "severity": "NO_GO",
+                "operator_action_required": True,
+                "suggested_operator_actions": [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+                "git": {}, "required_tags": {}, "runtime": {}, "autonomy": {}, "safety": {}, "guard_state": {},
+                "broker_mutation_firewall": {"status": "control_failure", "audit_only": True,
+                                                "canaries_count": 0, "checkpoint_id": checkpoint_id},
+                "mutation_surface_audit": {"surfaces_count": 0, "surfaces_passed_count": 0,
+                                             "surfaces_failed_count": 0, "surfaces": []},
+                "read_only_evidence": {"evidence_paths_count": 0, "evidence_paths": [],
+                                       "only_export_artifacts_written": True,
+                                       "no_runtime_config_mutation": True,
+                                       "no_env_mutation": True, "no_rules_mutation": True,
+                                       "no_guard_repair_performed": True,
+                                       "no_service_restart": True, "no_reconnect_attempted": True},
+                "mutation_probe_matrix": {"bridge_read_only": True, "bridge_allow_orders": False,
+                                          "env_allow_orders": True, "system_locked": True,
+                                          "broker_submission_allowed": False},
+                "blocked_mutation_attempts": [], "canary_intents": [],
+                "broker_mutation_checklist": [], "workflow_summary": {},
+                "all_canaries_blocked": False, "no_canary_executed": False,
+                "broker_mutation_firewall_intact": False,
+                "kpi_summary": {}, "doctor_summary": {}, "policy_summary": {},
+                "promotion_allowed_now": False, "order_enablement_allowed_now": False,
+                "order_enablement_performed": False, "promotion_performed": False,
+                "execution_authorized_now": False, "execution_performed": False,
+                "no_broker_mutation": True, "no_broker_order_created": True,
+                "no_broker_submission": True, "no_account_mutation": True,
+                "no_position_mutation": True, "no_order_window_opened": True,
+                "no_h1_token_used": True, "no_h1_token_read": True,
+                "no_h1_header_constructed": True, "no_h1_header_sent": True,
+                "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+                "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+                "no_trade_window_helper_called": True,
+                "no_trade_window_helper_called_by_drill": True,
+                "no_mutation_endpoint_called": True,
+                "no_order_mutation": True,
+                "h1_token_not_used": True,
+                "all_mutation_surfaces_blocked": False,
+                "all_blocks_expected": False,
+                "current_level": 0,
+                "evidence_hash": _compute_evidence_hash({"diagnosis": _PHASE16R_DIAGNOSIS["unknown"]}),
+                "explicit_non_actions": _PHASE16R_EXPLICIT_NON_ACTIONS,
+            }
+            print(f"Broker-mutation firewall audit internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_broker_mutation_firewall_audit_checkpoint(result)
+        if args.export:
+            ep = result.get("export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE16R_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

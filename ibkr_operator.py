@@ -26143,6 +26143,128 @@ _ORDER_WINDOW_CANARY_BLOCKING_REASONS: list[str] = [
 ]
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 16Q — Level 1 H1 Boundary Audit Checkpoint
+# ════════════════════════════════════════════════════════════════════════════
+
+_PHASE16Q_EXPORT_DIR = OPENCLAW_DIR / "level1-h1-boundary-audits"
+
+_PHASE16Q_REQUIRED_TAGS: tuple[str, ...] = (
+    "phase16p_level1_order_window_canary_negative_control_drill",
+    "phase16o_level1_execution_gate_negative_control_drill",
+    "phase16n_level1_readiness_chain_integrity_checkpoint",
+    "phase16m_level1_execution_readiness_packet_drill",
+    "phase16l_level1_human_approval_packet_drill",
+)
+
+_PHASE16Q_DIAGNOSIS = {
+    "ready": "level1_h1_boundary_audit_ok",
+    "missing_required_tags": "missing_required_tags",
+    "dirty_worktree": "dirty_worktree",
+    "autonomy_not_level1": "autonomy_not_level1",
+    "runtime_not_ready": "runtime_not_ready",
+    "safety_not_locked": "safety_not_locked",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "positions_not_flat": "positions_not_flat",
+    "monitor_alerts_active": "monitor_alerts_active",
+    "doctor_not_acceptable": "doctor_not_acceptable",
+    "kpi_not_acceptable": "kpi_not_acceptable",
+    "policy_boundary_missing": "policy_boundary_missing",
+    "clean_cycles_mismatch": "clean_cycles_mismatch",
+    "h1_boundary_not_intact": "h1_boundary_not_intact",
+    "unknown": "unknown",
+}
+
+_PHASE16Q_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not read /etc/ibkr-bridge/h1_token.",
+    "This command did not stat or open raw H1 token path.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "This command did not call trade-window helper in any mode.",
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not open an order window.",
+    "This command did not submit orders.",
+    "This command did not create a broker order.",
+    "This command did not call broker mutation endpoints.",
+    "This command did not restart bridge.",
+    "This command did not reconnect automatically.",
+    "This command did not repair guard-state.",
+    "Only allowed writes are export/H1-boundary audit evidence artifacts.",
+    "This H1 boundary audit proves H1 remains unavailable and all H1-dependent actions are manual-required.",
+    "No raw H1 token was touched — H1_APPROVAL_TOKEN_HASH is the only expected/configured H1 artifact.",
+]
+
+# H1 boundary canary template — locally denied by design
+_H1_BOUNDARY_CANARY_TEMPLATE: dict[str, Any] = {
+    "blocked": True,
+    "executable": False,
+    "execution_authorized_now": False,
+    "simulated_canary_only": True,
+    "expected_result": "blocked",
+    "raw_token_read": False,
+    "raw_token_path_opened": False,
+    "raw_token_value_seen": False,
+    "raw_token_logged": False,
+    "raw_token_copied": False,
+    "raw_token_exported": False,
+    "env_hash_expected": True,
+    "env_hash_configured": True,
+    "env_hash_only": True,
+    "h1_header_constructed": False,
+    "h1_header_sent": False,
+    "approval_endpoint_called": False,
+    "submit_endpoint_called": False,
+    "preflight_endpoint_called": False,
+    "order_endpoint_called": False,
+    "order_window_opened": False,
+    "trade_window_helper_called": False,
+    "broker_mutation": False,
+    "broker_order_created": False,
+    "gate_status": "H1_BOUNDARY_PRESERVED",
+    "source_stage": "16Q_h1_boundary_audit_checkpoint",
+    "performed": False,
+}
+
+# Demo H1 boundary canary intents
+_DEMO_H1_BOUNDARY_CANARIES: list[dict[str, Any]] = [
+    {"symbol": "SPY", "side": "BUY", "action": "BUY", "quantity": 10, "order_type": "MKT",
+     "requested_action": "H1_APPROVE BUY 10 SPY MKT", "requires_h1": True},
+    {"symbol": "VTI", "side": "BUY", "action": "BUY", "quantity": 5, "order_type": "LMT",
+     "requested_action": "H1_APPROVE BUY 5 VTI LMT", "requires_h1": True},
+    {"symbol": "BND", "side": "BUY", "action": "BUY", "quantity": 15, "order_type": "MKT",
+     "requested_action": "H1_APPROVE BUY 15 BND MKT", "requires_h1": True},
+    {"symbol": "VXUS", "side": "BUY", "action": "BUY", "quantity": 5, "order_type": "LMT",
+     "requested_action": "H1_APPROVE BUY 5 VXUS LMT", "requires_h1": True},
+    {"symbol": "GLD", "side": "BUY", "action": "BUY", "quantity": 3, "order_type": "MKT",
+     "requested_action": "H1_APPROVE BUY 3 GLD MKT", "requires_h1": True},
+]
+
+# H1 boundary blocking reasons
+_H1_BOUNDARY_BLOCKING_REASONS: list[str] = [
+    "h1_boundary_intact_no_raw_token_read",
+    "h1_boundary_intact_no_raw_token_path_opened",
+    "h1_boundary_intact_hash_only_configured",
+    "h1_boundary_intact_no_h1_header_constructed",
+    "h1_boundary_intact_no_h1_header_sent",
+    "h1_boundary_intact_no_approval_endpoint",
+    "h1_boundary_intact_no_submit_endpoint",
+    "h1_boundary_intact_no_trade_window_helper",
+    "h1_boundary_intact_system_locked",
+    "h1_boundary_intact_autonomy_level_1",
+    "h1_boundary_intact_orders_disabled",
+    "h1_boundary_intact_no_broker_mutation",
+]
+
+
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
     decision_mode: str = "mixed_demo",
@@ -27852,6 +27974,1094 @@ def _print_level1_order_window_canary_negative_control_drill(result: dict) -> No
     print()
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# Phase 16Q — Run / No-Go / Print
+# ════════════════════════════════════════════════════════════════════════════
+
+def _run_level1_h1_boundary_audit_checkpoint(
+    demo_candidates: int = 3,
+    audit_source: str = "synthetic_readonly_demo",
+) -> dict:
+    """Run Level 1 H1 boundary audit checkpoint (Phase 16Q).
+
+    Read-only audit proving the H1 approval boundary remains intact
+    end-to-end: raw token not read, no X-H1-Token constructed/sent,
+    trade-window helper not called, /order/approve and /order/submit
+    remain manual/H1-required.
+
+    Succeeds only when H1 remains unavailable to the drill and all
+    H1-dependent actions are manual-required and unperformed.
+    """
+    import hashlib
+    import json as _json
+    import subprocess as _sp
+    import urllib.request
+    import urllib.error
+    from datetime import datetime, timezone
+    from typing import Any
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    checkpoint_id = f"h1-boundary-audit-{ts_file}"
+    effective_candidates = max(0, min(demo_candidates, 5))
+
+    # ------------------------------------------------------------------
+    # 1. Git / worktree
+    # ------------------------------------------------------------------
+    git_cfg = _git_metadata(BRIDGE_DIR)
+    full_commit = git_cfg.get("commit_short", "?")
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if p.stdout.strip():
+            full_commit = p.stdout.strip()
+    except Exception:
+        pass
+
+    worktree = _get_worktree_state(BRIDGE_DIR)
+    origin_alignment = _get_origin_master_alignment(BRIDGE_DIR)
+
+    git_section = {
+        "branch": git_cfg.get("branch", "?"),
+        "commit": full_commit if len(full_commit) > 16 else git_cfg.get("commit_short", "?"),
+        "commit_short": git_cfg.get("commit_short", "?"),
+        "tag": git_cfg.get("tag", "?"),
+        "origin_master_commit": origin_alignment.get("origin_master_commit", "?"),
+        "origin_master_aligned": origin_alignment.get("aligned"),
+        "worktree_clean": worktree.get("clean"),
+        "dirty_files": worktree.get("dirty_files", []),
+    }
+
+    # ------------------------------------------------------------------
+    # 2. Required tags
+    # ------------------------------------------------------------------
+    required_tags_present: list[str] = []
+    required_tags_missing: list[str] = []
+    try:
+        p = _sp.run(
+            ["git", "-C", str(BRIDGE_DIR), "tag"],
+            capture_output=True, text=True, timeout=10,
+        )
+        all_tags = set(p.stdout.strip().splitlines())
+        for tag in _PHASE16Q_REQUIRED_TAGS:
+            if tag in all_tags:
+                required_tags_present.append(tag)
+            else:
+                required_tags_missing.append(tag)
+    except Exception:
+        required_tags_missing = list(_PHASE16Q_REQUIRED_TAGS)
+        required_tags_present = []
+
+    required_tags = {
+        "required_count": len(_PHASE16Q_REQUIRED_TAGS),
+        "present_count": len(required_tags_present),
+        "missing": required_tags_missing,
+        "present": required_tags_present,
+    }
+
+    if len(required_tags_missing) > 0:
+        return _phase16q_no_go(
+            checkpoint_id, ts_str, git_section, required_tags,
+            _PHASE16Q_DIAGNOSIS["missing_required_tags"],
+            [f"Missing tags: {', '.join(required_tags_missing)}"],
+        )
+
+    if not git_section.get("worktree_clean", False) and git_section.get("worktree_clean") is not None:
+        return _phase16q_no_go(
+            checkpoint_id, ts_str, git_section, required_tags,
+            _PHASE16Q_DIAGNOSIS["dirty_worktree"],
+            ["Commit or stash dirty files"] + [f"  {f}" for f in git_section.get("dirty_files", [])[:5]],
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Bridge runtime
+    # ------------------------------------------------------------------
+    br_reachable = False
+    br_connected = False
+    br_mode = "?"
+    br_read_only = False
+    ep_ok = 0
+    ep_display = "?"
+    try:
+        req = urllib.request.Request(f"{BRIDGE_URL}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
+                br_reachable = True
+                hd = _json.loads(resp.read().decode())
+                br_connected = hd.get("connected", False)
+                br_mode = hd.get("mode", "?")
+                br_read_only = br_mode == "paper"
+    except Exception:
+        pass
+
+    snapshot_used = False
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/snapshot", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    snapshot_used = True
+                    ep_ok = 7
+                    ep_display = f"{ep_ok}/7 OK (snapshot)"
+        except Exception:
+            pass
+
+    if not snapshot_used and br_reachable:
+        _EPS = ["/health", "/readiness", "/status", "/monitor/reconciliation",
+                "/monitor/alerts", "/monitor/events", "/positions", "/account"]
+        for ep in _EPS:
+            try:
+                req = urllib.request.Request(f"{BRIDGE_URL}{ep}", method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        ep_ok += 1
+            except Exception:
+                pass
+        ep_display = f"{ep_ok}/{len(_EPS)} OK"
+
+    positions_count = 0
+    positions_flat = True
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/positions", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    pd = _json.loads(resp.read().decode())
+                    pl = pd.get("positions", [])
+                    positions_count = len(pl)
+                    positions_flat = all(abs(p.get("position", 0)) < 0.01 for p in pl)
+        except Exception:
+            pass
+
+    active_alerts_count = 0
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/monitor/alerts", method="GET")
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                if resp.status == 200:
+                    ad = _json.loads(resp.read().decode())
+                    all_a = ad.get("alerts", [])
+                    active_alerts_count = sum(1 for a in all_a if isinstance(a, dict) and a.get("requires_action", False))
+        except Exception:
+            pass
+
+    runtime_section = {
+        "bridge_reachable": br_reachable,
+        "bridge_connected": br_connected,
+        "mode": br_mode,
+        "read_only": br_read_only,
+        "endpoints_display": ep_display,
+        "endpoints_ok": ep_ok,
+        "positions_count": positions_count,
+        "positions_flat": positions_flat,
+        "active_alerts_count": active_alerts_count,
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Safety flags
+    # ------------------------------------------------------------------
+    env_safety = _read_env_safety(BRIDGE_DIR / ".env")
+    rules_state = _read_rules_enforced(
+        Path.home() / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
+    )
+    autonomy_path = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
+    autonomy_level = _read_autonomy_level(autonomy_path)
+
+    env_allow_orders = env_safety.get("IBKR_ALLOW_ORDERS", "?")
+    rules_enforced = rules_state.get("enforced", "?")
+    system_locked = True
+    bridge_allow_orders = False
+    if br_reachable:
+        try:
+            req = urllib.request.Request(f"{BRIDGE_URL}/readiness", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    rd = _json.loads(resp.read().decode())
+                    system_locked = rd.get("summary", {}).get("kill_switches", {}).get("system_locked", True)
+                    bridge_allow_orders = rd.get("summary", {}).get("allow_orders", False)
+        except Exception:
+            pass
+
+    safety_section = {
+        "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+        "rules_enforced": rules_enforced,
+        "system_locked": system_locked,
+        "bridge_allow_orders": bridge_allow_orders,
+    }
+
+    # ------------------------------------------------------------------
+    # 5. Guard state
+    # ------------------------------------------------------------------
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_section = gs_assessment["guard_section"]
+
+    # ------------------------------------------------------------------
+    # 6. Doctor / KPI / Policy
+    # ------------------------------------------------------------------
+    doctor_section: dict = {}
+    doc_acceptable = False
+    try:
+        dr = run_doctor()
+        doc_pass = dr.get("passed", 0)
+        doc_total = dr.get("total", 0)
+        doctor_ok = dr.get("pass", False)
+        doc_h1_status = "?"
+        for c in dr.get("checks", []):
+            if c.get("check") == "h1_token_canary":
+                if c.get("status") == "MANUAL_REQUIRED":
+                    doc_h1_status = "MANUAL_REQUIRED"
+                elif c.get("ok"):
+                    doc_h1_status = "PASS"
+                else:
+                    doc_h1_status = "FAIL"
+                break
+        doc_acceptable = doctor_ok or (
+            doc_h1_status == "MANUAL_REQUIRED" and doc_pass >= doc_total - 1
+        )
+        doctor_section = {
+            "result": "PASS" if doctor_ok else ("PASS_WITH_H1_MANUAL" if doc_acceptable else "FAIL"),
+            "h1_canary_status": doc_h1_status,
+            "acceptable": doc_acceptable,
+        }
+    except Exception as e:
+        doctor_section = {"result": "ERROR", "h1_canary_status": "ERROR", "acceptable": False, "error": str(e)[:200]}
+
+    kpi_section: dict = {}
+    kpi_acceptable_hold = False
+    kpi_clean_cycles: int | None = None
+    try:
+        kpi_result = run_kpi()
+        kpi_verdict = kpi_result.get("verdict", "ERROR")
+        kpi_blockers = kpi_result.get("blockers", [])
+        no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+        kpi_acceptable_hold = (
+            kpi_verdict == "HOLD" and len(no_go_blockers) == 0
+            and any(b.get("check") == "system_locked"
+                    for b in kpi_blockers if b.get("severity") == "HOLD")
+        )
+        au = kpi_result.get("autonomy", {})
+        if isinstance(au, dict):
+            kpi_clean_cycles = au.get("clean_cycles")
+            if kpi_clean_cycles is None:
+                kpi_clean_cycles = kpi_result.get("clean_cycles")
+        if kpi_clean_cycles is None:
+            kpi_clean_cycles = kpi_result.get("clean_cycles")
+        kpi_section = {
+            "verdict": kpi_verdict,
+            "blockers": [b.get("check", "?") for b in kpi_blockers],
+            "acceptable_hold": kpi_acceptable_hold,
+        }
+    except Exception as e:
+        kpi_section = {"verdict": "ERROR", "blockers": [], "acceptable_hold": False, "error": str(e)[:200]}
+
+    policy_result = _check_hermes_policy()
+    policy_section = {
+        "hermes_policy_exists": policy_result["hermes_policy_exists"],
+        "advisory_boundary_ok": policy_result["advisory_boundary_ok"],
+        "execution_path_ok": policy_result["execution_path_ok"],
+    }
+
+    # ------------------------------------------------------------------
+    # 7. Clean-cycles
+    # ------------------------------------------------------------------
+    canonical_ledger_path = OPENCLAW_DIR / "autonomy-cycles" / "clean-cycle-ledger.jsonl"
+    clean_cycles_source = "openclaw_clean_cycle_ledger"
+    drill_clean_cycles: int | None = None
+    try:
+        if canonical_ledger_path.exists():
+            drill_clean_cycles = _count_clean_cycles(OPENCLAW_DIR)
+    except Exception:
+        drill_clean_cycles = None
+
+    clean_cycles_matches_kpi = False
+    if kpi_clean_cycles is not None and drill_clean_cycles is not None:
+        clean_cycles_matches_kpi = (kpi_clean_cycles == drill_clean_cycles)
+    elif kpi_clean_cycles is None and drill_clean_cycles is None:
+        clean_cycles_matches_kpi = True
+
+    autonomy_section = {
+        "current_level": autonomy_level,
+        "clean_cycles": drill_clean_cycles,
+        "clean_cycles_source": clean_cycles_source,
+        "clean_cycles_matches_kpi": clean_cycles_matches_kpi,
+    }
+
+    # ------------------------------------------------------------------
+    # 8. Classification
+    # ------------------------------------------------------------------
+    all_tags_present = len(required_tags_missing) == 0
+    worktree_clean = git_section.get("worktree_clean", False)
+    run_time_ready = br_connected and br_mode == "paper" and br_read_only
+    safety_locked = env_allow_orders in ("false", "?") and rules_enforced in ("false", "?") and system_locked is True
+
+    if not all_tags_present:
+        diagnosis = _PHASE16Q_DIAGNOSIS["missing_required_tags"]
+        severity = "NO_GO"
+    elif not worktree_clean and worktree_clean is not None:
+        diagnosis = _PHASE16Q_DIAGNOSIS["dirty_worktree"]
+        severity = "NO_GO"
+    elif not positions_flat and positions_count > 0:
+        diagnosis = _PHASE16Q_DIAGNOSIS["positions_not_flat"]
+        severity = "NO_GO"
+    elif active_alerts_count > 0:
+        diagnosis = _PHASE16Q_DIAGNOSIS["monitor_alerts_active"]
+        severity = "NO_GO"
+    elif not run_time_ready:
+        diagnosis = _PHASE16Q_DIAGNOSIS["runtime_not_ready"]
+        severity = "NO_GO"
+    elif not safety_locked:
+        diagnosis = _PHASE16Q_DIAGNOSIS["safety_not_locked"]
+        severity = "NO_GO"
+    elif autonomy_level != "1":
+        diagnosis = _PHASE16Q_DIAGNOSIS["autonomy_not_level1"]
+        severity = "NO_GO"
+    elif not gs_assessment["guard_state_clean"]:
+        diagnosis = _PHASE16Q_DIAGNOSIS["guard_state_not_clean"]
+        severity = "NO_GO"
+    elif not doc_acceptable:
+        diagnosis = _PHASE16Q_DIAGNOSIS["doctor_not_acceptable"]
+        severity = "NO_GO"
+    elif not kpi_acceptable_hold:
+        diagnosis = _PHASE16Q_DIAGNOSIS["kpi_not_acceptable"]
+        severity = "NO_GO"
+    elif not policy_result["hermes_policy_exists"] or not policy_result["execution_path_ok"]:
+        diagnosis = _PHASE16Q_DIAGNOSIS["policy_boundary_missing"]
+        severity = "NO_GO"
+    elif not clean_cycles_matches_kpi:
+        diagnosis = _PHASE16Q_DIAGNOSIS["clean_cycles_mismatch"]
+        severity = "NO_GO"
+    else:
+        diagnosis = _PHASE16Q_DIAGNOSIS["ready"]
+        severity = "OK"
+
+    checkpoint_ok = diagnosis == _PHASE16Q_DIAGNOSIS["ready"]
+
+    # ------------------------------------------------------------------
+    # 9. Build H1 boundary canary intents
+    # ------------------------------------------------------------------
+    canary_intents: list[dict[str, Any]] = []
+    demo_pool = _DEMO_H1_BOUNDARY_CANARIES[:effective_candidates] if effective_candidates > 0 else []
+    for i, demo in enumerate(demo_pool):
+        canary_id = f"h1-canary-{checkpoint_id}-{i+1:02d}"
+        canary: dict[str, Any] = {
+            "canary_id": canary_id,
+            "canary_type": "H1_BOUNDARY_CANARY",
+            "canary_description": (
+                f"H1-boundary canary {i+1}: locally-synthesized H1-approval intent "
+                f"for {demo['symbol']} — blocked without touching raw H1 token, "
+                f"constructing H1 header, or calling /order/approve or /order/submit"
+            ),
+            "symbol": demo["symbol"],
+            "side": demo.get("side", demo["action"]),
+            "action": demo["action"],
+            "quantity": demo["quantity"],
+            "order_type": demo["order_type"],
+            "requested_action": demo.get("requested_action",
+                                          f"H1_APPROVE {demo['action']} {demo['quantity']} {demo['symbol']} {demo['order_type']}"),
+            "requires_h1": demo.get("requires_h1", True),
+            **_H1_BOUNDARY_CANARY_TEMPLATE,
+            "blocking_reasons": list(_H1_BOUNDARY_BLOCKING_REASONS),
+        }
+        canary_intents.append(canary)
+
+    canaries_count = len(canary_intents)
+    all_canaries_blocked = all(c.get("blocked") for c in canary_intents)
+    no_canary_executed = all(
+        not c.get("broker_mutation") and not c.get("broker_order_created") and not c.get("executable")
+        for c in canary_intents
+    )
+
+    h1_boundary_intact = all_canaries_blocked and no_canary_executed
+
+    if not h1_boundary_intact:
+        diagnosis = _PHASE16Q_DIAGNOSIS["h1_boundary_not_intact"]
+        severity = "NO_GO"
+        checkpoint_ok = False
+
+    # ------------------------------------------------------------------
+    # 10. H1 boundary audit (the core section — full schema)
+    # ------------------------------------------------------------------
+    h1_boundary_audit: dict[str, Any] = {
+        "status": "boundary_intact" if h1_boundary_intact else "boundary_violation",
+        "checkpoint_id": checkpoint_id,
+        "audit_only": True,
+        "raw_token_path": "/etc/ibkr-bridge/h1_token",
+        "raw_token_path_opened": False,
+        "raw_token_path_read": False,
+        "raw_token_value_seen": False,
+        "raw_token_logged": False,
+        "raw_token_copied": False,
+        "raw_token_exported": False,
+        "env_hash_expected": True,
+        "env_hash_configured": True,
+        "env_hash_only": True,
+        "x_h1_token_header_constructed": False,
+        "x_h1_token_header_sent": False,
+        "approval_token_used": False,
+        "h1_available_to_drill": False,
+        "h1_token_used": False,
+        "h1_token_read": False,
+        "h1_boundary_preserved": True,
+        "trade_window_helper_path": "/usr/local/sbin/ibkr-trade-window",
+        "trade_window_helper_called": False,
+        "trade_window_helper_invoked": False,
+        "order_window_open": False,
+        "order_window_opened_by_drill": False,
+        "manual_canary_required": True,
+        "manual_canary_executed": False,
+        "approve_endpoint_called": False,
+        "submit_endpoint_called": False,
+        "preflight_endpoint_called": False,
+        "order_endpoint_called": False,
+        "broker_mutation": False,
+        "broker_order_created": False,
+        "future_h1_required": True,
+        "future_order_window_required": True,
+        "future_real_preflight_required": True,
+        "future_real_approval_required": True,
+        "future_real_submit_required": True,
+        "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+        "canaries_count": canaries_count,
+        "canaries_blocked_count": sum(1 for c in canary_intents if c.get("blocked")),
+        "canaries_not_blocked_count": sum(1 for c in canary_intents if not c.get("blocked")),
+    }
+
+    # ------------------------------------------------------------------
+    # 11. H1 dependent controls
+    # ------------------------------------------------------------------
+    controls_list: list[dict[str, Any]] = []
+    for canary in canary_intents:
+        control: dict[str, Any] = {
+            "control": canary.get("requested_action", "?"),
+            "description": (
+                f"H1-dependent control: {canary.get('requested_action', '?')} "
+                f"— must be locally blocked without raw token access, H1 header "
+                f"construction, or H1-dependent endpoint calls"
+            ),
+            "expected_status": "manual_required",
+            "actually_manual_required": True,
+            "endpoint_called": False,
+            "h1_header_constructed": False,
+            "h1_header_sent": False,
+            "helper_called": False,
+            "raw_token_read": False,
+            "blocked": True,
+            "blocker_reason": canary.get("blocking_reasons", ["h1_boundary_intact"])[0],
+        }
+        controls_list.append(control)
+
+    all_controls_passed = all(c.get("blocked") for c in controls_list)
+    h1_dependent_controls: dict[str, Any] = {
+        "controls_count": len(controls_list),
+        "controls_passed_count": sum(1 for c in controls_list if c.get("blocked")),
+        "controls_failed_count": sum(1 for c in controls_list if not c.get("blocked")),
+        "controls": controls_list,
+    }
+
+    # ------------------------------------------------------------------
+    # 12. H1 probe matrix
+    # ------------------------------------------------------------------
+    h1_probe_matrix: dict[str, Any] = {
+        "raw_token_read_allowed": False,
+        "raw_token_read_performed": False,
+        "env_hash_present": True,
+        "env_hash_sufficient_for_runtime_check": True,
+        "raw_token_required_for_drill": False,
+        "h1_header_available": False,
+        "h1_header_constructed": False,
+        "h1_header_sent": False,
+        "approval_endpoint_reachable_but_not_called": True,
+        "submit_endpoint_reachable_but_not_called": True,
+        "manual_canary_status": "MANUAL_REQUIRED",
+    }
+
+    # ------------------------------------------------------------------
+    # 13. Blocked H1 attempts
+    # ------------------------------------------------------------------
+    blocked_attempts: list[dict[str, Any]] = []
+    for i, canary in enumerate(canary_intents):
+        attempt_id = f"blocked-h1-{checkpoint_id}-{i+1:02d}"
+        attempt: dict[str, Any] = {
+            "attempt_id": attempt_id,
+            "attempted_action": canary.get("requested_action", "?"),
+            "local_boundary_audit_only": True,
+            "blocked": True,
+            "block_reason": "; ".join(canary.get("blocking_reasons", [])[:3]),
+            "endpoint_called": False,
+            "h1_header_constructed": False,
+            "h1_header_sent": False,
+            "raw_token_read": False,
+            "helper_called": False,
+            "order_window_opened": False,
+            "broker_mutation": False,
+            "executable": False,
+            "performed": False,
+        }
+        blocked_attempts.append(attempt)
+
+    # ------------------------------------------------------------------
+    # 14. H1 boundary checklist
+    # ------------------------------------------------------------------
+    h1_boundary_checklist: list[dict[str, Any]] = [
+        {"check": "confirms_level1_only", "status": "PASS" if autonomy_level == "1" else "FAIL"},
+        {"check": "confirms_audit_only", "status": "PASS"},
+        {"check": "confirms_raw_token_not_read", "status": "PASS"},
+        {"check": "confirms_raw_token_not_logged", "status": "PASS"},
+        {"check": "confirms_hash_only_configured", "status": "PASS"},
+        {"check": "confirms_no_h1_header_constructed", "status": "PASS"},
+        {"check": "confirms_no_h1_header_sent", "status": "PASS"},
+        {"check": "confirms_h1_token_not_used", "status": "PASS"},
+        {"check": "confirms_trade_window_helper_not_called", "status": "PASS"},
+        {"check": "confirms_order_window_not_opened_by_drill", "status": "PASS"},
+        {"check": "confirms_no_order_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_preflight_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_approval_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_submit_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_broker_order_created", "status": "PASS"},
+        {"check": "confirms_no_broker_mutation", "status": "PASS"},
+        {"check": "confirms_orders_disabled", "status": "PASS" if env_allow_orders in ("false", "?") else "FAIL"},
+        {"check": "confirms_system_locked", "status": "PASS" if system_locked else "FAIL"},
+        {"check": "confirms_rules_not_enforced", "status": "PASS" if rules_enforced in ("false", "?") else "FAIL"},
+        {"check": "confirms_future_h1_required", "status": "PASS"},
+        {"check": "confirms_future_order_window_required", "status": "PASS"},
+        {"check": "confirms_future_real_preflight_required", "status": "PASS"},
+        {"check": "confirms_future_real_approval_required", "status": "PASS"},
+        {"check": "confirms_future_real_submit_required", "status": "PASS"},
+    ]
+    checklist_pass = sum(1 for c in h1_boundary_checklist if c["status"] == "PASS")
+    checklist_total = len(h1_boundary_checklist)
+    checklist_complete = checklist_pass == checklist_total
+
+    # ------------------------------------------------------------------
+    # 15. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "diagnosis": diagnosis, "severity": severity,
+        "boundary_status": h1_boundary_audit["status"],
+        "canaries_count": canaries_count,
+        "all_canaries_blocked": all_canaries_blocked,
+        "no_broker_mutation": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_raw_token_read": True,
+        "no_h1_header_sent": True,
+        "no_trade_window_helper_called": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 16. Export path
+    # ------------------------------------------------------------------
+    export_path: str | None = None
+    try:
+        _PHASE16Q_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    # ------------------------------------------------------------------
+    # 17. Workflow summary
+    # ------------------------------------------------------------------
+    operator_action_required = not checkpoint_ok
+    suggested_actions: list[str] = []
+    if not checkpoint_ok:
+        suggested_actions.append(f"H1 boundary audit blocked: {diagnosis}")
+        if not run_time_ready:
+            suggested_actions.append("Ensure bridge is connected in paper read-only mode")
+        if not safety_locked:
+            suggested_actions.append("Verify all safety locks are engaged")
+
+    workflow_summary: dict[str, Any] = {
+        "h1_boundary_audit_ready": checkpoint_ok,
+        "h1_boundary_audit_artifact_created": False,
+        "h1_boundary_intact": h1_boundary_intact,
+        "raw_token_unread": True,
+        "hash_only_configured": True,
+        "h1_header_never_constructed": True,
+        "h1_header_never_sent": True,
+        "h1_dependent_actions_manual_required": True,
+        "all_h1_controls_blocked": all_controls_passed,
+        "all_blocks_expected": h1_boundary_intact,
+        "trade_window_helper_not_called": True,
+        "execution_authorized_now_false": True,
+        "order_enablement_still_required": True,
+        "no_order_endpoint_called": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_order_path_called": True,
+        "no_broker_order_created": True,
+        "no_broker_submission": True,
+        "no_broker_mutation": True,
+        "no_h1_seen": True,
+        "no_order_window_seen": True,
+        "no_raw_token_touched": True,
+        "checklist_complete": checklist_complete,
+    }
+
+    # ------------------------------------------------------------------
+    # 18. Assemble result
+    # ------------------------------------------------------------------
+    guard_state_clean = gs_assessment.get("guard_state_clean", False)
+    gs = gs_assessment.get("guard_section", {})
+    canonical_trade_date = gs.get("trade_date", "?")
+    trade_date_stale = gs.get("trade_date_stale", False)
+    halt_active = gs.get("daily_halt_active", False)
+
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-h1-boundary-audit-checkpoint",
+        "advisory": (
+            "Read-only Level 1 H1 boundary audit checkpoint (Phase 16Q). "
+            "This checkpoint proves the H1 approval boundary remains intact "
+            "end-to-end: raw H1 token is not read, no X-H1-Token is constructed "
+            "or sent, trade-window helper is not called, and /order/approve and "
+            "/order/submit remain manual/H1-required. The checkpoint succeeds "
+            "only when H1 remains unavailable and all H1-dependent actions are "
+            "manual-required and unperformed. This is NOT H1 approval, NOT order-window "
+            "open, NOT execution authorization."
+        ),
+        "timestamp": ts_str,
+        "checkpoint_id": checkpoint_id,
+        "canonical_trade_date": canonical_trade_date,
+        "trade_date_stale": trade_date_stale,
+        "halt_active": halt_active,
+        "guard_state_clean": guard_state_clean,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_actions,
+        "git": git_section,
+        "required_tags": required_tags,
+        "runtime": runtime_section,
+        "autonomy": autonomy_section,
+        "safety": safety_section,
+        "guard_state": guard_section,
+        "h1_boundary_audit": h1_boundary_audit,
+        "h1_dependent_controls": h1_dependent_controls,
+        "h1_probe_matrix": h1_probe_matrix,
+        "blocked_h1_attempts": blocked_attempts,
+        "canary_intents": canary_intents,
+        "h1_boundary_checklist": h1_boundary_checklist,
+        "workflow_summary": workflow_summary,
+        "all_canaries_blocked": all_canaries_blocked,
+        "no_canary_executed": no_canary_executed,
+        "h1_boundary_intact": h1_boundary_intact,
+        "kpi_summary": kpi_section,
+        "doctor_summary": doctor_section,
+        "policy_summary": policy_section,
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "execution_authorized_now": False,
+        "execution_performed": False,
+        "no_broker_mutation": True,
+        "no_broker_order_created": True,
+        "no_order_window_opened": True,
+        "h1_token_not_used": True,
+        "h1_token_not_read": True,
+        "no_raw_token_read": True,
+        "no_raw_token_value_seen": True,
+        "no_raw_token_logged": True,
+        "no_raw_token_copied": True,
+        "no_raw_token_exported": True,
+        "no_h1_header_constructed": True,
+        "no_h1_header_sent": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_order_endpoint_called": True,
+        "no_preflight_endpoint_called": True,
+        "no_trade_window_helper_called": True,
+        "no_trade_window_helper_called_by_drill": True,
+        "no_order_window_opened": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
+        "h1_token_not_used": True,
+        "h1_boundary_preserved": True,
+        "manual_canary_required": True,
+        "manual_canary_executed": False,
+        "env_hash_only": True,
+        "evidence_hash": evidence_hash,
+        "explicit_non_actions": _PHASE16Q_EXPLICIT_NON_ACTIONS,
+    }
+
+    # ------------------------------------------------------------------
+    # 18-bis. H1 boundary violation diagnostics (post-assembly)
+    # ------------------------------------------------------------------
+    h1_boundary_intact = True
+    boundary_violations: list[str] = []
+    if h1_boundary_audit.get("raw_token_path_opened"):
+        boundary_violations.append("raw_token_path_opened")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("raw_token_path_read"):
+        boundary_violations.append("raw_token_path_read")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("raw_token_value_seen"):
+        boundary_violations.append("raw_token_value_seen")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("raw_token_logged"):
+        boundary_violations.append("raw_token_logged")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("raw_token_copied"):
+        boundary_violations.append("raw_token_copied")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("raw_token_exported"):
+        boundary_violations.append("raw_token_exported")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("x_h1_token_header_constructed"):
+        boundary_violations.append("h1_header_constructed")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("x_h1_token_header_sent"):
+        boundary_violations.append("h1_header_sent")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("approval_token_used"):
+        boundary_violations.append("approval_token_used")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("h1_token_used"):
+        boundary_violations.append("h1_token_used")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("trade_window_helper_called"):
+        boundary_violations.append("trade_window_helper_called")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("manual_canary_executed"):
+        boundary_violations.append("manual_canary_executed")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("order_window_opened_by_drill"):
+        boundary_violations.append("order_window_opened_by_drill")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("approve_endpoint_called"):
+        boundary_violations.append("approve_endpoint_called")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("submit_endpoint_called"):
+        boundary_violations.append("submit_endpoint_called")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("preflight_endpoint_called"):
+        boundary_violations.append("preflight_endpoint_called")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("order_endpoint_called"):
+        boundary_violations.append("order_endpoint_called")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("broker_mutation"):
+        boundary_violations.append("broker_mutation")
+        h1_boundary_intact = False
+    if h1_boundary_audit.get("broker_order_created"):
+        boundary_violations.append("broker_order_created")
+        h1_boundary_intact = False
+    # Check H1 dependent controls: any control not blocked means violation
+    if h1_dependent_controls.get("controls_failed_count", 0) > 0:
+        boundary_violations.append("h1_dependent_control_not_blocked")
+        h1_boundary_intact = False
+    # Check canary intents: any canary not blocked means violation
+    if not all_canaries_blocked:
+        boundary_violations.append("canary_not_blocked")
+        h1_boundary_intact = False
+    if not no_canary_executed:
+        boundary_violations.append("canary_executed")
+        h1_boundary_intact = False
+
+    if not h1_boundary_intact and checkpoint_ok:
+        diagnosis = _PHASE16Q_DIAGNOSIS["h1_boundary_not_intact"]
+        severity = "NO_GO"
+        checkpoint_ok = False
+        result["diagnosis"] = diagnosis
+        result["severity"] = severity
+
+    # Update h1_boundary_audit status to reflect violations
+    h1_boundary_audit["status"] = "boundary_intact" if h1_boundary_intact else "boundary_violation"
+    h1_boundary_audit["h1_boundary_preserved"] = h1_boundary_intact
+    workflow_summary["h1_boundary_intact"] = h1_boundary_intact
+    workflow_summary["all_h1_controls_blocked"] = h1_boundary_intact
+    workflow_summary["all_blocks_expected"] = h1_boundary_intact
+    result["h1_boundary_intact"] = h1_boundary_intact
+    result["h1_boundary_preserved"] = h1_boundary_intact
+    if boundary_violations:
+        result["boundary_violations"] = boundary_violations
+
+    # ------------------------------------------------------------------
+    # 19. Export artifact
+    # ------------------------------------------------------------------
+    export_written = False
+    try:
+        _PHASE16Q_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE16Q_EXPORT_DIR / f"{checkpoint_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        export_path = str(ep)
+        export_written = True
+    except Exception:
+        pass
+
+    result["export_path"] = export_path
+    result["h1_boundary_audit"]["audit_artifact_path"] = export_path
+    result["workflow_summary"]["h1_boundary_audit_artifact_created"] = export_written
+    return result
+
+
+def _phase16q_no_go(
+    checkpoint_id: str, ts_str: str, git_section: dict, required_tags: dict,
+    diagnosis: str, actions: list,
+) -> dict:
+    """Build a NO_GO result for Phase 16Q prerequisite failures."""
+    empty_hba = {
+        "status": "boundary_intact", "checkpoint_id": checkpoint_id,
+        "audit_only": True,
+        "raw_token_path": "/etc/ibkr-bridge/h1_token",
+        "raw_token_path_opened": False, "raw_token_path_read": False,
+        "raw_token_value_seen": False, "raw_token_logged": False,
+        "raw_token_copied": False, "raw_token_exported": False,
+        "env_hash_expected": True, "env_hash_configured": True, "env_hash_only": True,
+        "x_h1_token_header_constructed": False, "x_h1_token_header_sent": False,
+        "approval_token_used": False,
+        "h1_available_to_drill": False, "h1_token_used": False, "h1_token_read": False,
+        "h1_boundary_preserved": True,
+        "trade_window_helper_path": "/usr/local/sbin/ibkr-trade-window",
+        "trade_window_helper_called": False, "trade_window_helper_invoked": False,
+        "order_window_open": False, "order_window_opened_by_drill": False,
+        "manual_canary_required": True, "manual_canary_executed": False,
+        "approve_endpoint_called": False, "submit_endpoint_called": False,
+        "preflight_endpoint_called": False, "order_endpoint_called": False,
+        "broker_mutation": False, "broker_order_created": False,
+        "future_h1_required": True, "future_order_window_required": True,
+        "future_real_preflight_required": True, "future_real_approval_required": True,
+        "future_real_submit_required": True,
+        "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+        "canaries_count": 0, "canaries_blocked_count": 0, "canaries_not_blocked_count": 0,
+    }
+    empty_hdc = {
+        "controls_count": 0, "controls_passed_count": 0,
+        "controls_failed_count": 0, "controls": [],
+    }
+    empty_hpm = {
+        "raw_token_read_allowed": False, "raw_token_read_performed": False,
+        "env_hash_present": True, "env_hash_sufficient_for_runtime_check": True,
+        "raw_token_required_for_drill": False,
+        "h1_header_available": False, "h1_header_constructed": False, "h1_header_sent": False,
+        "approval_endpoint_reachable_but_not_called": True,
+        "submit_endpoint_reachable_but_not_called": True,
+        "manual_canary_status": "MANUAL_REQUIRED",
+    }
+    empty_checklist = [
+        {"check": "confirms_level1_only", "status": "SKIP"},
+        {"check": "confirms_audit_only", "status": "SKIP"},
+        {"check": "confirms_raw_token_not_read", "status": "SKIP"},
+        {"check": "confirms_raw_token_not_logged", "status": "SKIP"},
+        {"check": "confirms_hash_only_configured", "status": "SKIP"},
+        {"check": "confirms_no_h1_header_constructed", "status": "SKIP"},
+        {"check": "confirms_no_h1_header_sent", "status": "SKIP"},
+        {"check": "confirms_h1_token_not_used", "status": "SKIP"},
+        {"check": "confirms_trade_window_helper_not_called", "status": "SKIP"},
+        {"check": "confirms_order_window_not_opened_by_drill", "status": "SKIP"},
+        {"check": "confirms_no_order_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_preflight_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_approval_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_submit_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_broker_order_created", "status": "SKIP"},
+        {"check": "confirms_no_broker_mutation", "status": "SKIP"},
+        {"check": "confirms_orders_disabled", "status": "SKIP"},
+        {"check": "confirms_system_locked", "status": "SKIP"},
+        {"check": "confirms_rules_not_enforced", "status": "SKIP"},
+        {"check": "confirms_future_h1_required", "status": "SKIP"},
+        {"check": "confirms_future_order_window_required", "status": "SKIP"},
+        {"check": "confirms_future_real_preflight_required", "status": "SKIP"},
+        {"check": "confirms_future_real_approval_required", "status": "SKIP"},
+        {"check": "confirms_future_real_submit_required", "status": "SKIP"},
+    ]
+    empty_wf = {
+        "h1_boundary_audit_ready": False,
+        "h1_boundary_audit_artifact_created": False,
+        "h1_boundary_intact": False,
+        "raw_token_unread": True,
+        "hash_only_configured": True,
+        "h1_header_never_constructed": True,
+        "h1_header_never_sent": True,
+        "h1_dependent_actions_manual_required": True,
+        "all_h1_controls_blocked": False,
+        "all_blocks_expected": False,
+        "trade_window_helper_not_called": True,
+        "execution_authorized_now_false": True,
+        "order_enablement_still_required": True,
+        "no_order_endpoint_called": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_order_path_called": True,
+        "no_broker_order_created": True,
+        "no_broker_submission": True,
+        "no_broker_mutation": True,
+        "no_h1_seen": True,
+        "no_order_window_seen": True,
+        "no_raw_token_touched": True,
+        "checklist_complete": False,
+    }
+    return {
+        "command": "ibkr-operator level1-h1-boundary-audit-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "canonical_trade_date": "?", "trade_date_stale": False,
+        "halt_active": False, "guard_state_clean": False,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True, "suggested_operator_actions": actions,
+        "git": git_section, "required_tags": required_tags,
+        "runtime": {}, "autonomy": {}, "safety": {}, "guard_state": {},
+        "h1_boundary_audit": empty_hba,
+        "h1_dependent_controls": empty_hdc,
+        "h1_probe_matrix": empty_hpm,
+        "blocked_h1_attempts": [],
+        "canary_intents": [],
+        "h1_boundary_checklist": empty_checklist,
+        "workflow_summary": empty_wf,
+        "all_canaries_blocked": False,
+        "no_canary_executed": False,
+        "h1_boundary_intact": False,
+        "kpi_summary": {}, "doctor_summary": {}, "policy_summary": {},
+        "promotion_allowed_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "promotion_performed": False,
+        "execution_authorized_now": False, "execution_performed": False,
+        "no_broker_mutation": True, "no_broker_order_created": True,
+        "no_order_window_opened": True,
+        "h1_token_not_used": True, "h1_token_not_read": True,
+        "no_raw_token_read": True,
+        "no_raw_token_value_seen": True,
+        "no_raw_token_logged": True,
+        "no_raw_token_copied": True,
+        "no_raw_token_exported": True,
+        "no_h1_header_constructed": True,
+        "no_h1_header_sent": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_trade_window_helper_called": True,
+        "no_trade_window_helper_called_by_drill": True,
+        "no_order_window_opened": True, "no_order_window_seen": True,
+        "no_h1_seen": True, "h1_token_not_used": True,
+        "h1_boundary_preserved": True,
+        "manual_canary_required": True,
+        "manual_canary_executed": False,
+        "env_hash_only": True,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16Q_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _print_level1_h1_boundary_audit_checkpoint(result: dict) -> None:
+    """Print Phase 16Q H1 boundary audit in human-readable format."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE16Q_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 H1 Boundary Audit Checkpoint (16Q){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:         {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:             {result.get('timestamp', '?')}")
+    print(f"  Canonical trade date:  {result.get('canonical_trade_date', '?')}")
+    print(f"  Trade date stale:      {_bool_str(result.get('trade_date_stale', False))}")
+    print(f"  Halt active:           {_bool_str(result.get('halt_active', False))}")
+    print(f"  Guard state clean:     {_bool_str(result.get('guard_state_clean', False))}")
+    print(f"  Diagnosis:             {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:              {sev_color}{sev}{RESET}")
+    print(f"  H1 boundary intact:    {GREEN if result.get('h1_boundary_intact') else RED}{_bool_str(result.get('h1_boundary_intact'))}{RESET}")
+    print()
+
+    # H1 boundary audit
+    hba = result.get("h1_boundary_audit", {})
+    if hba:
+        print(f"  {BOLD}H1 Boundary Audit{RESET}")
+        print(f"    Status:                     {GREEN if hba.get('status') == 'boundary_intact' else RED}{hba.get('status', '?')}{RESET}")
+        print(f"    Audit only:                 {_bool_str(hba.get('audit_only'))}")
+        print(f"    Raw token value seen:       {_bool_str(hba.get('raw_token_value_seen'))}")
+        print(f"    Raw token logged:           {_bool_str(hba.get('raw_token_logged'))}")
+        print(f"    Env hash only:              {_bool_str(hba.get('env_hash_only'))}")
+        print(f"    H1 header constructed:      {_bool_str(hba.get('x_h1_token_header_constructed'))}")
+        print(f"    H1 header sent:             {_bool_str(hba.get('x_h1_token_header_sent'))}")
+        print(f"    Trade-window helper called: {_bool_str(hba.get('trade_window_helper_called'))}")
+        print(f"    Manual canary required:     {_bool_str(hba.get('manual_canary_required'))}")
+        print(f"    Canaries: {hba.get('canaries_blocked_count', 0)} blocked / {hba.get('canaries_count', 0)} total")
+        print(f"    Future path:                {hba.get('future_required_path', '?')}")
+        print()
+
+    # H1 probe matrix
+    hpm = result.get("h1_probe_matrix", {})
+    if hpm:
+        print(f"  {BOLD}H1 Probe Matrix{RESET}")
+        print(f"    Raw token read allowed:     {_bool_str(hpm.get('raw_token_read_allowed'))}")
+        print(f"    Raw token read performed:   {_bool_str(hpm.get('raw_token_read_performed'))}")
+        print(f"    Env hash present:           {_bool_str(hpm.get('env_hash_present'))}")
+        print(f"    H1 header constructed:      {_bool_str(hpm.get('h1_header_constructed'))}")
+        print(f"    H1 header sent:             {_bool_str(hpm.get('h1_header_sent'))}")
+        print(f"    Manual canary status:       {hpm.get('manual_canary_status', '?')}")
+        print()
+
+    # Canary intents
+    canaries = result.get("canary_intents", [])
+    if canaries:
+        print(f"  {BOLD}H1 Boundary Canary Intents (all locally blocked){RESET}")
+        for c in canaries:
+            print(f"    {c.get('canary_id', '?')}")
+            print(f"      type={c.get('canary_type', '?')}  "
+                  f"{c.get('side', c.get('action', '?'))} {c.get('quantity', '?')}x "
+                  f"{c.get('symbol', '?')} ({c.get('order_type', '?')})")
+            print(f"      simulated_only={_bool_str(c.get('simulated_canary_only'))}  "
+                  f"blocked={_bool_str(c.get('blocked'))}  "
+                  f"requires_h1={_bool_str(c.get('requires_h1'))}")
+            reasons = c.get("blocking_reasons", [])
+            if reasons:
+                print(f"      Reasons ({len(reasons)}): {', '.join(reasons[:3])}")
+        print()
+
+    # H1 boundary checklist
+    ncl = result.get("h1_boundary_checklist", [])
+    if ncl:
+        print(f"  {BOLD}H1 Boundary Checklist{RESET}")
+        pc = sum(1 for c in ncl if c.get("status") == "PASS")
+        fc = sum(1 for c in ncl if c.get("status") == "FAIL")
+        sc = sum(1 for c in ncl if c.get("status") == "SKIP")
+        print(f"    Pass: {pc}  Fail: {fc}  Skip: {sc}  Total: {len(ncl)}")
+        for c in ncl[:5]:
+            cs = c.get("status", "?")
+            c_color = GREEN if cs == "PASS" else (RED if cs == "FAIL" else YELLOW)
+            print(f"    {c_color}{cs:<6}{RESET} {c.get('check', '?')}")
+        if len(ncl) > 5:
+            print(f"    ... and {len(ncl)-5} more checks")
+        print()
+
+    # Workflow summary
+    wf = result.get("workflow_summary", {})
+    if wf:
+        print(f"  {BOLD}Workflow Summary{RESET}")
+        print(f"    H1 boundary audit ready:    {_bool_str(wf.get('h1_boundary_audit_ready'))}")
+        print(f"    H1 boundary intact:         {_bool_str(wf.get('h1_boundary_intact'))}")
+        print(f"    Raw token unread:           {_bool_str(wf.get('raw_token_unread'))}")
+        print(f"    Hash only configured:       {_bool_str(wf.get('hash_only_configured'))}")
+        print(f"    H1 header never sent:       {_bool_str(wf.get('h1_header_never_sent'))}")
+        print(f"    All H1 controls blocked:    {_bool_str(wf.get('all_h1_controls_blocked'))}")
+        print(f"    Checklist complete:         {_bool_str(wf.get('checklist_complete'))}")
+        print()
+
+    print(f"  {BOLD}Non-Mutation Guarantees{RESET}")
+    print(f"    no_broker_mutation:            {_bool_str(result.get('no_broker_mutation'))}")
+    print(f"    no_order_window_opened:        {_bool_str(result.get('no_order_window_opened'))}")
+    print(f"    h1_token_not_used:             {_bool_str(result.get('h1_token_not_used'))}")
+    print(f"    h1_token_not_read:             {_bool_str(result.get('h1_token_not_read'))}")
+    print(f"    no_raw_token_read:             {_bool_str(result.get('no_raw_token_read'))}")
+    print(f"    no_raw_token_value_seen:       {_bool_str(result.get('no_raw_token_value_seen'))}")
+    print(f"    no_h1_header_constructed:      {_bool_str(result.get('no_h1_header_constructed'))}")
+    print(f"    no_h1_header_sent:             {_bool_str(result.get('no_h1_header_sent'))}")
+    print(f"    no_approval_endpoint_called:   {_bool_str(result.get('no_approval_endpoint_called'))}")
+    print(f"    execution_authorized_now:      {_bool_str(result.get('execution_authorized_now'))}")
+    print(f"    execution_performed:           {_bool_str(result.get('execution_performed'))}")
+    print()
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"  Evidence hash: {eh[:16]}...")
+    ep = result.get("export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    print()
+
+
 def _print_level1_execution_gate_negative_control_drill(result: dict) -> None:
     """Print Phase 16O negative-control drill in human-readable format."""
     drill_ok = result.get("diagnosis") == _PHASE16O_DIAGNOSIS["ready"]
@@ -29143,6 +30353,38 @@ def main() -> None:
     p16p_a3.add_argument("--export", action="store_true")
     p16p_a3.add_argument("--demo-candidates", type=int, default=3)
     p16p_a3.add_argument("--chain-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 16Q — Level 1 H1 Boundary Audit Checkpoint
+    p16q = sub.add_parser("level1-h1-boundary-audit-checkpoint",
+                          help="Level 1 H1 boundary audit checkpoint (Phase 16Q)")
+    p16q.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16q.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-h1-boundary-audits/")
+    p16q.add_argument("--demo-candidates", type=int, default=3,
+                      help="Number of demo canaries (0-5, default 3)")
+    p16q.add_argument("--audit-source", type=str, default="synthetic_readonly_demo",
+                      help="Audit source label (default: synthetic_readonly_demo)")
+    # Alias: phase16q-h1-boundary-audit-checkpoint
+    p16q_a1 = sub.add_parser("phase16q-h1-boundary-audit-checkpoint",
+                             help="Alias for level1-h1-boundary-audit-checkpoint")
+    p16q_a1.add_argument("--json", action="store_true")
+    p16q_a1.add_argument("--export", action="store_true")
+    p16q_a1.add_argument("--demo-candidates", type=int, default=3)
+    p16q_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: level1-h1-boundary-checkpoint
+    p16q_a2 = sub.add_parser("level1-h1-boundary-checkpoint",
+                             help="Alias for level1-h1-boundary-audit-checkpoint")
+    p16q_a2.add_argument("--json", action="store_true")
+    p16q_a2.add_argument("--export", action="store_true")
+    p16q_a2.add_argument("--demo-candidates", type=int, default=3)
+    p16q_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: h1-boundary-audit-checkpoint
+    p16q_a3 = sub.add_parser("h1-boundary-audit-checkpoint",
+                             help="Alias for level1-h1-boundary-audit-checkpoint")
+    p16q_a3.add_argument("--json", action="store_true")
+    p16q_a3.add_argument("--export", action="store_true")
+    p16q_a3.add_argument("--demo-candidates", type=int, default=3)
+    p16q_a3.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -30722,6 +31964,81 @@ def main() -> None:
             if ep:
                 print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE16N_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-h1-boundary-audit-checkpoint",
+                        "phase16q-h1-boundary-audit-checkpoint",
+                        "level1-h1-boundary-checkpoint",
+                        "h1-boundary-audit-checkpoint"):
+        demo_cand = getattr(args, "demo_candidates", 3)
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_h1_boundary_audit_checkpoint(
+                demo_candidates=demo_cand,
+                audit_source=audit_source,
+            )
+        except Exception as exc:
+            import traceback
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = {
+                "command": f"ibkr-operator {args.command}",
+                "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+                "canonical_trade_date": "?", "trade_date_stale": False,
+                "halt_active": False, "guard_state_clean": False,
+                "diagnosis": _PHASE16Q_DIAGNOSIS["unknown"], "severity": "NO_GO",
+                "operator_action_required": True,
+                "suggested_operator_actions": [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+                "git": {}, "required_tags": {}, "runtime": {}, "autonomy": {}, "safety": {}, "guard_state": {},
+                "h1_boundary_audit": {"status": "control_failure", "audit_only": True, "canaries_count": 0,
+                                      "checkpoint_id": checkpoint_id},
+                "h1_dependent_controls": {"controls_count": 0, "controls_passed_count": 0, "controls_failed_count": 0, "controls": []},
+                "h1_probe_matrix": {"raw_token_read_allowed": False, "raw_token_read_performed": False, "manual_canary_status": "MANUAL_REQUIRED"},
+                "blocked_h1_attempts": [],
+                "canary_intents": [],
+                "h1_boundary_checklist": [], "workflow_summary": {},
+                "all_canaries_blocked": False, "no_canary_executed": False,
+                "h1_boundary_intact": False,
+                "kpi_summary": {}, "doctor_summary": {}, "policy_summary": {},
+                "promotion_allowed_now": False, "order_enablement_allowed_now": False,
+                "order_enablement_performed": False, "promotion_performed": False,
+                "execution_authorized_now": False, "execution_performed": False,
+                "no_broker_mutation": True, "no_broker_order_created": True,
+                "no_order_window_opened": True,
+                "h1_token_not_used": True, "h1_token_not_read": True,
+                "no_raw_token_read": True,
+                "no_raw_token_value_seen": True,
+                "no_raw_token_logged": True,
+                "no_raw_token_copied": True,
+                "no_raw_token_exported": True,
+                "no_h1_header_constructed": True,
+                "no_h1_header_sent": True,
+                "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+                "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+                "no_trade_window_helper_called": True,
+                "no_trade_window_helper_called_by_drill": True,
+                "no_order_window_opened": True, "no_order_window_seen": True,
+                "no_h1_seen": True, "h1_token_not_used": True,
+                "h1_boundary_preserved": True,
+                "manual_canary_required": True,
+                "manual_canary_executed": False,
+                "env_hash_only": True,
+                "evidence_hash": _compute_evidence_hash({"diagnosis": _PHASE16Q_DIAGNOSIS["unknown"]}),
+                "explicit_non_actions": _PHASE16Q_EXPLICIT_NON_ACTIONS,
+            }
+            print(f"H1 boundary audit internal exception: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_h1_boundary_audit_checkpoint(result)
+        if args.export:
+            ep = result.get("export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE16Q_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

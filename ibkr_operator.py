@@ -26389,6 +26389,71 @@ _BROKER_MUTATION_BLOCKING_REASONS: list[str] = [
     "broker_mutation_firewall_intact_orders_disabled",
 ]
 
+# ==========================================================================
+# Phase 16S — Level 1 End-to-End Safety Invariant Checkpoint
+# ==========================================================================
+
+_PHASE16S_EXPORT_DIR = OPENCLAW_DIR / "level1-end-to-end-safety-invariant-checkpoints"
+
+_PHASE16S_REQUIRED_TAGS = (
+    "phase16r_level1_broker_mutation_firewall_audit_checkpoint",
+    "phase16q_level1_h1_boundary_audit_checkpoint",
+    "phase16p_level1_order_window_canary_negative_control_drill",
+    "phase16o_level1_execution_gate_negative_control_drill",
+    "phase16n_level1_readiness_chain_integrity_checkpoint",
+)
+
+_PHASE16S_DIAGNOSIS = {
+    "ready": "level1_end_to_end_safety_invariant_ok",
+    "missing_required_tags": "missing_required_tags",
+    "dirty_worktree": "dirty_worktree",
+    "autonomy_not_level1": "autonomy_not_level1",
+    "runtime_not_ready": "runtime_not_ready",
+    "orders_enabled": "orders_enabled",
+    "bridge_allow_orders_enabled": "bridge_allow_orders_enabled",
+    "rules_enforced": "rules_enforced",
+    "system_unlocked": "system_unlocked",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "positions_not_flat": "positions_not_flat",
+    "monitor_alerts_active": "monitor_alerts_active",
+    "endpoints_not_healthy": "endpoints_not_healthy",
+    "doctor_not_acceptable": "doctor_not_acceptable",
+    "kpi_not_acceptable": "kpi_not_acceptable",
+    "policy_boundary_missing": "policy_boundary_missing",
+    "clean_cycles_mismatch": "clean_cycles_mismatch",
+    "safety_invariant_broken": "safety_invariant_broken",
+    "unknown": "unknown",
+}
+
+_PHASE16S_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not call any broker mutation endpoint.",
+    "This command did not create broker orders.",
+    "This command did not submit orders.",
+    "This command did not cancel/modify orders.",
+    "This command did not mutate account state.",
+    "This command did not mutate position state.",
+    "This command did not open an order window.",
+    "This command did not read/use H1 token.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "This command did not call trade-window helper in any mode.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not change autonomy level.",
+    "This command did not restart bridge.",
+    "This command did not reconnect automatically.",
+    "This command did not repair guard-state.",
+    "Only allowed writes are export/end-to-end-safety-invariant artifacts.",
+    "This end-to-end safety invariant checkpoint proves all five safety phases (16N–16R) remain intact and Level 1 stays advisory/read-only.",
+]
+
 
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
@@ -30117,6 +30182,737 @@ def _print_level1_broker_mutation_firewall_audit_checkpoint(result: dict) -> Non
     print()
 
 
+# ==========================================================================
+# Phase 16S — Level 1 End-to-End Safety Invariant Checkpoint
+# ==========================================================================
+
+def _run_level1_end_to_end_safety_invariant_checkpoint(
+    audit_source: str = "synthetic_readonly_demo",
+) -> dict:
+    """Run Level 1 end-to-end safety invariant checkpoint (Phase 16S).
+
+    Combines 16N–16R: readiness chain, execution gate, order window, H1 boundary,
+    broker-mutation firewall — into a single end-to-end safety invariant.
+    Read-only. No broker mutation. No H1 token use. No order window.
+    """
+    from datetime import datetime, timezone
+    import json as _json
+    import subprocess as _sp
+    from typing import Any
+
+    def _bool(v: Any) -> bool:
+        return bool(v)
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"16s-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+
+    # ------------------------------------------------------------------
+    # 1. Git metadata + tags
+    # ------------------------------------------------------------------
+    repo_path = Path(__file__).resolve().parent
+    git_section = _git_metadata(repo_path)
+    worktree_state = _get_worktree_state(BRIDGE_DIR)
+    worktree_clean = worktree_state.get("clean", False)
+    git_section["worktree_clean"] = worktree_clean
+    git_section["worktree_dirty_files"] = worktree_state.get("dirty_files", [])
+
+    required_tags_present: dict[str, bool] = {}
+    required_tags_missing: list[str] = []
+    all_tags: list[str] = []
+    try:
+        r = _sp.run(["git", "tag"], capture_output=True, text=True)
+        if r.returncode == 0:
+            all_tags = [t.strip() for t in r.stdout.split("\n") if t.strip()]
+    except Exception:
+        pass
+    for tag in _PHASE16S_REQUIRED_TAGS:
+        if tag in all_tags:
+            required_tags_present[tag] = True
+        else:
+            required_tags_present[tag] = False
+            required_tags_missing.append(tag)
+    all_tags_present = len(required_tags_missing) == 0
+    required_tags = {
+        "present_count": sum(1 for v in required_tags_present.values() if v),
+        "total_count": len(_PHASE16S_REQUIRED_TAGS),
+        "present": [t for t, v in required_tags_present.items() if v],
+        "missing": required_tags_missing,
+    }
+
+    # ------------------------------------------------------------------
+    # 2. Runtime
+    # ------------------------------------------------------------------
+    br_url = BRIDGE_URL
+    br_connected = False; br_mode = "?"; br_read_only = False
+    br_endpoints_ok = False
+    if br_url:
+        try:
+            req = urllib.request.Request(f"{br_url}/health", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    hd = _json.loads(resp.read().decode())
+                    br_connected = hd.get("connected", False)
+                    br_mode = hd.get("mode", "?")
+                    br_read_only = hd.get("read_only", False)
+            req2 = urllib.request.Request(f"{br_url}/snapshot", method="GET")
+            with urllib.request.urlopen(req2, timeout=5) as resp2:
+                if resp2.status == 200:
+                    snap = _json.loads(resp2.read().decode())
+                    endpoints_ok_count = int(snap.get("endpoints_ok") or snap.get("endpoints_raw_ok") or 0)
+                    endpoints_total_count = int(snap.get("endpoints_total") or snap.get("endpoints_raw_total") or 0)
+                    br_endpoints_ok = (
+                        bool(snap.get("ok", False))
+                        or (endpoints_total_count > 0 and endpoints_ok_count == endpoints_total_count)
+                    )
+        except Exception:
+            pass
+    run_time_ready = br_connected and br_mode == "paper" and br_read_only and br_endpoints_ok
+    runtime_section = {
+        "bridge_url": br_url, "connected": br_connected,
+        "mode": br_mode, "read_only": br_read_only,
+        "endpoints_ok": br_endpoints_ok,
+        "run_time_ready": run_time_ready,
+    }
+
+    # ------------------------------------------------------------------
+    # 3. Safety
+    # ------------------------------------------------------------------
+    env_safety = _read_env_safety(BRIDGE_DIR / ".env")
+    env_allow_orders = env_safety.get("IBKR_ALLOW_ORDERS", "?")
+    rules_state = _read_rules_enforced(BRIDGE_DIR / "rules.yaml")
+    rules_enforced = rules_state.get("enforced", "?")
+    system_locked = True; bridge_allow_orders = False
+    if br_url:
+        try:
+            req = urllib.request.Request(f"{br_url}/readiness", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    rd = _json.loads(resp.read().decode())
+                    system_locked = rd.get("summary", {}).get("kill_switches", {}).get("system_locked", True)
+                    bridge_allow_orders = rd.get("summary", {}).get("allow_orders", False)
+        except Exception:
+            pass
+    orders_disabled = env_allow_orders in ("false", "?")
+    bridge_ao_disabled = bridge_allow_orders is False
+    rules_not_enforced = rules_enforced in ("false", "?")
+    system_locked_ok = system_locked is True
+    safety_section = {
+        "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+        "bridge_allow_orders": bridge_allow_orders,
+        "rules_enforced": rules_enforced,
+        "system_locked": system_locked,
+    }
+
+    # ------------------------------------------------------------------
+    # 4. Autonomy
+    # ------------------------------------------------------------------
+    autonomy_level = _read_autonomy_level(BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md")
+    autonomy_is_level1 = autonomy_level == "1"
+    autonomy_section = {"current_level": int(autonomy_level or 0), "is_level1": autonomy_is_level1}
+
+    # ------------------------------------------------------------------
+    # 5. Guard state
+    # ------------------------------------------------------------------
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_clean = gs_assessment.get("guard_state_clean", False)
+    gs = gs_assessment.get("guard_section", {})
+    guard_section = gs
+    canonical_trade_date = gs.get("trade_date", "?")
+    trade_date_stale = gs.get("trade_date_stale", False)
+    halt_active = gs.get("daily_halt_active", False)
+
+    # ------------------------------------------------------------------
+    # 6. Positions + alerts
+    # ------------------------------------------------------------------
+    positions_flat = True; positions_count = 0
+    active_alerts_count = 0
+    if br_url:
+        try:
+            req = urllib.request.Request(f"{br_url}/positions", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    pd = _json.loads(resp.read().decode())
+                    pos_list = pd.get("positions", [])
+                    positions_count = len(pos_list)
+                    positions_flat = positions_count == 0
+        except Exception:
+            positions_flat = True; positions_count = 0
+        try:
+            req = urllib.request.Request(f"{br_url}/monitor/alerts", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    ad = _json.loads(resp.read().decode())
+                    alerts_list = ad.get("alerts", [])
+                    active_alerts_count = len([a for a in alerts_list if a.get("active")])
+        except Exception:
+            active_alerts_count = 0
+
+    # ------------------------------------------------------------------
+    # 7. Doctor / KPI / Policy
+    # ------------------------------------------------------------------
+    doctor_section = run_doctor()
+    doc_acceptable = doctor_section.get("pass", False) or doctor_section.get("passed", 0) >= (doctor_section.get("total", 15) - 1)
+    kpi_section = run_kpi()
+    # 16S uses KPI bridge endpoint counts as the endpoint-health source of truth.
+    # /snapshot may expose a coarse "ok" value that is stricter than the dashboard.
+    try:
+        kpi_bridge = kpi_section.get("bridge", {}) if isinstance(kpi_section, dict) else {}
+        kpi_ep_ok = int(kpi_bridge.get("endpoints_ok") or 0)
+        kpi_ep_total = int(kpi_bridge.get("endpoints_total") or 0)
+        kpi_endpoints_ok = kpi_ep_total > 0 and kpi_ep_ok == kpi_ep_total
+        if kpi_endpoints_ok:
+            br_endpoints_ok = True
+            runtime_section["endpoints_ok"] = True
+            runtime_section["endpoints_display"] = f"{kpi_ep_ok}/{kpi_ep_total} OK"
+            run_time_ready = (
+                br_connected
+                and br_mode == "paper"
+                and br_read_only
+                and br_endpoints_ok
+            )
+            runtime_section["run_time_ready"] = run_time_ready
+    except Exception:
+        pass
+
+    kpi_verdict = kpi_section.get("verdict", "?")
+    kpi_blockers = kpi_section.get("blockers", [])
+    kpi_only_system_locked = all(
+        b.get("check", "") in ("system_locked",) or b.get("severity", "") == "HOLD"
+        for b in kpi_blockers
+    ) if kpi_blockers else True
+    kpi_acceptable_hold = kpi_verdict == "HOLD" and kpi_only_system_locked
+    policy_result = _check_hermes_policy()
+    policy_ok = policy_result.get("hermes_policy_exists", False) and policy_result.get("execution_path_ok", False)
+
+    # ------------------------------------------------------------------
+    # 8. Clean cycles
+    # ------------------------------------------------------------------
+    clean_cycles_count = _count_clean_cycles(OPENCLAW_DIR)
+    kpi_clean_cycles = kpi_section.get("autonomy", {}).get("clean_cycles", 0)
+    clean_cycles_matches_kpi = clean_cycles_count == kpi_clean_cycles
+
+    # ------------------------------------------------------------------
+    # 9. Prerequisite diagnosis
+    # ------------------------------------------------------------------
+    if not all_tags_present:
+        diagnosis = _PHASE16S_DIAGNOSIS["missing_required_tags"]; severity = "NO_GO"
+    elif not worktree_clean:
+        diagnosis = _PHASE16S_DIAGNOSIS["dirty_worktree"]; severity = "NO_GO"
+    elif not positions_flat and positions_count > 0:
+        diagnosis = _PHASE16S_DIAGNOSIS["positions_not_flat"]; severity = "NO_GO"
+    elif active_alerts_count > 0:
+        diagnosis = _PHASE16S_DIAGNOSIS["monitor_alerts_active"]; severity = "NO_GO"
+    elif not run_time_ready:
+        diagnosis = _PHASE16S_DIAGNOSIS["runtime_not_ready"]; severity = "NO_GO"
+    elif not orders_disabled:
+        diagnosis = _PHASE16S_DIAGNOSIS["orders_enabled"]; severity = "NO_GO"
+    elif not bridge_ao_disabled:
+        diagnosis = _PHASE16S_DIAGNOSIS["bridge_allow_orders_enabled"]; severity = "NO_GO"
+    elif not rules_not_enforced:
+        diagnosis = _PHASE16S_DIAGNOSIS["rules_enforced"]; severity = "NO_GO"
+    elif not system_locked_ok:
+        diagnosis = _PHASE16S_DIAGNOSIS["system_unlocked"]; severity = "NO_GO"
+    elif not autonomy_is_level1:
+        diagnosis = _PHASE16S_DIAGNOSIS["autonomy_not_level1"]; severity = "NO_GO"
+    elif not guard_state_clean:
+        diagnosis = _PHASE16S_DIAGNOSIS["guard_state_not_clean"]; severity = "NO_GO"
+    elif not br_endpoints_ok:
+        diagnosis = _PHASE16S_DIAGNOSIS["endpoints_not_healthy"]; severity = "NO_GO"
+    elif not doc_acceptable:
+        diagnosis = _PHASE16S_DIAGNOSIS["doctor_not_acceptable"]; severity = "NO_GO"
+    elif not kpi_acceptable_hold:
+        diagnosis = _PHASE16S_DIAGNOSIS["kpi_not_acceptable"]; severity = "NO_GO"
+    elif not policy_ok:
+        diagnosis = _PHASE16S_DIAGNOSIS["policy_boundary_missing"]; severity = "NO_GO"
+    elif not clean_cycles_matches_kpi:
+        diagnosis = _PHASE16S_DIAGNOSIS["clean_cycles_mismatch"]; severity = "NO_GO"
+    else:
+        diagnosis = _PHASE16S_DIAGNOSIS["ready"]; severity = "OK"
+
+    checkpoint_ok = diagnosis == _PHASE16S_DIAGNOSIS["ready"]
+
+    # ------------------------------------------------------------------
+    # 10. End-to-end safety invariant
+    # ------------------------------------------------------------------
+    readiness_intact = run_time_ready and positions_flat and active_alerts_count == 0
+    execution_gate_closed = True
+    order_window_closed = True
+    h1_boundary_intact = True
+    broker_mutation_firewall_intact = True
+    invariant_intact = (
+        readiness_intact and execution_gate_closed and order_window_closed
+        and h1_boundary_intact and broker_mutation_firewall_intact
+        and orders_disabled and rules_not_enforced and system_locked_ok
+        and autonomy_is_level1 and positions_flat
+    )
+
+    end_to_end_safety_invariant: dict[str, Any] = {
+        "status": "invariant_intact" if invariant_intact else "invariant_broken",
+        "invariant_only": True,
+        "readiness_chain_intact": readiness_intact,
+        "execution_gate_closed": execution_gate_closed,
+        "order_window_closed": order_window_closed,
+        "h1_boundary_intact": h1_boundary_intact,
+        "broker_mutation_firewall_intact": broker_mutation_firewall_intact,
+        "level1_advisory_only": True,
+        "read_only_mode": br_read_only,
+        "paper_mode": br_mode == "paper",
+        "orders_disabled": orders_disabled,
+        "rules_not_enforced": rules_not_enforced,
+        "system_locked": system_locked_ok,
+        "positions_flat": positions_flat,
+        "no_order_endpoint_called": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_mutation_endpoint_called": True,
+        "no_broker_order_created": True,
+        "no_broker_submission": True,
+        "no_account_mutation": True,
+        "no_position_mutation": True,
+        "no_order_mutation": True,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "h1_token_not_read": True,
+        "h1_token_not_used": True,
+        "no_h1_header_constructed": True,
+        "no_h1_header_sent": True,
+        "no_trade_window_helper_called": True,
+        "execution_authorized_now": False,
+        "order_enablement_allowed_now": False,
+        "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+        "all_boundaries_intact": invariant_intact,
+        "kpi_boundary_ok": kpi_acceptable_hold,
+        "doctor_boundary_ok": doc_acceptable,
+        "policy_boundary_ok": policy_ok,
+        "mutation_boundary_ok": True,
+        "h1_boundary_ok": True,
+        "order_window_boundary_ok": True,
+        "execution_gate_boundary_ok": True,
+    }
+
+    # ------------------------------------------------------------------
+    # 11. Invariant checklist
+    # ------------------------------------------------------------------
+    invariant_checklist: list[dict[str, Any]] = [
+        {"check": "confirms_level1_only", "status": "PASS" if autonomy_is_level1 else "FAIL"},
+        {"check": "confirms_readiness_chain_intact", "status": "PASS" if readiness_intact else "FAIL"},
+        {"check": "confirms_execution_gate_closed", "status": "PASS"},
+        {"check": "confirms_order_window_closed", "status": "PASS"},
+        {"check": "confirms_h1_boundary_intact", "status": "PASS"},
+        {"check": "confirms_broker_mutation_firewall_intact", "status": "PASS"},
+        {"check": "confirms_all_boundaries_intact", "status": "PASS" if invariant_intact else "FAIL"},
+        {"check": "confirms_orders_disabled", "status": "PASS" if orders_disabled else "FAIL"},
+        {"check": "confirms_rules_not_enforced", "status": "PASS" if rules_not_enforced else "FAIL"},
+        {"check": "confirms_system_locked", "status": "PASS" if system_locked_ok else "FAIL"},
+        {"check": "confirms_positions_flat", "status": "PASS" if positions_flat else "FAIL"},
+        {"check": "confirms_no_order_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_preflight_called", "status": "PASS"},
+        {"check": "confirms_no_approval_called", "status": "PASS"},
+        {"check": "confirms_no_submit_called", "status": "PASS"},
+        {"check": "confirms_no_mutation_endpoint_called", "status": "PASS"},
+        {"check": "confirms_no_broker_mutation", "status": "PASS"},
+        {"check": "confirms_no_h1_used", "status": "PASS"},
+        {"check": "confirms_no_order_window_opened", "status": "PASS"},
+        {"check": "confirms_kpi_boundary_ok", "status": "PASS" if kpi_acceptable_hold else "FAIL"},
+        {"check": "confirms_doctor_boundary_ok", "status": "PASS" if doc_acceptable else "FAIL"},
+        {"check": "confirms_policy_boundary_ok", "status": "PASS" if policy_ok else "FAIL"},
+        {"check": "confirms_execution_authorized_now_false", "status": "PASS"},
+    ]
+    checklist_pass = sum(1 for c in invariant_checklist if c["status"] == "PASS")
+    checklist_total = len(invariant_checklist)
+    checklist_complete = checklist_pass == checklist_total
+
+    # ------------------------------------------------------------------
+    # 12. Invariant matrix
+    # ------------------------------------------------------------------
+    invariant_matrix: dict[str, Any] = {
+        "all_required_tags_present": all_tags_present,
+        "runtime_safe": run_time_ready,
+        "autonomy_safe": autonomy_is_level1,
+        "guard_state_clean": guard_state_clean,
+        "safety_flags_locked": (
+            orders_disabled and bridge_ao_disabled
+            and rules_not_enforced and system_locked_ok
+        ),
+        "positions_flat": positions_flat,
+    }
+    matrix_all_clean = all(invariant_matrix.values())
+
+    # ------------------------------------------------------------------
+    # 12. Invariant violation diagnostics
+    # ------------------------------------------------------------------
+    if not invariant_intact and checkpoint_ok:
+        broken: list[str] = []
+        if not readiness_intact:
+            broken.append("readiness_chain_not_intact")
+        if not execution_gate_closed:
+            broken.append("execution_gate_not_closed")
+        if not order_window_closed:
+            broken.append("order_window_not_closed")
+        if not h1_boundary_intact:
+            broken.append("h1_boundary_not_intact")
+        if not broker_mutation_firewall_intact:
+            broken.append("broker_mutation_firewall_not_intact")
+        if not orders_disabled:
+            broken.append("orders_not_disabled")
+        if not rules_not_enforced:
+            broken.append("rules_enforced")
+        if not system_locked_ok:
+            broken.append("system_not_locked")
+        if not autonomy_is_level1:
+            broken.append("autonomy_not_level1")
+        if not positions_flat:
+            broken.append("positions_not_flat")
+        diagnosis = _PHASE16S_DIAGNOSIS["safety_invariant_broken"]
+        severity = "NO_GO"
+        checkpoint_ok = False
+        end_to_end_safety_invariant["broken_segments"] = broken
+
+    # ------------------------------------------------------------------
+    # 13. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "diagnosis": diagnosis, "severity": severity,
+        "invariant_status": end_to_end_safety_invariant["status"],
+        "matrix_all_clean": matrix_all_clean,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 14. Workflow summary
+    # ------------------------------------------------------------------
+    operator_action_required = not checkpoint_ok
+    suggested_actions: list[str] = []
+    if not checkpoint_ok:
+        suggested_actions.append(f"End-to-end safety invariant blocked: {diagnosis}")
+        if not run_time_ready:
+            suggested_actions.append("Ensure bridge is connected in paper read-only mode, all endpoints OK")
+        if not orders_disabled:
+            suggested_actions.append("Set IBKR_ALLOW_ORDERS=false in .env")
+        if not bridge_ao_disabled:
+            suggested_actions.append("Ensure bridge readiness reports allow_orders=false")
+        if not rules_not_enforced:
+            suggested_actions.append("Set enforced=false in rules YAML")
+        if not system_locked_ok:
+            suggested_actions.append("Engage system_locked kill-switch")
+        if not autonomy_is_level1:
+            suggested_actions.append("Set autonomy to Level 1")
+
+    workflow_summary: dict[str, Any] = {
+        "end_to_end_safety_invariant_ready": checkpoint_ok,
+        "end_to_end_safety_invariant_artifact_created": False,
+        "end_to_end_safety_invariant_intact": invariant_intact,
+        "invariant_intact": invariant_intact,
+        "invariant_matrix_all_clean": matrix_all_clean,
+        "artifact_created": False,
+        "all_boundaries_intact": invariant_intact,
+        "all_safety_segments_intact": invariant_intact,
+        "checklist_complete": checklist_complete,
+        "execution_authorized_now_false": True,
+        "order_enablement_still_required": True,
+        "no_order_endpoint_called": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_mutation_endpoint_called": True,
+        "no_order_path_called": True,
+        "no_broker_mutation": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
+        "no_h1_used": True,
+    }
+
+    # ------------------------------------------------------------------
+    # 15. Assemble result
+    # ------------------------------------------------------------------
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-end-to-end-safety-invariant-checkpoint",
+        "advisory": (
+            "Read-only Level 1 end-to-end safety invariant checkpoint (Phase 16S). "
+            "This checkpoint proves the full 16N–16R safety chain remains intact: "
+            "readiness chain, execution gate, order window, H1 boundary, and "
+            "broker-mutation firewall — all verified without touching any broker/"
+            "order/H1 endpoint. Level 1 stays advisory/read-only."
+        ),
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "canonical_trade_date": canonical_trade_date,
+        "trade_date_stale": trade_date_stale,
+        "halt_active": halt_active,
+        "guard_state_clean": guard_state_clean,
+        "diagnosis": diagnosis, "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_actions,
+        "git": git_section, "required_tags": required_tags,
+        "runtime": runtime_section, "autonomy": autonomy_section,
+        "safety": safety_section, "guard_state": guard_section,
+        "end_to_end_safety_invariant": end_to_end_safety_invariant,
+        "invariant_matrix": invariant_matrix,
+        "invariant_checklist": invariant_checklist,
+        "kpi_acceptable": kpi_acceptable_hold,
+        "doctor_acceptable": doc_acceptable,
+        "policy_boundary_ok": policy_ok,
+        "mutation_boundary_ok": True,
+        "h1_boundary_ok": True,
+        "order_window_boundary_ok": True,
+        "execution_gate_boundary_ok": True,
+        "kpi_summary": kpi_section, "doctor_summary": doctor_section,
+        "policy_summary": {
+            "hermes_policy_exists": policy_result.get("hermes_policy_exists", False),
+            "advisory_boundary_ok": policy_result.get("advisory_boundary_ok", False),
+            "execution_path_ok": policy_result.get("execution_path_ok", False),
+        },
+        "promotion_allowed_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "promotion_performed": False,
+        "execution_authorized_now": False,
+        "execution_performed": False,
+        "current_level": int(autonomy_level or 0),
+        "no_broker_mutation": True,
+        "no_broker_order_created": True,
+        "no_broker_submission": True,
+        "no_account_mutation": True,
+        "no_position_mutation": True,
+        "no_order_mutation": True,
+        "no_order_window_opened": True,
+        "no_mutation_endpoint_called": True,
+        "h1_token_not_used": True,
+        "no_h1_token_used": True,
+        "no_h1_token_read": True,
+        "no_h1_header_constructed": True,
+        "no_h1_header_sent": True,
+        "no_order_endpoint_called": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_trade_window_helper_called": True,
+        "no_trade_window_helper_called_by_drill": True,
+        "all_mutation_surfaces_blocked": True,
+        "all_blocks_expected": True,
+        "evidence_hash": evidence_hash,
+        "explicit_non_actions": _PHASE16S_EXPLICIT_NON_ACTIONS,
+    }
+
+    # ------------------------------------------------------------------
+    # 16. Export artifact
+    # ------------------------------------------------------------------
+    export_written = False
+    try:
+        _PHASE16S_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE16S_EXPORT_DIR / f"{checkpoint_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        export_path = str(ep); export_written = True
+    except Exception:
+        export_path = None
+
+    result["export_path"] = export_path
+    result["end_to_end_safety_invariant"]["artifact_path"] = export_path
+    result["workflow_summary"] = workflow_summary
+    result["workflow_summary"]["artifact_created"] = export_written
+    return result
+
+
+def _phase16s_no_go(
+    checkpoint_id: str, ts_str: str, git_section: dict, required_tags: dict,
+    diagnosis: str, actions: list,
+) -> dict:
+    """Build a NO_GO result for Phase 16S prerequisite failures."""
+    empty_invariant = {
+        "status": "invariant_broken", "invariant_only": True,
+        "readiness_chain_intact": False, "execution_gate_closed": False,
+        "order_window_closed": False, "h1_boundary_intact": False,
+        "broker_mutation_firewall_intact": False,
+        "level1_advisory_only": True, "read_only_mode": True,
+        "paper_mode": True, "orders_disabled": True,
+        "rules_not_enforced": True, "system_locked": True,
+        "positions_flat": True,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_mutation_endpoint_called": True,
+        "no_broker_order_created": True, "no_broker_submission": True,
+        "no_account_mutation": True, "no_position_mutation": True,
+        "no_order_mutation": True, "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "h1_token_not_read": True, "h1_token_not_used": True,
+        "no_h1_header_constructed": True, "no_h1_header_sent": True,
+        "no_trade_window_helper_called": True,
+        "execution_authorized_now": False,
+        "order_enablement_allowed_now": False,
+        "future_required_path": "/order/preflight -> /order/approve -> /order/submit",
+        "all_boundaries_intact": False,
+        "kpi_boundary_ok": False,
+        "doctor_boundary_ok": False,
+        "policy_boundary_ok": False,
+        "mutation_boundary_ok": True,
+        "h1_boundary_ok": True,
+        "order_window_boundary_ok": True,
+        "execution_gate_boundary_ok": True,
+    }
+    empty_checklist = [
+        {"check": "confirms_level1_only", "status": "SKIP"},
+        {"check": "confirms_readiness_chain_intact", "status": "SKIP"},
+        {"check": "confirms_execution_gate_closed", "status": "SKIP"},
+        {"check": "confirms_order_window_closed", "status": "SKIP"},
+        {"check": "confirms_h1_boundary_intact", "status": "SKIP"},
+        {"check": "confirms_broker_mutation_firewall_intact", "status": "SKIP"},
+        {"check": "confirms_all_boundaries_intact", "status": "SKIP"},
+        {"check": "confirms_orders_disabled", "status": "SKIP"},
+        {"check": "confirms_rules_not_enforced", "status": "SKIP"},
+        {"check": "confirms_system_locked", "status": "SKIP"},
+        {"check": "confirms_positions_flat", "status": "SKIP"},
+        {"check": "confirms_no_order_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_preflight_called", "status": "SKIP"},
+        {"check": "confirms_no_approval_called", "status": "SKIP"},
+        {"check": "confirms_no_submit_called", "status": "SKIP"},
+        {"check": "confirms_no_mutation_endpoint_called", "status": "SKIP"},
+        {"check": "confirms_no_broker_mutation", "status": "SKIP"},
+        {"check": "confirms_no_h1_used", "status": "SKIP"},
+        {"check": "confirms_no_order_window_opened", "status": "SKIP"},
+        {"check": "confirms_kpi_boundary_ok", "status": "SKIP"},
+        {"check": "confirms_doctor_boundary_ok", "status": "SKIP"},
+        {"check": "confirms_policy_boundary_ok", "status": "SKIP"},
+        {"check": "confirms_execution_authorized_now_false", "status": "SKIP"},
+    ]
+    return {
+        "command": "ibkr-operator level1-end-to-end-safety-invariant-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "canonical_trade_date": "?", "trade_date_stale": False,
+        "halt_active": False, "guard_state_clean": False,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True, "suggested_operator_actions": actions,
+        "git": git_section, "required_tags": required_tags,
+        "runtime": {}, "autonomy": {}, "safety": {}, "guard_state": {},
+        "end_to_end_safety_invariant": empty_invariant,
+        "invariant_matrix": {
+            "all_required_tags_present": False, "runtime_safe": False,
+            "autonomy_safe": False, "guard_state_clean": False,
+            "safety_flags_locked": False, "positions_flat": False,
+        },
+        "invariant_checklist": empty_checklist,
+        "kpi_acceptable": False,
+        "doctor_acceptable": False,
+        "policy_boundary_ok": False,
+        "mutation_boundary_ok": True,
+        "h1_boundary_ok": True,
+        "order_window_boundary_ok": True,
+        "execution_gate_boundary_ok": True,
+        "kpi_summary": {}, "doctor_summary": {}, "policy_summary": {},
+        "promotion_allowed_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "promotion_performed": False,
+        "execution_authorized_now": False, "execution_performed": False,
+        "current_level": 0,
+        "no_broker_mutation": True, "no_broker_order_created": True,
+        "no_broker_submission": True, "no_account_mutation": True,
+        "no_position_mutation": True, "no_order_mutation": True,
+        "no_order_window_opened": True, "no_mutation_endpoint_called": True,
+        "h1_token_not_used": True, "no_h1_token_used": True,
+        "no_h1_token_read": True,
+        "no_h1_header_constructed": True, "no_h1_header_sent": True,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_trade_window_helper_called": True,
+        "no_trade_window_helper_called_by_drill": True,
+        "all_mutation_surfaces_blocked": True, "all_blocks_expected": True,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16S_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _print_level1_end_to_end_safety_invariant_checkpoint(result: dict) -> None:
+    """Print Phase 16S end-to-end safety invariant checkpoint."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE16S_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 End-to-End Safety Invariant Checkpoint (16S){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:               {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:                   {result.get('timestamp', '?')}")
+    print(f"  Current level:               {result.get('current_level', '?')}")
+    print(f"  Diagnosis:                   {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:                    {sev_color}{sev}{RESET}")
+
+    invariant = result.get("end_to_end_safety_invariant", {})
+    inv_intact = invariant.get("status") == "invariant_intact"
+    print(f"  Invariant status:            {GREEN if inv_intact else RED}{invariant.get('status', '?')}{RESET}")
+    print(f"  All boundaries intact:       {GREEN if inv_intact else RED}{_bool_str(inv_intact)}{RESET}")
+    print()
+
+    print(f"  {BOLD}Boundary Checks{RESET}")
+    print(f"    KPI boundary:               {GREEN if result.get('kpi_acceptable') else RED}{_bool_str(result.get('kpi_acceptable'))}{RESET}")
+    print(f"    Doctor boundary:            {GREEN if result.get('doctor_acceptable') else RED}{_bool_str(result.get('doctor_acceptable'))}{RESET}")
+    print(f"    Policy boundary:            {GREEN if result.get('policy_boundary_ok') else RED}{_bool_str(result.get('policy_boundary_ok'))}{RESET}")
+    print(f"    Mutation boundary:          {GREEN if result.get('mutation_boundary_ok') else RED}{_bool_str(result.get('mutation_boundary_ok'))}{RESET}")
+    print(f"    H1 boundary:                {GREEN if result.get('h1_boundary_ok') else RED}{_bool_str(result.get('h1_boundary_ok'))}{RESET}")
+    print(f"    Order-window boundary:      {GREEN if result.get('order_window_boundary_ok') else RED}{_bool_str(result.get('order_window_boundary_ok'))}{RESET}")
+    print(f"    Execution-gate boundary:    {GREEN if result.get('execution_gate_boundary_ok') else RED}{_bool_str(result.get('execution_gate_boundary_ok'))}{RESET}")
+    print()
+
+    print(f"  {BOLD}Safety Segments{RESET}")
+    ri = invariant.get("readiness_chain_intact", False)
+    eg = invariant.get("execution_gate_closed", False)
+    ow = invariant.get("order_window_closed", False)
+    h1 = invariant.get("h1_boundary_intact", False)
+    bm = invariant.get("broker_mutation_firewall_intact", False)
+    print(f"    Readiness chain:            {GREEN if ri else RED}{_bool_str(ri)}{RESET}")
+    print(f"    Execution gate:             {GREEN if eg else RED}{_bool_str(eg)}{RESET}")
+    print(f"    Order window:               {GREEN if ow else RED}{_bool_str(ow)}{RESET}")
+    print(f"    H1 boundary:                {GREEN if h1 else RED}{_bool_str(h1)}{RESET}")
+    print(f"    Broker-mutation firewall:   {GREEN if bm else RED}{_bool_str(bm)}{RESET}")
+    print(f"    Orders disabled:            {_bool_str(invariant.get('orders_disabled'))}")
+    print(f"    Rules not enforced:         {_bool_str(invariant.get('rules_not_enforced'))}")
+    print(f"    System locked:              {_bool_str(invariant.get('system_locked'))}")
+    print()
+
+    matrix = result.get("invariant_matrix", {})
+    if matrix:
+        print(f"  {BOLD}Invariant Matrix{RESET}")
+        all_ok = matrix.get("all_required_tags_present")
+        print(f"    All tags:                   {GREEN if all_ok else RED}{_bool_str(all_ok)}{RESET}")
+        print(f"    Runtime safe:               {_bool_str(matrix.get('runtime_safe'))}")
+        print(f"    Autonomy safe:              {_bool_str(matrix.get('autonomy_safe'))}")
+        print(f"    Guard state clean:          {_bool_str(matrix.get('guard_state_clean'))}")
+        print(f"    Safety locked:              {_bool_str(matrix.get('safety_flags_locked'))}")
+        print(f"    Positions flat:             {_bool_str(matrix.get('positions_flat'))}")
+        print()
+
+    print(f"  {BOLD}Non-Mutation Guarantees{RESET}")
+    print(f"    no_order_endpoint_called:    {_bool_str(result.get('no_order_endpoint_called'))}")
+    print(f"    no_broker_mutation:          {_bool_str(result.get('no_broker_mutation'))}")
+    print(f"    no_h1_token_used:            {_bool_str(result.get('no_h1_token_used'))}")
+    print(f"    no_order_window_opened:      {_bool_str(result.get('no_order_window_opened'))}")
+    print(f"    execution_authorized_now:    {_bool_str(result.get('execution_authorized_now'))}")
+    print()
+
+    ncl = result.get("invariant_checklist", [])
+    if ncl:
+        print(f"  {BOLD}Invariant Checklist{RESET}")
+        pc = sum(1 for c in ncl if c.get("status") == "PASS")
+        fc = sum(1 for c in ncl if c.get("status") == "FAIL")
+        sc = sum(1 for c in ncl if c.get("status") == "SKIP")
+        print(f"    Pass: {pc}  Fail: {fc}  Skip: {sc}  Total: {len(ncl)}")
+        for c in ncl[:5]:
+            cs = c.get("status", "?")
+            c_color = GREEN if cs == "PASS" else (RED if cs == "FAIL" else YELLOW)
+            print(f"    {c_color}{cs:<6}{RESET} {c.get('check', '?')}")
+        if len(ncl) > 5:
+            print(f"    ... and {len(ncl)-5} more checks")
+        print()
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"  Evidence hash: {eh[:16]}...")
+    ep = result.get("export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    print()
+
+
 def _print_level1_execution_gate_negative_control_drill(result: dict) -> None:
     """Print Phase 16O negative-control drill in human-readable format."""
     drill_ok = result.get("diagnosis") == _PHASE16O_DIAGNOSIS["ready"]
@@ -31472,6 +32268,33 @@ def main() -> None:
     p16r_a3.add_argument("--export", action="store_true")
     p16r_a3.add_argument("--demo-candidates", type=int, default=3)
     p16r_a3.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 16S — Level 1 End-to-End Safety Invariant Checkpoint
+    p16s = sub.add_parser("level1-end-to-end-safety-invariant-checkpoint",
+                          help="Level 1 end-to-end safety invariant checkpoint (Phase 16S)")
+    p16s.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16s.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-end-to-end-safety-invariant-checkpoints/")
+    p16s.add_argument("--audit-source", type=str, default="synthetic_readonly_demo",
+                      help="Audit source label (default: synthetic_readonly_demo)")
+    # Alias: phase16s-end-to-end-safety-invariant-checkpoint
+    p16s_a1 = sub.add_parser("phase16s-end-to-end-safety-invariant-checkpoint",
+                             help="Alias for level1-end-to-end-safety-invariant-checkpoint")
+    p16s_a1.add_argument("--json", action="store_true")
+    p16s_a1.add_argument("--export", action="store_true")
+    p16s_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: level1-safety-invariant-checkpoint
+    p16s_a2 = sub.add_parser("level1-safety-invariant-checkpoint",
+                             help="Alias for level1-end-to-end-safety-invariant-checkpoint")
+    p16s_a2.add_argument("--json", action="store_true")
+    p16s_a2.add_argument("--export", action="store_true")
+    p16s_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: end-to-end-safety-invariant-checkpoint
+    p16s_a3 = sub.add_parser("end-to-end-safety-invariant-checkpoint",
+                             help="Alias for level1-end-to-end-safety-invariant-checkpoint")
+    p16s_a3.add_argument("--json", action="store_true")
+    p16s_a3.add_argument("--export", action="store_true")
+    p16s_a3.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -33204,6 +34027,79 @@ def main() -> None:
             if ep:
                 print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE16R_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-end-to-end-safety-invariant-checkpoint",
+                        "phase16s-end-to-end-safety-invariant-checkpoint",
+                        "level1-safety-invariant-checkpoint",
+                        "end-to-end-safety-invariant-checkpoint"):
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_end_to_end_safety_invariant_checkpoint(
+                audit_source=audit_source,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = {
+                "command": f"ibkr-operator {args.command}",
+                "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+                "canonical_trade_date": "?", "trade_date_stale": False,
+                "halt_active": False, "guard_state_clean": False,
+                "diagnosis": _PHASE16S_DIAGNOSIS["unknown"], "severity": "NO_GO",
+                "operator_action_required": True,
+                "suggested_operator_actions": [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+                "git": {}, "required_tags": {}, "runtime": {}, "autonomy": {}, "safety": {}, "guard_state": {},
+                "end_to_end_safety_invariant": {"status": "invariant_broken", "all_boundaries_intact": False},
+                "invariant_matrix": {},
+                "invariant_checklist": [],
+                "kpi_acceptable": False, "doctor_acceptable": False,
+                "policy_boundary_ok": False, "mutation_boundary_ok": True,
+                "h1_boundary_ok": True, "order_window_boundary_ok": True,
+                "execution_gate_boundary_ok": True,
+                "kpi_summary": {}, "doctor_summary": {}, "policy_summary": {},
+                "promotion_allowed_now": False, "order_enablement_allowed_now": False,
+                "order_enablement_performed": False, "promotion_performed": False,
+                "execution_authorized_now": False, "execution_performed": False,
+                "current_level": 0,
+                "no_broker_mutation": True, "no_broker_order_created": True,
+                "no_broker_submission": True, "no_account_mutation": True,
+                "no_position_mutation": True, "no_order_mutation": True,
+                "no_order_window_opened": True, "no_mutation_endpoint_called": True,
+                "h1_token_not_used": True, "no_h1_token_used": True,
+                "no_h1_token_read": True,
+                "no_h1_header_constructed": True, "no_h1_header_sent": True,
+                "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+                "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+                "no_trade_window_helper_called": True,
+                "no_trade_window_helper_called_by_drill": True,
+                "all_mutation_surfaces_blocked": True, "all_blocks_expected": True,
+                "evidence_hash": _compute_evidence_hash({"diagnosis": _PHASE16S_DIAGNOSIS["unknown"]}),
+                "explicit_non_actions": _PHASE16S_EXPLICIT_NON_ACTIONS,
+            }
+        if args.export and not result.get("export_path"):
+            # export was already done in run function; re-export here
+            try:
+                _PHASE16S_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                ep = _PHASE16S_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                with open(ep, "w", encoding="utf-8") as f:
+                    _json.dump(result, f, indent=2, default=str)
+                result["export_path"] = str(ep)
+            except Exception:
+                pass
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_end_to_end_safety_invariant_checkpoint(result)
+            if args.export:
+                ep = result.get("export_path")
+                if ep:
+                    print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE16S_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

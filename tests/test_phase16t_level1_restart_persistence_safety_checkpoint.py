@@ -259,12 +259,12 @@ def _build_mocks(before_health=None, after_health=None,
         return result
     patches.append(patch("subprocess.run", side_effect=_mock_subprocess))
 
-    # Restart bridge service
+    # Restart bridge service — now returns (ok, msg, timed_out)
     patches.append(patch("ibkr_operator._restart_bridge_service",
-                         return_value=(restart_ok, restart_msg)))
+                         return_value=(restart_ok, restart_msg, False)))
 
     # Poll bridge health — return connected=True immediately
-    def _mock_poll(url, timeout_secs=60, poll_interval=2.0):
+    def _mock_poll(url, timeout_secs=180, poll_interval=2.0):
         if after_health is None:
             return True, {"connected": True, "mode": "paper", "read_only": True}
         return after_health.get("connected", False), after_health or {}
@@ -414,7 +414,9 @@ class TestCleanRuntime:
             assert result["current_level"] == 1
 
             # Core flags
+            assert result["restart_attempted"] is True
             assert result["restart_performed"] is True
+            assert result["restart_command_timed_out"] is False
             assert result["restart_target"] == _PHASE16T_BRIDGE_SERVICE
 
             # After state
@@ -438,7 +440,9 @@ class TestCleanRuntime:
             # Restart persistence audit
             audit = result["restart_persistence_audit"]
             assert audit["invariant_survived"] is True
+            assert audit["restart_attempted"] is True
             assert audit["restart_performed"] is True
+            assert audit["restart_command_timed_out"] is False
             assert audit["restart_target"] == _PHASE16T_BRIDGE_SERVICE
             assert audit["bridge_survived"] is True
             assert audit["mode_survived"] is True
@@ -504,6 +508,7 @@ class TestPrerequisiteFailures:
             assert result["diagnosis"] == _PHASE16T_DIAGNOSIS["missing_required_tags"]
             assert result["severity"] == "NO_GO"
             # Should NOT have restarted
+            assert result["restart_attempted"] is False
             assert result["restart_performed"] is False
         finally:
             stop_patches(mocks, patches)
@@ -534,6 +539,7 @@ class TestPrerequisiteFailures:
             result = _run_level1_restart_persistence_safety_checkpoint()
             assert result["diagnosis"] == _PHASE16T_DIAGNOSIS["dirty_worktree"]
             assert result["severity"] == "NO_GO"
+            assert result["restart_attempted"] is False
             assert result["restart_performed"] is False
         finally:
             stop_patches(mocks, patches)
@@ -563,6 +569,7 @@ class TestPrerequisiteFailures:
             result = _run_level1_restart_persistence_safety_checkpoint()
             assert result["diagnosis"] == _PHASE16T_DIAGNOSIS["sixteen_s_invariant_not_ok"]
             assert result["severity"] == "NO_GO"
+            assert result["restart_attempted"] is False
             assert result["restart_performed"] is False
         finally:
             stop_patches(mocks, patches)
@@ -598,7 +605,8 @@ class TestPostRestartFailures:
             result = _run_level1_restart_persistence_safety_checkpoint()
             assert result["diagnosis"] == _PHASE16T_DIAGNOSIS["restart_failed"]
             assert result["severity"] == "NO_GO"
-            assert result["restart_performed"] is False
+            assert result["restart_attempted"] is True
+            assert result["restart_command_timed_out"] is False
         finally:
             stop_patches(mocks, patches)
 
@@ -630,7 +638,8 @@ class TestPostRestartFailures:
             result = _run_level1_restart_persistence_safety_checkpoint()
             assert result["diagnosis"] == _PHASE16T_DIAGNOSIS["bridge_not_reachable_after_restart"]
             assert result["severity"] == "NO_GO"
-            assert result["restart_performed"] is True
+            assert result["restart_attempted"] is True
+            assert result["restart_performed"] is False
         finally:
             stop_patches(mocks, patches)
 
@@ -978,7 +987,8 @@ class TestEdgeCases:
             audit = result["restart_persistence_audit"]
             required_audit_keys = [
                 "invariant_survived", "before_16s_ok", "after_16s_ok",
-                "restart_performed", "restart_target",
+                "restart_attempted", "restart_performed", "restart_command_timed_out",
+                "restart_target",
                 "bridge_reachable_after", "bridge_survived",
                 "mode_survived", "read_only_survived", "allow_orders_survived",
                 "endpoints_survived", "positions_survived",
@@ -988,8 +998,11 @@ class TestEdgeCases:
             ]
             for key in required_audit_keys:
                 assert key in audit, f"Missing key in audit: {key}"
-            # All should be True in clean runtime
-            assert all(audit.values())
+            # Verify survival keys are True (exclude restart_command_timed_out)
+            survival_keys = [k for k in required_audit_keys
+                           if k not in ("restart_attempted", "restart_command_timed_out")]
+            for key in survival_keys:
+                assert audit[key], f"Survival key {key} should be True"
         finally:
             stop_patches(mocks, patches)
 
@@ -1007,8 +1020,9 @@ class TestHelpers:
             mock_result.stderr = ""
             mock_run.return_value = mock_result
 
-            ok, msg = _restart_bridge_service()
+            ok, msg, timed_out = _restart_bridge_service()
             assert ok is True
+            assert timed_out is False
             assert "restarted successfully" in msg
 
     def test_restart_bridge_service_mocked_fail(self):
@@ -1019,9 +1033,18 @@ class TestHelpers:
             mock_result.stderr = "Access denied"
             mock_run.return_value = mock_result
 
-            ok, msg = _restart_bridge_service()
+            ok, msg, timed_out = _restart_bridge_service()
             assert ok is False
+            assert timed_out is False
             assert "Access denied" in msg
+
+    def test_restart_bridge_service_mocked_timeout(self):
+        import subprocess as _sp
+        with patch("subprocess.run", side_effect=_sp.TimeoutExpired(cmd=["sudo"], timeout=180)):
+            ok, msg, timed_out = _restart_bridge_service()
+            assert ok is False
+            assert timed_out is True
+            assert "recovery still pending" in msg
 
     def test_snapshot_bridge_state_ok(self):
         responses = {

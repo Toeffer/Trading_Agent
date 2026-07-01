@@ -26511,7 +26511,8 @@ _PHASE16T_EXPLICIT_NON_ACTIONS: list[str] = [
 ]
 
 _PHASE16T_BRIDGE_SERVICE = "ibkr-bridge.service"
-_PHASE16T_RESTART_TIMEOUT_SECS = 60
+_PHASE16T_RESTART_TIMEOUT_SECS = 180
+_PHASE16T_POLL_TIMEOUT_SECS = 180
 _PHASE16T_POLL_INTERVAL_SECS = 2
 
 
@@ -30977,10 +30978,11 @@ def _print_level1_end_to_end_safety_invariant_checkpoint(result: dict) -> None:
 # Phase 16T — Level 1 Restart-Persistence Safety Checkpoint
 # ==========================================================================
 
-def _restart_bridge_service() -> tuple[bool, str]:
+def _restart_bridge_service() -> tuple[bool, str, bool]:
     """Execute sudo systemctl restart ibkr-bridge.service.
 
-    Returns (success: bool, message: str).
+    Returns (success: bool, message: str, command_timed_out: bool).
+    On TimeoutExpired the command is timed out but bridge may still recover.
     """
     import subprocess as _sp
     try:
@@ -30989,29 +30991,44 @@ def _restart_bridge_service() -> tuple[bool, str]:
             capture_output=True, text=True, timeout=_PHASE16T_RESTART_TIMEOUT_SECS,
         )
         if r.returncode == 0:
-            return True, f"{_PHASE16T_BRIDGE_SERVICE} restarted successfully"
+            return True, f"{_PHASE16T_BRIDGE_SERVICE} restarted successfully", False
         else:
             err = r.stderr.strip() or r.stdout.strip() or f"exit code {r.returncode}"
-            return False, f"systemctl restart failed: {err}"
+            return False, f"systemctl restart failed: {err}", False
     except FileNotFoundError:
-        return False, "sudo not found — cannot restart bridge"
+        return False, "sudo not found — cannot restart bridge", False
     except _sp.TimeoutExpired:
-        return False, f"systemctl restart timed out after {_PHASE16T_RESTART_TIMEOUT_SECS}s"
+        return False, f"systemctl restart timed out after {_PHASE16T_RESTART_TIMEOUT_SECS}s — recovery still pending", True
     except Exception as exc:
-        return False, f"systemctl restart exception: {exc}"
+        return False, f"systemctl restart exception: {exc}", False
 
 
 def _poll_bridge_health(
-    br_url: str, timeout_secs: int = 60, poll_interval: float = 2.0,
+    br_url: str, timeout_secs: int = 180, poll_interval: float = 2.0,
 ) -> tuple[bool, dict]:
     """Poll /health until bridge is connected or timeout.
 
+    Also checks systemctl is-active first as a faster service-level check.
     Returns (connected: bool, health_dict: dict).
     """
+    import subprocess as _sp
     import time as _time
     elapsed = 0.0
     last_health: dict = {}
     while elapsed < timeout_secs:
+        # Check systemctl is-active as a fast service-level gate
+        try:
+            r = _sp.run(
+                ["systemctl", "is-active", _PHASE16T_BRIDGE_SERVICE],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode != 0 or r.stdout.strip() != "active":
+                _time.sleep(poll_interval)
+                elapsed += poll_interval
+                continue
+        except Exception:
+            pass
+        # Service is active — check /health
         try:
             req = urllib.request.Request(f"{br_url}/health", method="GET")
             with urllib.request.urlopen(req, timeout=poll_interval) as resp:
@@ -31173,12 +31190,15 @@ def _run_level1_restart_persistence_safety_checkpoint(
     # ------------------------------------------------------------------
     # 4. Execute restart
     # ------------------------------------------------------------------
+    restart_attempted = False
     restart_performed = False
+    restart_command_timed_out = False
     restart_error: str | None = None
     if pre_prereqs_ok:
-        restart_ok, restart_msg = _restart_bridge_service()
-        restart_performed = restart_ok
-        if not restart_ok:
+        restart_attempted = True
+        restart_ok, restart_msg, timed_out = _restart_bridge_service()
+        restart_command_timed_out = timed_out
+        if not restart_ok and not timed_out:
             restart_error = restart_msg
             diagnosis = _PHASE16T_DIAGNOSIS["restart_failed"]; severity = "NO_GO"
     else:
@@ -31189,22 +31209,22 @@ def _run_level1_restart_persistence_safety_checkpoint(
     # ------------------------------------------------------------------
     after: dict[str, Any] = {}
     bridge_reachable_after = False
-    if restart_performed and pre_prereqs_ok:
+    if restart_attempted and pre_prereqs_ok:
+        # Poll even if restart command timed out — bridge may still recover
         connected, health_after = _poll_bridge_health(
             br_url,
-            timeout_secs=_PHASE16T_RESTART_TIMEOUT_SECS,
+            timeout_secs=_PHASE16T_POLL_TIMEOUT_SECS,
             poll_interval=_PHASE16T_POLL_INTERVAL_SECS,
         )
         bridge_reachable_after = connected
-        if not connected:
-            # Bridge didn't come back — still NO_GO
-            diagnosis = _PHASE16T_DIAGNOSIS["bridge_not_reachable_after_restart"]; severity = "NO_GO"
-            after = health_after or {}
-        else:
+        if connected:
+            restart_performed = True  # bridge recovered after attempt
             # Collect full post-restart snapshot
             after = _snapshot_bridge_state(br_url)
-    elif not restart_performed and pre_prereqs_ok:
-        # Restart failed — treat after as empty
+        else:
+            diagnosis = _PHASE16T_DIAGNOSIS["bridge_not_reachable_after_restart"]; severity = "NO_GO"
+            after = health_after or {}
+    elif not restart_attempted and pre_prereqs_ok:
         after = {"connected": False, "mode": "?", "read_only": False}
 
     # ------------------------------------------------------------------
@@ -31258,8 +31278,8 @@ def _run_level1_restart_persistence_safety_checkpoint(
     # 7. Restart persistence audit
     # ------------------------------------------------------------------
     invariant_survived = (
-        restart_performed
-        and after_connected
+        restart_attempted
+        and bridge_reachable_after
         and after_mode == "paper"
         and after_read_only is True
         and after_allow_orders is False
@@ -31273,7 +31293,9 @@ def _run_level1_restart_persistence_safety_checkpoint(
         "invariant_survived": invariant_survived,
         "before_16s_ok": before_sixteen_s_ok,
         "after_16s_ok": sixteen_s_after_ok,
+        "restart_attempted": restart_attempted,
         "restart_performed": restart_performed,
+        "restart_command_timed_out": restart_command_timed_out,
         "restart_target": _PHASE16T_BRIDGE_SERVICE,
         "bridge_reachable_after": bridge_reachable_after,
         "bridge_survived": bridge_reachable_after,
@@ -31295,7 +31317,10 @@ def _run_level1_restart_persistence_safety_checkpoint(
     hashable = {
         "diagnosis": diagnosis, "severity": severity,
         "invariant_survived": invariant_survived,
+        "restart_attempted": restart_attempted,
         "restart_performed": restart_performed,
+        "restart_command_timed_out": restart_command_timed_out,
+        "bridge_reachable_after": bridge_reachable_after,
         "after_connected": after_connected,
         "after_mode": after_mode,
         "after_read_only": after_read_only,
@@ -31310,9 +31335,12 @@ def _run_level1_restart_persistence_safety_checkpoint(
     suggested_actions: list[str] = []
     if not checkpoint_ok:
         suggested_actions.append(f"Restart-persistence safety blocked: {diagnosis}")
-        if not restart_performed and pre_prereqs_ok:
-            suggested_actions.append(f"Restart failed: {restart_error or 'unknown'}")
-        if not bridge_reachable_after and restart_performed:
+        if not restart_performed and restart_attempted:
+            if restart_command_timed_out:
+                suggested_actions.append(f"Restart command timed out but bridge may still recover: {restart_error or 'unknown'}")
+            else:
+                suggested_actions.append(f"Restart failed: {restart_error or 'unknown'}")
+        if not bridge_reachable_after and restart_attempted:
             suggested_actions.append("Bridge did not come back online after restart")
         if not after_connected:
             suggested_actions.append("Verify bridge connectivity after restart")
@@ -31329,7 +31357,10 @@ def _run_level1_restart_persistence_safety_checkpoint(
         "restart_persistence_invariant_ready": checkpoint_ok,
         "restart_persistence_artifact_created": False,
         "invariant_survived": invariant_survived,
+        "restart_attempted": restart_attempted,
         "restart_performed": restart_performed,
+        "restart_command_timed_out": restart_command_timed_out,
+        "bridge_reachable_after": bridge_reachable_after,
         "bridge_survived": bridge_reachable_after,
         "sixteen_s_invariant_ok_before": before_sixteen_s_ok,
         "sixteen_s_invariant_ok_after": sixteen_s_after_ok,
@@ -31376,6 +31407,8 @@ def _run_level1_restart_persistence_safety_checkpoint(
             "system_locked": after_system_locked,
         },
         "restart_performed": restart_performed,
+        "restart_attempted": restart_attempted,
+        "restart_command_timed_out": restart_command_timed_out,
         "restart_target": _PHASE16T_BRIDGE_SERVICE,
         "restart_error": restart_error or "",
         "bridge_reachable_after_restart": bridge_reachable_after,
@@ -31453,7 +31486,8 @@ def _phase16t_no_go(
 ) -> dict:
     """Build a NO_GO result for Phase 16T prerequisite failures."""
     empty_audit = {
-        "invariant_survived": False, "restart_performed": False,
+        "invariant_survived": False, "restart_attempted": False,
+        "restart_performed": False, "restart_command_timed_out": False,
         "restart_target": _PHASE16T_BRIDGE_SERVICE,
         "bridge_reachable_after": False, "bridge_survived": False,
         "mode_survived": False, "read_only_survived": False,
@@ -31478,6 +31512,8 @@ def _phase16t_no_go(
                    "positions_count": None, "positions_flat": None,
                    "system_locked": None},
         "restart_performed": False,
+        "restart_attempted": False,
+        "restart_command_timed_out": False,
         "restart_target": _PHASE16T_BRIDGE_SERVICE,
         "restart_error": "Pre-restart prerequisites not met — restart not attempted",
         "bridge_reachable_after_restart": False,
@@ -31524,7 +31560,9 @@ def _print_level1_restart_persistence_safety_checkpoint(result: dict) -> None:
     audit = result.get("restart_persistence_audit", {})
     inv_surv = audit.get("invariant_survived", False)
     print(f"  Invariant survived:          {GREEN if inv_surv else RED}{_bool_str(inv_surv)}{RESET}")
+    print(f"  Restart attempted:           {_bool_str(result.get('restart_attempted', False))}")
     print(f"  Restart performed:           {_bool_str(audit.get('restart_performed', False))}")
+    print(f"  Restart cmd timed out:       {_bool_str(result.get('restart_command_timed_out', False))}")
     print(f"  Restart target:              {audit.get('restart_target', '?')}")
     print()
 
@@ -34831,7 +34869,9 @@ def main() -> None:
                 "suggested_operator_actions": [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
                 "git": {}, "required_tags": {},
                 "before": {}, "after": {},
-                "restart_performed": False, "restart_target": _PHASE16T_BRIDGE_SERVICE,
+                "restart_performed": False, "restart_attempted": False,
+                "restart_command_timed_out": False,
+                "restart_target": _PHASE16T_BRIDGE_SERVICE,
                 "restart_error": f"{type(exc).__name__}",
                 "bridge_reachable_after_restart": False,
                 "guard_state_clean": False, "guard_state": {},
@@ -34840,7 +34880,9 @@ def main() -> None:
                 "sixteen_s_after_summary": {"diagnosis": "N/A (not run)", "severity": "N/A (not run)", "invariant_intact": False},
                 "restart_persistence_audit": {
                     "invariant_survived": False,
+                    "restart_attempted": False,
                     "restart_performed": False,
+                    "restart_command_timed_out": False,
                     "restart_target": _PHASE16T_BRIDGE_SERVICE,
                 },
                 "no_broker_mutation": True, "no_broker_order_created": True,

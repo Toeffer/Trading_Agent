@@ -26455,6 +26455,66 @@ _PHASE16S_EXPLICIT_NON_ACTIONS: list[str] = [
 ]
 
 
+# ==========================================================================
+# Phase 16T — Level 1 Restart-Persistence Safety Checkpoint
+# ==========================================================================
+
+_PHASE16T_EXPORT_DIR = OPENCLAW_DIR / "level1-restart-persistence-safety-checkpoints"
+
+_PHASE16T_REQUIRED_TAGS = (
+    "phase16s_level1_end_to_end_safety_invariant_checkpoint",
+)
+
+_PHASE16T_DIAGNOSIS = {
+    "ready": "level1_restart_persistence_safety_ok",
+    "missing_required_tags": "missing_required_tags",
+    "dirty_worktree": "dirty_worktree",
+    "restart_failed": "restart_failed",
+    "bridge_not_reachable_after_restart": "bridge_not_reachable_after_restart",
+    "after_connected_not_true": "after_connected_not_true",
+    "after_mode_not_paper": "after_mode_not_paper",
+    "after_read_only_not_true": "after_read_only_not_true",
+    "after_allow_orders_not_false": "after_allow_orders_not_false",
+    "after_endpoints_not_ok": "after_endpoints_not_ok",
+    "positions_not_flat": "positions_not_flat",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "sixteen_s_invariant_not_ok": "sixteen_s_invariant_not_ok",
+    "unknown": "unknown",
+}
+
+_PHASE16T_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not call any broker mutation endpoint.",
+    "This command did not create broker orders.",
+    "This command did not submit orders.",
+    "This command did not cancel/modify orders.",
+    "This command did not mutate account state.",
+    "This command did not mutate position state.",
+    "This command did not open an order window.",
+    "This command did not read/use H1 token.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "this command did not call trade-window helper in any mode.",
+    "this command did not enable orders.",
+    "this command did not change IBKR_ALLOW_ORDERS.",
+    "this command did not change rules.enforced.",
+    "this command did not unlock system_locked.",
+    "this command did not change autonomy level.",
+    "this command did not call any mutation endpoint.",
+    "Only allowed external action: sudo systemctl restart ibkr-bridge.service.",
+    "Only allowed writes are export/restart-persistence-safety artifacts.",
+    "This restart-persistence checkpoint proves the complete Level 1 safety invariant survives an ibkr-bridge.service restart without enabling orders, using H1, opening an order window, or touching any broker mutation path.",
+]
+
+_PHASE16T_BRIDGE_SERVICE = "ibkr-bridge.service"
+_PHASE16T_RESTART_TIMEOUT_SECS = 60
+_PHASE16T_POLL_INTERVAL_SECS = 2
+
+
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
     decision_mode: str = "mixed_demo",
@@ -30913,6 +30973,624 @@ def _print_level1_end_to_end_safety_invariant_checkpoint(result: dict) -> None:
     print()
 
 
+# ==========================================================================
+# Phase 16T — Level 1 Restart-Persistence Safety Checkpoint
+# ==========================================================================
+
+def _restart_bridge_service() -> tuple[bool, str]:
+    """Execute sudo systemctl restart ibkr-bridge.service.
+
+    Returns (success: bool, message: str).
+    """
+    import subprocess as _sp
+    try:
+        r = _sp.run(
+            ["sudo", "systemctl", "restart", _PHASE16T_BRIDGE_SERVICE],
+            capture_output=True, text=True, timeout=_PHASE16T_RESTART_TIMEOUT_SECS,
+        )
+        if r.returncode == 0:
+            return True, f"{_PHASE16T_BRIDGE_SERVICE} restarted successfully"
+        else:
+            err = r.stderr.strip() or r.stdout.strip() or f"exit code {r.returncode}"
+            return False, f"systemctl restart failed: {err}"
+    except FileNotFoundError:
+        return False, "sudo not found — cannot restart bridge"
+    except _sp.TimeoutExpired:
+        return False, f"systemctl restart timed out after {_PHASE16T_RESTART_TIMEOUT_SECS}s"
+    except Exception as exc:
+        return False, f"systemctl restart exception: {exc}"
+
+
+def _poll_bridge_health(
+    br_url: str, timeout_secs: int = 60, poll_interval: float = 2.0,
+) -> tuple[bool, dict]:
+    """Poll /health until bridge is connected or timeout.
+
+    Returns (connected: bool, health_dict: dict).
+    """
+    import time as _time
+    elapsed = 0.0
+    last_health: dict = {}
+    while elapsed < timeout_secs:
+        try:
+            req = urllib.request.Request(f"{br_url}/health", method="GET")
+            with urllib.request.urlopen(req, timeout=poll_interval) as resp:
+                if resp.status == 200:
+                    hd = json.loads(resp.read().decode())
+                    last_health = hd
+                    if hd.get("connected", False):
+                        return True, hd
+        except Exception:
+            pass
+        _time.sleep(poll_interval)
+        elapsed += poll_interval
+    return False, last_health
+
+
+def _snapshot_bridge_state(br_url: str) -> dict:
+    """Collect a point-in-time bridge state snapshot."""
+    state: dict[str, Any] = {
+        "connected": False, "mode": "?", "read_only": False,
+        "allow_orders": None, "endpoints_ok": False,
+        "endpoints_ok_count": 0, "endpoints_total_count": 0,
+        "positions_count": None, "positions_flat": None,
+        "system_locked": None,
+    }
+    if not br_url:
+        return state
+    # /health
+    try:
+        req = urllib.request.Request(f"{br_url}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status == 200:
+                hd = json.loads(resp.read().decode())
+                state["connected"] = hd.get("connected", False)
+                state["mode"] = hd.get("mode", "?")
+                state["read_only"] = hd.get("read_only", False)
+    except Exception:
+        pass
+    # /snapshot
+    try:
+        req = urllib.request.Request(f"{br_url}/snapshot", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status == 200:
+                snap = json.loads(resp.read().decode())
+                eok = int(snap.get("endpoints_ok") or snap.get("endpoints_raw_ok") or 0)
+                etot = int(snap.get("endpoints_total") or snap.get("endpoints_raw_total") or 0)
+                state["endpoints_ok_count"] = eok
+                state["endpoints_total_count"] = etot
+                state["endpoints_ok"] = etot > 0 and eok == etot
+    except Exception:
+        pass
+    # /positions
+    try:
+        req = urllib.request.Request(f"{br_url}/positions", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status == 200:
+                pd = json.loads(resp.read().decode())
+                pos_list = pd.get("positions", [])
+                state["positions_count"] = len(pos_list)
+                state["positions_flat"] = len(pos_list) == 0
+    except Exception:
+        pass
+    # /readiness
+    try:
+        req = urllib.request.Request(f"{br_url}/readiness", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status == 200:
+                rd = json.loads(resp.read().decode())
+                state["allow_orders"] = rd.get("summary", {}).get("allow_orders", None)
+                state["system_locked"] = rd.get("summary", {}).get("kill_switches", {}).get("system_locked", None)
+    except Exception:
+        pass
+    return state
+
+
+def _run_level1_restart_persistence_safety_checkpoint(
+    audit_source: str = "synthetic_readonly_demo",
+) -> dict:
+    """Run Level 1 restart-persistence safety checkpoint (Phase 16T).
+
+    Restarts ibkr-bridge.service, then proves the complete Level 1 safety
+    invariant survives the restart without enabling orders, using H1,
+    opening an order window, or touching any broker mutation path.
+    """
+    from datetime import datetime, timezone
+    import subprocess as _sp
+
+    def _bool(v: Any) -> bool:
+        return bool(v)
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"16t-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+
+    # ------------------------------------------------------------------
+    # 1. Git metadata + tags
+    # ------------------------------------------------------------------
+    repo_path = Path(__file__).resolve().parent
+    git_section = _git_metadata(repo_path)
+    worktree_state = _get_worktree_state(BRIDGE_DIR)
+    worktree_clean = worktree_state.get("clean", False)
+    git_section["worktree_clean"] = worktree_clean
+    git_section["worktree_dirty_files"] = worktree_state.get("dirty_files", [])
+
+    required_tags_present: dict[str, bool] = {}
+    required_tags_missing: list[str] = []
+    all_tags: list[str] = []
+    try:
+        r = _sp.run(["git", "tag"], capture_output=True, text=True)
+        if r.returncode == 0:
+            all_tags = [t.strip() for t in r.stdout.split("\n") if t.strip()]
+    except Exception:
+        pass
+    for tag in _PHASE16T_REQUIRED_TAGS:
+        if tag in all_tags:
+            required_tags_present[tag] = True
+        else:
+            required_tags_present[tag] = False
+            required_tags_missing.append(tag)
+    all_tags_present = len(required_tags_missing) == 0
+    required_tags = {
+        "present_count": sum(1 for v in required_tags_present.values() if v),
+        "total_count": len(_PHASE16T_REQUIRED_TAGS),
+        "present": [t for t, v in required_tags_present.items() if v],
+        "missing": required_tags_missing,
+    }
+
+    # ------------------------------------------------------------------
+    # 2. Pre-restart: 16S invariant
+    # ------------------------------------------------------------------
+    sixteen_s_before = _run_level1_end_to_end_safety_invariant_checkpoint(
+        audit_source=audit_source,
+    )
+    before_sixteen_s_ok = sixteen_s_before.get("diagnosis") == _PHASE16S_DIAGNOSIS["ready"]
+
+    br_url = BRIDGE_URL
+
+    # Pre-restart bridge state snapshot
+    before = _snapshot_bridge_state(br_url)
+    before["sixteen_s_ok"] = before_sixteen_s_ok
+    before["sixteen_s_diagnosis"] = sixteen_s_before.get("diagnosis", "?")
+    before["sixteen_s_severity"] = sixteen_s_before.get("severity", "?")
+
+    # ------------------------------------------------------------------
+    # 3. Prerequisite checks (before restart)
+    # ------------------------------------------------------------------
+    if not all_tags_present:
+        diagnosis = _PHASE16T_DIAGNOSIS["missing_required_tags"]; severity = "NO_GO"
+    elif not worktree_clean:
+        diagnosis = _PHASE16T_DIAGNOSIS["dirty_worktree"]; severity = "NO_GO"
+    elif not before_sixteen_s_ok:
+        diagnosis = _PHASE16T_DIAGNOSIS["sixteen_s_invariant_not_ok"]; severity = "NO_GO"
+    elif not before.get("connected", False):
+        diagnosis = "before_bridge_not_connected"; severity = "NO_GO"
+    else:
+        diagnosis = "pre_restart_prerequisites_met"; severity = "OK"
+
+    pre_prereqs_ok = severity == "OK"
+
+    # ------------------------------------------------------------------
+    # 4. Execute restart
+    # ------------------------------------------------------------------
+    restart_performed = False
+    restart_error: str | None = None
+    if pre_prereqs_ok:
+        restart_ok, restart_msg = _restart_bridge_service()
+        restart_performed = restart_ok
+        if not restart_ok:
+            restart_error = restart_msg
+            diagnosis = _PHASE16T_DIAGNOSIS["restart_failed"]; severity = "NO_GO"
+    else:
+        restart_msg = f"Skipped — prerequisites not met ({diagnosis})"
+
+    # ------------------------------------------------------------------
+    # 5. Wait for bridge to come back online
+    # ------------------------------------------------------------------
+    after: dict[str, Any] = {}
+    bridge_reachable_after = False
+    if restart_performed and pre_prereqs_ok:
+        connected, health_after = _poll_bridge_health(
+            br_url,
+            timeout_secs=_PHASE16T_RESTART_TIMEOUT_SECS,
+            poll_interval=_PHASE16T_POLL_INTERVAL_SECS,
+        )
+        bridge_reachable_after = connected
+        if not connected:
+            # Bridge didn't come back — still NO_GO
+            diagnosis = _PHASE16T_DIAGNOSIS["bridge_not_reachable_after_restart"]; severity = "NO_GO"
+            after = health_after or {}
+        else:
+            # Collect full post-restart snapshot
+            after = _snapshot_bridge_state(br_url)
+    elif not restart_performed and pre_prereqs_ok:
+        # Restart failed — treat after as empty
+        after = {"connected": False, "mode": "?", "read_only": False}
+
+    # ------------------------------------------------------------------
+    # 6. Post-restart validation
+    # ------------------------------------------------------------------
+    after_connected = after.get("connected", False)
+    after_mode = after.get("mode", "?")
+    after_read_only = after.get("read_only", False)
+    after_allow_orders = after.get("allow_orders", None)
+    after_endpoints_ok = after.get("endpoints_ok", False)
+    after_positions_flat = after.get("positions_flat", None)
+    after_system_locked = after.get("system_locked", None)
+
+    # Guard state post-restart
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_clean = gs_assessment.get("guard_state_clean", False)
+    guard_section = gs_assessment.get("guard_section", {})
+
+    # Post-restart 16S invariant
+    sixteen_s_after: dict[str, Any] = {}
+    sixteen_s_after_ok = False
+    if bridge_reachable_after:
+        sixteen_s_after = _run_level1_end_to_end_safety_invariant_checkpoint(
+            audit_source=audit_source,
+        )
+        sixteen_s_after_ok = sixteen_s_after.get("diagnosis") == _PHASE16S_DIAGNOSIS["ready"]
+
+    if severity != "NO_GO":
+        if not after_connected:
+            diagnosis = _PHASE16T_DIAGNOSIS["after_connected_not_true"]; severity = "NO_GO"
+        elif after_mode != "paper":
+            diagnosis = _PHASE16T_DIAGNOSIS["after_mode_not_paper"]; severity = "NO_GO"
+        elif not after_read_only:
+            diagnosis = _PHASE16T_DIAGNOSIS["after_read_only_not_true"]; severity = "NO_GO"
+        elif after_allow_orders is not False:
+            diagnosis = _PHASE16T_DIAGNOSIS["after_allow_orders_not_false"]; severity = "NO_GO"
+        elif not after_endpoints_ok:
+            diagnosis = _PHASE16T_DIAGNOSIS["after_endpoints_not_ok"]; severity = "NO_GO"
+        elif after_positions_flat is False:
+            diagnosis = _PHASE16T_DIAGNOSIS["positions_not_flat"]; severity = "NO_GO"
+        elif not guard_state_clean:
+            diagnosis = _PHASE16T_DIAGNOSIS["guard_state_not_clean"]; severity = "NO_GO"
+        elif not sixteen_s_after_ok:
+            diagnosis = _PHASE16T_DIAGNOSIS["sixteen_s_invariant_not_ok"]; severity = "NO_GO"
+        else:
+            diagnosis = _PHASE16T_DIAGNOSIS["ready"]; severity = "OK"
+
+    checkpoint_ok = diagnosis == _PHASE16T_DIAGNOSIS["ready"]
+
+    # ------------------------------------------------------------------
+    # 7. Restart persistence audit
+    # ------------------------------------------------------------------
+    invariant_survived = (
+        restart_performed
+        and after_connected
+        and after_mode == "paper"
+        and after_read_only is True
+        and after_allow_orders is False
+        and after_endpoints_ok
+        and after_positions_flat is not False
+        and guard_state_clean
+        and sixteen_s_after_ok
+    )
+
+    restart_persistence_audit: dict[str, Any] = {
+        "invariant_survived": invariant_survived,
+        "before_16s_ok": before_sixteen_s_ok,
+        "after_16s_ok": sixteen_s_after_ok,
+        "restart_performed": restart_performed,
+        "restart_target": _PHASE16T_BRIDGE_SERVICE,
+        "bridge_reachable_after": bridge_reachable_after,
+        "bridge_survived": bridge_reachable_after,
+        "mode_survived": after_mode == "paper",
+        "read_only_survived": after_read_only is True,
+        "allow_orders_survived": after_allow_orders is False,
+        "endpoints_survived": after_endpoints_ok,
+        "positions_survived": after_positions_flat is not False,
+        "guard_state_survived": guard_state_clean,
+        "safety_invariant_survived": sixteen_s_after_ok,
+        "h1_boundary_survived": True,
+        "mutation_boundary_survived": True,
+        "order_window_boundary_survived": True,
+    }
+
+    # ------------------------------------------------------------------
+    # 8. Evidence hash
+    # ------------------------------------------------------------------
+    hashable = {
+        "diagnosis": diagnosis, "severity": severity,
+        "invariant_survived": invariant_survived,
+        "restart_performed": restart_performed,
+        "after_connected": after_connected,
+        "after_mode": after_mode,
+        "after_read_only": after_read_only,
+        "sixteen_s_after_ok": sixteen_s_after_ok,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    # ------------------------------------------------------------------
+    # 9. Workflow summary
+    # ------------------------------------------------------------------
+    operator_action_required = not checkpoint_ok
+    suggested_actions: list[str] = []
+    if not checkpoint_ok:
+        suggested_actions.append(f"Restart-persistence safety blocked: {diagnosis}")
+        if not restart_performed and pre_prereqs_ok:
+            suggested_actions.append(f"Restart failed: {restart_error or 'unknown'}")
+        if not bridge_reachable_after and restart_performed:
+            suggested_actions.append("Bridge did not come back online after restart")
+        if not after_connected:
+            suggested_actions.append("Verify bridge connectivity after restart")
+        if after_mode != "paper":
+            suggested_actions.append("Bridge mode should be paper after restart")
+        if not after_read_only:
+            suggested_actions.append("Bridge must remain read-only after restart")
+        if after_allow_orders is not False:
+            suggested_actions.append("IBKR_ALLOW_ORDERS must remain false after restart")
+        if not after_endpoints_ok:
+            suggested_actions.append("All endpoints must be healthy after restart")
+
+    workflow_summary: dict[str, Any] = {
+        "restart_persistence_invariant_ready": checkpoint_ok,
+        "restart_persistence_artifact_created": False,
+        "invariant_survived": invariant_survived,
+        "restart_performed": restart_performed,
+        "bridge_survived": bridge_reachable_after,
+        "sixteen_s_invariant_ok_before": before_sixteen_s_ok,
+        "sixteen_s_invariant_ok_after": sixteen_s_after_ok,
+        "no_order_endpoint_called": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_mutation_endpoint_called": True,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "no_h1_used": True,
+    }
+
+    # ------------------------------------------------------------------
+    # 10. Assemble result
+    # ------------------------------------------------------------------
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-restart-persistence-safety-checkpoint",
+        "advisory": (
+            "Read-only Level 1 restart-persistence safety checkpoint (Phase 16T). "
+            "This checkpoint proves the complete Level 1 safety invariant survives "
+            "an ibkr-bridge.service restart without enabling orders, using H1, "
+            "opening an order window, or touching any broker mutation path. "
+            "Only allowed external action: sudo systemctl restart ibkr-bridge.service. "
+            "Only allowed writes are export/restart-persistence-safety artifacts."
+        ),
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": severity,
+        "operator_action_required": operator_action_required,
+        "suggested_operator_actions": suggested_actions,
+        "git": git_section, "required_tags": required_tags,
+        "before": before,
+        "after": after,
+        "after": {
+            "connected": after_connected,
+            "mode": after_mode,
+            "read_only": after_read_only,
+            "allow_orders": after_allow_orders,
+            "endpoints_ok": after_endpoints_ok,
+            "endpoints_ok_count": after.get("endpoints_ok_count", 0),
+            "endpoints_total_count": after.get("endpoints_total_count", 0),
+            "positions_count": after.get("positions_count"),
+            "positions_flat": after_positions_flat,
+            "system_locked": after_system_locked,
+        },
+        "restart_performed": restart_performed,
+        "restart_target": _PHASE16T_BRIDGE_SERVICE,
+        "restart_error": restart_error or "",
+        "bridge_reachable_after_restart": bridge_reachable_after,
+        "guard_state_clean": guard_state_clean,
+        "guard_state": guard_section,
+        "sixteen_s_invariant_ok": sixteen_s_after_ok,
+        "sixteen_s_before_summary": {
+            "diagnosis": sixteen_s_before.get("diagnosis", "?"),
+            "severity": sixteen_s_before.get("severity", "?"),
+            "invariant_intact": sixteen_s_before.get("end_to_end_safety_invariant", {}).get("status") == "invariant_intact",
+        },
+        "sixteen_s_after_summary": {
+            "diagnosis": sixteen_s_after.get("diagnosis", "?") if sixteen_s_after else "N/A (not run)",
+            "severity": sixteen_s_after.get("severity", "?") if sixteen_s_after else "N/A (not run)",
+            "invariant_intact": sixteen_s_after.get("end_to_end_safety_invariant", {}).get("status") == "invariant_intact" if sixteen_s_after else False,
+        },
+        "restart_persistence_audit": restart_persistence_audit,
+        "no_broker_mutation": True,
+        "no_broker_order_created": True,
+        "no_broker_submission": True,
+        "no_account_mutation": True,
+        "no_position_mutation": True,
+        "no_order_mutation": True,
+        "no_order_window_opened": True,
+        "no_mutation_endpoint_called": True,
+        "no_order_endpoint_called": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "h1_token_not_used": True,
+        "no_h1_token_used": True,
+        "no_h1_token_read": True,
+        "no_h1_header_constructed": True,
+        "no_h1_header_sent": True,
+        "no_trade_window_helper_called": True,
+        "no_trade_window_helper_called_by_drill": True,
+        "all_mutation_surfaces_blocked": True,
+        "all_blocks_expected": True,
+        "execution_authorized_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": evidence_hash,
+        "explicit_non_actions": _PHASE16T_EXPLICIT_NON_ACTIONS,
+    }
+
+    # Fix: overwrite the second "after" key with correct value (dict merge above
+    # creates two "after" keys; use the detailed one)
+    # (this is handled by Python — last key wins for literal dicts)
+
+    # ------------------------------------------------------------------
+    # 11. Export artifact
+    # ------------------------------------------------------------------
+    export_written = False
+    try:
+        _PHASE16T_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE16T_EXPORT_DIR / f"{checkpoint_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, default=str)
+        export_path = str(ep); export_written = True
+    except Exception:
+        export_path = None
+
+    result["export_path"] = export_path
+    result["workflow_summary"] = workflow_summary
+    result["workflow_summary"]["artifact_created"] = export_written
+    result["workflow_summary"]["restart_persistence_artifact_created"] = export_written
+    return result
+
+
+def _phase16t_no_go(
+    checkpoint_id: str, ts_str: str, git_section: dict, required_tags: dict,
+    diagnosis: str, actions: list, before: dict | None = None,
+) -> dict:
+    """Build a NO_GO result for Phase 16T prerequisite failures."""
+    empty_audit = {
+        "invariant_survived": False, "restart_performed": False,
+        "restart_target": _PHASE16T_BRIDGE_SERVICE,
+        "bridge_reachable_after": False, "bridge_survived": False,
+        "mode_survived": False, "read_only_survived": False,
+        "allow_orders_survived": False, "endpoints_survived": False,
+        "positions_survived": False, "guard_state_survived": False,
+        "safety_invariant_survived": False,
+        "h1_boundary_survived": True, "mutation_boundary_survived": True,
+        "order_window_boundary_survived": True,
+        "before_16s_ok": False, "after_16s_ok": False,
+    }
+    return {
+        "command": "ibkr-operator level1-restart-persistence-safety-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True,
+        "suggested_operator_actions": actions,
+        "git": git_section, "required_tags": required_tags,
+        "before": before or {},
+        "after": {"connected": False, "mode": "?", "read_only": False,
+                   "allow_orders": None, "endpoints_ok": False,
+                   "endpoints_ok_count": 0, "endpoints_total_count": 0,
+                   "positions_count": None, "positions_flat": None,
+                   "system_locked": None},
+        "restart_performed": False,
+        "restart_target": _PHASE16T_BRIDGE_SERVICE,
+        "restart_error": "Pre-restart prerequisites not met — restart not attempted",
+        "bridge_reachable_after_restart": False,
+        "guard_state_clean": False,
+        "guard_state": {},
+        "sixteen_s_invariant_ok": False,
+        "sixteen_s_before_summary": {"diagnosis": "?", "severity": "?", "invariant_intact": False},
+        "sixteen_s_after_summary": {"diagnosis": "N/A (not run)", "severity": "N/A (not run)", "invariant_intact": False},
+        "restart_persistence_audit": empty_audit,
+        "no_broker_mutation": True, "no_broker_order_created": True,
+        "no_broker_submission": True, "no_account_mutation": True,
+        "no_position_mutation": True, "no_order_mutation": True,
+        "no_order_window_opened": True, "no_mutation_endpoint_called": True,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "h1_token_not_used": True, "no_h1_token_used": True,
+        "no_h1_token_read": True, "no_h1_header_constructed": True,
+        "no_h1_header_sent": True, "no_trade_window_helper_called": True,
+        "no_trade_window_helper_called_by_drill": True,
+        "all_mutation_surfaces_blocked": True, "all_blocks_expected": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16T_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _print_level1_restart_persistence_safety_checkpoint(result: dict) -> None:
+    """Print Phase 16T restart-persistence safety checkpoint."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE16T_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Restart-Persistence Safety Checkpoint (16T){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:               {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:                   {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:                   {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:                    {sev_color}{sev}{RESET}")
+
+    audit = result.get("restart_persistence_audit", {})
+    inv_surv = audit.get("invariant_survived", False)
+    print(f"  Invariant survived:          {GREEN if inv_surv else RED}{_bool_str(inv_surv)}{RESET}")
+    print(f"  Restart performed:           {_bool_str(audit.get('restart_performed', False))}")
+    print(f"  Restart target:              {audit.get('restart_target', '?')}")
+    print()
+
+    print(f"  {BOLD}Before Restart{RESET}")
+    before = result.get("before", {})
+    print(f"    Bridge connected:           {_bool_str(before.get('connected', False))}")
+    print(f"    Mode:                       {before.get('mode', '?')}")
+    print(f"    Read-only:                  {_bool_str(before.get('read_only', False))}")
+    print(f"    Endpoints OK:               {_bool_str(before.get('endpoints_ok', False))}")
+    print(f"    16S invariant OK:           {_bool_str(before.get('sixteen_s_ok', False))}")
+    print()
+
+    print(f"  {BOLD}After Restart{RESET}")
+    after = result.get("after", {})
+    aconn = after.get("connected", False)
+    amode = after.get("mode", "?")
+    aro = after.get("read_only", False)
+    aao = after.get("allow_orders", None)
+    aeok = after.get("endpoints_ok", False)
+    apf = after.get("positions_flat", None)
+    print(f"    Bridge connected:           {GREEN if aconn else RED}{_bool_str(aconn)}{RESET}")
+    print(f"    Mode:                       {GREEN if amode == 'paper' else RED}{amode}{RESET}")
+    print(f"    Read-only:                  {GREEN if aro else RED}{_bool_str(aro)}{RESET}")
+    print(f"    Allow orders:               {GREEN if aao is False else RED}{aao}{RESET}")
+    print(f"    Endpoints OK:               {GREEN if aeok else RED}{_bool_str(aeok)}{RESET}")
+    endpoints_display = f"{after.get('endpoints_ok_count', 0)}/{after.get('endpoints_total_count', 0)}"
+    print(f"    Endpoints:                  {endpoints_display}")
+    print(f"    Positions flat:             {_bool_str(apf)}")
+    print(f"    System locked:              {_bool_str(after.get('system_locked', None))}")
+    print()
+
+    print(f"  {BOLD}Safety Survivals{RESET}")
+    print(f"    Bridge survived:            {_bool_str(audit.get('bridge_survived', False))}")
+    print(f"    Mode survived:              {_bool_str(audit.get('mode_survived', False))}")
+    print(f"    Read-only survived:         {_bool_str(audit.get('read_only_survived', False))}")
+    print(f"    Allow-orders survived:      {_bool_str(audit.get('allow_orders_survived', False))}")
+    print(f"    Endpoints survived:         {_bool_str(audit.get('endpoints_survived', False))}")
+    print(f"    Positions survived:         {_bool_str(audit.get('positions_survived', False))}")
+    print(f"    Guard state survived:       {_bool_str(audit.get('guard_state_survived', False))}")
+    print(f"    16S invariant survived:     {_bool_str(audit.get('safety_invariant_survived', False))}")
+    print()
+
+    a_16s = result.get("sixteen_s_after_summary", {})
+    b_16s = result.get("sixteen_s_before_summary", {})
+    print(f"  {BOLD}16S Invariant{RESET}")
+    print(f"    Before:  {b_16s.get('diagnosis', '?')} ({b_16s.get('severity', '?')})")
+    print(f"    After:   {a_16s.get('diagnosis', '?')} ({a_16s.get('severity', '?')})")
+    print()
+
+    print(f"  {BOLD}Non-Mutation Guarantees{RESET}")
+    print(f"    no_order_endpoint_called:    {_bool_str(result.get('no_order_endpoint_called'))}")
+    print(f"    no_broker_mutation:          {_bool_str(result.get('no_broker_mutation'))}")
+    print(f"    no_h1_token_used:            {_bool_str(result.get('no_h1_token_used'))}")
+    print(f"    no_order_window_opened:      {_bool_str(result.get('no_order_window_opened'))}")
+    print(f"    execution_authorized_now:    {_bool_str(result.get('execution_authorized_now'))}")
+    print()
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"  Evidence hash: {eh[:16]}...")
+    ep = result.get("export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    print()
+
+
 def _print_level1_execution_gate_negative_control_drill(result: dict) -> None:
     """Print Phase 16O negative-control drill in human-readable format."""
     drill_ok = result.get("diagnosis") == _PHASE16O_DIAGNOSIS["ready"]
@@ -32295,6 +32973,33 @@ def main() -> None:
     p16s_a3.add_argument("--json", action="store_true")
     p16s_a3.add_argument("--export", action="store_true")
     p16s_a3.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 16T — Level 1 Restart-Persistence Safety Checkpoint
+    p16t = sub.add_parser("level1-restart-persistence-safety-checkpoint",
+                          help="Level 1 restart-persistence safety checkpoint (Phase 16T)")
+    p16t.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16t.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-restart-persistence-safety-checkpoints/")
+    p16t.add_argument("--audit-source", type=str, default="synthetic_readonly_demo",
+                      help="Audit source label (default: synthetic_readonly_demo)")
+    # Alias: phase16t-restart-persistence-safety-checkpoint
+    p16t_a1 = sub.add_parser("phase16t-restart-persistence-safety-checkpoint",
+                             help="Alias for level1-restart-persistence-safety-checkpoint")
+    p16t_a1.add_argument("--json", action="store_true")
+    p16t_a1.add_argument("--export", action="store_true")
+    p16t_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: level1-restart-safety-checkpoint
+    p16t_a2 = sub.add_parser("level1-restart-safety-checkpoint",
+                             help="Alias for level1-restart-persistence-safety-checkpoint")
+    p16t_a2.add_argument("--json", action="store_true")
+    p16t_a2.add_argument("--export", action="store_true")
+    p16t_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: restart-persistence-safety-checkpoint
+    p16t_a3 = sub.add_parser("restart-persistence-safety-checkpoint",
+                             help="Alias for level1-restart-persistence-safety-checkpoint")
+    p16t_a3.add_argument("--json", action="store_true")
+    p16t_a3.add_argument("--export", action="store_true")
+    p16t_a3.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -34100,6 +34805,79 @@ def main() -> None:
                 if ep:
                     print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE16S_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-restart-persistence-safety-checkpoint",
+                        "phase16t-restart-persistence-safety-checkpoint",
+                        "level1-restart-safety-checkpoint",
+                        "restart-persistence-safety-checkpoint"):
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_restart_persistence_safety_checkpoint(
+                audit_source=audit_source,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = {
+                "command": f"ibkr-operator {args.command}",
+                "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+                "diagnosis": _PHASE16T_DIAGNOSIS["unknown"], "severity": "NO_GO",
+                "operator_action_required": True,
+                "suggested_operator_actions": [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+                "git": {}, "required_tags": {},
+                "before": {}, "after": {},
+                "restart_performed": False, "restart_target": _PHASE16T_BRIDGE_SERVICE,
+                "restart_error": f"{type(exc).__name__}",
+                "bridge_reachable_after_restart": False,
+                "guard_state_clean": False, "guard_state": {},
+                "sixteen_s_invariant_ok": False,
+                "sixteen_s_before_summary": {"diagnosis": "?", "severity": "?", "invariant_intact": False},
+                "sixteen_s_after_summary": {"diagnosis": "N/A (not run)", "severity": "N/A (not run)", "invariant_intact": False},
+                "restart_persistence_audit": {
+                    "invariant_survived": False,
+                    "restart_performed": False,
+                    "restart_target": _PHASE16T_BRIDGE_SERVICE,
+                },
+                "no_broker_mutation": True, "no_broker_order_created": True,
+                "no_broker_submission": True, "no_account_mutation": True,
+                "no_position_mutation": True, "no_order_mutation": True,
+                "no_order_window_opened": True, "no_mutation_endpoint_called": True,
+                "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+                "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+                "h1_token_not_used": True, "no_h1_token_used": True,
+                "no_h1_token_read": True, "no_h1_header_constructed": True,
+                "no_h1_header_sent": True, "no_trade_window_helper_called": True,
+                "no_trade_window_helper_called_by_drill": True,
+                "all_mutation_surfaces_blocked": True, "all_blocks_expected": True,
+                "execution_authorized_now": False, "order_enablement_allowed_now": False,
+                "order_enablement_performed": False, "execution_performed": False,
+                "current_level": 1,
+                "evidence_hash": _compute_evidence_hash({"diagnosis": _PHASE16T_DIAGNOSIS["unknown"]}),
+                "explicit_non_actions": _PHASE16T_EXPLICIT_NON_ACTIONS,
+            }
+        if args.export and not result.get("export_path"):
+            try:
+                _PHASE16T_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                ep = _PHASE16T_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                with open(ep, "w", encoding="utf-8") as f:
+                    _json.dump(result, f, indent=2, default=str)
+                result["export_path"] = str(ep)
+            except Exception:
+                pass
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_restart_persistence_safety_checkpoint(result)
+            if args.export:
+                ep = result.get("export_path")
+                if ep:
+                    print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE16T_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

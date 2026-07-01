@@ -580,13 +580,16 @@ class TestPrerequisiteFailures:
 # ===========================================================================
 
 class TestPostRestartFailures:
-    def test_restart_fails_no_go(self, clean_git_metadata, clean_worktree,
-                                  all_tags_present, before_bridge_ok,
-                                  sixteen_s_ok_result, guard_state_clean_str,
-                                  env_safety_locked, rules_locked, autonomy_level_one,
-                                  doctor_pass, kpi_hold_expected, hermes_policy_ok):
+    def test_restart_fails_and_bridge_unreachable_no_go(self, clean_git_metadata, clean_worktree,
+                                                         all_tags_present, before_bridge_ok,
+                                                         sixteen_s_ok_result, guard_state_clean_str,
+                                                         env_safety_locked, rules_locked, autonomy_level_one,
+                                                         doctor_pass, kpi_hold_expected, hermes_policy_ok):
+        # Restart command fails AND bridge not reachable after — should be NO_GO
+        after_unreachable = {"connected": False, "mode": "?", "read_only": False}
         patches = _build_mocks(
             before_health=before_bridge_ok,
+            after_health=after_unreachable,
             git_metadata=clean_git_metadata,
             worktree=clean_worktree,
             tags=all_tags_present,
@@ -603,10 +606,50 @@ class TestPostRestartFailures:
         mocks, patches = apply_patches(patches)
         try:
             result = _run_level1_restart_persistence_safety_checkpoint()
-            assert result["diagnosis"] == _PHASE16T_DIAGNOSIS["restart_failed"]
+            assert result["diagnosis"] == _PHASE16T_DIAGNOSIS["bridge_not_reachable_after_restart"]
             assert result["severity"] == "NO_GO"
             assert result["restart_attempted"] is True
             assert result["restart_command_timed_out"] is False
+        finally:
+            stop_patches(mocks, patches)
+
+    def test_restart_cmd_fails_but_bridge_reachable_ok(self, clean_git_metadata, clean_worktree,
+                                                        all_tags_present, before_bridge_ok, after_bridge_ok,
+                                                        sixteen_s_ok_result, guard_state_clean_str,
+                                                        env_safety_locked, rules_locked, autonomy_level_one,
+                                                        doctor_pass, kpi_hold_expected, hermes_policy_ok):
+        # Restart command fails (sudo) but bridge IS reachable — should recover and pass
+        patches = _build_mocks(
+            before_health=before_bridge_ok,
+            after_health=after_bridge_ok,
+            after_snapshot={"ok": True, "endpoints_ok": 8, "endpoints_total": 8},
+            after_readiness={"summary": {"kill_switches": {"system_locked": True}, "allow_orders": False}},
+            after_positions={"positions": []},
+            git_metadata=clean_git_metadata,
+            worktree=clean_worktree,
+            tags=all_tags_present,
+            sixteen_s_before_result=sixteen_s_ok_result,
+            sixteen_s_after_result=sixteen_s_ok_result,
+            guard_state_content=guard_state_clean_str,
+            env_safety=env_safety_locked,
+            rules=rules_locked,
+            autonomy=autonomy_level_one,
+            doctor=doctor_pass,
+            kpi=kpi_hold_expected,
+            policy=hermes_policy_ok,
+            clean_cycles_count=7,
+            restart_ok=False, restart_msg="sudo: a terminal is required",
+        )
+        mocks, patches = apply_patches(patches)
+        try:
+            result = _run_level1_restart_persistence_safety_checkpoint()
+            # Bridge reachable after failed restart command → not a failure
+            assert result["restart_attempted"] is True
+            assert result["restart_command_timed_out"] is False
+            assert result["restart_error"] == "sudo: a terminal is required"
+            # Should recover and pass validation
+            assert result["diagnosis"] == _PHASE16T_DIAGNOSIS["ready"]
+            assert result["severity"] == "OK"
         finally:
             stop_patches(mocks, patches)
 

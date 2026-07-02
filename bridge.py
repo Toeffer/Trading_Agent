@@ -75,9 +75,14 @@ _STARTUP_CONNECT_RETRY_DELAY = 5.0
 async def _startup_auto_connect():
     """Async auto-connect with bounded retries. Runs as background task.
 
-    Calls the existing connect() function directly on the main event-loop
-    thread — NOT via run_in_executor — because ib_insync's IB.connect()
-    requires an asyncio event loop in the calling thread.
+    Uses ib.connectAsync() — the async-native connect path — because we are
+    inside the running Uvicorn asyncio event loop.  Do NOT call the
+    synchronous connect() or ib.connect() from here; they would try to
+    start a second event loop and fail with "Cannot run the event loop
+    while another loop is running".
+
+    The existing synchronous POST /connect endpoint is unchanged and
+    continues to work for manual connects.
 
     Read-only. No /order*, no H1, no trade-window, no broker mutation.
     """
@@ -108,21 +113,32 @@ async def _startup_auto_connect():
                 IBKR_HOST, IBKR_PORT, IBKR_CLIENT_ID, IBKR_READ_ONLY, IBKR_ALLOW_ORDERS,
             )
 
-            # Call connect() directly — NOT via run_in_executor.
-            # connect() is synchronous but ib_insync needs the event loop.
-            result = connect()
+            # Create a fresh IB instance and connect async.
+            # Use connectAsync() — NOT connect() — because we are on the
+            # Uvicorn event loop and must not start a second loop.
+            global ib
+            ib = IB()
+            await ib.connectAsync(
+                IBKR_HOST,
+                IBKR_PORT,
+                clientId=IBKR_CLIENT_ID,
+                timeout=20,
+                readonly=IBKR_READ_ONLY,
+                account=IBKR_ACCOUNT or "",
+            )
 
-            if result.get("connected"):
+            if ib.isConnected():
+                accounts = ib.managedAccounts()
                 _l.warning(
-                    "startup_auto_connect OK attempt=%d/%d managed_accounts=%s client_id=%s",
+                    "startup_auto_connect OK attempt=%d/%d managed_accounts=%s client_id=%s read_only=%s allow_orders=%s",
                     attempt, _STARTUP_CONNECT_MAX_ATTEMPTS,
-                    result.get("managed_accounts"), result.get("client_id"),
+                    accounts, IBKR_CLIENT_ID, IBKR_READ_ONLY, IBKR_ALLOW_ORDERS,
                 )
                 return
 
             _l.warning(
-                "startup_auto_connect not_connected attempt=%d/%d result=%s",
-                attempt, _STARTUP_CONNECT_MAX_ATTEMPTS, result,
+                "startup_auto_connect not_connected attempt=%d/%d ib.isConnected()=%s",
+                attempt, _STARTUP_CONNECT_MAX_ATTEMPTS, ib.isConnected(),
             )
 
         except Exception as exc:
@@ -132,10 +148,16 @@ async def _startup_auto_connect():
                 type(exc).__name__, str(exc),
             )
             _l.warning(
-                "startup_auto_connect traceback attempt=%d/%d %s",
+                "startup_auto_connect traceback attempt=%d/%d\n%s",
                 attempt, _STARTUP_CONNECT_MAX_ATTEMPTS,
                 _tb.format_exc(),
             )
+            # Clean up failed connect and reset IB instance
+            try:
+                ib.disconnect()
+            except Exception:
+                pass
+            ib = IB()
 
         if attempt < _STARTUP_CONNECT_MAX_ATTEMPTS:
             await asyncio.sleep(_STARTUP_CONNECT_RETRY_DELAY)

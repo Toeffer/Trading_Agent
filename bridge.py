@@ -51,6 +51,145 @@ if _IBKR_BRIDGE_DEBUG:
 # /OOM_TRACE_MIN
 
 
+# ---------------------------------------------------------------------------
+# Startup auto-connect handler — always active, not gated by debug flag
+# ---------------------------------------------------------------------------
+@app.on_event("startup")
+async def _auto_connect_startup():
+    """Always-registered startup hook for bounded read-only IBKR auto-connect."""
+    asyncio.create_task(_startup_auto_connect())
+
+
+# ---------------------------------------------------------------------------
+# Startup auto-connect — bounded read-only connect on service start
+# ---------------------------------------------------------------------------
+# After a service restart the bridge must auto-connect to IBKR Gateway
+# so /health reports connected=true without a manual POST /connect.
+# Retries for up to ~90s because Gateway may still be waking up.
+# Read-only. No /order*, no H1, no trade-window, no broker mutation.
+
+_STARTUP_CONNECT_MAX_ATTEMPTS = 20
+_STARTUP_CONNECT_RETRY_DELAY = 5.0
+_STARTUP_CONNECT_TIMEOUT = 20  # per-attempt connect timeout
+
+
+def _do_startup_connect() -> dict:
+    """Execute one read-only connect attempt. Called in thread executor.
+
+    Returns dict with keys: connected (bool), managed_accounts (list[str]),
+    client_id (int), error (str|None).
+    """
+    global ib
+    import traceback as _tb
+
+    if not IB:
+        return {
+            "connected": False,
+            "managed_accounts": [],
+            "client_id": IBKR_CLIENT_ID,
+            "error": "ib_insync not installed",
+        }
+
+    try:
+        if ib is not None and ib.isConnected():
+            return {
+                "connected": True,
+                "managed_accounts": ib.managedAccounts(),
+                "client_id": IBKR_CLIENT_ID,
+                "error": None,
+            }
+    except Exception:
+        pass  # stale ib object — create a fresh one
+
+    try:
+        logger.info(
+            "startup_auto_connect connecting host=%s port=%s client_id=%s read_only=true allow_orders=%s account=%s",
+            IBKR_HOST, IBKR_PORT, IBKR_CLIENT_ID, IBKR_ALLOW_ORDERS, IBKR_ACCOUNT or "(default)",
+        )
+        ib = IB()
+        ib.connect(
+            IBKR_HOST,
+            IBKR_PORT,
+            clientId=IBKR_CLIENT_ID,
+            timeout=_STARTUP_CONNECT_TIMEOUT,
+            readonly=True,  # always read-only — never enable orders
+            account=IBKR_ACCOUNT or "",
+        )
+        connected = ib.isConnected()
+        if connected:
+            logger.info(
+                "startup_auto_connect connected managed_accounts=%s client_id=%s",
+                ib.managedAccounts(), IBKR_CLIENT_ID,
+            )
+        return {
+            "connected": connected,
+            "managed_accounts": ib.managedAccounts() if connected else [],
+            "client_id": IBKR_CLIENT_ID,
+            "error": None,
+        }
+    except Exception as e:
+        logger.error(
+            "startup_auto_connect exception class=%s message=%s traceback=%s",
+            type(e).__name__, str(e), _tb.format_exc(),
+        )
+        # Clean up failed connect to avoid resource leak
+        try:
+            ib.disconnect()
+        except Exception:
+            pass
+        return {
+            "connected": False,
+            "managed_accounts": [],
+            "client_id": IBKR_CLIENT_ID,
+            "error": f"{type(e).__name__}: {e}",
+        }
+
+
+async def _startup_auto_connect():
+    """Async auto-connect with bounded retries. Runs as background task."""
+    logger.info(
+        "startup_auto_connect begin max_attempts=%d retry_delay=%.0fs timeout=%ds host=%s port=%s client_id=%s read_only=true allow_orders=%s",
+        _STARTUP_CONNECT_MAX_ATTEMPTS, _STARTUP_CONNECT_RETRY_DELAY, _STARTUP_CONNECT_TIMEOUT,
+        IBKR_HOST, IBKR_PORT, IBKR_CLIENT_ID, IBKR_ALLOW_ORDERS,
+    )
+    await asyncio.sleep(3)  # let uvicorn finish binding before first attempt
+
+    for attempt in range(1, _STARTUP_CONNECT_MAX_ATTEMPTS + 1):
+        logger.info(
+            "startup_auto_connect attempt=%d/%d",
+            attempt, _STARTUP_CONNECT_MAX_ATTEMPTS,
+        )
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _do_startup_connect)
+
+        if result.get("connected"):
+            logger.info(
+                "startup_auto_connect OK attempt=%d/%d managed_accounts=%s client_id=%s",
+                attempt,
+                _STARTUP_CONNECT_MAX_ATTEMPTS,
+                result.get("managed_accounts"),
+                result.get("client_id"),
+            )
+            return
+
+        err = result.get("error", "not connected")
+        if attempt < _STARTUP_CONNECT_MAX_ATTEMPTS:
+            logger.warning(
+                "startup_auto_connect attempt=%d/%d failed error=%s retry_in=%.0fs",
+                attempt,
+                _STARTUP_CONNECT_MAX_ATTEMPTS,
+                err,
+                _STARTUP_CONNECT_RETRY_DELAY,
+            )
+            await asyncio.sleep(_STARTUP_CONNECT_RETRY_DELAY)
+        else:
+            logger.error(
+                "startup_auto_connect FAILED attempts=%d last_error=%s",
+                attempt,
+                err,
+            )
+
+
 IBKR_MODE = os.getenv("IBKR_MODE", "paper")
 IBKR_HOST = os.getenv("IBKR_HOST", "127.0.0.1")
 IBKR_PORT = int(os.getenv("IBKR_PORT", "4002"))

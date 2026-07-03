@@ -31006,6 +31006,84 @@ def _print_level1_end_to_end_safety_invariant_checkpoint(result: dict) -> None:
 # Phase 16T — Level 1 Restart-Persistence Safety Checkpoint
 # ==========================================================================
 
+
+def _run_16s_fresh_subprocess(audit_source: str = "synthetic_readonly_demo") -> tuple[int, dict]:
+    """Run standalone 16S as a subprocess and parse the fresh JSON result.
+
+    Runs the exact same command as the standalone CLI path:
+        python3 ibkr_operator.py level1-end-to-end-safety-invariant-checkpoint --json --export
+
+    This ensures a completely fresh 16S check with no shared state, no stale
+    snapshot cache, and no skip_heavy_probes bypass that could mask endpoint
+    health issues.
+
+    Returns (exit_code, parsed_result_dict).
+    On any failure returns (1, error_result_dict with diagnosis=unknown).
+    """
+    import subprocess as _sp
+    import re as _re
+
+    script_path = Path(__file__).resolve()
+    try:
+        r = _sp.run(
+            [sys.executable, str(script_path),
+             "level1-end-to-end-safety-invariant-checkpoint",
+             "--json", "--export",
+             "--audit-source", audit_source],
+            capture_output=True, text=True, timeout=120,
+            cwd=str(script_path.parent),
+        )
+        exit_code = r.returncode
+        stdout = r.stdout.strip()
+        stderr = r.stderr.strip()
+
+        # Parse JSON from stdout
+        result: dict = {}
+        if stdout:
+            try:
+                result = json.loads(stdout)
+            except json.JSONDecodeError:
+                # Try to extract JSON object from mixed output
+                match = _re.search(r'\{.*\}', stdout, _re.DOTALL)
+                if match:
+                    try:
+                        result = json.loads(match.group())
+                    except json.JSONDecodeError:
+                        pass
+
+        if not result:
+            result = {
+                "diagnosis": _PHASE16S_DIAGNOSIS["unknown"],
+                "severity": "NO_GO",
+                "end_to_end_safety_invariant": {"status": "invariant_broken", "all_boundaries_intact": False},
+                "guard_state_clean": False,
+                "runtime": {"connected": False},
+                "_subprocess_parse_error": (stdout[:500] if stdout else "") + ("\nstderr: " + stderr[:200] if stderr else ""),
+            }
+            exit_code = 1
+
+        return exit_code, result
+
+    except _sp.TimeoutExpired:
+        return 1, {
+            "diagnosis": _PHASE16S_DIAGNOSIS["unknown"],
+            "severity": "NO_GO",
+            "end_to_end_safety_invariant": {"status": "invariant_broken", "all_boundaries_intact": False},
+            "guard_state_clean": False,
+            "runtime": {"connected": False},
+            "_subprocess_error": "16S subprocess timed out after 120s",
+        }
+    except Exception as exc:
+        return 1, {
+            "diagnosis": _PHASE16S_DIAGNOSIS["unknown"],
+            "severity": "NO_GO",
+            "end_to_end_safety_invariant": {"status": "invariant_broken", "all_boundaries_intact": False},
+            "guard_state_clean": False,
+            "runtime": {"connected": False},
+            "_subprocess_error": f"16S subprocess failed: {type(exc).__name__}: {exc}",
+        }
+
+
 def _restart_bridge_service() -> tuple[bool, str, bool]:
     """Execute sudo systemctl restart ibkr-bridge.service.
 
@@ -31391,21 +31469,43 @@ def _run_level1_restart_persistence_safety_checkpoint(
     }
 
     # ------------------------------------------------------------------
-    # 2. Pre-restart: 16S invariant
+    # 2. Pre-restart: Fresh 16S invariant via standalone subprocess
     # ------------------------------------------------------------------
-    sixteen_s_before = _run_level1_end_to_end_safety_invariant_checkpoint(
-        audit_source=audit_source,
-        skip_heavy_probes=True,
+    # Run standalone 16S as a subprocess — identical to CLI invocation.
+    # This avoids skip_heavy_probes bypass, stale snapshot cache, and
+    # in-process shared-state issues.
+    sixteen_s_before_exit, sixteen_s_before = _run_16s_fresh_subprocess(audit_source)
+
+    # Parse every required field from the fresh subprocess result
+    sixteen_s_before_diagnosis = sixteen_s_before.get("diagnosis", "?")
+    sixteen_s_before_severity = sixteen_s_before.get("severity", "?")
+    sixteen_s_before_timestamp = sixteen_s_before.get("timestamp", "?")
+    sixteen_s_before_checkpoint_id = sixteen_s_before.get("checkpoint_id", "?")
+    sixteen_s_before_export_path = sixteen_s_before.get("export_path")
+    sixteen_s_before_runtime = sixteen_s_before.get("runtime", {})
+    sixteen_s_before_runtime_connected = sixteen_s_before_runtime.get("connected", False)
+    sixteen_s_before_guard_state_clean = bool(sixteen_s_before.get("guard_state_clean", False))
+    sixteen_s_before_invariant = sixteen_s_before.get("end_to_end_safety_invariant", {})
+    sixteen_s_before_invariant_intact = sixteen_s_before_invariant.get("status") == "invariant_intact"
+    sixteen_s_before_all_boundaries_intact = bool(sixteen_s_before_invariant.get("all_boundaries_intact", False))
+
+    # Set before_16s_ok ONLY when all explicit conditions hold on the fresh result
+    before_sixteen_s_ok = (
+        sixteen_s_before_exit == 0
+        and sixteen_s_before_diagnosis == _PHASE16S_DIAGNOSIS["ready"]
+        and sixteen_s_before_severity == "OK"
+        and sixteen_s_before_runtime_connected is True
+        and sixteen_s_before_guard_state_clean is True
+        and sixteen_s_before_all_boundaries_intact is True
     )
-    before_sixteen_s_ok = sixteen_s_before.get("diagnosis") == _PHASE16S_DIAGNOSIS["ready"]
 
     br_url = BRIDGE_URL
 
-    # Pre-restart bridge state snapshot
+    # Pre-restart bridge state snapshot (independent of 16S subprocess)
     before = _snapshot_bridge_state(br_url)
     before["sixteen_s_ok"] = before_sixteen_s_ok
-    before["sixteen_s_diagnosis"] = sixteen_s_before.get("diagnosis", "?")
-    before["sixteen_s_severity"] = sixteen_s_before.get("severity", "?")
+    before["sixteen_s_diagnosis"] = sixteen_s_before_diagnosis
+    before["sixteen_s_severity"] = sixteen_s_before_severity
 
     # ------------------------------------------------------------------
     # 3. Prerequisite checks (before restart)
@@ -31519,16 +31619,18 @@ def _run_level1_restart_persistence_safety_checkpoint(
     guard_section = gs_assessment.get("guard_section", {})
 
     # Post-restart 16S invariant
-    # Only run 16S when IBKR is connected; otherwise skip and report
+    # Only run 16S when IBKR is connected; otherwise skip and report.
+    # Uses the same standalone subprocess as the pre-restart check.
     sixteen_s_after: dict[str, Any] = {}
     sixteen_s_after_ok = False
+    sixteen_s_after_exit: int | None = None
     sixteen_s_skipped_reason: str | None = None
     if after_connected:
-        sixteen_s_after = _run_level1_end_to_end_safety_invariant_checkpoint(
-            audit_source=audit_source,
-            skip_heavy_probes=True,
+        sixteen_s_after_exit, sixteen_s_after = _run_16s_fresh_subprocess(audit_source)
+        sixteen_s_after_ok = (
+            sixteen_s_after_exit == 0
+            and sixteen_s_after.get("diagnosis") == _PHASE16S_DIAGNOSIS["ready"]
         )
-        sixteen_s_after_ok = sixteen_s_after.get("diagnosis") == _PHASE16S_DIAGNOSIS["ready"]
     elif bridge_reachable_after:
         # Bridge is up but IBKR not connected — skip 16S, report reason
         sixteen_s_skipped_reason = "ibkr_not_connected"
@@ -31706,14 +31808,28 @@ def _run_level1_restart_persistence_safety_checkpoint(
         "health_reachable_after_seconds": recovery.get("health_reachable_after_seconds"),
         "connected_after_seconds": recovery.get("connected_after_seconds"),
         "kpi_healthy_after_seconds": recovery.get("all_stages_healthy_after_seconds"),
-        "sixteen_s_after_exit": 0 if sixteen_s_after_ok else (1 if sixteen_s_after else None),
+        "sixteen_s_after_exit": sixteen_s_after_exit if sixteen_s_after_exit is not None else (0 if sixteen_s_after_ok else (1 if sixteen_s_after else None)),
         "guard_state_clean": guard_state_clean,
         "guard_state": guard_section,
         "sixteen_s_invariant_ok": sixteen_s_after_ok,
+        "sixteen_s_before_exit": sixteen_s_before_exit,
+        "sixteen_s_before_timestamp": sixteen_s_before_timestamp,
+        "sixteen_s_before_checkpoint_id": sixteen_s_before_checkpoint_id,
+        "sixteen_s_before_export_path": sixteen_s_before_export_path,
+        "sixteen_s_before_diagnosis": sixteen_s_before_diagnosis,
+        "sixteen_s_before_severity": sixteen_s_before_severity,
+        "sixteen_s_before_runtime_connected": sixteen_s_before_runtime_connected,
+        "sixteen_s_before_guard_state_clean": sixteen_s_before_guard_state_clean,
+        "sixteen_s_before_invariant_intact": sixteen_s_before_invariant_intact,
+        "sixteen_s_before_all_boundaries_intact": sixteen_s_before_all_boundaries_intact,
         "sixteen_s_before_summary": {
-            "diagnosis": sixteen_s_before.get("diagnosis", "?"),
-            "severity": sixteen_s_before.get("severity", "?"),
-            "invariant_intact": sixteen_s_before.get("end_to_end_safety_invariant", {}).get("status") == "invariant_intact",
+            "diagnosis": sixteen_s_before_diagnosis,
+            "severity": sixteen_s_before_severity,
+            "exit_code": sixteen_s_before_exit,
+            "runtime_connected": sixteen_s_before_runtime_connected,
+            "guard_state_clean": sixteen_s_before_guard_state_clean,
+            "invariant_intact": sixteen_s_before_invariant_intact,
+            "all_boundaries_intact": sixteen_s_before_all_boundaries_intact,
         },
         "sixteen_s_after_summary": {
             "diagnosis": sixteen_s_after.get("diagnosis", "?") if sixteen_s_after else ("skipped_due_to_" + (sixteen_s_skipped_reason or "unknown")),
@@ -31912,6 +32028,11 @@ def _print_level1_restart_persistence_safety_checkpoint(result: dict) -> None:
     b_16s = result.get("sixteen_s_before_summary", {})
     print(f"  {BOLD}16S Invariant{RESET}")
     print(f"    Before:  {b_16s.get('diagnosis', '?')} ({b_16s.get('severity', '?')})")
+    print(f"    Before exit:                 {result.get('sixteen_s_before_exit', '?')}")
+    print(f"    Before connected:            {_bool_str(b_16s.get('runtime_connected', False))}")
+    print(f"    Before guard clean:          {_bool_str(b_16s.get('guard_state_clean', False))}")
+    print(f"    Before invariant intact:     {_bool_str(b_16s.get('invariant_intact', False))}")
+    print(f"    Before all boundaries:       {_bool_str(b_16s.get('all_boundaries_intact', False))}")
     print(f"    After:   {a_16s.get('diagnosis', '?')} ({a_16s.get('severity', '?')})")
     sixteen_s_after_exit = result.get('sixteen_s_after_exit')
     if sixteen_s_after_exit is not None:
@@ -35201,7 +35322,17 @@ def main() -> None:
                 "sixteen_s_after_exit": None,
                 "guard_state_clean": False, "guard_state": {},
                 "sixteen_s_invariant_ok": False,
-                "sixteen_s_before_summary": {"diagnosis": "?", "severity": "?", "invariant_intact": False},
+                "sixteen_s_before_exit": None,
+                "sixteen_s_before_timestamp": "?",
+                "sixteen_s_before_checkpoint_id": "?",
+                "sixteen_s_before_export_path": None,
+                "sixteen_s_before_diagnosis": "?",
+                "sixteen_s_before_severity": "?",
+                "sixteen_s_before_runtime_connected": False,
+                "sixteen_s_before_guard_state_clean": False,
+                "sixteen_s_before_invariant_intact": False,
+                "sixteen_s_before_all_boundaries_intact": False,
+                "sixteen_s_before_summary": {"diagnosis": "?", "severity": "?", "invariant_intact": False, "exit_code": None, "runtime_connected": False, "guard_state_clean": False, "all_boundaries_intact": False},
                 "sixteen_s_after_summary": {"diagnosis": "N/A (not run)", "severity": "N/A (not run)", "invariant_intact": False},
                 "restart_persistence_audit": {
                     "invariant_survived": False,

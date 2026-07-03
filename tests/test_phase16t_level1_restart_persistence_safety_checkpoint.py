@@ -285,22 +285,41 @@ def _build_mocks(before_health=None,
     else:
         patches.append(patch("ibkr_operator._staged_recovery_poll"))
 
-    # 16S checkpoint — return before/after results
+    # 16S checkpoint — mock _run_16s_fresh_subprocess (returns (exit_code, result_dict))
     s16s_call_count = [0]
     from ibkr_operator import _PHASE16S_DIAGNOSIS
-    _DEF_16S_OK = {
+    _DEF_16S_OK_FULL = {
         "diagnosis": _PHASE16S_DIAGNOSIS["ready"],
         "severity": "OK",
-        "end_to_end_safety_invariant": {"status": "invariant_intact"},
+        "timestamp": "2026-07-03T07:26:40Z",
+        "checkpoint_id": "16s-mock-000000",
+        "export_path": "/tmp/mock-16s.json",
+        "runtime": {"connected": True},
+        "guard_state_clean": True,
+        "end_to_end_safety_invariant": {"status": "invariant_intact", "all_boundaries_intact": True},
     }
-    def _mock_s16s(audit_source="synthetic_readonly_demo", skip_heavy_probes=False):
+    def _mock_16s_subprocess(audit_source="synthetic_readonly_demo"):
         s16s_call_count[0] += 1
-        if s16s_call_count[0] == 1:
-            return sixteen_s_before_result or _DEF_16S_OK
-        else:
-            return sixteen_s_after_result or _DEF_16S_OK
-    patches.append(patch("ibkr_operator._run_level1_end_to_end_safety_invariant_checkpoint",
-                         side_effect=_mock_s16s))
+        result = sixteen_s_before_result if s16s_call_count[0] == 1 else sixteen_s_after_result
+        if result is None:
+            result = {}
+        # Deep-merge: start with full defaults, then shallow-merge top-level
+        # but preserve nested dicts from defaults that result doesn't override
+        full = dict(_DEF_16S_OK_FULL)
+        full.update(result)
+        # Restore nested dicts that result may have partially overridden
+        if "end_to_end_safety_invariant" in result:
+            ei = dict(_DEF_16S_OK_FULL["end_to_end_safety_invariant"])
+            ei.update(result["end_to_end_safety_invariant"])
+            full["end_to_end_safety_invariant"] = ei
+        if "runtime" in result:
+            rt = dict(_DEF_16S_OK_FULL["runtime"])
+            rt.update(result["runtime"])
+            full["runtime"] = rt
+        exit_code = 0 if full.get("diagnosis") == _PHASE16S_DIAGNOSIS["ready"] else 1
+        return exit_code, full
+    patches.append(patch("ibkr_operator._run_16s_fresh_subprocess",
+                         side_effect=_mock_16s_subprocess))
 
     # Guard state
     tmp_openclaw = Path(tempfile.mkdtemp())

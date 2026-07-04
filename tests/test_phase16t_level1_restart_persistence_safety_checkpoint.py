@@ -208,6 +208,7 @@ class _MockResponse:
 
 
 def _build_mocks(before_health=None,
+                 after_health=None,
                  staged_recovery=None,
                  git_metadata=None, worktree=None, tags=None,
                  sixteen_s_before_result=None, sixteen_s_after_result=None,
@@ -218,15 +219,22 @@ def _build_mocks(before_health=None,
     """Build mock patches for Phase 16T checkpoint.
 
     Uses _staged_recovery_poll mock for post-restart recovery.
-    URL opener only used for before snapshot + 16S runs.
+    URL opener used for before snapshot (before_health), after snapshot
+    (after_health), and 16S runs.  after_health defaults to before_health
+    when omitted.
     """
     patches = []
+    _health_call_count = [0]
 
-    # URL opener for before snapshot + 16S
+    # URL opener for before snapshot + after snapshot + 16S
     def _mock_urlopen(req, timeout=None):
         url = req.full_url if hasattr(req, 'full_url') else str(req)
         if "/health" in url:
-            body = before_health if before_health else {"connected": True, "mode": "paper", "read_only": True}
+            _health_call_count[0] += 1
+            if _health_call_count[0] == 1:
+                body = before_health if before_health else {"connected": True, "mode": "paper", "read_only": True}
+            else:
+                body = after_health if after_health else before_health if before_health else {"connected": True, "mode": "paper", "read_only": True}
             return _MockResponse(200, json.dumps(body).encode())
         if "/snapshot" in url:
             return _MockResponse(200, json.dumps({"ok": True, "endpoints_ok": 8, "endpoints_total": 8}).encode())
@@ -667,8 +675,10 @@ class TestPostRestartFailures:
                                                env_safety_locked, rules_locked, autonomy_level_one,
                                                doctor_pass, kpi_hold_expected, hermes_policy_ok):
         # Bridge reachable but IBKR not connected — diagnosis ibkr_not_connected_after_restart
+        after_not_connected = {"connected": False, "mode": "paper", "read_only": True}
         patches = _build_mocks(
             before_health=before_bridge_ok,
+            after_health=after_not_connected,
             staged_recovery=staged_recovery_no_connected,
             git_metadata=clean_git_metadata,
             worktree=clean_worktree,

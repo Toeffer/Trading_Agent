@@ -31547,34 +31547,31 @@ def _run_level1_restart_persistence_safety_checkpoint(
     bridge_reachable_after = False
     recovery: dict[str, Any] = {}
     if restart_attempted and pre_prereqs_ok:
-        # Staged recovery A–E across up to 300s
+        # Staged recovery A–H across up to 300s
         recovery = _staged_recovery_poll(
             br_url,
             timeout_secs=_PHASE16T_RECOVERY_TIMEOUT_SECS,
             poll_interval=_PHASE16T_POLL_INTERVAL_SECS,
         )
         bridge_reachable_after = recovery.get("bridge_reachable", False)
-        if recovery.get("passed", False):
+        # restart_performed: True if service active AND /health reachable
+        if recovery.get("stage_a_ok") and recovery.get("stage_b_ok"):
             restart_performed = True
-            # If restart command failed but bridge recovered, clear failure
-            if diagnosis == _PHASE16T_DIAGNOSIS["restart_failed"]:
-                diagnosis = "pre_restart_prerequisites_met"; severity = "OK"
-            # Build after dict from recovery data
-            after = {
-                "connected": recovery.get("connected", False),
-                "mode": recovery.get("mode", "?"),
-                "read_only": recovery.get("read_only", False),
-                "allow_orders": recovery.get("allow_orders"),
-                "endpoints_ok": True,  # staged recovery passed => all checks ok
-                "endpoints_ok_count": 8,
-                "endpoints_total_count": 8,
-                "positions_count": 0 if recovery.get("positions_flat") is True else None,
-                "positions_flat": recovery.get("positions_flat"),
-                "system_locked": recovery.get("system_locked"),
-            }
+        # If restart command failed but bridge recovered, clear failure
+        if restart_performed and diagnosis == _PHASE16T_DIAGNOSIS["restart_failed"]:
+            diagnosis = "pre_restart_prerequisites_met"; severity = "OK"
+
+        # ------------------------------------------------------------------
+        # 5a. Take a FRESH live snapshot of bridge state after recovery poll.
+        #     This is the authoritative after-state, regardless of whether
+        #     every staged-recovery substage passed.  The staged poll is
+        #     informational; the live /health + /snapshot + /positions calls
+        #     are what populate the after dict truthfully.
+        # ------------------------------------------------------------------
+        if bridge_reachable_after:
+            after = _snapshot_bridge_state(br_url)
         else:
-            # Staged recovery didn't complete
-            # Build partial after dict from whatever stages passed
+            # Bridge never came back — preserve whatever partial data recovery had
             after = {
                 "connected": recovery.get("connected", False),
                 "mode": recovery.get("mode", "?"),
@@ -31584,21 +31581,24 @@ def _run_level1_restart_persistence_safety_checkpoint(
                 "endpoints_ok_count": 0,
                 "endpoints_total_count": 0,
                 "positions_count": None,
-                "positions_flat": recovery.get("positions_flat"),
-                "system_locked": recovery.get("system_locked"),
+                "positions_flat": None,
+                "system_locked": None,
             }
-            # restart_performed: True if service active AND /health reachable
-            # (even if not connected — bridge is up, IBKR may still be connecting)
-            if recovery.get("stage_a_ok") and recovery.get("stage_b_ok"):
-                restart_performed = True
-            if not bridge_reachable_after:
-                diagnosis = _PHASE16T_DIAGNOSIS["bridge_not_reachable_after_restart"]; severity = "NO_GO"
-            elif not recovery.get("stage_h_ok"):
-                # Bridge reachable but IBKR not connected
-                diagnosis = _PHASE16T_DIAGNOSIS["ibkr_not_connected_after_restart"]; severity = "NO_GO"
-            else:
-                # Bridge reachable, connected, but some other stage failed
-                diagnosis = "recovery_stages_incomplete"; severity = "NO_GO"
+
+        # ------------------------------------------------------------------
+        # 5b. Diagnosis from after-state facts, NOT from staged-recovery
+        #     stage_h_ok proxy (which can be false when a prior stage failed
+        #     even though IBKR is already connected).
+        # ------------------------------------------------------------------
+        after_connected_fact = after.get("connected", False)
+        if not bridge_reachable_after:
+            diagnosis = _PHASE16T_DIAGNOSIS["bridge_not_reachable_after_restart"]; severity = "NO_GO"
+        elif not after_connected_fact:
+            diagnosis = _PHASE16T_DIAGNOSIS["ibkr_not_connected_after_restart"]; severity = "NO_GO"
+        else:
+            # Bridge reachable AND IBKR connected — clear any stale diagnosis
+            if severity != "OK":
+                diagnosis = "post_restart_validation_pending"; severity = "OK"
     elif not restart_attempted and pre_prereqs_ok:
         after = {"connected": False, "mode": "?", "read_only": False}
 

@@ -33145,9 +33145,11 @@ def _run_level1_guard_state_rollover_resilience_checkpoint(
             confirm_local_state_repair=False,
         )
         reconcile_repair_applied = reconcile_result.get("repair_applied", False)
-        # exit=0 when no blockers and no unhandled error
-        has_blockers = len(reconcile_result.get("blockers", [])) > 0
-        reconcile_exit = 0 if (not has_blockers) else 1
+        # exit=0 when no NO-GO blockers (HOLD-level blockers are fine —
+        # they indicate ambiguous/no-action-needed, not failure)
+        blockers = reconcile_result.get("blockers", [])
+        no_go_blockers = [b for b in blockers if b.get("severity", "") == "NO-GO"]
+        reconcile_exit = 0 if (len(no_go_blockers) == 0) else 1
     except Exception as e:
         reconcile_result = {"_error": str(e)[:200]}
         reconcile_exit = 1

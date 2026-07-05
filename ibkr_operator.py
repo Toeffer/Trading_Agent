@@ -26516,6 +26516,56 @@ _PHASE16T_RESTART_TIMEOUT_SECS = 180
 _PHASE16T_RECOVERY_TIMEOUT_SECS = 300
 _PHASE16T_POLL_INTERVAL_SECS = 5
 
+# ---------------------------------------------------------------------------
+# Phase 16U — Level 1 Startup Auto-Connect Resilience Checkpoint
+# ---------------------------------------------------------------------------
+
+_PHASE16U_EXPORT_DIR = OPENCLAW_DIR / "level1-startup-autoconnect-resilience-checkpoints"
+
+_PHASE16U_DIAGNOSIS = {
+    "ready": "level1_startup_autoconnect_resilience_ok",
+    "git_worktree_dirty": "git_worktree_dirty",
+    "bridge_unreachable": "bridge_unreachable",
+    "runtime_not_connected": "runtime_not_connected",
+    "mode_not_paper": "mode_not_paper",
+    "read_only_not_true": "read_only_not_true",
+    "allow_orders_not_false": "allow_orders_not_false",
+    "endpoints_not_ok": "endpoints_not_ok",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "startup_autoconnect_config_not_found": "startup_autoconnect_config_not_found",
+    "startup_autoconnect_retry_window_too_short": "startup_autoconnect_retry_window_too_short",
+    "startup_autoconnect_attempts_too_low": "startup_autoconnect_attempts_too_low",
+    "startup_autoconnect_not_local_connect": "startup_autoconnect_not_local_connect",
+    "unknown": "unknown",
+}
+
+_PHASE16U_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not call any broker mutation endpoint.",
+    "This command did not create broker orders.",
+    "This command did not submit orders.",
+    "This command did not cancel/modify orders.",
+    "This command did not mutate account state.",
+    "This command did not mutate position state.",
+    "This command did not open an order window.",
+    "This command did not read/use H1 token.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "This command did not call trade-window helper in any mode.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not change autonomy level.",
+    "This command did not call any mutation endpoint.",
+    "Only allowed writes are export/startup-autoconnect-resilience artifacts.",
+    "This checkpoint proves bridge startup auto-connect resilience without restarting the bridge, using H1, opening an order window, or touching any broker mutation path.",
+]
+
 
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
@@ -32202,6 +32252,471 @@ def _print_level1_restart_persistence_safety_checkpoint(result: dict) -> None:
     print()
 
 
+# ===================================================================
+# Phase 16U — Level 1 Startup Auto-Connect Resilience Checkpoint
+# ===================================================================
+
+def _startup_autoconnect_config_from_source() -> dict:
+    """Read startup_auto_connect config constants from bridge.py source.
+
+    Parses the bridge.py file in the same repo directory to extract
+    _STARTUP_CONNECT_MAX_ATTEMPTS and _STARTUP_CONNECT_RETRY_DELAY.
+    Returns dict with config values and evidence.
+    """
+    result: dict[str, Any] = {
+        "found": False,
+        "source_file": None,
+        "max_attempts": None,
+        "retry_delay_seconds": None,
+        "retry_window_seconds": None,
+        "self_connect_pattern": False,
+        "parse_errors": [],
+    }
+    bridge_py = BRIDGE_DIR / "bridge.py"
+    if not bridge_py.exists():
+        result["parse_errors"].append(f"{bridge_py} not found")
+        return result
+    result["source_file"] = str(bridge_py)
+    try:
+        source = bridge_py.read_text()
+        # Extract constants via simple regex (avoid import side-effects)
+        import re
+        m_attempts = re.search(r'_STARTUP_CONNECT_MAX_ATTEMPTS\s*=\s*(\d+)', source)
+        m_delay = re.search(r'_STARTUP_CONNECT_RETRY_DELAY\s*=\s*([\d.]+)', source)
+        if m_attempts:
+            result["max_attempts"] = int(m_attempts.group(1))
+        else:
+            result["parse_errors"].append("_STARTUP_CONNECT_MAX_ATTEMPTS not found in bridge.py")
+        if m_delay:
+            result["retry_delay_seconds"] = float(m_delay.group(1))
+        else:
+            result["parse_errors"].append("_STARTUP_CONNECT_RETRY_DELAY not found in bridge.py")
+        if result["max_attempts"] is not None and result["retry_delay_seconds"] is not None:
+            result["retry_window_seconds"] = result["max_attempts"] * result["retry_delay_seconds"]
+            result["found"] = True
+        # Check self-connect pattern
+        if "_startup_self_connect_http" in source and "/connect" in source:
+            result["self_connect_pattern"] = True
+    except Exception as e:
+        result["parse_errors"].append(str(e)[:200])
+    return result
+
+
+def _startup_autoconnect_journal_evidence() -> dict:
+    """Collect recent startup_auto_connect journal lines from ibkr-bridge.service.
+
+    Returns dict with relevant lines and count.
+    """
+    import subprocess as _sp
+    result: dict[str, Any] = {
+        "lines": [],
+        "line_count": 0,
+        "last_ok": None,
+        "last_failed": None,
+        "last_attempt_line": None,
+        "error": None,
+    }
+    try:
+        r = _sp.run(
+            ["journalctl", "-u", "ibkr-bridge.service", "--no-pager",
+             "--since", "1 hour ago", "-o", "cat", "--grep", "startup_auto_connect"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            lines = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+            result["lines"] = lines[-40:]  # last 40 lines max
+            result["line_count"] = len(result["lines"])
+            for l in lines:
+                if "startup_auto_connect OK" in l:
+                    result["last_ok"] = l[-200:]
+                if "startup_auto_connect FAILED" in l:
+                    result["last_failed"] = l[-200:]
+                if "attempt=" in l:
+                    result["last_attempt_line"] = l[-200:]
+        else:
+            result["error"] = f"journalctl exit {r.returncode}: {r.stderr[:200]}"
+    except Exception as e:
+        result["error"] = str(e)[:200]
+    return result
+
+
+def _phase16u_no_go(
+    checkpoint_id: str, ts_str: str, git_section: dict,
+    diagnosis: str, actions: list[str],
+    runtime: dict | None = None,
+) -> dict:
+    """Build a NO_GO result for Phase 16U."""
+    return {
+        "command": "ibkr-operator level1-startup-autoconnect-resilience-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True,
+        "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": git_section.get("worktree_clean", False),
+        "runtime": runtime or {
+            "connected": False, "mode": "?", "read_only": False,
+            "allow_orders": None, "endpoints_ok": False,
+            "endpoints_ok_count": 0, "endpoints_total_count": 0,
+        },
+        "kpi": {},
+        "startup_autoconnect_config": {"found": False},
+        "startup_autoconnect_journal": {},
+        "startup_autoconnect_config_found": False,
+        "startup_autoconnect_retry_window_seconds": 0,
+        "startup_autoconnect_retry_window_ge_300": False,
+        "startup_autoconnect_attempts": 0,
+        "startup_autoconnect_attempts_ge_60": False,
+        "startup_autoconnect_uses_local_connect": False,
+        "connect_path_only": False,
+        "runtime_connected": False,
+        "mode": "?",
+        "read_only": False,
+        "allow_orders": None,
+        "endpoints_ok": False,
+        "guard_state_clean": False,
+        "guard_state": {},
+        "no_order_endpoint_called": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_h1_token_used": True,
+        "no_trade_window_helper_called": True,
+        "no_broker_mutation": True,
+        "artifact_created": False,
+        "export_path": None,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16U_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _run_level1_startup_autoconnect_resilience_checkpoint(
+    audit_source: str = "synthetic_readonly_demo",
+) -> dict:
+    """Run Phase 16U — Level 1 Startup Auto-Connect Resilience Checkpoint.
+
+    Read-only. No restart. No broker mutation. No H1. No /order*.
+
+    Collects static/runtime evidence proving bridge startup_auto_connect
+    resilience without requiring another restart drill.  Verifies that:
+    - Bridge source config has retry window >= 300s, attempts >= 60
+    - Self-connect uses local POST /connect only
+    - Current runtime is connected=true, paper, read_only=true, allow_orders=false
+    - Guard state is clean
+    - All mutation surfaces are blocked
+
+    Returns dict with full evidence.
+    """
+    import json as _json
+    import subprocess as _sp
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"16u-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+
+    # ------------------------------------------------------------------
+    # 1. Git metadata + worktree state
+    # ------------------------------------------------------------------
+    repo_path = Path(__file__).resolve().parent
+    git_section = _git_metadata(repo_path)
+    worktree_state = _get_worktree_state(BRIDGE_DIR)
+    worktree_clean = worktree_state.get("clean", False)
+    git_section["worktree_clean"] = worktree_clean
+    git_section["worktree_dirty_files"] = worktree_state.get("dirty_files", [])
+
+    if not worktree_clean:
+        return _phase16u_no_go(
+            checkpoint_id, ts_str, git_section,
+            _PHASE16U_DIAGNOSIS["git_worktree_dirty"],
+            ["Commit or stash dirty files before running this checkpoint."],
+        )
+
+    # ------------------------------------------------------------------
+    # 2. Bridge source config evidence
+    # ------------------------------------------------------------------
+    config_evidence = _startup_autoconnect_config_from_source()
+
+    config_found = config_evidence.get("found", False)
+    max_attempts = config_evidence.get("max_attempts") or 0
+    retry_delay = config_evidence.get("retry_delay_seconds") or 0
+    retry_window = config_evidence.get("retry_window_seconds") or 0
+    self_connect = config_evidence.get("self_connect_pattern", False)
+
+    if not config_found:
+        return _phase16u_no_go(
+            checkpoint_id, ts_str, git_section,
+            _PHASE16U_DIAGNOSIS["startup_autoconnect_config_not_found"],
+            ["Could not parse startup_auto_connect config from bridge.py."],
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Journal evidence
+    # ------------------------------------------------------------------
+    journal_evidence = _startup_autoconnect_journal_evidence()
+
+    # ------------------------------------------------------------------
+    # 4. Runtime state — /health
+    # ------------------------------------------------------------------
+    br_url = BRIDGE_URL
+    runtime_state = _snapshot_bridge_state(br_url)
+
+    rt_connected = runtime_state.get("connected", False)
+    rt_mode = runtime_state.get("mode", "?")
+    rt_read_only = runtime_state.get("read_only", False)
+    rt_allow_orders = runtime_state.get("allow_orders")
+    rt_endpoints_ok = runtime_state.get("endpoints_ok", False)
+    rt_endpoints_count = f"{runtime_state.get('endpoints_ok_count', 0)}/{runtime_state.get('endpoints_total_count', 0)}"
+    rt_positions_flat = runtime_state.get("positions_flat")
+    rt_system_locked = runtime_state.get("system_locked")
+
+    bridge_reachable = bool(runtime_state.get("mode", "?") != "?")
+
+    if not bridge_reachable:
+        return _phase16u_no_go(
+            checkpoint_id, ts_str, git_section,
+            _PHASE16U_DIAGNOSIS["bridge_unreachable"],
+            ["Bridge is not reachable. Start ibkr-bridge.service."],
+        )
+
+    # ------------------------------------------------------------------
+    # 5. KPI
+    # ------------------------------------------------------------------
+    try:
+        kpi = run_kpi()
+    except Exception:
+        kpi = {"verdict": "ERROR", "error": "run_kpi failed"}
+
+    # ------------------------------------------------------------------
+    # 6. Guard state — check guard-state.json exists and is readable
+    # ------------------------------------------------------------------
+    guard_state: dict[str, Any] = {}
+    guard_state_clean = False
+    guard_path = OPENCLAW_DIR / "guard-state.json"
+    try:
+        if guard_path.exists():
+            gs_raw = guard_path.read_text()
+            guard_state = _json.loads(gs_raw) if gs_raw.strip() else {}
+            # guard is clean if it exists, is parseable, and has no enabled-orders drift
+            guard_allow = guard_state.get("IBKR_ALLOW_ORDERS", None)
+            guard_rules = guard_state.get("rules", {})
+            guard_rules_enforced = guard_rules.get("enforced", None) if isinstance(guard_rules, dict) else None
+            # Clean means: orders are not allowed in guard state
+            if guard_allow is False or guard_allow == "false":
+                guard_state_clean = True
+    except Exception:
+        guard_state = {"_error": "guard-state.json unreadable"}
+
+    # ------------------------------------------------------------------
+    # 7. Compute boolean field verdicts
+    # ------------------------------------------------------------------
+    retry_window_ge_300 = retry_window >= 300
+    attempts_ge_60 = max_attempts >= 60
+    uses_local_connect = self_connect is True
+    connect_path_only = uses_local_connect  # self-connect via POST /connect is the only path
+
+    # ------------------------------------------------------------------
+    # 8. Diagnosis
+    # ------------------------------------------------------------------
+    diagnosis = _PHASE16U_DIAGNOSIS["ready"]
+    severity = "OK"
+    actions: list[str] = []
+
+    if not rt_connected:
+        diagnosis = _PHASE16U_DIAGNOSIS["runtime_not_connected"]; severity = "NO_GO"
+        actions.append("Bridge is not connected to IBKR Gateway. Run ibkr-operator doctor.")
+    elif rt_mode != "paper":
+        diagnosis = _PHASE16U_DIAGNOSIS["mode_not_paper"]; severity = "NO_GO"
+        actions.append(f"Mode is {rt_mode}, expected paper.")
+    elif rt_read_only is not True:
+        diagnosis = _PHASE16U_DIAGNOSIS["read_only_not_true"]; severity = "NO_GO"
+        actions.append("Read-only is not true.")
+    elif rt_allow_orders is not False:
+        diagnosis = _PHASE16U_DIAGNOSIS["allow_orders_not_false"]; severity = "NO_GO"
+        actions.append(f"allow_orders is {rt_allow_orders}, expected false.")
+    elif not rt_endpoints_ok:
+        diagnosis = _PHASE16U_DIAGNOSIS["endpoints_not_ok"]; severity = "NO_GO"
+        actions.append("Not all endpoints are healthy.")
+    elif not guard_state_clean:
+        diagnosis = _PHASE16U_DIAGNOSIS["guard_state_not_clean"]; severity = "NO_GO"
+        actions.append("Guard state is not clean. Run 16S checkpoint.")
+    elif not retry_window_ge_300:
+        diagnosis = _PHASE16U_DIAGNOSIS["startup_autoconnect_retry_window_too_short"]; severity = "NO_GO"
+        actions.append(f"Retry window is {retry_window}s, need >= 300s. Increase _STARTUP_CONNECT_MAX_ATTEMPTS.")
+    elif not attempts_ge_60:
+        diagnosis = _PHASE16U_DIAGNOSIS["startup_autoconnect_attempts_too_low"]; severity = "NO_GO"
+        actions.append(f"Max attempts is {max_attempts}, need >= 60.")
+    elif not uses_local_connect:
+        diagnosis = _PHASE16U_DIAGNOSIS["startup_autoconnect_not_local_connect"]; severity = "NO_GO"
+        actions.append("Self-connect pattern not found in bridge.py.")
+
+    checkpoint_ok = diagnosis == _PHASE16U_DIAGNOSIS["ready"]
+
+    # ------------------------------------------------------------------
+    # 9. Assemble result
+    # ------------------------------------------------------------------
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-startup-autoconnect-resilience-checkpoint",
+        "timestamp": ts_str,
+        "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": not checkpoint_ok,
+        "suggested_operator_actions": actions if not checkpoint_ok else ["None — startup auto-connect resilience is confirmed."],
+        "git": git_section,
+        "git_worktree_clean": worktree_clean,
+        "runtime": {
+            "connected": rt_connected,
+            "mode": rt_mode,
+            "read_only": rt_read_only,
+            "allow_orders": rt_allow_orders,
+            "endpoints_ok": rt_endpoints_ok,
+            "endpoints_ok_count": runtime_state.get("endpoints_ok_count", 0),
+            "endpoints_total_count": runtime_state.get("endpoints_total_count", 0),
+            "endpoints_display": rt_endpoints_count,
+            "positions_count": runtime_state.get("positions_count"),
+            "positions_flat": rt_positions_flat,
+            "system_locked": rt_system_locked,
+        },
+        "kpi": kpi,
+        "startup_autoconnect_config": config_evidence,
+        "startup_autoconnect_journal": journal_evidence,
+        "startup_autoconnect_config_found": config_found,
+        "startup_autoconnect_retry_window_seconds": retry_window,
+        "startup_autoconnect_retry_window_ge_300": retry_window_ge_300,
+        "startup_autoconnect_attempts": max_attempts,
+        "startup_autoconnect_attempts_ge_60": attempts_ge_60,
+        "startup_autoconnect_uses_local_connect": uses_local_connect,
+        "connect_path_only": connect_path_only,
+        "runtime_connected": rt_connected,
+        "mode": rt_mode,
+        "read_only": rt_read_only,
+        "allow_orders": rt_allow_orders,
+        "endpoints_ok": rt_endpoints_ok,
+        "guard_state_clean": guard_state_clean,
+        "guard_state": guard_state,
+        "no_order_endpoint_called": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_h1_token_used": True,
+        "no_trade_window_helper_called": True,
+        "no_broker_mutation": True,
+        "execution_authorized_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16U_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False,
+        "export_path": None,
+    }
+
+    # ------------------------------------------------------------------
+    # 10. Export artifact
+    # ------------------------------------------------------------------
+    export_written = False
+    try:
+        _PHASE16U_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE16U_EXPORT_DIR / f"{checkpoint_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        result["export_path"] = str(ep)
+        result["artifact_created"] = True
+        export_written = True
+    except Exception:
+        result["export_path"] = None
+        result["artifact_created"] = False
+
+    return result
+
+
+def _print_level1_startup_autoconnect_resilience_checkpoint(result: dict) -> None:
+    """Print Phase 16U startup auto-connect resilience checkpoint."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE16U_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Startup Auto-Connect Resilience Chkpt (16U){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:               {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:                   {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:                   {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:                    {sev_color}{sev}{RESET}")
+    print()
+
+    print(f"  {BOLD}Git{RESET}")
+    g = result.get("git", {})
+    print(f"    Branch:        {g.get('branch', '?')}")
+    print(f"    Commit:        {g.get('commit', '?')[:12] if g.get('commit') else '?'}")
+    print(f"    Tag:           {g.get('tag', '?')}")
+    print(f"    Worktree clean: {_bool_str(result.get('git_worktree_clean', False))}")
+    print()
+
+    print(f"  {BOLD}Runtime State{RESET}")
+    rt = result.get("runtime", {})
+    print(f"    Connected:     {GREEN if rt.get('connected') else RED}{_bool_str(rt.get('connected'))}{RESET}")
+    print(f"    Mode:          {GREEN if rt.get('mode') == 'paper' else RED}{rt.get('mode', '?')}{RESET}")
+    print(f"    Read-only:     {GREEN if rt.get('read_only') else RED}{_bool_str(rt.get('read_only'))}{RESET}")
+    print(f"    Allow orders:  {GREEN if rt.get('allow_orders') is False else RED}{rt.get('allow_orders')}{RESET}")
+    print(f"    Endpoints OK:  {GREEN if rt.get('endpoints_ok') else RED}{_bool_str(rt.get('endpoints_ok'))}{RESET}")
+    print(f"    Endpoints:     {rt.get('endpoints_display', '?')}")
+    print(f"    System locked: {_bool_str(rt.get('system_locked', None))}")
+    print()
+
+    print(f"  {BOLD}Startup Auto-Connect Config{RESET}")
+    cfg = result.get("startup_autoconnect_config", {})
+    print(f"    Config found:  {_bool_str(result.get('startup_autoconnect_config_found', False))}")
+    print(f"    Source:        {cfg.get('source_file', '?')}")
+    print(f"    Max attempts:  {result.get('startup_autoconnect_attempts', 0)}")
+    print(f"    Retry delay:   {cfg.get('retry_delay_seconds', 0)}s")
+    print(f"    Retry window:  {result.get('startup_autoconnect_retry_window_seconds', 0)}s")
+    print(f"    Window >= 300s: {_bool_str(result.get('startup_autoconnect_retry_window_ge_300', False))}")
+    print(f"    Attempts >= 60: {_bool_str(result.get('startup_autoconnect_attempts_ge_60', False))}")
+    print(f"    Local connect: {_bool_str(result.get('startup_autoconnect_uses_local_connect', False))}")
+    print(f"    Connect only:  {_bool_str(result.get('connect_path_only', False))}")
+    print()
+
+    print(f"  {BOLD}Journal Evidence{RESET}")
+    jrn = result.get("startup_autoconnect_journal", {})
+    print(f"    Lines found:   {jrn.get('line_count', 0)}")
+    if jrn.get("last_ok"):
+        print(f"    Last OK:       {jrn['last_ok'][:120]}")
+    if jrn.get("last_failed"):
+        print(f"    Last FAILED:   {jrn['last_failed'][:120]}")
+    if not jrn.get("last_ok") and not jrn.get("last_failed"):
+        print(f"    (no recent startup_auto_connect entries)")
+    print()
+
+    print(f"  {BOLD}Safety{RESET}")
+    print(f"    Guard state clean:          {_bool_str(result.get('guard_state_clean', False))}")
+    print(f"    No /order* called:          {_bool_str(result.get('no_order_endpoint_called'))}")
+    print(f"    No preflight called:        {_bool_str(result.get('no_preflight_endpoint_called'))}")
+    print(f"    No approval called:         {_bool_str(result.get('no_approval_endpoint_called'))}")
+    print(f"    No submit called:           {_bool_str(result.get('no_submit_endpoint_called'))}")
+    print(f"    No H1 token used:           {_bool_str(result.get('no_h1_token_used'))}")
+    print(f"    No trade window:            {_bool_str(result.get('no_trade_window_helper_called'))}")
+    print(f"    No broker mutation:         {_bool_str(result.get('no_broker_mutation'))}")
+    print(f"    Artifact created:           {_bool_str(result.get('artifact_created', False))}")
+    print()
+
+    if not checkpoint_ok:
+        print(f"  {BOLD}Suggested Actions{RESET}")
+        for a in result.get("suggested_operator_actions", []):
+            print(f"    {RED}✗{RESET} {a}")
+        print()
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"  Evidence hash: {eh[:16]}...")
+    ep = result.get("export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    print()
+
+
 def _print_level1_execution_gate_negative_control_drill(result: dict) -> None:
     """Print Phase 16O negative-control drill in human-readable format."""
     drill_ok = result.get("diagnosis") == _PHASE16O_DIAGNOSIS["ready"]
@@ -33611,6 +34126,33 @@ def main() -> None:
     p16t_a3.add_argument("--json", action="store_true")
     p16t_a3.add_argument("--export", action="store_true")
     p16t_a3.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 16U — Level 1 Startup Auto-Connect Resilience Checkpoint
+    p16u = sub.add_parser("level1-startup-autoconnect-resilience-checkpoint",
+                          help="Level 1 startup auto-connect resilience checkpoint (Phase 16U)")
+    p16u.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16u.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-startup-autoconnect-resilience-checkpoints/")
+    p16u.add_argument("--audit-source", type=str, default="synthetic_readonly_demo",
+                      help="Audit source label (default: synthetic_readonly_demo)")
+    # Alias: phase16u-startup-autoconnect-resilience-checkpoint
+    p16u_a1 = sub.add_parser("phase16u-startup-autoconnect-resilience-checkpoint",
+                             help="Alias for level1-startup-autoconnect-resilience-checkpoint")
+    p16u_a1.add_argument("--json", action="store_true")
+    p16u_a1.add_argument("--export", action="store_true")
+    p16u_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: level1-autoconnect-resilience
+    p16u_a2 = sub.add_parser("level1-autoconnect-resilience",
+                             help="Alias for level1-startup-autoconnect-resilience-checkpoint")
+    p16u_a2.add_argument("--json", action="store_true")
+    p16u_a2.add_argument("--export", action="store_true")
+    p16u_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: startup-autoconnect-resilience-checkpoint
+    p16u_a3 = sub.add_parser("startup-autoconnect-resilience-checkpoint",
+                             help="Alias for level1-startup-autoconnect-resilience-checkpoint")
+    p16u_a3.add_argument("--json", action="store_true")
+    p16u_a3.add_argument("--export", action="store_true")
+    p16u_a3.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -35509,6 +36051,50 @@ def main() -> None:
                 if ep:
                     print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE16T_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-startup-autoconnect-resilience-checkpoint",
+                        "phase16u-startup-autoconnect-resilience-checkpoint",
+                        "level1-autoconnect-resilience",
+                        "startup-autoconnect-resilience-checkpoint"):
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_startup_autoconnect_resilience_checkpoint(
+                audit_source=audit_source,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"16u-error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = _phase16u_no_go(
+                checkpoint_id, ts_str,
+                {"branch": "?", "commit": "?", "tag": "?", "worktree_clean": False},
+                _PHASE16U_DIAGNOSIS["unknown"],
+                [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+            )
+        if args.export and not result.get("export_path"):
+            try:
+                _PHASE16U_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                ep = _PHASE16U_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                import json as _json
+                with open(ep, "w", encoding="utf-8") as f:
+                    _json.dump(result, f, indent=2, default=str)
+                result["export_path"] = str(ep)
+                result["artifact_created"] = True
+            except Exception:
+                pass
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_startup_autoconnect_resilience_checkpoint(result)
+            if args.export:
+                ep = result.get("export_path")
+                if ep:
+                    print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE16U_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

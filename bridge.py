@@ -64,7 +64,9 @@ async def _startup_ibkr_autoconnect():
 # ---------------------------------------------------------------------------
 # After a service restart the bridge must auto-connect to IBKR Gateway
 # so /health reports connected=true without a manual POST /connect.
-# Retries for up to ~90s because Gateway may still be waking up.
+# Retries for up to ~450s (90 × 5s) because Gateway may still be waking up
+# and the 16T restart-persistence checkpoint needs connected=true within
+# its 300s recovery window.
 # Read-only. No /order*, no H1, no trade-window, no broker mutation.
 
 # ---------------------------------------------------------------------------
@@ -83,7 +85,7 @@ async def _startup_ibkr_autoconnect():
 #
 # Read-only.  No /order*, no H1, no trade-window, no broker mutation.
 
-_STARTUP_CONNECT_MAX_ATTEMPTS = 20
+_STARTUP_CONNECT_MAX_ATTEMPTS = 90
 _STARTUP_CONNECT_RETRY_DELAY = 5.0
 
 

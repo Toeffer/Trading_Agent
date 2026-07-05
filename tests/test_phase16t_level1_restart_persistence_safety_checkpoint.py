@@ -120,6 +120,8 @@ def staged_recovery_ok():
     """Full staged recovery passed — all stages A-H OK."""
     return {
         "passed": True,
+        "early_exit": True,
+        "timed_out": False,
         "stage_a_ok": True, "stage_b_ok": True, "stage_c_ok": True,
         "stage_d_ok": True, "stage_e_ok": True,
         "stage_f_ok": True, "stage_g_ok": True, "stage_h_ok": True,
@@ -133,6 +135,13 @@ def staged_recovery_ok():
         "health_reachable_after_seconds": 0.2,
         "connected_after_seconds": 0.2,
         "all_stages_healthy_after_seconds": 0.3,
+        "recovery_poll_started_at": "2026-07-04T12:00:00Z",
+        "recovery_poll_finished_at": "2026-07-04T12:00:00Z",
+        "recovery_poll_iterations": 1,
+        "last_recovery_stage": "B_early_exit",
+        "last_health_snapshot": {"connected": True, "mode": "paper", "read_only": True},
+        "last_kpi_snapshot": {},
+        "last_failure_reason": None,
     }
 
 @pytest.fixture
@@ -140,6 +149,8 @@ def staged_recovery_unreachable():
     """Staged recovery failed — bridge not reachable at all."""
     return {
         "passed": False,
+        "early_exit": False,
+        "timed_out": True,
         "stage_a_ok": True, "stage_b_ok": False, "stage_c_ok": False,
         "stage_d_ok": False, "stage_e_ok": False,
         "stage_f_ok": False, "stage_g_ok": False, "stage_h_ok": False,
@@ -153,13 +164,22 @@ def staged_recovery_unreachable():
         "health_reachable_after_seconds": None,
         "connected_after_seconds": None,
         "all_stages_healthy_after_seconds": None,
+        "recovery_poll_started_at": "2026-07-04T12:00:00Z",
+        "recovery_poll_finished_at": "2026-07-04T12:05:00Z",
+        "recovery_poll_iterations": 60,
+        "last_recovery_stage": "timeout",
+        "last_health_snapshot": {},
+        "last_kpi_snapshot": {},
+        "last_failure_reason": "Timed out after 300.0s",
     }
 
 @pytest.fixture
 def staged_recovery_no_connected():
-    """Bridge reachable but not IBKR-connected — stages A-G pass, H fails."""
+    """Bridge reachable but not IBKR-connected — stages A-E pass, connected=false."""
     return {
         "passed": False,
+        "early_exit": False,
+        "timed_out": False,
         "stage_a_ok": True, "stage_b_ok": True, "stage_c_ok": True,
         "stage_d_ok": True, "stage_e_ok": True,
         "stage_f_ok": True, "stage_g_ok": True, "stage_h_ok": False,
@@ -173,6 +193,13 @@ def staged_recovery_no_connected():
         "health_reachable_after_seconds": 2.0,
         "connected_after_seconds": None,
         "all_stages_healthy_after_seconds": None,
+        "recovery_poll_started_at": "2026-07-04T12:00:00Z",
+        "recovery_poll_finished_at": "2026-07-04T12:00:05Z",
+        "recovery_poll_iterations": 2,
+        "last_recovery_stage": "E",
+        "last_health_snapshot": {"connected": False, "mode": "paper", "read_only": True},
+        "last_kpi_snapshot": {},
+        "last_failure_reason": None,
     }
 
 
@@ -982,18 +1009,24 @@ class TestHelpers:
              patch("time.sleep", return_value=None):
             rec = _staged_recovery_poll("http://localhost:5000/v1/api", timeout_secs=10, poll_interval=0.1)
             assert rec["passed"] is True
+            assert rec["early_exit"] is True
             assert rec["bridge_reachable"] is True
             assert rec["connected"] is True
             assert rec["mode"] == "paper"
             assert rec["read_only"] is True
             assert rec["allow_orders"] is False
-            assert rec["system_locked"] is True
-            assert rec["stage_f_ok"] is True
-            assert rec["stage_h_ok"] is True
-            assert rec["positions_flat"] is True
+            # Early-exit at stage B: F/G never ran, so system_locked/positions_flat are None
+            assert rec["stage_f_ok"] is False
+            assert rec["stage_g_ok"] is False
+            assert rec["stage_h_ok"] is True  # backward-compat: connected => True
             assert rec["service_active_after_seconds"] is not None
             assert rec["health_reachable_after_seconds"] is not None
             assert rec["all_stages_healthy_after_seconds"] is not None
+            # New progress fields
+            assert rec["recovery_poll_iterations"] >= 1
+            assert rec["last_recovery_stage"] == "B_early_exit"
+            assert rec["recovery_poll_started_at"] is not None
+            assert rec["recovery_poll_finished_at"] is not None
 
     def test_staged_recovery_poll_offline(self):
         """Staged recovery with no bridge — all stages fail."""

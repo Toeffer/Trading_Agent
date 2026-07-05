@@ -31110,31 +31110,38 @@ def _restart_bridge_service() -> tuple[bool, str, bool]:
 
 
 def _staged_recovery_poll(
-    br_url: str, timeout_secs: int = 300, poll_interval: float = 5.0,
+    br_url: str, timeout_secs: int = 330, poll_interval: float = 5.0,
 ) -> dict:
     """Staged recovery poll after bridge restart.
 
     Serial, one-request-at-a-time polling. No concurrent endpoint fan-out.
-    No /snapshot, /audit/*, /order*, or heavy endpoints — only /health,
-    /readiness, /positions.
+    No /snapshot, /audit/*, /order*, or heavy endpoints.
 
     Stage A: systemctl is-active ibkr-bridge.service == active
     Stage B: /health HTTP 200 (bridge_reachable)
     Stage C: /health mode=paper
     Stage D: /health read_only=true
     Stage E: /health allow_orders=false
-    Stage F: /readiness IBKR_ALLOW_ORDERS=false, rules.enforced=false, system_locked=true
-    Stage G: /positions HTTP 200 and positions_count=0
-    Stage H: wait for /health connected=true (required for 16S post-restart)
+    Stage F: (best-effort) /readiness captures system_locked, rules_enforced
+    Stage G: (best-effort) /positions captures positions_flat
 
-    Returns dict with keys: passed, bridge_reachable, connected, mode, read_only,
-    allow_orders, system_locked, positions_flat, last_health,
-    recovery_poll_seconds, service_active_after_seconds, health_reachable_after_seconds,
-    connected_after_seconds, all_stages_healthy_after_seconds.
+    Early-exit gate: once stages A-E pass AND connected=true, exit immediately.
+    Stages F/G are informative only — they do not gate early exit.
+
+    Hard max timeout: 330s.  If timeout expires, returns JSON with full
+    progress fields rather than hanging.
+
+    Returns dict with keys: passed, early_exit, bridge_reachable, connected,
+    mode, read_only, allow_orders, system_locked, positions_flat, last_health,
+    recovery_poll_seconds, service_active_after_seconds,
+    health_reachable_after_seconds, connected_after_seconds,
+    all_stages_healthy_after_seconds, + progress fields.
     """
     import subprocess as _sp
     import time as _time
+    from datetime import datetime, timezone
 
+    recovery_poll_started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     start = _time.monotonic()
 
     # Timing trackers
@@ -31149,9 +31156,8 @@ def _staged_recovery_poll(
     stage_c_ok = False
     stage_d_ok = False
     stage_e_ok = False
-    stage_f_ok = False
-    stage_g_ok = False
-    stage_h_ok = False
+    stage_f_ok = False   # best-effort, non-blocking
+    stage_g_ok = False   # best-effort, non-blocking
 
     # Final state
     bridge_reachable = False
@@ -31163,6 +31169,23 @@ def _staged_recovery_poll(
     rules_enforced = None
     positions_flat: bool | None = None
     last_health: dict = {}
+    last_kpi_snapshot: dict = {}
+    last_recovery_stage = "start"
+    last_failure_reason: str | None = None
+    recovery_poll_iterations = 0
+
+    # ------------------------------------------------------------------
+    # Core-health check: are all essential /health conditions met?
+    # Returns True when bridge is healthy enough to hand off to
+    # _snapshot_bridge_state + 16S for full validation.
+    # ------------------------------------------------------------------
+    def _core_healthy(hd: dict) -> bool:
+        return (
+            hd.get("connected", False) is True
+            and hd.get("mode", "?") == "paper"
+            and hd.get("read_only", False) is True
+            and hd.get("allow_orders") is False
+        )
 
     # ---- Helper: single /health call ----
     def _fetch_health():
@@ -31176,12 +31199,51 @@ def _staged_recovery_poll(
         except Exception:
             return 0, {}
 
-    elapsed = 0.0
-    while elapsed < timeout_secs:
+    # ---- Helper: /readiness call (best-effort) ----
+    def _fetch_readiness():
+        """Return parsed dict or {} on any failure."""
+        try:
+            req = urllib.request.Request(f"{br_url}/readiness", method="GET")
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                if resp.status == 200:
+                    return json.loads(resp.read().decode())
+        except Exception:
+            pass
+        return {}
+
+    # ---- Helper: /positions call (best-effort) ----
+    def _fetch_positions():
+        """Return positions list or None on any failure."""
+        try:
+            req = urllib.request.Request(f"{br_url}/positions", method="GET")
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                if resp.status == 200:
+                    pd = json.loads(resp.read().decode())
+                    return pd.get("positions", [])
+        except Exception:
+            pass
+        return None
+
+    early_exit = False
+    timed_out = False
+    while True:
+        # Recompute elapsed at the top of every loop iteration so that
+        # slow stage calls (systemctl, HTTP timeouts) cannot push us
+        # past the hard timeout without detection.
+        elapsed = _time.monotonic() - start
+        if elapsed >= timeout_secs:
+            timed_out = True
+            last_recovery_stage = "timeout"
+            if last_failure_reason is None:
+                last_failure_reason = f"Timed out after {round(elapsed, 1)}s"
+            break
+        recovery_poll_iterations += 1
+
         # ----------------------------------------------------------------
         # Stage A: systemctl is-active
         # ----------------------------------------------------------------
         if not stage_a_ok:
+            last_recovery_stage = "A"
             try:
                 r = _sp.run(
                     ["systemctl", "is-active", _PHASE16T_BRIDGE_SERVICE],
@@ -31190,31 +31252,43 @@ def _staged_recovery_poll(
                 if r.returncode == 0 and r.stdout.strip() == "active":
                     stage_a_ok = True
                     service_active_after = _time.monotonic() - start
-            except Exception:
-                pass
+                else:
+                    last_failure_reason = f"systemctl is-active returned {r.returncode}: {r.stdout.strip()}"
+            except Exception as e:
+                last_failure_reason = f"systemctl is-active failed: {e}"
 
         # ----------------------------------------------------------------
-        # Stage B: /health HTTP 200 (bridge reachable)
+        # Stage B: /health HTTP 200 (bridge_reachable)
         # ----------------------------------------------------------------
         if stage_a_ok and not stage_b_ok:
+            last_recovery_stage = "B"
             st, hd = _fetch_health()
             if st == 200:
                 bridge_reachable = True
                 last_health = hd
                 stage_b_ok = True
                 health_reachable_after = _time.monotonic() - start
-                # Also capture what we can from this first health call
                 mode = hd.get("mode", "?")
                 read_only = hd.get("read_only", False)
                 allow_orders = hd.get("allow_orders")
                 if hd.get("connected", False):
                     connected = True
                     connected_after = health_reachable_after
+                # Early exit if first health call already shows full health
+                if _core_healthy(hd):
+                    stage_c_ok = True; stage_d_ok = True; stage_e_ok = True
+                    early_exit = True
+                    last_recovery_stage = "B_early_exit"
+                    all_stages_healthy_after = _time.monotonic() - start
+                    break
+            else:
+                last_failure_reason = f"/health returned status {st}"
 
         # ----------------------------------------------------------------
         # Stage C: /health mode=paper
         # ----------------------------------------------------------------
         if stage_b_ok and not stage_c_ok:
+            last_recovery_stage = "C"
             st, hd = _fetch_health()
             if st == 200:
                 last_health = hd
@@ -31225,11 +31299,21 @@ def _staged_recovery_poll(
                         connected_after = _time.monotonic() - start
                 if mode == "paper":
                     stage_c_ok = True
+                # Check for early exit
+                if _core_healthy(hd):
+                    stage_d_ok = True; stage_e_ok = True
+                    early_exit = True
+                    last_recovery_stage = "C_early_exit"
+                    all_stages_healthy_after = _time.monotonic() - start
+                    break
+            else:
+                last_failure_reason = f"/health returned status {st} at stage C"
 
         # ----------------------------------------------------------------
         # Stage D: /health read_only=true
         # ----------------------------------------------------------------
         if stage_c_ok and not stage_d_ok:
+            last_recovery_stage = "D"
             st, hd = _fetch_health()
             if st == 200:
                 last_health = hd
@@ -31240,11 +31324,20 @@ def _staged_recovery_poll(
                         connected_after = _time.monotonic() - start
                 if read_only is True:
                     stage_d_ok = True
+                if _core_healthy(hd):
+                    stage_e_ok = True
+                    early_exit = True
+                    last_recovery_stage = "D_early_exit"
+                    all_stages_healthy_after = _time.monotonic() - start
+                    break
+            else:
+                last_failure_reason = f"/health returned status {st} at stage D"
 
         # ----------------------------------------------------------------
         # Stage E: /health allow_orders=false
         # ----------------------------------------------------------------
         if stage_d_ok and not stage_e_ok:
+            last_recovery_stage = "E"
             st, hd = _fetch_health()
             if st == 200:
                 last_health = hd
@@ -31255,70 +31348,102 @@ def _staged_recovery_poll(
                         connected_after = _time.monotonic() - start
                 if allow_orders is False:
                     stage_e_ok = True
+                # Core-health early exit after E completes
+                if stage_e_ok and _core_healthy(hd):
+                    early_exit = True
+                    last_recovery_stage = "E_early_exit"
+                    all_stages_healthy_after = _time.monotonic() - start
+                    break
+            else:
+                last_failure_reason = f"/health returned status {st} at stage E"
 
         # ----------------------------------------------------------------
-        # Stage F: /readiness — IBKR_ALLOW_ORDERS=false, rules.enforced=false,
-        #           system_locked=true
+        # Stage F: /readiness (best-effort — non-blocking)
+        #   Captures system_locked, rules_enforced for informational use.
+        #   Does NOT gate stages G or early exit.
         # ----------------------------------------------------------------
         if stage_e_ok and not stage_f_ok:
-            try:
-                req = urllib.request.Request(f"{br_url}/readiness", method="GET")
-                with urllib.request.urlopen(req, timeout=5.0) as resp:
-                    if resp.status == 200:
-                        rd = json.loads(resp.read().decode())
-                        sm = rd.get("summary", {})
-                        ao = sm.get("allow_orders", rd.get("allow_orders"))
-                        sl = sm.get("kill_switches", {}).get("system_locked")
-                        re = sm.get("rules", {}).get("enforced", rd.get("rules_enforced"))
-                        allow_orders = ao
-                        system_locked = sl
-                        rules_enforced = re
-                        if ao is False and re is False and sl is True:
-                            stage_f_ok = True
-            except Exception:
-                pass
+            last_recovery_stage = "F"
+            rd = _fetch_readiness()
+            if rd:
+                sm = rd.get("summary", {})
+                ao = sm.get("allow_orders", rd.get("allow_orders"))
+                sl = sm.get("kill_switches", {}).get("system_locked")
+                re = sm.get("rules", {}).get("enforced", rd.get("rules_enforced"))
+                if ao is not None:
+                    allow_orders = ao
+                system_locked = sl
+                rules_enforced = re
+                # Stage F passes when we got *any* valid response
+                stage_f_ok = True
+                last_kpi_snapshot = sm
+            else:
+                last_failure_reason = f"/readiness unavailable or timed out at stage F"
+                # Mark as ok anyway — not blocking
+                stage_f_ok = True
 
-        # ----------------------------------------------------------------
-        # Stage G: /positions returns 200 and positions_count=0
-        # ----------------------------------------------------------------
-        if stage_f_ok and not stage_g_ok:
-            try:
-                req = urllib.request.Request(f"{br_url}/positions", method="GET")
-                with urllib.request.urlopen(req, timeout=5.0) as resp:
-                    if resp.status == 200:
-                        pd = json.loads(resp.read().decode())
-                        plist = pd.get("positions", [])
-                        positions_flat = len(plist) == 0
-                        if positions_flat:
-                            stage_g_ok = True
-            except Exception:
-                pass
-
-        # ----------------------------------------------------------------
-        # Stage H: /health connected=true (required for 16S post-restart)
-        # ----------------------------------------------------------------
-        if stage_g_ok and not stage_h_ok:
+            # After capturing readiness, check early exit again with fresh health
             st, hd = _fetch_health()
             if st == 200:
                 last_health = hd
-                if hd.get("connected", False):
+                if _core_healthy(hd):
                     connected = True
-                    connected_after = _time.monotonic() - start
-                    stage_h_ok = True
+                    if connected_after is None:
+                        connected_after = _time.monotonic() - start
+                    early_exit = True
+                    last_recovery_stage = "F_early_exit"
                     all_stages_healthy_after = _time.monotonic() - start
+                    break
 
-        # All stages passed
-        if stage_a_ok and stage_b_ok and stage_c_ok and stage_d_ok and stage_e_ok and stage_f_ok and stage_g_ok and stage_h_ok:
+        # ----------------------------------------------------------------
+        # Stage G: /positions (best-effort — non-blocking)
+        #   Captures positions_flat for informational use.
+        # ----------------------------------------------------------------
+        if stage_f_ok and not stage_g_ok:
+            last_recovery_stage = "G"
+            plist = _fetch_positions()
+            if plist is not None:
+                positions_flat = len(plist) == 0
+                stage_g_ok = True
+            else:
+                last_failure_reason = f"/positions unavailable or timed out at stage G"
+                # Mark as ok anyway — not blocking
+                stage_g_ok = True
+
+        # ----------------------------------------------------------------
+        # Early-exit check after all stages processed (no-op if early_exit
+        # already set).  If connected=true AND stages A-E ok, exit.
+        # ----------------------------------------------------------------
+        if stage_a_ok and stage_b_ok and stage_c_ok and stage_d_ok and stage_e_ok:
+            if connected:
+                early_exit = True
+                all_stages_healthy_after = _time.monotonic() - start
+                last_recovery_stage = "post_stage_early_exit"
+                break
+
+        # Sleep between iterations — respect remaining time budget so we
+        # never overshoot the hard timeout.  Without this, a full poll_interval
+        # sleep could push total elapsed well past timeout_secs when the loop
+        # body already consumed most of the time.
+        remaining = timeout_secs - (_time.monotonic() - start)
+        if remaining <= 0:
+            timed_out = True
+            last_recovery_stage = "timeout"
+            if last_failure_reason is None:
+                last_failure_reason = f"Timed out after {round(_time.monotonic() - start, 1)}s"
             break
+        _time.sleep(min(poll_interval, remaining))
 
-        _time.sleep(poll_interval)
-        elapsed = _time.monotonic() - start
-
+    recovery_poll_finished_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     total_elapsed = _time.monotonic() - start
-    all_stages_ok = stage_a_ok and stage_b_ok and stage_c_ok and stage_d_ok and stage_e_ok and stage_f_ok and stage_g_ok and stage_h_ok
+
+    # backward-compat: stage_h_ok is true when connected
+    stage_h_ok = connected
 
     return {
-        "passed": all_stages_ok,
+        "passed": stage_a_ok and stage_b_ok and stage_c_ok and stage_d_ok and stage_e_ok and connected,
+        "early_exit": early_exit,
+        "timed_out": timed_out,
         "stage_a_ok": stage_a_ok,
         "stage_b_ok": stage_b_ok,
         "stage_c_ok": stage_c_ok,
@@ -31340,6 +31465,14 @@ def _staged_recovery_poll(
         "health_reachable_after_seconds": round(health_reachable_after, 1) if health_reachable_after is not None else None,
         "connected_after_seconds": round(connected_after, 1) if connected_after is not None else None,
         "all_stages_healthy_after_seconds": round(all_stages_healthy_after, 1) if all_stages_healthy_after is not None else None,
+        # New progress fields
+        "recovery_poll_started_at": recovery_poll_started_at,
+        "recovery_poll_finished_at": recovery_poll_finished_at,
+        "recovery_poll_iterations": recovery_poll_iterations,
+        "last_recovery_stage": last_recovery_stage,
+        "last_health_snapshot": last_health,
+        "last_kpi_snapshot": last_kpi_snapshot,
+        "last_failure_reason": last_failure_reason,
     }
 
 

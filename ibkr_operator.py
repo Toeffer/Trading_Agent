@@ -32487,24 +32487,18 @@ def _run_level1_startup_autoconnect_resilience_checkpoint(
         kpi = {"verdict": "ERROR", "error": "run_kpi failed"}
 
     # ------------------------------------------------------------------
-    # 6. Guard state — check guard-state.json exists and is readable
+    # 6. Guard state — canonical cleanliness via _assess_guard_state_cleanliness
+    #    Same logic as 16S and all Phase 16B–16F checkpoints.  Clean means:
+    #    - guard-state.json found and parseable
+    #    - daily_trade_count == 0
+    #    - halt_active is explicitly false
+    #    - trade_date is not stale (== canonical_trade_date)
+    #    Prior repair metadata (trade_count_repair_id, stale_trade_date_repaired)
+    #    does not make the state unclean after a successful repair.
     # ------------------------------------------------------------------
-    guard_state: dict[str, Any] = {}
-    guard_state_clean = False
-    guard_path = OPENCLAW_DIR / "guard-state.json"
-    try:
-        if guard_path.exists():
-            gs_raw = guard_path.read_text()
-            guard_state = _json.loads(gs_raw) if gs_raw.strip() else {}
-            # guard is clean if it exists, is parseable, and has no enabled-orders drift
-            guard_allow = guard_state.get("IBKR_ALLOW_ORDERS", None)
-            guard_rules = guard_state.get("rules", {})
-            guard_rules_enforced = guard_rules.get("enforced", None) if isinstance(guard_rules, dict) else None
-            # Clean means: orders are not allowed in guard state
-            if guard_allow is False or guard_allow == "false":
-                guard_state_clean = True
-    except Exception:
-        guard_state = {"_error": "guard-state.json unreadable"}
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_clean = gs_assessment["guard_state_clean"]
+    guard_state = gs_assessment.get("guard_section", {})
 
     # ------------------------------------------------------------------
     # 7. Compute boolean field verdicts

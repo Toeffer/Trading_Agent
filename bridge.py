@@ -51,6 +51,109 @@ if _IBKR_BRIDGE_DEBUG:
 # /OOM_TRACE_MIN
 
 
+# ---------------------------------------------------------------------------
+# Startup auto-connect handler — always active, not gated by debug flag
+# ---------------------------------------------------------------------------
+@app.on_event("startup")
+async def _startup_ibkr_autoconnect():
+    asyncio.create_task(_startup_auto_connect())
+
+
+# ---------------------------------------------------------------------------
+# Startup auto-connect — bounded read-only connect on service start
+# ---------------------------------------------------------------------------
+# After a service restart the bridge must auto-connect to IBKR Gateway
+# so /health reports connected=true without a manual POST /connect.
+# Retries for up to ~450s (90 × 5s) because Gateway may still be waking up
+# and the 16T restart-persistence checkpoint needs connected=true within
+# its 300s recovery window.
+# Read-only. No /order*, no H1, no trade-window, no broker mutation.
+
+# ---------------------------------------------------------------------------
+# Startup auto-connect — self-call POST /connect via local HTTP
+# ---------------------------------------------------------------------------
+# ib_insync's IB.connectAsync() fails inside Uvicorn's asyncio loop with
+# "got Future attached to a different loop".  The synchronous connect()
+# also fails with "Cannot run the event loop while another loop is running".
+#
+# The proven path is the existing POST /connect endpoint which FastAPI
+# runs in its thread-pool.  We self-call it via a local HTTP POST from a
+# thread (asyncio.to_thread), which avoids any event-loop conflict.
+#
+# This is startup auto-connect, not a manual operator connect.  Logged
+# as startup_auto_connect self_connect.
+#
+# Read-only.  No /order*, no H1, no trade-window, no broker mutation.
+
+_STARTUP_CONNECT_MAX_ATTEMPTS = 90
+_STARTUP_CONNECT_RETRY_DELAY = 5.0
+
+
+def _startup_self_connect_http() -> dict:
+    """Blocking HTTP POST to the bridge's own /connect endpoint.
+
+    Runs in a thread-pool thread via asyncio.to_thread.  Uses only stdlib
+    urllib — no additional dependencies.
+    """
+    import json
+    import urllib.request
+
+    url = "http://127.0.0.1:8790/connect"
+    req = urllib.request.Request(url, data=b"", method="POST")
+
+    with urllib.request.urlopen(req, timeout=25) as resp:
+        body = resp.read().decode("utf-8")
+        return json.loads(body)
+
+
+async def _startup_auto_connect():
+    """Async auto-connect retry loop. Runs as background startup task."""
+    import logging as _log
+    _l = _log.getLogger("ibkr-bridge")
+
+    await asyncio.sleep(3)
+
+    for attempt in range(1, _STARTUP_CONNECT_MAX_ATTEMPTS + 1):
+        try:
+            if is_connected():
+                _l.warning(
+                    "startup_auto_connect already_connected attempt=%d/%d",
+                    attempt, _STARTUP_CONNECT_MAX_ATTEMPTS,
+                )
+                return
+
+            _l.warning(
+                "startup_auto_connect self_connect attempt=%d/%d url=http://127.0.0.1:8790/connect "
+                "host=%s port=%s client_id=%s read_only=%s allow_orders=%s",
+                attempt, _STARTUP_CONNECT_MAX_ATTEMPTS,
+                IBKR_HOST, IBKR_PORT, IBKR_CLIENT_ID, IBKR_READ_ONLY, IBKR_ALLOW_ORDERS,
+            )
+
+            result = await asyncio.to_thread(_startup_self_connect_http)
+
+            _l.warning("startup_auto_connect self_connect result=%s", result)
+
+            if result.get("connected"):
+                _l.warning(
+                    "startup_auto_connect OK attempt=%d/%d managed_accounts=%s client_id=%s",
+                    attempt, _STARTUP_CONNECT_MAX_ATTEMPTS,
+                    result.get("managed_accounts"), result.get("client_id"),
+                )
+                return
+
+        except Exception as exc:
+            _l.warning(
+                "startup_auto_connect exception attempt=%d/%d class=%s message=%s",
+                attempt, _STARTUP_CONNECT_MAX_ATTEMPTS,
+                type(exc).__name__, str(exc),
+                exc_info=True,
+            )
+
+        await asyncio.sleep(_STARTUP_CONNECT_RETRY_DELAY)
+
+    _l.error("startup_auto_connect FAILED attempts=%d", _STARTUP_CONNECT_MAX_ATTEMPTS)
+
+
 IBKR_MODE = os.getenv("IBKR_MODE", "paper")
 IBKR_HOST = os.getenv("IBKR_HOST", "127.0.0.1")
 IBKR_PORT = int(os.getenv("IBKR_PORT", "4002"))

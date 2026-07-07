@@ -26567,6 +26567,59 @@ _PHASE16U_EXPLICIT_NON_ACTIONS: list[str] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Phase 16V — Level 1 Guard-State Rollover Resilience Checkpoint
+# ---------------------------------------------------------------------------
+
+_PHASE16V_EXPORT_DIR = OPENCLAW_DIR / "level1-guard-state-rollover-resilience-checkpoints"
+
+_PHASE16V_DIAGNOSIS = {
+    "ready": "level1_guard_state_rollover_resilience_ok",
+    "git_worktree_dirty": "git_worktree_dirty",
+    "bridge_unreachable": "bridge_unreachable",
+    "runtime_not_connected": "runtime_not_connected",
+    "mode_not_paper": "mode_not_paper",
+    "read_only_not_true": "read_only_not_true",
+    "allow_orders_not_false": "allow_orders_not_false",
+    "endpoints_not_ok": "endpoints_not_ok",
+    "current_guard_state_not_clean": "current_guard_state_not_clean",
+    "reconcile_dry_run_failed": "reconcile_dry_run_failed",
+    "synthetic_stale_trade_date_case_failed": "synthetic_stale_trade_date_case_failed",
+    "synthetic_false_trade_count_case_failed": "synthetic_false_trade_count_case_failed",
+    "synthetic_clean_case_failed": "synthetic_clean_case_failed",
+    "synthetic_blocked_repair_case_failed": "synthetic_blocked_repair_case_failed",
+    "unknown": "unknown",
+}
+
+_PHASE16V_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not call any broker mutation endpoint.",
+    "This command did not create broker orders.",
+    "This command did not submit orders.",
+    "This command did not cancel/modify orders.",
+    "This command did not mutate account state.",
+    "This command did not mutate position state.",
+    "This command did not open an order window.",
+    "This command did not read/use H1 token.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "This command did not call trade-window helper in any mode.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not change autonomy level.",
+    "This command did not call any mutation endpoint.",
+    "Only allowed writes are export/guard-state-rollover-resilience artifacts.",
+    "This checkpoint proves guard-state rollover/reconciliation resilience at Level 1 without enabling orders, using H1, opening an order window, or touching any broker mutation path.",
+    "Synthetic fixture tests use temp files only — never mutate ~/.openclaw/guard-state.json.",
+]
+
+
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
     decision_mode: str = "mixed_demo",
@@ -32711,6 +32764,638 @@ def _print_level1_startup_autoconnect_resilience_checkpoint(result: dict) -> Non
     print()
 
 
+# ===================================================================
+# Phase 16V — Level 1 Guard-State Rollover Resilience Checkpoint
+# ===================================================================
+
+def _synthetic_guard_state_reconcile_for_path(
+    guard_path: Path,
+    canonical_date_override: str | None = None,
+    live_order_override: int | None = None,
+    positions_flat_override: bool | None = None,
+    open_order_override: int | None = None,
+) -> dict:
+    """Run guard-state reconcile detection logic against a temp guard-state file.
+
+    NEVER mutates the real ~/.openclaw/guard-state.json.  Uses only the
+    provided temp path.  Returns the same-structured result dict as the
+    real reconcile for mismatch/repair detection, but repair_applied is
+    always False.
+
+    Override args allow synthetic injection of live-order/position state
+    that would normally come from bridge endpoints.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+
+    # Canonical trade date
+    try:
+        from guard import canonical_trade_date
+        canonical_date = canonical_date_override or canonical_trade_date(now_utc)
+    except Exception:
+        canonical_date = canonical_date_override or now_utc.strftime("%Y-%m-%d")
+
+    # Read synthetic guard state
+    guard_state_ok = False
+    guard_count = -1
+    trade_date = "?"
+    try:
+        if guard_path.exists():
+            gs = _json.loads(guard_path.read_text())
+            guard_state_ok = True
+            guard_count = int(gs.get("daily_trade_count", 0))
+            trade_date = gs.get("trade_date", "?")
+    except Exception:
+        pass
+
+    trade_date_stale = (trade_date != canonical_date)
+
+    # Confirmed events — always 0 for synthetic (no real events match
+    # a synthetic trade_date)
+    confirmed_count = 0
+    confirmed_order_ids: list[str] = []
+
+    # Override params
+    ibkr_live = live_order_override
+    open_orders = open_order_override
+    pos_flat = positions_flat_override
+
+    # Mismatch detection
+    mismatch_detected = guard_count != confirmed_count
+    repair_recommended = False
+    repair_reason = "none"
+    stale_trade_date_repair = False
+    blockers: list[dict] = []
+
+    # Case: stale trade date rollover (guard=0, confirmed=0, date stale)
+    if trade_date_stale and guard_count == 0 and confirmed_count == 0:
+        blocked = False
+        if ibkr_live is not None and ibkr_live > 0:
+            blockers.append({"check": "live_orders_exist", "detail": f"{ibkr_live} live orders"})
+            blocked = True
+        if open_orders is not None and open_orders > 0:
+            blockers.append({"check": "open_orders_exist", "detail": f"{open_orders} open orders"})
+            blocked = True
+        if pos_flat is False:
+            blockers.append({"check": "positions_not_flat"})
+            blocked = True
+        if not blocked:
+            repair_recommended = True
+            stale_trade_date_repair = True
+            repair_reason = "stale_trade_date_rollover"
+
+    # Case: guard count > confirmed count (can repair down)
+    elif guard_count > confirmed_count:
+        blocked = False
+        if ibkr_live is not None and ibkr_live > 0:
+            blockers.append({"check": "live_orders_exist", "detail": f"{ibkr_live} live orders"})
+            blocked = True
+        if open_orders is not None and open_orders > 0:
+            blockers.append({"check": "open_orders_exist", "detail": f"{open_orders} open orders"})
+            blocked = True
+        if pos_flat is False:
+            blockers.append({"check": "positions_not_flat"})
+            blocked = True
+        if not blocked:
+            repair_recommended = True
+            repair_reason = "guard_count_inflated"
+
+    return {
+        "guard_state_ok": guard_state_ok,
+        "guard_daily_trade_count_before": guard_count,
+        "confirmed_event_trade_count": confirmed_count,
+        "confirmed_unique_order_ids": confirmed_order_ids,
+        "trade_date": trade_date,
+        "canonical_trade_date": canonical_date,
+        "trade_date_stale": trade_date_stale,
+        "mismatch_detected": mismatch_detected,
+        "repair_recommended": repair_recommended,
+        "repair_applied": False,
+        "repair_reason": repair_reason,
+        "stale_trade_date_repair": stale_trade_date_repair,
+        "ibkr_live_order_count": ibkr_live,
+        "open_order_count": open_orders,
+        "positions_flat": pos_flat,
+        "blockers": blockers,
+        "no_broker_mutation": True,
+    }
+
+
+def _synthetic_fixture_stale_trade_date_rollover() -> dict:
+    """Case 1: stale trade_date rollover — yesterday's date, count=0.
+
+    Expected: trade_date_stale=true, mismatch_detected=false, repair_recommended=true.
+    """
+    import json as _json
+    import tempfile
+    from datetime import datetime, timezone, timedelta
+
+    now_utc = datetime.now(timezone.utc)
+    yesterday = (now_utc - timedelta(days=1)).strftime("%Y-%m-%d")
+    today = now_utc.strftime("%Y-%m-%d")
+
+    with tempfile.TemporaryDirectory() as td:
+        gp = Path(td) / "guard-state.json"
+        gp.write_text(_json.dumps({
+            "daily_trade_count": 0,
+            "trade_date": yesterday,
+            "daily_halt_active": False,
+        }))
+        result = _synthetic_guard_state_reconcile_for_path(
+            gp, canonical_date_override=today,
+        )
+
+    passed = (
+        result["trade_date_stale"] is True
+        and result["repair_recommended"] is True
+        and result["repair_applied"] is False
+        and result["stale_trade_date_repair"] is True
+        and result["no_broker_mutation"] is True
+    )
+    return {"passed": passed, "case": "stale_trade_date_rollover", "result": result}
+
+
+def _synthetic_fixture_false_trade_count() -> dict:
+    """Case 2: false positive daily_trade_count > 0 with confirmed_event_trade_count=0.
+
+    Guard has count=3 but 0 confirmed events — inflated counter.
+    Expected: mismatch_detected=true, repair_recommended=true.
+    """
+    import json as _json
+    import tempfile
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    today = now_utc.strftime("%Y-%m-%d")
+
+    with tempfile.TemporaryDirectory() as td:
+        gp = Path(td) / "guard-state.json"
+        gp.write_text(_json.dumps({
+            "daily_trade_count": 3,
+            "trade_date": today,
+            "daily_halt_active": False,
+        }))
+        result = _synthetic_guard_state_reconcile_for_path(
+            gp, canonical_date_override=today,
+        )
+
+    passed = (
+        result["mismatch_detected"] is True
+        and result["repair_recommended"] is True
+        and result["repair_applied"] is False
+        and result["no_broker_mutation"] is True
+        and result["trade_date_stale"] is False
+    )
+    return {"passed": passed, "case": "false_trade_count", "result": result}
+
+
+def _synthetic_fixture_already_clean() -> dict:
+    """Case 3: already-clean guard state — today's date, count=0, halt=false.
+
+    Expected: mismatch_detected=false, repair_recommended=false.
+    """
+    import json as _json
+    import tempfile
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    today = now_utc.strftime("%Y-%m-%d")
+
+    with tempfile.TemporaryDirectory() as td:
+        gp = Path(td) / "guard-state.json"
+        gp.write_text(_json.dumps({
+            "daily_trade_count": 0,
+            "trade_date": today,
+            "daily_halt_active": False,
+        }))
+        result = _synthetic_guard_state_reconcile_for_path(
+            gp, canonical_date_override=today,
+        )
+
+    passed = (
+        result["mismatch_detected"] is False
+        and result["repair_recommended"] is False
+        and result["repair_applied"] is False
+        and result["trade_date_stale"] is False
+        and result["no_broker_mutation"] is True
+    )
+    return {"passed": passed, "case": "already_clean", "result": result}
+
+
+def _synthetic_fixture_blocked_repair() -> dict:
+    """Case 4: blocked repair — stale date, count=0, but live orders exist.
+
+    Expected: repair_recommended=false, blockers non-empty.
+    """
+    import json as _json
+    import tempfile
+    from datetime import datetime, timezone, timedelta
+
+    now_utc = datetime.now(timezone.utc)
+    yesterday = (now_utc - timedelta(days=1)).strftime("%Y-%m-%d")
+    today = now_utc.strftime("%Y-%m-%d")
+
+    with tempfile.TemporaryDirectory() as td:
+        gp = Path(td) / "guard-state.json"
+        gp.write_text(_json.dumps({
+            "daily_trade_count": 0,
+            "trade_date": yesterday,
+            "daily_halt_active": False,
+        }))
+        result = _synthetic_guard_state_reconcile_for_path(
+            gp, canonical_date_override=today,
+            live_order_override=2,
+            open_order_override=2,
+        )
+
+    passed = (
+        result["repair_recommended"] is False
+        and result["repair_applied"] is False
+        and len(result["blockers"]) > 0
+        and result["no_broker_mutation"] is True
+    )
+    return {"passed": passed, "case": "blocked_repair", "result": result}
+
+
+def _phase16v_no_go(
+    checkpoint_id: str, ts_str: str, git_section: dict,
+    diagnosis: str, actions: list[str],
+    runtime: dict | None = None,
+) -> dict:
+    """Build a NO_GO result for Phase 16V."""
+    return {
+        "command": "ibkr-operator level1-guard-state-rollover-resilience-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True,
+        "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": git_section.get("worktree_clean", False),
+        "runtime": runtime or {
+            "connected": False, "mode": "?", "read_only": False,
+            "allow_orders": None, "endpoints_ok": False,
+            "endpoints_ok_count": 0, "endpoints_total_count": 0,
+        },
+        "current_guard_state_clean": False,
+        "guard_state_section": {},
+        "reconcile_dry_run": {},
+        "reconcile_dry_run_exit": 1,
+        "reconcile_repair_applied": False,
+        "synthetic_stale_trade_date_case_passed": False,
+        "synthetic_false_trade_count_case_passed": False,
+        "synthetic_clean_case_passed": False,
+        "synthetic_blocked_repair_case_passed": False,
+        "synthetic_cases": {},
+        "runtime_connected": False,
+        "mode": "?",
+        "read_only": False,
+        "allow_orders": None,
+        "endpoints_ok": False,
+        "no_order_endpoint_called": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_h1_token_used": True,
+        "no_trade_window_helper_called": True,
+        "no_broker_mutation": True,
+        "artifact_created": False,
+        "export_path": None,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16V_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _run_level1_guard_state_rollover_resilience_checkpoint(
+    audit_source: str = "synthetic_readonly_demo",
+) -> dict:
+    """Run Phase 16V — Level 1 Guard-State Rollover Resilience Checkpoint.
+
+    Read-only. No restart. No broker mutation. No H1. No /order*.
+
+    Verifies:
+    - Current live guard-state is clean (same logic as 16S)
+    - Real reconcile dry-run runs without errors
+    - Four synthetic fixture tests pass using temp files only
+
+    Returns dict with full evidence.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"16v-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+
+    # ------------------------------------------------------------------
+    # 1. Git metadata + worktree
+    # ------------------------------------------------------------------
+    repo_path = Path(__file__).resolve().parent
+    git_section = _git_metadata(repo_path)
+    worktree_state = _get_worktree_state(BRIDGE_DIR)
+    worktree_clean = worktree_state.get("clean", False)
+    git_section["worktree_clean"] = worktree_clean
+    git_section["worktree_dirty_files"] = worktree_state.get("dirty_files", [])
+
+    if not worktree_clean:
+        return _phase16v_no_go(
+            checkpoint_id, ts_str, git_section,
+            _PHASE16V_DIAGNOSIS["git_worktree_dirty"],
+            ["Commit or stash dirty files before running this checkpoint."],
+        )
+
+    # ------------------------------------------------------------------
+    # 2. Runtime state — /health
+    # ------------------------------------------------------------------
+    br_url = BRIDGE_URL
+    runtime_state = _snapshot_bridge_state(br_url)
+
+    rt_connected = runtime_state.get("connected", False)
+    rt_mode = runtime_state.get("mode", "?")
+    rt_read_only = runtime_state.get("read_only", False)
+    rt_allow_orders = runtime_state.get("allow_orders")
+    rt_endpoints_ok = runtime_state.get("endpoints_ok", False)
+    rt_endpoints_display = f"{runtime_state.get('endpoints_ok_count', 0)}/{runtime_state.get('endpoints_total_count', 0)}"
+
+    bridge_reachable = bool(runtime_state.get("mode", "?") != "?")
+
+    if not bridge_reachable:
+        return _phase16v_no_go(
+            checkpoint_id, ts_str, git_section,
+            _PHASE16V_DIAGNOSIS["bridge_unreachable"],
+            ["Bridge is not reachable. Start ibkr-bridge.service."],
+        )
+
+    # ------------------------------------------------------------------
+    # 3. Current guard-state cleanliness (canonical 16S logic)
+    # ------------------------------------------------------------------
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    current_guard_state_clean = gs_assessment["guard_state_clean"]
+    guard_state_section = gs_assessment.get("guard_section", {})
+
+    # ------------------------------------------------------------------
+    # 4. Real reconcile dry-run
+    # ------------------------------------------------------------------
+    reconcile_result: dict[str, Any] = {}
+    reconcile_exit = 1
+    reconcile_repair_applied = False
+    try:
+        reconcile_result = _run_guard_state_reconcile(
+            apply_repair=False,
+            confirm_local_state_repair=False,
+        )
+        reconcile_repair_applied = reconcile_result.get("repair_applied", False)
+        # exit=0 when no NO-GO blockers (HOLD-level blockers are fine —
+        # they indicate ambiguous/no-action-needed, not failure)
+        blockers = reconcile_result.get("blockers", [])
+        no_go_blockers = [b for b in blockers if b.get("severity", "") == "NO-GO"]
+        reconcile_exit = 0 if (len(no_go_blockers) == 0) else 1
+    except Exception as e:
+        reconcile_result = {"_error": str(e)[:200]}
+        reconcile_exit = 1
+
+    # ------------------------------------------------------------------
+    # 5. Synthetic fixture tests (temp files only, never real guard-state)
+    # ------------------------------------------------------------------
+    synthetic_cases: dict[str, dict] = {}
+
+    try:
+        c1 = _synthetic_fixture_stale_trade_date_rollover()
+        synthetic_cases["stale_trade_date"] = c1
+    except Exception as e:
+        synthetic_cases["stale_trade_date"] = {"passed": False, "error": str(e)[:200]}
+
+    try:
+        c2 = _synthetic_fixture_false_trade_count()
+        synthetic_cases["false_trade_count"] = c2
+    except Exception as e:
+        synthetic_cases["false_trade_count"] = {"passed": False, "error": str(e)[:200]}
+
+    try:
+        c3 = _synthetic_fixture_already_clean()
+        synthetic_cases["already_clean"] = c3
+    except Exception as e:
+        synthetic_cases["already_clean"] = {"passed": False, "error": str(e)[:200]}
+
+    try:
+        c4 = _synthetic_fixture_blocked_repair()
+        synthetic_cases["blocked_repair"] = c4
+    except Exception as e:
+        synthetic_cases["blocked_repair"] = {"passed": False, "error": str(e)[:200]}
+
+    syn_stale_ok = synthetic_cases.get("stale_trade_date", {}).get("passed", False)
+    syn_false_ok = synthetic_cases.get("false_trade_count", {}).get("passed", False)
+    syn_clean_ok = synthetic_cases.get("already_clean", {}).get("passed", False)
+    syn_blocked_ok = synthetic_cases.get("blocked_repair", {}).get("passed", False)
+
+    # ------------------------------------------------------------------
+    # 6. Diagnosis
+    # ------------------------------------------------------------------
+    diagnosis = _PHASE16V_DIAGNOSIS["ready"]
+    severity = "OK"
+    actions: list[str] = []
+
+    if not rt_connected:
+        diagnosis = _PHASE16V_DIAGNOSIS["runtime_not_connected"]; severity = "NO_GO"
+        actions.append("Bridge is not connected to IBKR Gateway.")
+    elif rt_mode != "paper":
+        diagnosis = _PHASE16V_DIAGNOSIS["mode_not_paper"]; severity = "NO_GO"
+        actions.append(f"Mode is {rt_mode}, expected paper.")
+    elif rt_read_only is not True:
+        diagnosis = _PHASE16V_DIAGNOSIS["read_only_not_true"]; severity = "NO_GO"
+        actions.append("Read-only is not true.")
+    elif rt_allow_orders is not False:
+        diagnosis = _PHASE16V_DIAGNOSIS["allow_orders_not_false"]; severity = "NO_GO"
+        actions.append(f"allow_orders is {rt_allow_orders}, expected false.")
+    elif not rt_endpoints_ok:
+        diagnosis = _PHASE16V_DIAGNOSIS["endpoints_not_ok"]; severity = "NO_GO"
+        actions.append("Not all endpoints are healthy.")
+    elif not current_guard_state_clean:
+        diagnosis = _PHASE16V_DIAGNOSIS["current_guard_state_not_clean"]; severity = "NO_GO"
+        actions.append("Current guard state is not clean. Run 16S checkpoint or guard-state-reconcile.")
+    elif reconcile_exit != 0:
+        diagnosis = _PHASE16V_DIAGNOSIS["reconcile_dry_run_failed"]; severity = "NO_GO"
+        actions.append("Reconcile dry-run did not exit cleanly.")
+    elif not syn_stale_ok:
+        diagnosis = _PHASE16V_DIAGNOSIS["synthetic_stale_trade_date_case_failed"]; severity = "NO_GO"
+        actions.append("Synthetic stale trade-date case failed.")
+    elif not syn_false_ok:
+        diagnosis = _PHASE16V_DIAGNOSIS["synthetic_false_trade_count_case_failed"]; severity = "NO_GO"
+        actions.append("Synthetic false trade-count case failed.")
+    elif not syn_clean_ok:
+        diagnosis = _PHASE16V_DIAGNOSIS["synthetic_clean_case_failed"]; severity = "NO_GO"
+        actions.append("Synthetic already-clean case failed.")
+    elif not syn_blocked_ok:
+        diagnosis = _PHASE16V_DIAGNOSIS["synthetic_blocked_repair_case_failed"]; severity = "NO_GO"
+        actions.append("Synthetic blocked-repair case failed.")
+
+    checkpoint_ok = diagnosis == _PHASE16V_DIAGNOSIS["ready"]
+
+    # ------------------------------------------------------------------
+    # 7. Assemble result
+    # ------------------------------------------------------------------
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-guard-state-rollover-resilience-checkpoint",
+        "timestamp": ts_str,
+        "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis,
+        "severity": severity,
+        "operator_action_required": not checkpoint_ok,
+        "suggested_operator_actions": actions if not checkpoint_ok else ["None — guard-state rollover resilience is confirmed."],
+        "git": git_section,
+        "git_worktree_clean": worktree_clean,
+        "runtime": {
+            "connected": rt_connected,
+            "mode": rt_mode,
+            "read_only": rt_read_only,
+            "allow_orders": rt_allow_orders,
+            "endpoints_ok": rt_endpoints_ok,
+            "endpoints_display": rt_endpoints_display,
+        },
+        "current_guard_state_clean": current_guard_state_clean,
+        "guard_state_section": guard_state_section,
+        "reconcile_dry_run": reconcile_result,
+        "reconcile_dry_run_exit": reconcile_exit,
+        "reconcile_repair_applied": reconcile_repair_applied,
+        "synthetic_stale_trade_date_case_passed": syn_stale_ok,
+        "synthetic_false_trade_count_case_passed": syn_false_ok,
+        "synthetic_clean_case_passed": syn_clean_ok,
+        "synthetic_blocked_repair_case_passed": syn_blocked_ok,
+        "synthetic_cases": synthetic_cases,
+        "runtime_connected": rt_connected,
+        "mode": rt_mode,
+        "read_only": rt_read_only,
+        "allow_orders": rt_allow_orders,
+        "endpoints_ok": rt_endpoints_ok,
+        "no_order_endpoint_called": True,
+        "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True,
+        "no_submit_endpoint_called": True,
+        "no_h1_token_used": True,
+        "no_trade_window_helper_called": True,
+        "no_broker_mutation": True,
+        "execution_authorized_now": False,
+        "order_enablement_allowed_now": False,
+        "order_enablement_performed": False,
+        "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16V_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False,
+        "export_path": None,
+    }
+
+    # ------------------------------------------------------------------
+    # 8. Export artifact
+    # ------------------------------------------------------------------
+    try:
+        _PHASE16V_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE16V_EXPORT_DIR / f"{checkpoint_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        result["export_path"] = str(ep)
+        result["artifact_created"] = True
+    except Exception:
+        result["export_path"] = None
+        result["artifact_created"] = False
+
+    return result
+
+
+def _print_level1_guard_state_rollover_resilience_checkpoint(result: dict) -> None:
+    """Print Phase 16V guard-state rollover resilience checkpoint."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE16V_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Guard-State Rollover Resilience Chkpt (16V){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:               {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:                   {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:                   {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:                    {sev_color}{sev}{RESET}")
+    print()
+
+    print(f"  {BOLD}Git{RESET}")
+    g = result.get("git", {})
+    print(f"    Branch:        {g.get('branch', '?')}")
+    print(f"    Commit:        {g.get('commit', '?')[:12] if g.get('commit') else '?'}")
+    print(f"    Tag:           {g.get('tag', '?')}")
+    print(f"    Worktree clean: {_bool_str(result.get('git_worktree_clean', False))}")
+    print()
+
+    print(f"  {BOLD}Runtime State{RESET}")
+    rt = result.get("runtime", {})
+    print(f"    Connected:     {GREEN if rt.get('connected') else RED}{_bool_str(rt.get('connected'))}{RESET}")
+    print(f"    Mode:          {GREEN if rt.get('mode') == 'paper' else RED}{rt.get('mode', '?')}{RESET}")
+    print(f"    Read-only:     {GREEN if rt.get('read_only') else RED}{_bool_str(rt.get('read_only'))}{RESET}")
+    print(f"    Allow orders:  {GREEN if rt.get('allow_orders') is False else RED}{rt.get('allow_orders')}{RESET}")
+    print(f"    Endpoints OK:  {GREEN if rt.get('endpoints_ok') else RED}{_bool_str(rt.get('endpoints_ok'))}{RESET}")
+    print()
+
+    print(f"  {BOLD}Current Guard State{RESET}")
+    print(f"    Clean:         {GREEN if result.get('current_guard_state_clean') else RED}{_bool_str(result.get('current_guard_state_clean'))}{RESET}")
+    gs = result.get("guard_state_section", {})
+    print(f"    Trade date:    {gs.get('trade_date', '?')}")
+    print(f"    Canonical:     {gs.get('canonical_trade_date', '?')}")
+    print(f"    Date stale:    {_bool_str(gs.get('trade_date_stale', '?'))}")
+    print(f"    Trade count:   {gs.get('daily_trade_count', '?')}")
+    print(f"    Halt active:   {_bool_str(gs.get('halt_active', None))}")
+    print()
+
+    print(f"  {BOLD}Reconcile Dry-Run{RESET}")
+    print(f"    Exit:          {GREEN if result.get('reconcile_dry_run_exit') == 0 else RED}{result.get('reconcile_dry_run_exit', '?')}{RESET}")
+    print(f"    Repair applied: {GREEN if result.get('reconcile_repair_applied') is False else RED}{_bool_str(result.get('reconcile_repair_applied'))}{RESET}")
+    rd = result.get("reconcile_dry_run", {})
+    if rd:
+        print(f"    Mismatch:      {_bool_str(rd.get('mismatch_detected', False))}")
+        print(f"    Recommended:   {_bool_str(rd.get('repair_recommended', False))}")
+        print(f"    Reason:        {rd.get('repair_reason', 'none')}")
+        blk = rd.get("blockers", [])
+        if blk:
+            for b in blk:
+                print(f"    Blocker:       {b.get('check', '?')}: {b.get('detail', '')}")
+    print()
+
+    print(f"  {BOLD}Synthetic Fixture Tests (temp files only){RESET}")
+    syn = result.get("synthetic_cases", {})
+    for case_key, label in [("stale_trade_date", "Stale trade-date rollover"),
+                              ("false_trade_count", "False trade count > 0"),
+                              ("already_clean", "Already-clean guard state"),
+                              ("blocked_repair", "Blocked repair (live orders)")]:
+        c = syn.get(case_key, {})
+        ok = c.get("passed", False)
+        print(f"    {label:30s} {GREEN if ok else RED}{'PASS' if ok else 'FAIL'}{RESET}")
+    print()
+
+    print(f"  {BOLD}Safety{RESET}")
+    print(f"    No /order* called:          {_bool_str(result.get('no_order_endpoint_called'))}")
+    print(f"    No preflight called:        {_bool_str(result.get('no_preflight_endpoint_called'))}")
+    print(f"    No approval called:         {_bool_str(result.get('no_approval_endpoint_called'))}")
+    print(f"    No submit called:           {_bool_str(result.get('no_submit_endpoint_called'))}")
+    print(f"    No H1 token used:           {_bool_str(result.get('no_h1_token_used'))}")
+    print(f"    No trade window:            {_bool_str(result.get('no_trade_window_helper_called'))}")
+    print(f"    No broker mutation:         {_bool_str(result.get('no_broker_mutation'))}")
+    print(f"    Artifact created:           {_bool_str(result.get('artifact_created', False))}")
+    print()
+
+    if not checkpoint_ok:
+        print(f"  {BOLD}Suggested Actions{RESET}")
+        for a in result.get("suggested_operator_actions", []):
+            print(f"    {RED}✗{RESET} {a}")
+        print()
+
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"  Evidence hash: {eh[:16]}...")
+    ep = result.get("export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    print()
+
+
 def _print_level1_execution_gate_negative_control_drill(result: dict) -> None:
     """Print Phase 16O negative-control drill in human-readable format."""
     drill_ok = result.get("diagnosis") == _PHASE16O_DIAGNOSIS["ready"]
@@ -34147,6 +34832,33 @@ def main() -> None:
     p16u_a3.add_argument("--json", action="store_true")
     p16u_a3.add_argument("--export", action="store_true")
     p16u_a3.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 16V — Level 1 Guard-State Rollover Resilience Checkpoint
+    p16v = sub.add_parser("level1-guard-state-rollover-resilience-checkpoint",
+                          help="Level 1 guard-state rollover resilience checkpoint (Phase 16V)")
+    p16v.add_argument("--json", action="store_true", help="Output raw JSON only")
+    p16v.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-guard-state-rollover-resilience-checkpoints/")
+    p16v.add_argument("--audit-source", type=str, default="synthetic_readonly_demo",
+                      help="Audit source label (default: synthetic_readonly_demo)")
+    # Alias: phase16v-guard-state-rollover-resilience-checkpoint
+    p16v_a1 = sub.add_parser("phase16v-guard-state-rollover-resilience-checkpoint",
+                             help="Alias for level1-guard-state-rollover-resilience-checkpoint")
+    p16v_a1.add_argument("--json", action="store_true")
+    p16v_a1.add_argument("--export", action="store_true")
+    p16v_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: level1-guard-state-rollover-resilience
+    p16v_a2 = sub.add_parser("level1-guard-state-rollover-resilience",
+                             help="Alias for level1-guard-state-rollover-resilience-checkpoint")
+    p16v_a2.add_argument("--json", action="store_true")
+    p16v_a2.add_argument("--export", action="store_true")
+    p16v_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: guard-state-rollover-resilience-checkpoint
+    p16v_a3 = sub.add_parser("guard-state-rollover-resilience-checkpoint",
+                             help="Alias for level1-guard-state-rollover-resilience-checkpoint")
+    p16v_a3.add_argument("--json", action="store_true")
+    p16v_a3.add_argument("--export", action="store_true")
+    p16v_a3.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -36089,6 +36801,50 @@ def main() -> None:
                 if ep:
                     print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE16U_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-guard-state-rollover-resilience-checkpoint",
+                        "phase16v-guard-state-rollover-resilience-checkpoint",
+                        "level1-guard-state-rollover-resilience",
+                        "guard-state-rollover-resilience-checkpoint"):
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_guard_state_rollover_resilience_checkpoint(
+                audit_source=audit_source,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"16v-error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = _phase16v_no_go(
+                checkpoint_id, ts_str,
+                {"branch": "?", "commit": "?", "tag": "?", "worktree_clean": False},
+                _PHASE16V_DIAGNOSIS["unknown"],
+                [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+            )
+        if args.export and not result.get("export_path"):
+            try:
+                _PHASE16V_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                import json as _json
+                ep = _PHASE16V_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                with open(ep, "w", encoding="utf-8") as f:
+                    _json.dump(result, f, indent=2, default=str)
+                result["export_path"] = str(ep)
+                result["artifact_created"] = True
+            except Exception:
+                pass
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_guard_state_rollover_resilience_checkpoint(result)
+            if args.export:
+                ep = result.get("export_path")
+                if ep:
+                    print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE16V_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

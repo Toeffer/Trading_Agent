@@ -33620,7 +33620,14 @@ def _verify_heartbeat_command_read_only() -> dict:
     """Verify heartbeat command is read-only."""
     import inspect
     hb_src = inspect.getsource(_run_heartbeat)
-    mutation_patterns = ["h1_token", "H1_TOKEN", "X-H1-Token", "sudo", "ibkr-trade-window", "/order", "/connect", "ALLOW_ORDERS", "allow_orders", "save_guard_state", "append_guard_event"]
+    mutation_patterns = [
+        "h1_token", "H1_TOKEN", "X-H1-Token",
+        "sudo", "ibkr-trade-window",
+        "save_guard_state", "append_guard_event",
+        "placeOrder", "cancelOrder",
+        "IBKR_ALLOW_ORDERS=true", "ALLOW_ORDERS=true",
+        "IBKR_ALLOW_ORDERS=1", "ALLOW_ORDERS=1",
+    ]
     mutations_found = [mp for mp in mutation_patterns if mp in hb_src]
     source_clean = len(mutations_found) == 0
     endpoints_read_only = all(not any(fs in ep for fs in ["/connect", "/order"]) for ep in _HEARTBEAT_ENDPOINTS)

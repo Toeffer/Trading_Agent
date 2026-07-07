@@ -34296,6 +34296,10 @@ def _verify_raw_h1_not_leaked() -> dict:
         str(BRIDGE_DIR / "approval_ui.py"),
         str(BRIDGE_DIR / "tests"), str(BRIDGE_DIR / "scripts"),
         str(BRIDGE_DIR / ".git"),
+        str(_PHASE16X_EXPORT_DIR),  # self-reference — scan results contain matched patterns
+        str(OPENCLAW_DIR / "agents"),  # session transcripts discuss H1 as concept, not leaks
+        str(OPENCLAW_DIR / "level1"),
+        str(OPENCLAW_DIR / "submitted-approvals"),
     ]
     findings = []
     for sd in SEARCH_DIRS:

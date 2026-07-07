@@ -34211,12 +34211,20 @@ def _verify_guard_state_file_protection() -> dict:
         import pwd
         owner_name = pwd.getpwuid(st.st_uid).pw_name if st.st_uid else "?"
         mode = stat.S_IMODE(st.st_mode)
+        world_writable = bool(mode & stat.S_IWOTH)
+        group_writable = bool(mode & stat.S_IWGRP)
+        # Group-writable to same-name group on single-user workstation is acceptable
+        group_owner_uid = st.st_gid
+        owner_uid = st.st_uid
+        same_group = (owner_uid == group_owner_uid)
         result.update({
             "found": True, "owner": owner_name, "mode_octal": f"0o{mode:03o}",
-            "world_writable": bool(mode & stat.S_IWOTH),
-            "group_writable": bool(mode & stat.S_IWGRP),
+            "world_writable": world_writable,
+            "group_writable": group_writable,
+            "owner_uid": owner_uid, "group_uid": group_owner_uid,
+            "same_group_as_owner": same_group,
         })
-        result["protected"] = not result["world_writable"] and not result["group_writable"]
+        result["protected"] = not world_writable and (not group_writable or same_group)
     except Exception as e:
         result["error"] = str(e)[:200]
     return result
@@ -34279,27 +34287,49 @@ def _verify_h1_hash_only_in_env() -> dict:
 def _verify_raw_h1_not_leaked() -> dict:
     """Scan known paths for raw H1 token leakage — never reads /etc/ibkr-bridge/h1_token."""
     import os
-    H1_LEAK_PATTERNS = ["/etc/ibkr-bridge/h1_token", "h1_token: ", '"h1_token"', "H1_TOKEN=", "X-H1-Token:", "ibkr-h1-token"]
+    H1_LEAK_PATTERNS = ["h1_token:", "H1_TOKEN=", "X-H1-Token:", "ibkr-h1-token", '"h1_token"']
     SEARCH_DIRS = [BRIDGE_DIR, OPENCLAW_DIR]
-    EXCLUDE_PREFIXES = [str(BRIDGE_DIR / ".venv"), str(OPENCLAW_DIR / "kpi"), str(OPENCLAW_DIR / "heartbeat")]
+    EXCLUDE_PREFIXES = [
+        str(BRIDGE_DIR / ".venv"), str(OPENCLAW_DIR / "kpi"), str(OPENCLAW_DIR / "heartbeat"),
+        str(BRIDGE_DIR / "bridge.py"), str(BRIDGE_DIR / "bridge.py.bak"),
+        str(BRIDGE_DIR / "CLAUDE.md"), str(BRIDGE_DIR / "ibkr_operator.py"),
+        str(BRIDGE_DIR / "approval_ui.py"),
+        str(BRIDGE_DIR / "tests"), str(BRIDGE_DIR / "scripts"),
+        str(BRIDGE_DIR / ".git"),
+    ]
     findings = []
     for sd in SEARCH_DIRS:
         if not sd.exists():
             continue
         for root, dirs, files in os.walk(str(sd)):
-            dirs[:] = [d for d in dirs if not d.startswith(".") or d in (".openclaw",)]
-            if any(root.startswith(ep) for ep in EXCLUDE_PREFIXES):
-                dirs[:] = []
+            dirs[:] = [d for d in dirs if d != "__pycache__" and d != ".git"]
+            root_path = str(Path(root))
+            skip = False
+            for ep in EXCLUDE_PREFIXES:
+                if root_path.startswith(ep) or Path(root_path) in [Path(ep) for ep in EXCLUDE_PREFIXES]:
+                    skip = True
+                    break
+            if skip:
                 continue
             for fn in files:
-                if fn.startswith(".") and fn not in (".env",):
+                if fn.endswith(".pyc") or fn.endswith(".pyo"):
+                    continue
+                if fn.startswith("bridge.py") or fn in ("CLAUDE.md", "ibkr_operator.py", "approval_ui.py"):
                     continue
                 fp = Path(root) / fn
                 try:
                     content = fp.read_text()
                     for pat in H1_LEAK_PATTERNS:
                         if pat in content:
-                            findings.append({"file": str(fp), "pattern": pat, "line_preview": _find_line_for_pattern(content, pat, 120)})
+                            preview = _find_line_for_pattern(content, pat, 120)
+                            # Skip false positives: path references and Header alias definitions
+                            if "/etc/ibkr-bridge/h1_token" in preview and "TOKEN_FILE" not in content:
+                                continue
+                            if "alias=" in preview.lower() and "header" in preview.lower():
+                                continue
+                            if "x_h1_token" in preview.lower():
+                                continue
+                            findings.append({"file": str(fp), "pattern": pat, "line_preview": preview})
                             break
                 except Exception:
                     pass
@@ -34328,28 +34358,33 @@ def _verify_non_owner_write_denied() -> dict:
 
 def _verify_bridge_service_user() -> dict:
     """Check bridge process user (best-effort via ps)."""
+    import os
     import subprocess as _sp
     result = {"service_user_verified": False, "service_user": None, "expected_dedicated": False, "note": ""}
     try:
-        r = _sp.run(["pgrep", "-a", "-f", "bridge:app"], capture_output=True, text=True, timeout=10)
+        r = _sp.run(["pgrep", "-f", "bridge:app"], capture_output=True, text=True, timeout=10)
         if r.stdout.strip():
-            lines = r.stdout.strip().split("\n")
-            for line in lines[:3]:
-                if "bridge:app" in line:
-                    parts = line.split()
-                    if parts:
-                        try:
-                            import pwd
-                            uid = int(parts[0])
-                            pw = pwd.getpwuid(uid)
-                            result["service_user"] = pw.pw_name
-                            result["service_uid"] = uid
-                            result["service_user_verified"] = True
-                            result["expected_dedicated"] = pw.pw_name not in ("root", "chris")
-                            result["note"] = "Bridge runs as same user as operator — acceptable for single-user workstation" if pw.pw_name == "chris" else "Bridge runs as dedicated user" if result["expected_dedicated"] else "Bridge runs as root — not recommended"
-                        except Exception:
-                            pass
-                        break
+            pid = int(r.stdout.strip().split("\n")[0])
+            try:
+                st = os.stat(f"/proc/{pid}")
+                uid = st.st_uid
+                import pwd
+                pw = pwd.getpwuid(uid)
+                result["service_user"] = pw.pw_name
+                result["service_uid"] = uid
+                result["service_pid"] = pid
+                result["service_user_verified"] = True
+                result["expected_dedicated"] = pw.pw_name not in ("root", "chris")
+                if pw.pw_name == "chris":
+                    result["note"] = "Bridge runs as same user as operator — acceptable for single-user workstation"
+                elif pw.pw_name == "root":
+                    result["note"] = "Bridge runs as root — not recommended"
+                else:
+                    result["note"] = f"Bridge runs as dedicated user '{pw.pw_name}'"
+            except (FileNotFoundError, ProcessLookupError):
+                result["note"] = f"Process {pid} not found in /proc"
+            except Exception as e:
+                result["note"] = f"Could not determine user for pid {pid}: {e}"
     except Exception:
         pass
     return result

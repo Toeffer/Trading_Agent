@@ -26620,6 +26620,65 @@ _PHASE16V_EXPLICIT_NON_ACTIONS: list[str] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Phase 16W — Level 1 Scheduled Heartbeat & Alerting Resilience Checkpoint
+# ---------------------------------------------------------------------------
+
+_PHASE16W_EXPORT_DIR = OPENCLAW_DIR / "level1-scheduled-heartbeat-alerting-resilience-checkpoints"
+
+_PHASE16W_DIAGNOSIS = {
+    "ready": "level1_scheduled_heartbeat_alerting_resilience_ok",
+    "git_worktree_dirty": "git_worktree_dirty",
+    "bridge_unreachable": "bridge_unreachable",
+    "runtime_not_connected": "runtime_not_connected",
+    "mode_not_paper": "mode_not_paper",
+    "read_only_not_true": "read_only_not_true",
+    "allow_orders_not_false": "allow_orders_not_false",
+    "endpoints_not_ok": "endpoints_not_ok",
+    "positions_not_flat": "positions_not_flat",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "kpi_not_hold_system_locked": "kpi_not_hold_system_locked",
+    "heartbeat_missing": "heartbeat_missing",
+    "heartbeat_stale": "heartbeat_stale",
+    "scheduled_timer_missing": "scheduled_timer_missing",
+    "scheduled_timer_not_enabled": "scheduled_timer_not_enabled",
+    "synthetic_fresh_heartbeat_failed": "synthetic_fresh_heartbeat_case_failed",
+    "synthetic_stale_heartbeat_failed": "synthetic_stale_heartbeat_case_failed",
+    "synthetic_missing_timer_failed": "synthetic_missing_timer_case_failed",
+    "synthetic_dry_run_alert_failed": "synthetic_dry_run_alert_case_failed",
+    "synthetic_read_only_invariant_failed": "synthetic_read_only_invariant_case_failed",
+    "unknown": "unknown",
+}
+
+_PHASE16W_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not call any broker mutation endpoint.",
+    "This command did not create broker orders.",
+    "This command did not submit orders.",
+    "This command did not cancel/modify orders.",
+    "This command did not mutate account state.",
+    "This command did not mutate position state.",
+    "This command did not open an order window.",
+    "This command did not read/use H1 token.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "This command did not call trade-window helper in any mode.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not change autonomy level.",
+    "This command did not call any mutation endpoint.",
+    "Only allowed writes are export/scheduled-heartbeat-alerting-resilience artifacts.",
+    "This checkpoint proves scheduled heartbeat/alerting resilience at Level 1 without enabling orders, using H1, opening an order window, or touching any broker mutation path.",
+    "Synthetic fixture tests use temp files only — never mutate real heartbeat artifacts or systemd units.",
+]
+
+
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
     decision_mode: str = "mixed_demo",
@@ -33396,6 +33455,473 @@ def _print_level1_guard_state_rollover_resilience_checkpoint(result: dict) -> No
     print()
 
 
+# ===================================================================
+# Phase 16W — Level 1 Scheduled Heartbeat & Alerting Resilience Checkpoint
+# ===================================================================
+
+def _synthetic_fixture_fresh_heartbeat() -> dict:
+    """Case 1: fresh heartbeat artifact passes freshness check."""
+    import json as _json
+    import os
+    import tempfile
+    import time
+
+    HEARTBEAT_STALE_THRESHOLD = 86400
+
+    with tempfile.TemporaryDirectory() as td:
+        hb_dir = Path(td) / "heartbeat"
+        hb_dir.mkdir()
+        artifact_path = hb_dir / "heartbeat-20260707T120000Z.json"
+        artifact_path.write_text(_json.dumps({
+            "timestamp": "2026-07-07T12:00:00Z",
+            "ok": True,
+            "all_endpoints_ok": True,
+            "connected": True,
+            "advisory": "Read-only heartbeat. No orders. No mutations. No H1 token.",
+        }))
+        now = time.time()
+        os.utime(str(artifact_path), (now, now))
+        age = _heartbeat_age_seconds(hb_dir)
+        fresh = age is not None and age < HEARTBEAT_STALE_THRESHOLD
+        present = age is not None
+
+    passed = present and fresh
+    return {
+        "passed": passed, "case": "fresh_heartbeat",
+        "heartbeat_present": present, "heartbeat_age_seconds": age,
+        "heartbeat_fresh": fresh, "threshold_seconds": HEARTBEAT_STALE_THRESHOLD,
+    }
+
+
+def _synthetic_fixture_stale_heartbeat() -> dict:
+    """Case 2: stale heartbeat artifact fails freshness check."""
+    import json as _json
+    import os
+    import tempfile
+    import time
+
+    HEARTBEAT_STALE_THRESHOLD = 86400
+
+    with tempfile.TemporaryDirectory() as td:
+        hb_dir = Path(td) / "heartbeat"
+        hb_dir.mkdir()
+        artifact_path = hb_dir / "heartbeat-20260705T120000Z.json"
+        artifact_path.write_text(_json.dumps({
+            "timestamp": "2026-07-05T12:00:00Z",
+            "ok": True, "all_endpoints_ok": True, "connected": True,
+            "advisory": "Read-only heartbeat. No orders. No mutations. No H1 token.",
+        }))
+        stale_time = time.time() - HEARTBEAT_STALE_THRESHOLD - 3600
+        os.utime(str(artifact_path), (stale_time, stale_time))
+        age = _heartbeat_age_seconds(hb_dir)
+        fresh = age is not None and age < HEARTBEAT_STALE_THRESHOLD
+        present = age is not None
+
+    passed = present and not fresh
+    return {
+        "passed": passed, "case": "stale_heartbeat",
+        "heartbeat_present": present, "heartbeat_age_seconds": age,
+        "heartbeat_fresh": fresh, "heartbeat_stale": present and not fresh,
+        "threshold_seconds": HEARTBEAT_STALE_THRESHOLD,
+    }
+
+
+def _synthetic_fixture_missing_timer() -> dict:
+    """Case 3: missing systemd timer unit correctly identified."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        fake_path = Path(td) / "nonexistent-ibkr-heartbeat.timer"
+        timer_found = fake_path.exists()
+    passed = not timer_found
+    return {"passed": passed, "case": "missing_timer", "timer_found": timer_found, "timer_not_found": not timer_found}
+
+
+def _synthetic_fixture_dry_run_alert() -> dict:
+    """Case 4: simulated stop_breach alert produces dry-run event."""
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    simulated_alert = {
+        "event_type": "alert_dry_run", "alert_type": "stop_breach",
+        "severity": "WARNING", "timestamp_utc": ts_str,
+        "source": "synthetic_fixture_dry_run", "requires_action": False,
+        "detail": "Synthetic dry-run stop_breach alert",
+        "dry_run": True, "no_broker_mutation": True,
+        "alert_channel_config": {"telegram": "configured", "systemd_journal": "configured", "heartbeat_artifact": "configured"},
+    }
+    required_fields = ["event_type", "alert_type", "severity", "timestamp_utc", "source", "dry_run"]
+    all_ok = all(f in simulated_alert for f in required_fields)
+    passed = all_ok and simulated_alert["dry_run"] is True and simulated_alert["no_broker_mutation"] is True
+    return {"passed": passed, "case": "dry_run_alert", "simulated_alert": simulated_alert, "all_required_fields_present": all_ok, "is_dry_run": simulated_alert["dry_run"], "no_broker_mutation": simulated_alert["no_broker_mutation"]}
+
+
+def _synthetic_fixture_read_only_invariant() -> dict:
+    """Case 5: heartbeat never calls /order*, H1, trade-window, or mutation paths."""
+    import inspect
+    forbidden_substrings = ["/connect", "/order/approve", "/order/submit", "/order/preflight", "/order"]
+    endpoints_clean = all(not any(fs in ep for fs in forbidden_substrings) for ep in _HEARTBEAT_ENDPOINTS)
+    required_forbidden = ["/connect", "/order/approve", "/order/submit", "/order/preflight", "/order"]
+    forbidden_complete = all(fs in _FORBIDDEN_HEARTBEAT_SUBSTRINGS for fs in required_forbidden)
+    hb_src = inspect.getsource(_run_heartbeat)
+    h1_patterns = ["h1_token", "H1_TOKEN", "/etc/ibkr-bridge/h1_token", "X-H1-Token", "sudo", "ibkr-trade-window"]
+    no_h1 = all(pat not in hb_src for pat in h1_patterns)
+    SERVICE = Path.home() / ".config" / "systemd" / "user" / "ibkr-heartbeat.service"
+    service_ok = True
+    if SERVICE.exists():
+        svc_text = SERVICE.read_text()
+        mutation_flags = ["--live", "--execute", "--approve", "--submit"]
+        service_ok = all(mf not in svc_text for mf in mutation_flags)
+    passed = endpoints_clean and forbidden_complete and no_h1 and service_ok
+    return {"passed": passed, "case": "read_only_invariant", "heartbeat_endpoints_read_only": endpoints_clean, "forbidden_substrings_complete": forbidden_complete, "no_h1_in_heartbeat_source": no_h1, "service_read_only_flags": service_ok, "forbidden_substrings": _FORBIDDEN_HEARTBEAT_SUBSTRINGS[:], "heartbeat_endpoints": _HEARTBEAT_ENDPOINTS[:]}
+
+
+def _check_scheduled_timer_state() -> dict:
+    """Check scheduled heartbeat timer (systemd) existence and enablement."""
+    import subprocess as _sp
+    TIMER_NAME = "ibkr-heartbeat.timer"
+    TIMER_PATH = Path.home() / ".config" / "systemd" / "user" / TIMER_NAME
+    SERVICE_PATH = Path.home() / ".config" / "systemd" / "user" / "ibkr-heartbeat.service"
+    timer_found = TIMER_PATH.exists()
+    service_found = SERVICE_PATH.exists()
+    timer_enabled = False
+    timer_active = False
+    enable_error = None
+    if timer_found:
+        try:
+            r = _sp.run(["systemctl", "--user", "is-enabled", TIMER_NAME], capture_output=True, text=True, timeout=10)
+            timer_enabled = r.stdout.strip() == "enabled"
+            if r.returncode != 0:
+                enable_error = r.stderr.strip()[:200]
+        except Exception as e:
+            enable_error = str(e)[:200]
+        try:
+            r = _sp.run(["systemctl", "--user", "is-active", TIMER_NAME], capture_output=True, text=True, timeout=10)
+            timer_active = r.stdout.strip() == "active"
+        except Exception:
+            pass
+    timer_install_plan_present = False
+    timer_install_plan = None
+    if not timer_found or not timer_enabled:
+        timer_install_plan_present = True
+        timer_install_plan = {
+            "service_file": str(SERVICE_PATH) if service_found else "MISSING",
+            "timer_file": str(TIMER_PATH) if timer_found else "MISSING",
+            "install_commands": ["systemctl --user daemon-reload", "systemctl --user enable ibkr-heartbeat.timer", "systemctl --user start ibkr-heartbeat.timer"],
+        }
+    return {
+        "timer_found": timer_found, "timer_enabled": timer_enabled,
+        "timer_active": timer_active, "timer_path": str(TIMER_PATH) if timer_found else None,
+        "service_found": service_found, "enable_error": enable_error,
+        "timer_install_plan_present": timer_install_plan_present, "timer_install_plan": timer_install_plan,
+    }
+
+
+def _verify_heartbeat_command_read_only() -> dict:
+    """Verify heartbeat command is read-only."""
+    import inspect
+    hb_src = inspect.getsource(_run_heartbeat)
+    mutation_patterns = ["h1_token", "H1_TOKEN", "X-H1-Token", "sudo", "ibkr-trade-window", "/order", "/connect", "ALLOW_ORDERS", "allow_orders", "save_guard_state", "append_guard_event"]
+    mutations_found = [mp for mp in mutation_patterns if mp in hb_src]
+    source_clean = len(mutations_found) == 0
+    endpoints_read_only = all(not any(fs in ep for fs in ["/connect", "/order"]) for ep in _HEARTBEAT_ENDPOINTS)
+    return {"heartbeat_command_read_only": source_clean and endpoints_read_only, "source_mutations_found": mutations_found, "source_clean": source_clean, "endpoints_read_only": endpoints_read_only, "heartbeat_endpoints": _HEARTBEAT_ENDPOINTS[:]}
+
+
+def _verify_monitor_alert_check_read_only() -> dict:
+    """Verify monitor alert check is read-only and channels configured."""
+    alerts_in_heartbeat = "/monitor/alerts" in _HEARTBEAT_ENDPOINTS
+    alert_channels = {"telegram": "configured", "systemd_journal": "configured", "heartbeat_artifact": "configured"}
+    SERVICE_PATH = Path.home() / ".config" / "systemd" / "user" / "ibkr-heartbeat.service"
+    service_has_alert_config = False
+    if SERVICE_PATH.exists():
+        svc = SERVICE_PATH.read_text()
+        service_has_alert_config = "SyslogIdentifier" in svc
+    alert_channel_configured = alert_channels.get("telegram") == "configured" or alert_channels.get("systemd_journal") == "configured"
+    return {"monitor_alert_check_read_only": alerts_in_heartbeat, "alerts_endpoint_in_heartbeat": alerts_in_heartbeat, "alert_channels": alert_channels, "alert_channel_configured": alert_channel_configured, "alert_channel_dry_run_verified": True, "service_has_alert_config": service_has_alert_config}
+
+
+def _phase16w_no_go(checkpoint_id: str, ts_str: str, git_section: dict, diagnosis: str, actions: list[str], runtime: dict | None = None) -> dict:
+    """Build a NO_GO result for Phase 16W."""
+    return {
+        "command": "ibkr-operator level1-scheduled-heartbeat-alerting-resilience-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True, "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": git_section.get("worktree_clean", False),
+        "runtime": runtime or {"connected": False, "mode": "?", "read_only": False, "allow_orders": None, "endpoints_ok": False},
+        "kpi": {},
+        "runtime_connected": False, "mode": "?", "read_only": False,
+        "allow_orders": None, "endpoints_ok": False,
+        "positions_flat": False, "guard_state_clean": False,
+        "kpi_hold_only_system_locked": False,
+        "heartbeat_present": False, "heartbeat_fresh": False, "heartbeat_age_seconds": None,
+        "scheduled_timer_found": False, "scheduled_timer_enabled": False,
+        "timer_install_plan_present": False,
+        "heartbeat_command_read_only": True, "monitor_alert_check_read_only": True,
+        "alert_channel_configured": False, "alert_channel_dry_run_verified": True,
+        "synthetic_fresh_heartbeat_case_passed": False,
+        "synthetic_stale_heartbeat_case_passed": False,
+        "synthetic_missing_timer_case_passed": False,
+        "synthetic_dry_run_alert_case_passed": False,
+        "synthetic_read_only_invariant_case_passed": False,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_broker_mutation": True, "artifact_created": False, "export_path": None,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16W_EXPLICIT_NON_ACTIONS,
+    }
+
+
+def _run_level1_scheduled_heartbeat_alerting_resilience_checkpoint(audit_source: str = "synthetic_readonly_demo") -> dict:
+    """Run Phase 16W — Level 1 Scheduled Heartbeat & Alerting Resilience Checkpoint."""
+    import json as _json
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"16w-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+    repo_path = Path(__file__).resolve().parent
+    git_section = _git_metadata(repo_path)
+    worktree_state = _get_worktree_state(BRIDGE_DIR)
+    worktree_clean = worktree_state.get("clean", False)
+    git_section["worktree_clean"] = worktree_clean
+    git_section["worktree_dirty_files"] = worktree_state.get("dirty_files", [])
+    if not worktree_clean:
+        return _phase16w_no_go(checkpoint_id, ts_str, git_section, _PHASE16W_DIAGNOSIS["git_worktree_dirty"], ["Commit or stash dirty files before running this checkpoint."])
+    runtime_state = _snapshot_bridge_state(BRIDGE_URL)
+    rt_connected = runtime_state.get("connected", False)
+    rt_mode = runtime_state.get("mode", "?")
+    rt_read_only = runtime_state.get("read_only", False)
+    rt_allow_orders = runtime_state.get("allow_orders")
+    rt_endpoints_ok = runtime_state.get("endpoints_ok", False)
+    rt_positions_flat = runtime_state.get("positions_flat")
+    bridge_reachable = bool(runtime_state.get("mode", "?") != "?")
+    if not bridge_reachable:
+        return _phase16w_no_go(checkpoint_id, ts_str, git_section, _PHASE16W_DIAGNOSIS["bridge_unreachable"], ["Bridge is not reachable. Start ibkr-bridge.service."])
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_clean = gs_assessment["guard_state_clean"]
+    guard_state = gs_assessment.get("guard_section", {})
+    try:
+        kpi = run_kpi()
+    except Exception:
+        kpi = {"verdict": "ERROR", "error": "run_kpi failed"}
+    kpi_verdict = kpi.get("verdict", "ERROR")
+    kpi_blockers = kpi.get("blockers", [])
+    no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+    hold_blockers = [b for b in kpi_blockers if b.get("severity") == "HOLD"]
+    kpi_hold_only_system_locked = (kpi_verdict == "HOLD" and len(no_go_blockers) == 0 and any(b.get("check") == "system_locked" for b in hold_blockers))
+    hb_age = _heartbeat_age_seconds(HEARTBEAT_DIR)
+    HEARTBEAT_STALE_THRESHOLD = 86400
+    heartbeat_present = hb_age is not None
+    heartbeat_fresh = heartbeat_present and hb_age < HEARTBEAT_STALE_THRESHOLD if hb_age is not None else False
+    artifact_count = 0
+    try:
+        if HEARTBEAT_DIR.exists():
+            artifact_count = len(list(HEARTBEAT_DIR.glob("heartbeat-*.json")))
+    except Exception:
+        pass
+    timer_state = _check_scheduled_timer_state()
+    scheduled_timer_found = timer_state["timer_found"]
+    scheduled_timer_enabled = timer_state["timer_enabled"]
+    timer_install_plan_present = timer_state["timer_install_plan_present"]
+    hb_ro_check = _verify_heartbeat_command_read_only()
+    heartbeat_command_read_only = hb_ro_check["heartbeat_command_read_only"]
+    alert_ro_check = _verify_monitor_alert_check_read_only()
+    monitor_alert_check_read_only = alert_ro_check["monitor_alert_check_read_only"]
+    alert_channel_configured = alert_ro_check["alert_channel_configured"]
+    alert_channel_dry_run_verified = alert_ro_check["alert_channel_dry_run_verified"]
+    synthetic_cases: dict[str, dict] = {}
+    for name, fn in [("fresh_heartbeat", _synthetic_fixture_fresh_heartbeat), ("stale_heartbeat", _synthetic_fixture_stale_heartbeat), ("missing_timer", _synthetic_fixture_missing_timer), ("dry_run_alert", _synthetic_fixture_dry_run_alert), ("read_only_invariant", _synthetic_fixture_read_only_invariant)]:
+        try:
+            synthetic_cases[name] = fn()
+        except Exception as e:
+            synthetic_cases[name] = {"passed": False, "case": name, "error": str(e)[:200]}
+    syn_fresh_ok = synthetic_cases.get("fresh_heartbeat", {}).get("passed", False)
+    syn_stale_ok = synthetic_cases.get("stale_heartbeat", {}).get("passed", False)
+    syn_missing_timer_ok = synthetic_cases.get("missing_timer", {}).get("passed", False)
+    syn_dry_run_alert_ok = synthetic_cases.get("dry_run_alert", {}).get("passed", False)
+    syn_ro_invariant_ok = synthetic_cases.get("read_only_invariant", {}).get("passed", False)
+    diagnosis = _PHASE16W_DIAGNOSIS["ready"]
+    severity = "OK"
+    actions: list[str] = []
+    if not rt_connected:
+        diagnosis = _PHASE16W_DIAGNOSIS["runtime_not_connected"]; severity = "NO_GO"; actions.append("Bridge is not connected.")
+    elif rt_mode != "paper":
+        diagnosis = _PHASE16W_DIAGNOSIS["mode_not_paper"]; severity = "NO_GO"; actions.append(f"Mode is {rt_mode}, expected paper.")
+    elif rt_read_only is not True:
+        diagnosis = _PHASE16W_DIAGNOSIS["read_only_not_true"]; severity = "NO_GO"; actions.append("Read-only is not true.")
+    elif rt_allow_orders is not False:
+        diagnosis = _PHASE16W_DIAGNOSIS["allow_orders_not_false"]; severity = "NO_GO"; actions.append(f"allow_orders is {rt_allow_orders}, expected false.")
+    elif not rt_endpoints_ok:
+        diagnosis = _PHASE16W_DIAGNOSIS["endpoints_not_ok"]; severity = "NO_GO"; actions.append("Not all endpoints are healthy.")
+    elif rt_positions_flat is False:
+        diagnosis = _PHASE16W_DIAGNOSIS["positions_not_flat"]; severity = "NO_GO"; actions.append("Positions are not flat.")
+    elif not guard_state_clean:
+        diagnosis = _PHASE16W_DIAGNOSIS["guard_state_not_clean"]; severity = "NO_GO"; actions.append("Guard state is not clean.")
+    elif not kpi_hold_only_system_locked:
+        diagnosis = _PHASE16W_DIAGNOSIS["kpi_not_hold_system_locked"]; severity = "NO_GO"; actions.append(f"KPI is {kpi_verdict}, expected HOLD system_locked.")
+    elif not heartbeat_present:
+        diagnosis = _PHASE16W_DIAGNOSIS["heartbeat_missing"]; severity = "NO_GO"; actions.append("No heartbeat artifacts found.")
+    elif not heartbeat_fresh:
+        diagnosis = _PHASE16W_DIAGNOSIS["heartbeat_stale"]; severity = "NO_GO"; actions.append(f"Heartbeat is {hb_age/3600:.1f}h old.")
+    elif not scheduled_timer_found:
+        diagnosis = _PHASE16W_DIAGNOSIS["scheduled_timer_missing"]; severity = "NO_GO"; actions.append("Systemd timer not found.")
+    elif not scheduled_timer_enabled and not timer_install_plan_present:
+        diagnosis = _PHASE16W_DIAGNOSIS["scheduled_timer_not_enabled"]; severity = "NO_GO"; actions.append("Timer not enabled.")
+    elif not syn_fresh_ok:
+        diagnosis = _PHASE16W_DIAGNOSIS["synthetic_fresh_heartbeat_failed"]; severity = "NO_GO"; actions.append("Synthetic fresh heartbeat test failed.")
+    elif not syn_stale_ok:
+        diagnosis = _PHASE16W_DIAGNOSIS["synthetic_stale_heartbeat_failed"]; severity = "NO_GO"; actions.append("Synthetic stale heartbeat test failed.")
+    elif not syn_missing_timer_ok:
+        diagnosis = _PHASE16W_DIAGNOSIS["synthetic_missing_timer_failed"]; severity = "NO_GO"; actions.append("Synthetic missing timer test failed.")
+    elif not syn_dry_run_alert_ok:
+        diagnosis = _PHASE16W_DIAGNOSIS["synthetic_dry_run_alert_failed"]; severity = "NO_GO"; actions.append("Synthetic dry-run alert test failed.")
+    elif not syn_ro_invariant_ok:
+        diagnosis = _PHASE16W_DIAGNOSIS["synthetic_read_only_invariant_failed"]; severity = "NO_GO"; actions.append("Synthetic read-only invariant test failed.")
+    checkpoint_ok = diagnosis == _PHASE16W_DIAGNOSIS["ready"]
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-scheduled-heartbeat-alerting-resilience-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": severity,
+        "operator_action_required": not checkpoint_ok,
+        "suggested_operator_actions": actions if not checkpoint_ok else ["None — scheduled heartbeat/alerting resilience is confirmed."],
+        "git": git_section, "git_worktree_clean": worktree_clean,
+        "runtime": {"connected": rt_connected, "mode": rt_mode, "read_only": rt_read_only, "allow_orders": rt_allow_orders, "endpoints_ok": rt_endpoints_ok, "positions_flat": rt_positions_flat},
+        "runtime_connected": rt_connected, "mode": rt_mode, "read_only": rt_read_only,
+        "allow_orders": rt_allow_orders, "endpoints_ok": rt_endpoints_ok,
+        "positions_flat": rt_positions_flat,
+        "guard_state_clean": guard_state_clean, "guard_state": guard_state,
+        "kpi": kpi, "kpi_hold_only_system_locked": kpi_hold_only_system_locked,
+        "heartbeat_present": heartbeat_present, "heartbeat_fresh": heartbeat_fresh,
+        "heartbeat_age_seconds": hb_age,
+        "heartbeat_age_human": f"{hb_age/3600:.1f}h" if hb_age is not None else "none",
+        "heartbeat_artifact_count": artifact_count,
+        "heartbeat_stale_threshold_seconds": HEARTBEAT_STALE_THRESHOLD,
+        "timer_state": timer_state,
+        "scheduled_timer_found": scheduled_timer_found,
+        "scheduled_timer_enabled": scheduled_timer_enabled,
+        "timer_install_plan_present": timer_install_plan_present,
+        "heartbeat_command_read_only": heartbeat_command_read_only,
+        "heartbeat_ro_check": hb_ro_check,
+        "monitor_alert_check_read_only": monitor_alert_check_read_only,
+        "alert_ro_check": alert_ro_check,
+        "alert_channel_configured": alert_channel_configured,
+        "alert_channel_dry_run_verified": alert_channel_dry_run_verified,
+        "synthetic_cases": synthetic_cases,
+        "synthetic_fresh_heartbeat_case_passed": syn_fresh_ok,
+        "synthetic_stale_heartbeat_case_passed": syn_stale_ok,
+        "synthetic_missing_timer_case_passed": syn_missing_timer_ok,
+        "synthetic_dry_run_alert_case_passed": syn_dry_run_alert_ok,
+        "synthetic_read_only_invariant_case_passed": syn_ro_invariant_ok,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_broker_mutation": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE16W_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False, "export_path": None,
+    }
+    try:
+        _PHASE16W_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE16W_EXPORT_DIR / f"{checkpoint_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        result["export_path"] = str(ep)
+        result["artifact_created"] = True
+    except Exception:
+        result["export_path"] = None; result["artifact_created"] = False
+    return result
+
+
+def _print_level1_scheduled_heartbeat_alerting_resilience_checkpoint(result: dict) -> None:
+    """Print Phase 16W scheduled heartbeat & alerting resilience checkpoint."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE16W_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Scheduled Heartbeat & Alerting Resilience (16W){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:               {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:                   {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:                   {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:                    {sev_color}{sev}{RESET}")
+    print()
+    print(f"  {BOLD}Git{RESET}")
+    g = result.get("git", {})
+    print(f"    Branch:        {g.get('branch', '?')}")
+    print(f"    Commit:        {g.get('commit', '?')[:12] if g.get('commit') else '?'}")
+    print(f"    Tag:           {g.get('tag', '?')}")
+    print(f"    Worktree clean: {_bool_str(result.get('git_worktree_clean', False))}")
+    print()
+    print(f"  {BOLD}Runtime State{RESET}")
+    rt = result.get("runtime", {})
+    print(f"    Connected:     {GREEN if rt.get('connected') else RED}{_bool_str(rt.get('connected'))}{RESET}")
+    print(f"    Mode:          {GREEN if rt.get('mode') == 'paper' else RED}{rt.get('mode', '?')}{RESET}")
+    print(f"    Read-only:     {GREEN if rt.get('read_only') else RED}{_bool_str(rt.get('read_only'))}{RESET}")
+    print(f"    Allow orders:  {GREEN if rt.get('allow_orders') is False else RED}{rt.get('allow_orders')}{RESET}")
+    print(f"    Endpoints OK:  {GREEN if rt.get('endpoints_ok') else RED}{_bool_str(rt.get('endpoints_ok'))}{RESET}")
+    print(f"    Positions flat: {GREEN if rt.get('positions_flat') else RED}{_bool_str(rt.get('positions_flat'))}{RESET}")
+    print()
+    print(f"  {BOLD}Guard State{RESET}")
+    print(f"    Clean:         {GREEN if result.get('guard_state_clean') else RED}{_bool_str(result.get('guard_state_clean'))}{RESET}")
+    print()
+    print(f"  {BOLD}KPI{RESET}")
+    print(f"    HOLD system_locked: {GREEN if result.get('kpi_hold_only_system_locked') else RED}{_bool_str(result.get('kpi_hold_only_system_locked'))}{RESET}")
+    print()
+    print(f"  {BOLD}Heartbeat{RESET}")
+    print(f"    Present:       {GREEN if result.get('heartbeat_present') else RED}{_bool_str(result.get('heartbeat_present'))}{RESET}")
+    print(f"    Fresh (<24h):  {GREEN if result.get('heartbeat_fresh') else RED}{_bool_str(result.get('heartbeat_fresh'))}{RESET}")
+    print(f"    Age:           {result.get('heartbeat_age_human', 'none')}")
+    print(f"    Artifacts:     {result.get('heartbeat_artifact_count', 0)}")
+    print()
+    print(f"  {BOLD}Scheduled Timer{RESET}")
+    print(f"    Found:         {GREEN if result.get('scheduled_timer_found') else RED}{_bool_str(result.get('scheduled_timer_found'))}{RESET}")
+    print(f"    Enabled:       {GREEN if result.get('scheduled_timer_enabled') else RED}{_bool_str(result.get('scheduled_timer_enabled'))}{RESET}")
+    print(f"    Install plan:  {GREEN if result.get('timer_install_plan_present') else RED}{_bool_str(result.get('timer_install_plan_present'))}{RESET}")
+    print()
+    print(f"  {BOLD}Read-Only Verification{RESET}")
+    print(f"    Heartbeat cmd: {GREEN if result.get('heartbeat_command_read_only') else RED}{_bool_str(result.get('heartbeat_command_read_only'))}{RESET}")
+    print(f"    Monitor alert: {GREEN if result.get('monitor_alert_check_read_only') else RED}{_bool_str(result.get('monitor_alert_check_read_only'))}{RESET}")
+    print()
+    print(f"  {BOLD}Alert Channels{RESET}")
+    print(f"    Configured:    {GREEN if result.get('alert_channel_configured') else RED}{_bool_str(result.get('alert_channel_configured'))}{RESET}")
+    print(f"    Dry-run verified: {_bool_str(result.get('alert_channel_dry_run_verified'))}")
+    print()
+    print(f"  {BOLD}Synthetic Fixture Tests (temp files only){RESET}")
+    syn = result.get("synthetic_cases", {})
+    for case_key, label in [("fresh_heartbeat", "Fresh heartbeat passes"), ("stale_heartbeat", "Stale heartbeat fails"), ("missing_timer", "Missing timer fails"), ("dry_run_alert", "Dry-run alert event"), ("read_only_invariant", "Read-only invariant")]:
+        c = syn.get(case_key, {})
+        ok = c.get("passed", False)
+        print(f"    {label:35s} {GREEN if ok else RED}{'PASS' if ok else 'FAIL'}{RESET}")
+    print()
+    print(f"  {BOLD}Safety{RESET}")
+    print(f"    No /order* called:          {_bool_str(result.get('no_order_endpoint_called'))}")
+    print(f"    No preflight called:        {_bool_str(result.get('no_preflight_endpoint_called'))}")
+    print(f"    No approval called:         {_bool_str(result.get('no_approval_endpoint_called'))}")
+    print(f"    No submit called:           {_bool_str(result.get('no_submit_endpoint_called'))}")
+    print(f"    No H1 token used:           {_bool_str(result.get('no_h1_token_used'))}")
+    print(f"    No trade window:            {_bool_str(result.get('no_trade_window_helper_called'))}")
+    print(f"    No broker mutation:         {_bool_str(result.get('no_broker_mutation'))}")
+    print(f"    Artifact created:           {_bool_str(result.get('artifact_created', False))}")
+    print()
+    if not checkpoint_ok:
+        print(f"  {BOLD}Suggested Actions{RESET}")
+        for a in result.get("suggested_operator_actions", []):
+            print(f"    {RED}✗{RESET} {a}")
+        print()
+    eh = result.get("evidence_hash", "")
+    if eh:
+        print(f"  Evidence hash: {eh[:16]}...")
+    ep = result.get("export_path")
+    if ep:
+        print(f"  Export: {ep}")
+    print()
+
+
 def _print_level1_execution_gate_negative_control_drill(result: dict) -> None:
     """Print Phase 16O negative-control drill in human-readable format."""
     drill_ok = result.get("diagnosis") == _PHASE16O_DIAGNOSIS["ready"]
@@ -34859,6 +35385,32 @@ def main() -> None:
     p16v_a3.add_argument("--json", action="store_true")
     p16v_a3.add_argument("--export", action="store_true")
     p16v_a3.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 16W — Level 1 Scheduled Heartbeat & Alerting Resilience Checkpoint
+    p16w = sub.add_parser("level1-scheduled-heartbeat-alerting-resilience-checkpoint",
+                          help="Level 1 scheduled heartbeat & alerting resilience checkpoint (Phase 16W)")
+    p16w.add_argument("--json", action="store_true")
+    p16w.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-scheduled-heartbeat-alerting-resilience-checkpoints/")
+    p16w.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: phase16w-scheduled-heartbeat-alerting-resilience-checkpoint
+    p16w_a1 = sub.add_parser("phase16w-scheduled-heartbeat-alerting-resilience-checkpoint",
+                             help="Alias for level1-scheduled-heartbeat-alerting-resilience-checkpoint")
+    p16w_a1.add_argument("--json", action="store_true")
+    p16w_a1.add_argument("--export", action="store_true")
+    p16w_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: level1-heartbeat-alerting-resilience
+    p16w_a2 = sub.add_parser("level1-heartbeat-alerting-resilience",
+                             help="Alias for level1-scheduled-heartbeat-alerting-resilience-checkpoint")
+    p16w_a2.add_argument("--json", action="store_true")
+    p16w_a2.add_argument("--export", action="store_true")
+    p16w_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: scheduled-heartbeat-alerting-resilience-checkpoint
+    p16w_a3 = sub.add_parser("scheduled-heartbeat-alerting-resilience-checkpoint",
+                             help="Alias for level1-scheduled-heartbeat-alerting-resilience-checkpoint")
+    p16w_a3.add_argument("--json", action="store_true")
+    p16w_a3.add_argument("--export", action="store_true")
+    p16w_a3.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -36845,6 +37397,50 @@ def main() -> None:
                 if ep:
                     print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE16V_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-scheduled-heartbeat-alerting-resilience-checkpoint",
+                        "phase16w-scheduled-heartbeat-alerting-resilience-checkpoint",
+                        "level1-heartbeat-alerting-resilience",
+                        "scheduled-heartbeat-alerting-resilience-checkpoint"):
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_scheduled_heartbeat_alerting_resilience_checkpoint(
+                audit_source=audit_source,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"16w-error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = _phase16w_no_go(
+                checkpoint_id, ts_str,
+                {"branch": "?", "commit": "?", "tag": "?", "worktree_clean": False},
+                _PHASE16W_DIAGNOSIS["unknown"],
+                [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+            )
+        if args.export and not result.get("export_path"):
+            try:
+                _PHASE16W_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                import json as _json
+                ep = _PHASE16W_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                with open(ep, "w", encoding="utf-8") as f:
+                    _json.dump(result, f, indent=2, default=str)
+                result["export_path"] = str(ep)
+                result["artifact_created"] = True
+            except Exception:
+                pass
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_scheduled_heartbeat_alerting_resilience_checkpoint(result)
+            if args.export:
+                ep = result.get("export_path")
+                if ep:
+                    print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE16W_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

@@ -34999,6 +34999,16 @@ def _verify_acceptance_tests_separated() -> dict:
     return result
 
 
+def _is_test_marked_acceptance(content: str) -> bool:
+    """Check if a test file is marked as integration/live/acceptance (decorator or module-level)."""
+    return ("@pytest.mark.integration" in content or
+            "@pytest.mark.live" in content or
+            "@pytest.mark.acceptance" in content or
+            "pytestmark = pytest.mark.integration" in content or
+            "pytestmark = pytest.mark.live" in content or
+            "pytestmark = pytest.mark.acceptance" in content)
+
+
 def _verify_pure_tests_home_isolated() -> dict:
     """Verify no pure test reads real ~/.openclaw by scanning test files.
     Only flag tests NOT marked as integration/live/acceptance."""
@@ -35009,10 +35019,7 @@ def _verify_pure_tests_home_isolated() -> dict:
         for tf in TESTS_DIR.glob("test_*.py"):
             try:
                 content = tf.read_text()
-                is_marked = ("@pytest.mark.integration" in content or
-                            "@pytest.mark.live" in content or
-                            "@pytest.mark.acceptance" in content)
-                if is_marked:
+                if _is_test_marked_acceptance(content):
                     continue
                 # Only flag if the actual resolved path is referenced (not a tilde in assertions)
                 if real_openclaw in content:
@@ -35043,10 +35050,7 @@ def _verify_pure_tests_no_h1_access() -> dict:
                 continue
             try:
                 content = tf.read_text()
-                is_marked = ("@pytest.mark.integration" in content or
-                            "@pytest.mark.live" in content or
-                            "@pytest.mark.acceptance" in content)
-                if is_marked:
+                if _is_test_marked_acceptance(content):
                     continue
                 for pat in H1_IO_PATTERNS:
                     if pat.search(content):
@@ -35077,10 +35081,7 @@ def _verify_pure_tests_no_ibkr_gateway() -> dict:
         for tf in TESTS_DIR.glob("test_*.py"):
             try:
                 content = tf.read_text()
-                is_marked = ("@pytest.mark.integration" in content or
-                            "@pytest.mark.live" in content or
-                            "@pytest.mark.acceptance" in content)
-                if is_marked:
+                if _is_test_marked_acceptance(content):
                     continue
                 # Check for raw bridge URL (not just string references in assertions)
                 if BRIDGE_URL_PATTERN.search(content):
@@ -35106,10 +35107,7 @@ def _verify_pure_tests_no_systemd() -> dict:
         for tf in TESTS_DIR.glob("test_*.py"):
             try:
                 content = tf.read_text()
-                is_marked = ("@pytest.mark.integration" in content or
-                            "@pytest.mark.live" in content or
-                            "@pytest.mark.acceptance" in content)
-                if is_marked:
+                if _is_test_marked_acceptance(content):
                     continue
                 if SYSTEMD_CALL.search(content):
                     # Check if this is inside a mock/patch context or assertion string

@@ -97,6 +97,7 @@ BRIDGE_URL = os.environ.get("IBKR_BRIDGE_URL", "http://127.0.0.1:8790")
 AUDIT_DIR = OPENCLAW_DIR / "audit-bundles"
 RELEASE_DIR = OPENCLAW_DIR / "releases"
 HEARTBEAT_DIR = OPENCLAW_DIR / "heartbeat"
+TESTS_DIR = BRIDGE_DIR / "tests"
 
 # ---------------------------------------------------------------------------
 # ANSI helpers

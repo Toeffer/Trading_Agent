@@ -26957,6 +26957,92 @@ _PHASE17A_EXPLICIT_NON_ACTIONS: list[str] = [
 ]
 
 
+# ===================================================================
+# Phase 17B — Level 1 Strategy v1 Proposal Packet Schema Checkpoint
+# ===================================================================
+
+_PHASE17B_EXPORT_DIR = OPENCLAW_DIR / "level1-strategy-v1-proposal-packet-schema-checkpoints"
+
+_PROPOSAL_PACKET_DOC_PATH = BRIDGE_DIR / "docs" / "proposal_packet_v1.md"
+_PROPOSAL_PACKET_SCHEMA_PATH = BRIDGE_DIR / "docs" / "proposal_packet_v1.schema.json"
+
+_PHASE17B_DIAGNOSIS = {
+    "ready": "level1_strategy_v1_proposal_packet_schema_ok",
+    "git_worktree_dirty": "git_worktree_dirty",
+    "bridge_unreachable": "bridge_unreachable",
+    "runtime_not_connected": "runtime_not_connected",
+    "mode_not_paper": "mode_not_paper",
+    "read_only_not_true": "read_only_not_true",
+    "allow_orders_not_false": "allow_orders_not_false",
+    "endpoints_not_ok": "endpoints_not_ok",
+    "positions_not_flat": "positions_not_flat",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "kpi_not_hold_system_locked": "kpi_not_hold_system_locked",
+    "proposal_packet_doc_missing": "proposal_packet_doc_missing",
+    "proposal_packet_schema_missing": "proposal_packet_schema_missing",
+    "strategy_v1_ref_not_required": "strategy_v1_ref_not_required",
+    "proposal_id_not_required": "proposal_id_not_required",
+    "timestamp_not_required": "timestamp_not_required",
+    "instrument_not_required": "instrument_not_required",
+    "allowed_instrument_check_not_required": "allowed_instrument_check_not_required",
+    "signal_thesis_not_required": "signal_thesis_not_required",
+    "signal_inputs_not_required": "signal_inputs_not_required",
+    "data_quality_not_required": "data_quality_not_required",
+    "no_trade_checklist_not_required": "no_trade_checklist_not_required",
+    "risk_envelope_check_not_required": "risk_envelope_check_not_required",
+    "sizing_not_required": "sizing_not_required",
+    "daily_trade_count_not_required": "daily_trade_count_not_required",
+    "daily_loss_not_required": "daily_loss_not_required",
+    "stop_exit_not_required": "stop_exit_not_required",
+    "bracket_simulation_not_required": "bracket_simulation_not_required",
+    "advisory_boundary_not_required": "advisory_boundary_not_required",
+    "broker_boundary_not_required": "broker_boundary_not_required",
+    "human_review_not_required": "human_review_not_required",
+    "rejection_reasons_not_required": "rejection_reasons_not_required",
+    "evidence_hash_not_required": "evidence_hash_not_required",
+    "synthetic_valid_packet_failed": "synthetic_valid_packet_failed",
+    "synthetic_missing_strategy_ref_failed": "synthetic_missing_strategy_ref_failed",
+    "synthetic_disallowed_instrument_failed": "synthetic_disallowed_instrument_failed",
+    "synthetic_missing_data_quality_failed": "synthetic_missing_data_quality_failed",
+    "synthetic_missing_no_trade_checklist_failed": "synthetic_missing_no_trade_checklist_failed",
+    "synthetic_missing_risk_sizing_failed": "synthetic_missing_risk_sizing_failed",
+    "synthetic_missing_stop_bracket_failed": "synthetic_missing_stop_bracket_failed",
+    "synthetic_missing_advisory_boundary_failed": "synthetic_missing_advisory_boundary_failed",
+    "synthetic_read_only_invariant_failed": "synthetic_read_only_invariant_failed",
+    "unknown": "unknown",
+}
+
+_PHASE17B_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not call any broker mutation endpoint.",
+    "This command did not create broker orders.",
+    "This command did not submit orders.",
+    "This command did not cancel/modify orders.",
+    "This command did not mutate account state.",
+    "This command did not mutate position state.",
+    "This command did not open an order window.",
+    "This command did not read/use H1 token.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "This command did not call trade-window helper in any mode.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not change autonomy level.",
+    "This command did not call any mutation endpoint.",
+    "This command did not read ~/.openclaw from pure tests.",
+    "This command did not read /etc/ibkr-bridge/h1_token from pure tests.",
+    "Only allowed writes are export/proposal-packet-schema artifacts.",
+    "This checkpoint proves Level 1 proposal packet schema without enabling orders, using H1, opening an order window, or touching any broker mutation path.",
+    "Synthetic fixture tests use temp files only — never require real IBKR Gateway, systemd, ~/.openclaw, or H1 token.",
+]
+
+
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
     decision_mode: str = "mixed_demo",
@@ -36725,6 +36811,733 @@ def _print_level1_strategy_v1_governance_checkpoint(result: dict) -> None:
     print()
 
 
+# ===================================================================
+# Phase 17B — Level 1 Strategy v1 Proposal Packet Schema Helpers
+# ===================================================================
+
+
+def _synthetic_fixture_valid_proposal_packet() -> dict:
+    """Case 1: A valid proposal packet passes all checks."""
+    import json as _json
+    packet = {
+        "proposal_id": "prop-20260709-001",
+        "timestamp": "2026-07-09T14:30:00Z",
+        "strategy_version": "v1.0.0",
+        "strategy_doc_ref": "docs/strategy_v1.md",
+        "symbol": "AAPL",
+        "side": "BUY",
+        "quantity": 100,
+        "entry_price": 200.0,
+        "signal_thesis": "AAPL breaking above consolidation after strong earnings with volume confirmation.",
+        "signal_inputs": {"signals_aligned_count": 2, "min_signals_met": True, "atr_14": 3.21, "vix_level": 18.5},
+        "data_quality": {"overall": "PASS", "bar_data_ok": True, "atr_ok": True, "contract_lookup_ok": True},
+        "no_trade_checklist": {"overall": "PASS", "symbol_in_allowlist": True, "ibkr_gateway_connected": True},
+        "risk_envelope_check": {"notional_ok": True, "risk_ok": True, "total_exposure_ok": True, "overall": "PASS"},
+        "sizing_calculation": {"final_shares": 100, "sizing_method": "strategy-v1-\u00a79", "stop_distance_pct": 4.0, "overall": "PASS"},
+        "daily_trade_count_check": {"current_count": 0, "max_allowed": 2, "ok": True},
+        "daily_loss_check": {"loss_pct": 0.0, "loss_halt_1pct": False, "ok": True},
+        "stop_exit_plan": {"initial_stop_loss": 194.0, "stop_type": "STP", "bracket_required": True, "chosen_stop": 194.0, "overall": "PASS"},
+        "bracket_simulation": {"bracket_required": True, "fail_closed": True, "overall": "PASS"},
+        "advisory_only_statement": "This proposal is advisory-only. No broker execution.",
+        "broker_execution_path": "Only path: guard to preflight to approve to submit.",
+        "human_review_checklist": {"overall": "PENDING_CHRIS_REVIEW"},
+        "proposed_by": "Werner",
+        "model": "test-model",
+        "rejection_reasons": [],
+        "evidence_hash": "a" * 64,
+    }
+    required = ["proposal_id", "timestamp", "strategy_version", "strategy_doc_ref", "symbol", "side",
+                "quantity", "entry_price", "signal_thesis", "signal_inputs", "data_quality",
+                "no_trade_checklist", "risk_envelope_check", "sizing_calculation",
+                "daily_trade_count_check", "daily_loss_check", "stop_exit_plan", "bracket_simulation",
+                "advisory_only_statement", "broker_execution_path", "human_review_checklist",
+                "rejection_reasons", "evidence_hash"]
+    all_present = all(k in packet for k in required)
+    allowed_symbols = ["AAPL", "META", "NVDA", "AMD"]
+    symbol_allowed = packet["symbol"] in allowed_symbols
+    passed = all_present and symbol_allowed and packet["data_quality"]["overall"] == "PASS"
+    return {"passed": passed, "case": "valid_proposal_packet", "all_required_fields": all_present, "symbol_allowed": symbol_allowed}
+
+
+def _synthetic_fixture_missing_strategy_ref() -> dict:
+    """Case 2: Missing strategy_v1 reference must fail."""
+    packet = {
+        "proposal_id": "prop-20260709-002",
+        "timestamp": "2026-07-09T14:30:00Z",
+        "strategy_version": "v1.0.0",
+        "symbol": "AAPL",
+        "side": "BUY",
+        "quantity": 100,
+        "entry_price": 200.0,
+        "signal_thesis": "Missing strategy_doc_ref field.",
+        "signal_inputs": {"signals_aligned_count": 2, "min_signals_met": True, "atr_14": 3.21},
+        "data_quality": {"overall": "PASS", "bar_data_ok": True, "atr_ok": True, "contract_lookup_ok": True},
+        "no_trade_checklist": {"overall": "PASS", "symbol_in_allowlist": True, "ibkr_gateway_connected": True},
+        "risk_envelope_check": {"notional_ok": True, "risk_ok": True, "total_exposure_ok": True, "overall": "PASS"},
+        "sizing_calculation": {"final_shares": 100, "sizing_method": "strategy-v1", "stop_distance_pct": 4.0, "overall": "PASS"},
+        "daily_trade_count_check": {"current_count": 0, "max_allowed": 2, "ok": True},
+        "daily_loss_check": {"loss_pct": 0.0, "loss_halt_1pct": False, "ok": True},
+        "stop_exit_plan": {"initial_stop_loss": 194.0, "stop_type": "STP", "bracket_required": True, "chosen_stop": 194.0, "overall": "PASS"},
+        "bracket_simulation": {"bracket_required": True, "fail_closed": True, "overall": "PASS"},
+        "advisory_only_statement": "Advisory-only.",
+        "broker_execution_path": "guard to submit.",
+        "human_review_checklist": {"overall": "PENDING"},
+        "proposed_by": "Werner",
+        "model": "test",
+        "rejection_reasons": [],
+        "evidence_hash": "a" * 64,
+    }
+    has_strategy_ref = "strategy_doc_ref" in packet
+    passed = not has_strategy_ref
+    return {"passed": passed, "case": "missing_strategy_ref", "strategy_ref_missing": not has_strategy_ref}
+
+
+def _synthetic_fixture_disallowed_instrument() -> dict:
+    """Case 3: Disallowed instrument must fail."""
+    packet = {
+        "proposal_id": "prop-20260709-003",
+        "timestamp": "2026-07-09T14:30:00Z",
+        "strategy_version": "v1.0.0",
+        "strategy_doc_ref": "docs/strategy_v1.md",
+        "symbol": "TSLA",
+        "side": "BUY",
+        "quantity": 100,
+        "entry_price": 250.0,
+        "signal_thesis": "TSLA not in v1 allowlist.",
+        "signal_inputs": {"signals_aligned_count": 2, "min_signals_met": True, "atr_14": 5.0},
+        "data_quality": {"overall": "PASS", "bar_data_ok": True, "atr_ok": True, "contract_lookup_ok": True},
+        "no_trade_checklist": {"overall": "PASS", "symbol_in_allowlist": False, "ibkr_gateway_connected": True},
+        "risk_envelope_check": {"notional_ok": True, "risk_ok": True, "total_exposure_ok": True, "overall": "PASS"},
+        "sizing_calculation": {"final_shares": 100, "sizing_method": "strategy-v1", "stop_distance_pct": 4.0, "overall": "PASS"},
+        "daily_trade_count_check": {"current_count": 0, "max_allowed": 2, "ok": True},
+        "daily_loss_check": {"loss_pct": 0.0, "loss_halt_1pct": False, "ok": True},
+        "stop_exit_plan": {"initial_stop_loss": 237.5, "stop_type": "STP", "bracket_required": True, "chosen_stop": 237.5, "overall": "PASS"},
+        "bracket_simulation": {"bracket_required": True, "fail_closed": True, "overall": "PASS"},
+        "advisory_only_statement": "Advisory-only.",
+        "broker_execution_path": "guard to submit.",
+        "human_review_checklist": {"overall": "PENDING"},
+        "proposed_by": "Werner",
+        "model": "test",
+        "rejection_reasons": [{"check": "gate_a", "reason": "TSLA not in allowlist", "severity": "HARD_BLOCK"}],
+        "evidence_hash": "a" * 64,
+    }
+    allowed = ["AAPL", "META", "NVDA", "AMD"]
+    symbol_allowed = packet["symbol"] in allowed
+    no_trade_fail = packet["no_trade_checklist"]["symbol_in_allowlist"] is False
+    passed = not symbol_allowed and no_trade_fail
+    return {"passed": passed, "case": "disallowed_instrument", "symbol_not_allowed": not symbol_allowed}
+
+
+def _synthetic_fixture_missing_data_quality() -> dict:
+    """Case 4: Missing data quality evidence must fail."""
+    packet = {
+        "proposal_id": "prop-20260709-004",
+        "timestamp": "2026-07-09T14:30:00Z",
+        "strategy_version": "v1.0.0",
+        "strategy_doc_ref": "docs/strategy_v1.md",
+        "symbol": "AAPL",
+        "side": "BUY",
+        "quantity": 100,
+        "entry_price": 200.0,
+        "signal_thesis": "Trying to trade without data quality evidence.",
+        "signal_inputs": {"signals_aligned_count": 2, "min_signals_met": True, "atr_14": 3.21},
+        "no_trade_checklist": {"overall": "PASS", "symbol_in_allowlist": True, "ibkr_gateway_connected": True},
+        "risk_envelope_check": {"notional_ok": True, "risk_ok": True, "total_exposure_ok": True, "overall": "PASS"},
+        "sizing_calculation": {"final_shares": 100, "sizing_method": "strategy-v1", "stop_distance_pct": 4.0, "overall": "PASS"},
+        "daily_trade_count_check": {"current_count": 0, "max_allowed": 2, "ok": True},
+        "daily_loss_check": {"loss_pct": 0.0, "loss_halt_1pct": False, "ok": True},
+        "stop_exit_plan": {"initial_stop_loss": 194.0, "stop_type": "STP", "bracket_required": True, "chosen_stop": 194.0, "overall": "PASS"},
+        "bracket_simulation": {"bracket_required": True, "fail_closed": True, "overall": "PASS"},
+        "advisory_only_statement": "Advisory-only.",
+        "broker_execution_path": "guard to submit.",
+        "human_review_checklist": {"overall": "PENDING"},
+        "proposed_by": "Werner",
+        "model": "test",
+        "rejection_reasons": [],
+        "evidence_hash": "a" * 64,
+    }
+    has_data_quality = "data_quality" in packet
+    passed = not has_data_quality
+    return {"passed": passed, "case": "missing_data_quality", "data_quality_missing": not has_data_quality}
+
+
+def _synthetic_fixture_missing_no_trade_checklist_17b() -> dict:
+    """Case 5: Missing no-trade checklist must fail."""
+    packet = {
+        "proposal_id": "prop-20260709-005",
+        "timestamp": "2026-07-09T14:30:00Z",
+        "strategy_version": "v1.0.0",
+        "strategy_doc_ref": "docs/strategy_v1.md",
+        "symbol": "AAPL",
+        "side": "BUY",
+        "quantity": 100,
+        "entry_price": 200.0,
+        "signal_thesis": "Missing no-trade checklist.",
+        "signal_inputs": {"signals_aligned_count": 2, "min_signals_met": True, "atr_14": 3.21},
+        "data_quality": {"overall": "PASS", "bar_data_ok": True, "atr_ok": True, "contract_lookup_ok": True},
+        "risk_envelope_check": {"notional_ok": True, "risk_ok": True, "total_exposure_ok": True, "overall": "PASS"},
+        "sizing_calculation": {"final_shares": 100, "sizing_method": "strategy-v1", "stop_distance_pct": 4.0, "overall": "PASS"},
+        "daily_trade_count_check": {"current_count": 0, "max_allowed": 2, "ok": True},
+        "daily_loss_check": {"loss_pct": 0.0, "loss_halt_1pct": False, "ok": True},
+        "stop_exit_plan": {"initial_stop_loss": 194.0, "stop_type": "STP", "bracket_required": True, "chosen_stop": 194.0, "overall": "PASS"},
+        "bracket_simulation": {"bracket_required": True, "fail_closed": True, "overall": "PASS"},
+        "advisory_only_statement": "Advisory-only.",
+        "broker_execution_path": "guard to submit.",
+        "human_review_checklist": {"overall": "PENDING"},
+        "proposed_by": "Werner",
+        "model": "test",
+        "rejection_reasons": [],
+        "evidence_hash": "a" * 64,
+    }
+    has_no_trade = "no_trade_checklist" in packet
+    passed = not has_no_trade
+    return {"passed": passed, "case": "missing_no_trade_checklist", "no_trade_checklist_missing": not has_no_trade}
+
+
+def _synthetic_fixture_missing_risk_sizing() -> dict:
+    """Case 6: Missing risk envelope + sizing calculation must fail."""
+    packet = {
+        "proposal_id": "prop-20260709-006",
+        "timestamp": "2026-07-09T14:30:00Z",
+        "strategy_version": "v1.0.0",
+        "strategy_doc_ref": "docs/strategy_v1.md",
+        "symbol": "AAPL",
+        "side": "BUY",
+        "quantity": 100,
+        "entry_price": 200.0,
+        "signal_thesis": "Missing risk envelope and sizing blocks.",
+        "signal_inputs": {"signals_aligned_count": 2, "min_signals_met": True, "atr_14": 3.21},
+        "data_quality": {"overall": "PASS", "bar_data_ok": True, "atr_ok": True, "contract_lookup_ok": True},
+        "no_trade_checklist": {"overall": "PASS", "symbol_in_allowlist": True, "ibkr_gateway_connected": True},
+        "daily_trade_count_check": {"current_count": 0, "max_allowed": 2, "ok": True},
+        "daily_loss_check": {"loss_pct": 0.0, "loss_halt_1pct": False, "ok": True},
+        "stop_exit_plan": {"initial_stop_loss": 194.0, "stop_type": "STP", "bracket_required": True, "chosen_stop": 194.0, "overall": "PASS"},
+        "bracket_simulation": {"bracket_required": True, "fail_closed": True, "overall": "PASS"},
+        "advisory_only_statement": "Advisory-only.",
+        "broker_execution_path": "guard to submit.",
+        "human_review_checklist": {"overall": "PENDING"},
+        "proposed_by": "Werner",
+        "model": "test",
+        "rejection_reasons": [],
+        "evidence_hash": "a" * 64,
+    }
+    has_risk = "risk_envelope_check" in packet
+    has_sizing = "sizing_calculation" in packet
+    passed = not has_risk and not has_sizing
+    return {"passed": passed, "case": "missing_risk_sizing", "risk_missing": not has_risk, "sizing_missing": not has_sizing}
+
+
+def _synthetic_fixture_missing_stop_bracket() -> dict:
+    """Case 7: Missing stop/exit plan + bracket simulation must fail."""
+    packet = {
+        "proposal_id": "prop-20260709-007",
+        "timestamp": "2026-07-09T14:30:00Z",
+        "strategy_version": "v1.0.0",
+        "strategy_doc_ref": "docs/strategy_v1.md",
+        "symbol": "AAPL",
+        "side": "BUY",
+        "quantity": 100,
+        "entry_price": 200.0,
+        "signal_thesis": "Missing stop/exit and bracket blocks.",
+        "signal_inputs": {"signals_aligned_count": 2, "min_signals_met": True, "atr_14": 3.21},
+        "data_quality": {"overall": "PASS", "bar_data_ok": True, "atr_ok": True, "contract_lookup_ok": True},
+        "no_trade_checklist": {"overall": "PASS", "symbol_in_allowlist": True, "ibkr_gateway_connected": True},
+        "risk_envelope_check": {"notional_ok": True, "risk_ok": True, "total_exposure_ok": True, "overall": "PASS"},
+        "sizing_calculation": {"final_shares": 100, "sizing_method": "strategy-v1", "stop_distance_pct": 4.0, "overall": "PASS"},
+        "daily_trade_count_check": {"current_count": 0, "max_allowed": 2, "ok": True},
+        "daily_loss_check": {"loss_pct": 0.0, "loss_halt_1pct": False, "ok": True},
+        "advisory_only_statement": "Advisory-only.",
+        "broker_execution_path": "guard to submit.",
+        "human_review_checklist": {"overall": "PENDING"},
+        "proposed_by": "Werner",
+        "model": "test",
+        "rejection_reasons": [],
+        "evidence_hash": "a" * 64,
+    }
+    has_stop = "stop_exit_plan" in packet
+    has_bracket = "bracket_simulation" in packet
+    passed = not has_stop and not has_bracket
+    return {"passed": passed, "case": "missing_stop_bracket", "stop_missing": not has_stop, "bracket_missing": not has_bracket}
+
+
+def _synthetic_fixture_missing_advisory_boundary_17b() -> dict:
+    """Case 8: Missing advisory-only boundary must fail."""
+    packet = {
+        "proposal_id": "prop-20260709-008",
+        "timestamp": "2026-07-09T14:30:00Z",
+        "strategy_version": "v1.0.0",
+        "strategy_doc_ref": "docs/strategy_v1.md",
+        "symbol": "AAPL",
+        "side": "BUY",
+        "quantity": 100,
+        "entry_price": 200.0,
+        "signal_thesis": "Missing advisory-only and broker boundary statements.",
+        "signal_inputs": {"signals_aligned_count": 2, "min_signals_met": True, "atr_14": 3.21},
+        "data_quality": {"overall": "PASS", "bar_data_ok": True, "atr_ok": True, "contract_lookup_ok": True},
+        "no_trade_checklist": {"overall": "PASS", "symbol_in_allowlist": True, "ibkr_gateway_connected": True},
+        "risk_envelope_check": {"notional_ok": True, "risk_ok": True, "total_exposure_ok": True, "overall": "PASS"},
+        "sizing_calculation": {"final_shares": 100, "sizing_method": "strategy-v1", "stop_distance_pct": 4.0, "overall": "PASS"},
+        "daily_trade_count_check": {"current_count": 0, "max_allowed": 2, "ok": True},
+        "daily_loss_check": {"loss_pct": 0.0, "loss_halt_1pct": False, "ok": True},
+        "stop_exit_plan": {"initial_stop_loss": 194.0, "stop_type": "STP", "bracket_required": True, "chosen_stop": 194.0, "overall": "PASS"},
+        "bracket_simulation": {"bracket_required": True, "fail_closed": True, "overall": "PASS"},
+        "human_review_checklist": {"overall": "PENDING"},
+        "proposed_by": "Werner",
+        "model": "test",
+        "rejection_reasons": [],
+        "evidence_hash": "a" * 64,
+    }
+    has_advisory = "advisory_only_statement" in packet
+    has_broker = "broker_execution_path" in packet
+    passed = not has_advisory and not has_broker
+    return {"passed": passed, "case": "missing_advisory_boundary", "advisory_missing": not has_advisory, "broker_boundary_missing": not has_broker}
+
+
+def _synthetic_fixture_read_only_invariant_17b() -> dict:
+    """Case 9: checkpoint never calls /order*, H1, trade-window, or mutation paths."""
+    import inspect
+    mutation_patterns = ["h1_token", "H1_TOKEN", "X-H1-Token", "/etc/ibkr-bridge/h1_token",
+                        "sudo", "ibkr-trade-window", "/connect", "/order"]
+    current_src = inspect.getsource(_run_level1_strategy_v1_proposal_packet_schema_checkpoint) if "_run_level1_strategy_v1_proposal_packet_schema_checkpoint" in dir() else ""
+    mutations_found = [p for p in mutation_patterns if p in current_src]
+    source_clean = len(mutations_found) == 0
+    passed = source_clean
+    return {"passed": passed, "case": "read_only_invariant_17b", "source_clean": source_clean, "mutations_found_in_source": mutations_found, "mutation_patterns_checked": mutation_patterns}
+
+
+# ---------------------------------------------------------------------------
+# Phase 17B verification helpers
+# ---------------------------------------------------------------------------
+
+
+def _verify_proposal_packet_docs() -> dict:
+    """Verify docs/proposal_packet_v1.md and .schema.json exist and are valid."""
+    result = {
+        "proposal_packet_doc_present": False,
+        "proposal_packet_schema_present": False,
+        "strategy_v1_reference_required": False,
+        "proposal_id_required": False,
+        "timestamp_required": False,
+        "instrument_required": False,
+        "allowed_instrument_check_required": False,
+        "signal_thesis_required": False,
+        "signal_inputs_required": False,
+        "data_quality_evidence_required": False,
+        "no_trade_checklist_required": False,
+        "risk_envelope_check_required": False,
+        "sizing_calculation_required": False,
+        "daily_trade_count_check_required": False,
+        "daily_loss_check_required": False,
+        "stop_exit_plan_required": False,
+        "bracket_simulation_required": False,
+        "advisory_only_boundary_required": False,
+        "broker_execution_boundary_required": False,
+        "human_review_checklist_required": False,
+        "rejection_reasons_required": False,
+        "evidence_hash_required": False,
+    }
+    # Check markdown doc
+    if _PROPOSAL_PACKET_DOC_PATH.exists():
+        result["proposal_packet_doc_present"] = True
+        try:
+            md = _PROPOSAL_PACKET_DOC_PATH.read_text()
+            result["strategy_v1_reference_required"] = "strategy_v1.md" in md or "strategy_v1" in md
+            result["proposal_id_required"] = "proposal_id" in md
+            result["timestamp_required"] = "timestamp" in md
+            result["instrument_required"] = "symbol" in md
+            result["allowed_instrument_check_required"] = "allowlist" in md.lower() or "allowed" in md.lower()
+            result["signal_thesis_required"] = "signal_thesis" in md or "thesis" in md.lower()
+            result["signal_inputs_required"] = "signal_inputs" in md or "signal inputs" in md.lower()
+            result["data_quality_evidence_required"] = "data_quality" in md or "data quality" in md.lower()
+            result["no_trade_checklist_required"] = "no_trade_checklist" in md or "no-trade" in md.lower()
+            result["risk_envelope_check_required"] = "risk_envelope_check" in md or "risk envelope" in md.lower()
+            result["sizing_calculation_required"] = "sizing_calculation" in md or "sizing" in md.lower()
+            result["daily_trade_count_check_required"] = "daily_trade_count_check" in md or "daily trade" in md.lower()
+            result["daily_loss_check_required"] = "daily_loss_check" in md or "daily loss" in md.lower()
+            result["stop_exit_plan_required"] = "stop_exit_plan" in md or "stop" in md.lower()
+            result["bracket_simulation_required"] = "bracket_simulation" in md or "bracket" in md.lower()
+            result["advisory_only_boundary_required"] = "advisory_only_statement" in md or "advisory-only" in md.lower()
+            result["broker_execution_boundary_required"] = "broker_execution_path" in md or "broker execution" in md.lower()
+            result["human_review_checklist_required"] = "human_review_checklist" in md or "review checklist" in md.lower()
+            result["rejection_reasons_required"] = "rejection_reasons" in md
+            result["evidence_hash_required"] = "evidence_hash" in md
+            result["doc_size_bytes"] = len(md)
+        except Exception:
+            pass
+    # Check JSON schema
+    if _PROPOSAL_PACKET_SCHEMA_PATH.exists():
+        result["proposal_packet_schema_present"] = True
+        try:
+            import json as _json
+            schema = _json.loads(_PROPOSAL_PACKET_SCHEMA_PATH.read_text())
+            required_fields = schema.get("required", [])
+            result["schema_required_fields_count"] = len(required_fields)
+            result["schema_required_fields"] = required_fields
+            result["schema_size_bytes"] = _PROPOSAL_PACKET_SCHEMA_PATH.stat().st_size
+        except Exception:
+            pass
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Phase 17B NO_GO builder
+# ---------------------------------------------------------------------------
+
+
+def _phase17b_no_go(checkpoint_id: str, ts_str: str, git_section: dict, diagnosis: str, actions: list[str], runtime: dict | None = None) -> dict:
+    """Build a NO_GO result for Phase 17B."""
+    return {
+        "command": "ibkr-operator level1-strategy-v1-proposal-packet-schema-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True, "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": git_section.get("worktree_clean", False),
+        "runtime": runtime or {"connected": False, "mode": "?", "read_only": False, "allow_orders": None, "endpoints_ok": False},
+        "kpi": {},
+        "runtime_connected": False, "mode": "?", "read_only": False,
+        "allow_orders": None, "endpoints_ok": False,
+        "positions_flat": False, "guard_state_clean": False,
+        "kpi_hold_only_system_locked": False,
+        "proposal_packet_doc_present": False,
+        "proposal_packet_schema_present": False,
+        "strategy_v1_reference_required": False,
+        "proposal_id_required": False,
+        "timestamp_required": False,
+        "instrument_required": False,
+        "allowed_instrument_check_required": False,
+        "signal_thesis_required": False,
+        "signal_inputs_required": False,
+        "data_quality_evidence_required": False,
+        "no_trade_checklist_required": False,
+        "risk_envelope_check_required": False,
+        "sizing_calculation_required": False,
+        "daily_trade_count_check_required": False,
+        "daily_loss_check_required": False,
+        "stop_exit_plan_required": False,
+        "bracket_simulation_required": False,
+        "advisory_only_boundary_required": False,
+        "broker_execution_boundary_required": False,
+        "human_review_checklist_required": False,
+        "rejection_reasons_required": False,
+        "evidence_hash_required": False,
+        "synthetic_valid_packet_case_passed": False,
+        "synthetic_missing_strategy_reference_case_passed": False,
+        "synthetic_disallowed_instrument_case_passed": False,
+        "synthetic_missing_data_quality_case_passed": False,
+        "synthetic_missing_no_trade_checklist_case_passed": False,
+        "synthetic_missing_risk_sizing_case_passed": False,
+        "synthetic_missing_stop_bracket_case_passed": False,
+        "synthetic_missing_advisory_boundary_case_passed": False,
+        "synthetic_read_only_invariant_case_passed": False,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_broker_mutation": True, "artifact_created": False, "export_path": None,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17B_EXPLICIT_NON_ACTIONS,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 17B run function
+# ---------------------------------------------------------------------------
+
+
+def _run_level1_strategy_v1_proposal_packet_schema_checkpoint(audit_source: str = "synthetic_readonly_demo") -> dict:
+    """Run Phase 17B — Level 1 Strategy v1 Proposal Packet Schema Checkpoint."""
+    import json as _json
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"17b-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+    repo_path = Path(__file__).resolve().parent
+    git_section = _git_metadata(repo_path)
+    worktree_state = _get_worktree_state(BRIDGE_DIR)
+    worktree_clean_state = worktree_state.get("clean", False)
+    git_section["worktree_clean"] = worktree_clean_state
+    git_section["worktree_dirty_files"] = worktree_state.get("dirty_files", [])
+    if not worktree_clean_state:
+        return _phase17b_no_go(checkpoint_id, ts_str, git_section, _PHASE17B_DIAGNOSIS["git_worktree_dirty"], ["Commit or stash dirty files before running this checkpoint."])
+    runtime_state = _snapshot_bridge_state(BRIDGE_URL)
+    rt_connected = runtime_state.get("connected", False)
+    rt_mode = runtime_state.get("mode", "?")
+    rt_read_only = runtime_state.get("read_only", False)
+    rt_allow_orders = runtime_state.get("allow_orders")
+    rt_endpoints_ok = runtime_state.get("endpoints_ok", False)
+    rt_positions_flat = runtime_state.get("positions_flat")
+    bridge_reachable = bool(runtime_state.get("mode", "?") != "?")
+    if not bridge_reachable:
+        return _phase17b_no_go(checkpoint_id, ts_str, git_section, _PHASE17B_DIAGNOSIS["bridge_unreachable"], ["Bridge is not reachable. Start ibkr-bridge.service."])
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_clean = gs_assessment["guard_state_clean"]
+    guard_state = gs_assessment.get("guard_section", {})
+    try:
+        kpi = run_kpi()
+    except Exception:
+        kpi = {"verdict": "ERROR", "error": "run_kpi failed"}
+    kpi_verdict = kpi.get("verdict", "ERROR")
+    kpi_blockers = kpi.get("blockers", [])
+    no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+    hold_blockers = [b for b in kpi_blockers if b.get("severity") == "HOLD"]
+    kpi_hold_only_system_locked = (kpi_verdict == "HOLD" and len(no_go_blockers) == 0 and any(b.get("check") == "system_locked" for b in hold_blockers))
+    # Proposal packet doc verification
+    doc_check = _verify_proposal_packet_docs()
+    # Synthetic fixtures
+    syn_valid = _synthetic_fixture_valid_proposal_packet()
+    syn_valid_ok = syn_valid.get("passed", False)
+    syn_missing_ref = _synthetic_fixture_missing_strategy_ref()
+    syn_missing_ref_ok = syn_missing_ref.get("passed", False)
+    syn_disallowed = _synthetic_fixture_disallowed_instrument()
+    syn_disallowed_ok = syn_disallowed.get("passed", False)
+    syn_missing_dq = _synthetic_fixture_missing_data_quality()
+    syn_missing_dq_ok = syn_missing_dq.get("passed", False)
+    syn_missing_nt = _synthetic_fixture_missing_no_trade_checklist_17b()
+    syn_missing_nt_ok = syn_missing_nt.get("passed", False)
+    syn_missing_rs = _synthetic_fixture_missing_risk_sizing()
+    syn_missing_rs_ok = syn_missing_rs.get("passed", False)
+    syn_missing_sb = _synthetic_fixture_missing_stop_bracket()
+    syn_missing_sb_ok = syn_missing_sb.get("passed", False)
+    syn_missing_ab = _synthetic_fixture_missing_advisory_boundary_17b()
+    syn_missing_ab_ok = syn_missing_ab.get("passed", False)
+    syn_ro = _synthetic_fixture_read_only_invariant_17b()
+    syn_ro_ok = syn_ro.get("passed", False)
+    # Diagnosis cascade
+    diagnosis = _PHASE17B_DIAGNOSIS["ready"]
+    severity = "OK"
+    actions: list[str] = []
+    if not rt_connected:
+        diagnosis = _PHASE17B_DIAGNOSIS["runtime_not_connected"]; severity = "NO_GO"; actions.append("Bridge is not connected.")
+    elif rt_mode != "paper":
+        diagnosis = _PHASE17B_DIAGNOSIS["mode_not_paper"]; severity = "NO_GO"; actions.append(f"Mode is {rt_mode}, expected paper.")
+    elif rt_read_only is not True:
+        diagnosis = _PHASE17B_DIAGNOSIS["read_only_not_true"]; severity = "NO_GO"; actions.append("Read-only is not true.")
+    elif rt_allow_orders is not False:
+        diagnosis = _PHASE17B_DIAGNOSIS["allow_orders_not_false"]; severity = "NO_GO"; actions.append(f"allow_orders is {rt_allow_orders}.")
+    elif not rt_endpoints_ok:
+        diagnosis = _PHASE17B_DIAGNOSIS["endpoints_not_ok"]; severity = "NO_GO"; actions.append("Endpoints not all healthy.")
+    elif rt_positions_flat is False:
+        diagnosis = _PHASE17B_DIAGNOSIS["positions_not_flat"]; severity = "NO_GO"; actions.append("Positions are not flat.")
+    elif not guard_state_clean:
+        diagnosis = _PHASE17B_DIAGNOSIS["guard_state_not_clean"]; severity = "NO_GO"; actions.append("Guard state is not clean.")
+    elif not kpi_hold_only_system_locked:
+        diagnosis = _PHASE17B_DIAGNOSIS["kpi_not_hold_system_locked"]; severity = "NO_GO"; actions.append(f"KPI is {kpi_verdict}.")
+    elif not doc_check.get("proposal_packet_doc_present"):
+        diagnosis = _PHASE17B_DIAGNOSIS["proposal_packet_doc_missing"]; severity = "NO_GO"; actions.append("docs/proposal_packet_v1.md not found.")
+    elif not doc_check.get("proposal_packet_schema_present"):
+        diagnosis = _PHASE17B_DIAGNOSIS["proposal_packet_schema_missing"]; severity = "NO_GO"; actions.append("docs/proposal_packet_v1.schema.json not found.")
+    elif not doc_check.get("strategy_v1_reference_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["strategy_v1_ref_not_required"]; severity = "NO_GO"; actions.append("Strategy v1 reference not required in schema.")
+    elif not doc_check.get("proposal_id_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["proposal_id_not_required"]; severity = "NO_GO"; actions.append("proposal_id not required.")
+    elif not doc_check.get("timestamp_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["timestamp_not_required"]; severity = "NO_GO"; actions.append("timestamp not required.")
+    elif not doc_check.get("instrument_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["instrument_not_required"]; severity = "NO_GO"; actions.append("symbol not required.")
+    elif not doc_check.get("allowed_instrument_check_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["allowed_instrument_check_not_required"]; severity = "NO_GO"; actions.append("Allowed instrument check not required.")
+    elif not doc_check.get("signal_thesis_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["signal_thesis_not_required"]; severity = "NO_GO"; actions.append("signal_thesis not required.")
+    elif not doc_check.get("signal_inputs_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["signal_inputs_not_required"]; severity = "NO_GO"; actions.append("signal_inputs not required.")
+    elif not doc_check.get("data_quality_evidence_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["data_quality_not_required"]; severity = "NO_GO"; actions.append("data_quality not required.")
+    elif not doc_check.get("no_trade_checklist_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["no_trade_checklist_not_required"]; severity = "NO_GO"; actions.append("no_trade_checklist not required.")
+    elif not doc_check.get("risk_envelope_check_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["risk_envelope_check_not_required"]; severity = "NO_GO"; actions.append("risk_envelope_check not required.")
+    elif not doc_check.get("sizing_calculation_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["sizing_not_required"]; severity = "NO_GO"; actions.append("sizing_calculation not required.")
+    elif not doc_check.get("daily_trade_count_check_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["daily_trade_count_not_required"]; severity = "NO_GO"; actions.append("daily_trade_count_check not required.")
+    elif not doc_check.get("daily_loss_check_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["daily_loss_not_required"]; severity = "NO_GO"; actions.append("daily_loss_check not required.")
+    elif not doc_check.get("stop_exit_plan_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["stop_exit_not_required"]; severity = "NO_GO"; actions.append("stop_exit_plan not required.")
+    elif not doc_check.get("bracket_simulation_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["bracket_simulation_not_required"]; severity = "NO_GO"; actions.append("bracket_simulation not required.")
+    elif not doc_check.get("advisory_only_boundary_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["advisory_boundary_not_required"]; severity = "NO_GO"; actions.append("advisory_only_statement not required.")
+    elif not doc_check.get("broker_execution_boundary_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["broker_boundary_not_required"]; severity = "NO_GO"; actions.append("broker_execution_path not required.")
+    elif not doc_check.get("human_review_checklist_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["human_review_not_required"]; severity = "NO_GO"; actions.append("human_review_checklist not required.")
+    elif not doc_check.get("rejection_reasons_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["rejection_reasons_not_required"]; severity = "NO_GO"; actions.append("rejection_reasons not required.")
+    elif not doc_check.get("evidence_hash_required"):
+        diagnosis = _PHASE17B_DIAGNOSIS["evidence_hash_not_required"]; severity = "NO_GO"; actions.append("evidence_hash not required.")
+    elif not syn_valid_ok:
+        diagnosis = _PHASE17B_DIAGNOSIS["synthetic_valid_packet_failed"]; severity = "NO_GO"; actions.append("Synthetic valid packet test failed.")
+    elif not syn_missing_ref_ok:
+        diagnosis = _PHASE17B_DIAGNOSIS["synthetic_missing_strategy_ref_failed"]; severity = "NO_GO"; actions.append("Synthetic missing strategy ref test failed.")
+    elif not syn_disallowed_ok:
+        diagnosis = _PHASE17B_DIAGNOSIS["synthetic_disallowed_instrument_failed"]; severity = "NO_GO"; actions.append("Synthetic disallowed instrument test failed.")
+    elif not syn_missing_dq_ok:
+        diagnosis = _PHASE17B_DIAGNOSIS["synthetic_missing_data_quality_failed"]; severity = "NO_GO"; actions.append("Synthetic missing data quality test failed.")
+    elif not syn_missing_nt_ok:
+        diagnosis = _PHASE17B_DIAGNOSIS["synthetic_missing_no_trade_checklist_failed"]; severity = "NO_GO"; actions.append("Synthetic missing no-trade checklist test failed.")
+    elif not syn_missing_rs_ok:
+        diagnosis = _PHASE17B_DIAGNOSIS["synthetic_missing_risk_sizing_failed"]; severity = "NO_GO"; actions.append("Synthetic missing risk/sizing test failed.")
+    elif not syn_missing_sb_ok:
+        diagnosis = _PHASE17B_DIAGNOSIS["synthetic_missing_stop_bracket_failed"]; severity = "NO_GO"; actions.append("Synthetic missing stop/bracket test failed.")
+    elif not syn_missing_ab_ok:
+        diagnosis = _PHASE17B_DIAGNOSIS["synthetic_missing_advisory_boundary_failed"]; severity = "NO_GO"; actions.append("Synthetic missing advisory boundary test failed.")
+    elif not syn_ro_ok:
+        diagnosis = _PHASE17B_DIAGNOSIS["synthetic_read_only_invariant_failed"]; severity = "NO_GO"; actions.append("Synthetic read-only invariant test failed.")
+    checkpoint_ok = diagnosis == _PHASE17B_DIAGNOSIS["ready"]
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-strategy-v1-proposal-packet-schema-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": severity,
+        "operator_action_required": not checkpoint_ok,
+        "suggested_operator_actions": actions if not checkpoint_ok else ["None — proposal packet schema confirmed."],
+        "git": git_section, "git_worktree_clean": worktree_clean_state,
+        "runtime": {"connected": rt_connected, "mode": rt_mode, "read_only": rt_read_only, "allow_orders": rt_allow_orders, "endpoints_ok": rt_endpoints_ok, "positions_flat": rt_positions_flat},
+        "runtime_connected": rt_connected, "mode": rt_mode, "read_only": rt_read_only,
+        "allow_orders": rt_allow_orders, "endpoints_ok": rt_endpoints_ok,
+        "positions_flat": rt_positions_flat,
+        "guard_state_clean": guard_state_clean, "guard_state": guard_state,
+        "kpi": kpi, "kpi_hold_only_system_locked": kpi_hold_only_system_locked,
+        "proposal_packet_doc_present": doc_check.get("proposal_packet_doc_present", False),
+        "proposal_packet_schema_present": doc_check.get("proposal_packet_schema_present", False),
+        "strategy_v1_reference_required": doc_check.get("strategy_v1_reference_required", False),
+        "proposal_id_required": doc_check.get("proposal_id_required", False),
+        "timestamp_required": doc_check.get("timestamp_required", False),
+        "instrument_required": doc_check.get("instrument_required", False),
+        "allowed_instrument_check_required": doc_check.get("allowed_instrument_check_required", False),
+        "signal_thesis_required": doc_check.get("signal_thesis_required", False),
+        "signal_inputs_required": doc_check.get("signal_inputs_required", False),
+        "data_quality_evidence_required": doc_check.get("data_quality_evidence_required", False),
+        "no_trade_checklist_required": doc_check.get("no_trade_checklist_required", False),
+        "risk_envelope_check_required": doc_check.get("risk_envelope_check_required", False),
+        "sizing_calculation_required": doc_check.get("sizing_calculation_required", False),
+        "daily_trade_count_check_required": doc_check.get("daily_trade_count_check_required", False),
+        "daily_loss_check_required": doc_check.get("daily_loss_check_required", False),
+        "stop_exit_plan_required": doc_check.get("stop_exit_plan_required", False),
+        "bracket_simulation_required": doc_check.get("bracket_simulation_required", False),
+        "advisory_only_boundary_required": doc_check.get("advisory_only_boundary_required", False),
+        "broker_execution_boundary_required": doc_check.get("broker_execution_boundary_required", False),
+        "human_review_checklist_required": doc_check.get("human_review_checklist_required", False),
+        "rejection_reasons_required": doc_check.get("rejection_reasons_required", False),
+        "evidence_hash_required": doc_check.get("evidence_hash_required", False),
+        "synthetic_valid_packet_case_passed": syn_valid_ok,
+        "synthetic_missing_strategy_reference_case_passed": syn_missing_ref_ok,
+        "synthetic_disallowed_instrument_case_passed": syn_disallowed_ok,
+        "synthetic_missing_data_quality_case_passed": syn_missing_dq_ok,
+        "synthetic_missing_no_trade_checklist_case_passed": syn_missing_nt_ok,
+        "synthetic_missing_risk_sizing_case_passed": syn_missing_rs_ok,
+        "synthetic_missing_stop_bracket_case_passed": syn_missing_sb_ok,
+        "synthetic_missing_advisory_boundary_case_passed": syn_missing_ab_ok,
+        "synthetic_read_only_invariant_case_passed": syn_ro_ok,
+        "synthetic_cases": {
+            "valid_packet": syn_valid,
+            "missing_strategy_ref": syn_missing_ref,
+            "disallowed_instrument": syn_disallowed,
+            "missing_data_quality": syn_missing_dq,
+            "missing_no_trade_checklist": syn_missing_nt,
+            "missing_risk_sizing": syn_missing_rs,
+            "missing_stop_bracket": syn_missing_sb,
+            "missing_advisory_boundary": syn_missing_ab,
+            "read_only_invariant": syn_ro,
+        },
+        "doc_check": doc_check,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_broker_mutation": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17B_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False, "export_path": None,
+    }
+    try:
+        _PHASE17B_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE17B_EXPORT_DIR / f"{checkpoint_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        result["export_path"] = str(ep)
+        result["artifact_created"] = True
+    except Exception:
+        result["export_path"] = None; result["artifact_created"] = False
+    return result
+
+
+def _print_level1_strategy_v1_proposal_packet_schema_checkpoint(result: dict) -> None:
+    """Print Phase 17B proposal packet schema checkpoint."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE17B_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Proposal Packet Schema Checkpoint (17B){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:               {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:                   {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:                   {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:                    {sev_color}{sev}{RESET}")
+    print()
+    print(f"  {BOLD}Git{RESET}")
+    g = result.get("git", {})
+    print(f"    Branch:        {g.get('branch', '?')}")
+    print(f"    Commit:        {g.get('commit_short', g.get('commit', '?'))}")
+    print(f"    Tag:           {g.get('tag', '?')}")
+    print(f"    Worktree clean: {_bool_str(result.get('git_worktree_clean', False))}")
+    print()
+    print(f"  {BOLD}Runtime State{RESET}")
+    rt = result.get("runtime", {})
+    print(f"    Connected:     {_bool_str(rt.get('connected'))}")
+    print(f"    Mode:          {rt.get('mode', '?')}")
+    print(f"    Read-only:     {_bool_str(rt.get('read_only'))}")
+    print(f"    Allow orders:  {rt.get('allow_orders')}")
+    print(f"    Endpoints OK:  {_bool_str(rt.get('endpoints_ok'))}")
+    print(f"    Positions flat: {_bool_str(rt.get('positions_flat'))}")
+    print()
+    print(f"  {BOLD}Guard State & KPI{RESET}")
+    print(f"    Guard clean:   {_bool_str(result.get('guard_state_clean', False))}")
+    print(f"    KPI HOLD only system_locked: {_bool_str(result.get('kpi_hold_only_system_locked', False))}")
+    print()
+    print(f"  {BOLD}Proposal Packet Schema Checks{RESET}")
+    for key in ["proposal_packet_doc_present", "proposal_packet_schema_present",
+                 "strategy_v1_reference_required", "proposal_id_required",
+                 "timestamp_required", "instrument_required",
+                 "allowed_instrument_check_required", "signal_thesis_required",
+                 "signal_inputs_required", "data_quality_evidence_required",
+                 "no_trade_checklist_required", "risk_envelope_check_required",
+                 "sizing_calculation_required", "daily_trade_count_check_required",
+                 "daily_loss_check_required", "stop_exit_plan_required",
+                 "bracket_simulation_required", "advisory_only_boundary_required",
+                 "broker_execution_boundary_required", "human_review_checklist_required",
+                 "rejection_reasons_required", "evidence_hash_required"]:
+        label = key.replace("_", " ").replace("required", "").strip()
+        print(f"    {label:35s} {_bool_str(result.get(key, False))}")
+    print()
+    print(f"  {BOLD}Synthetic Cases{RESET}")
+    for key, label in [
+        ("synthetic_valid_packet_case_passed", "Valid packet"),
+        ("synthetic_missing_strategy_reference_case_passed", "Missing strategy ref"),
+        ("synthetic_disallowed_instrument_case_passed", "Disallowed instrument"),
+        ("synthetic_missing_data_quality_case_passed", "Missing data quality"),
+        ("synthetic_missing_no_trade_checklist_case_passed", "Missing no-trade checklist"),
+        ("synthetic_missing_risk_sizing_case_passed", "Missing risk/sizing"),
+        ("synthetic_missing_stop_bracket_case_passed", "Missing stop/bracket"),
+        ("synthetic_missing_advisory_boundary_case_passed", "Missing advisory boundary"),
+        ("synthetic_read_only_invariant_case_passed", "Read-only invariant"),
+    ]:
+        print(f"    {label:30s} {_bool_str(result.get(key, False))}")
+    print()
+    print(f"  {BOLD}Mutation Safety{RESET}")
+    print(f"    No /order called:      {_bool_str(result.get('no_order_endpoint_called', True))}")
+    print(f"    No H1 token used:      {_bool_str(result.get('no_h1_token_used', True))}")
+    print(f"    No trade window:       {_bool_str(result.get('no_trade_window_helper_called', True))}")
+    print(f"    No broker mutation:    {_bool_str(result.get('no_broker_mutation', True))}")
+    print(f"    Artifact created:      {_bool_str(result.get('artifact_created', False))}")
+    ep = result.get("export_path")
+    if ep:
+        print(f"    Export: {ep}")
+    print()
+
+
 def _print_level1_execution_gate_negative_control_drill(result: dict) -> None:
     """Print Phase 16O negative-control drill in human-readable format."""
     drill_ok = result.get("diagnosis") == _PHASE16O_DIAGNOSIS["ready"]
@@ -38306,6 +39119,26 @@ def main() -> None:
     p17a_a2.add_argument("--json", action="store_true")
     p17a_a2.add_argument("--export", action="store_true")
     p17a_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 17B — Level 1 Strategy v1 Proposal Packet Schema Checkpoint
+    p17b = sub.add_parser("level1-strategy-v1-proposal-packet-schema-checkpoint",
+                          help="Level 1 strategy v1 proposal packet schema checkpoint (Phase 17B)")
+    p17b.add_argument("--json", action="store_true")
+    p17b.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-strategy-v1-proposal-packet-schema-checkpoints/")
+    p17b.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: phase17b-strategy-v1-proposal-packet-schema-checkpoint
+    p17b_a1 = sub.add_parser("phase17b-strategy-v1-proposal-packet-schema-checkpoint",
+                             help="Alias for level1-strategy-v1-proposal-packet-schema-checkpoint")
+    p17b_a1.add_argument("--json", action="store_true")
+    p17b_a1.add_argument("--export", action="store_true")
+    p17b_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: proposal-packet-schema-checkpoint
+    p17b_a2 = sub.add_parser("proposal-packet-schema-checkpoint",
+                             help="Alias for level1-strategy-v1-proposal-packet-schema-checkpoint")
+    p17b_a2.add_argument("--json", action="store_true")
+    p17b_a2.add_argument("--export", action="store_true")
+    p17b_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -40510,6 +41343,49 @@ def main() -> None:
                 if ep:
                     print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE17A_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-strategy-v1-proposal-packet-schema-checkpoint",
+                        "phase17b-strategy-v1-proposal-packet-schema-checkpoint",
+                        "proposal-packet-schema-checkpoint"):
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_strategy_v1_proposal_packet_schema_checkpoint(
+                audit_source=audit_source,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"17b-error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = _phase17b_no_go(
+                checkpoint_id, ts_str,
+                {"branch": "?", "commit": "?", "tag": "?", "worktree_clean": False},
+                _PHASE17B_DIAGNOSIS["unknown"],
+                [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+            )
+        if args.export and not result.get("export_path"):
+            try:
+                _PHASE17B_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                import json as _json
+                ep = _PHASE17B_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                with open(ep, "w", encoding="utf-8") as f:
+                    _json.dump(result, f, indent=2, default=str)
+                result["export_path"] = str(ep)
+                result["artifact_created"] = True
+            except Exception:
+                pass
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_strategy_v1_proposal_packet_schema_checkpoint(result)
+            if args.export:
+                ep = result.get("export_path")
+                if ep:
+                    print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE17B_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

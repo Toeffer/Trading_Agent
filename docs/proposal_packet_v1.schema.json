@@ -1,0 +1,309 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ibkr-bridge/proposal-packet-v1.0.0",
+  "title": "Strategy v1 Proposal Packet",
+  "description": "Machine-checkable schema for every Level 1 advisory proposal. References docs/strategy_v1.md governance baseline.",
+  "type": "object",
+  "required": [
+    "proposal_id",
+    "timestamp",
+    "strategy_version",
+    "strategy_doc_ref",
+    "symbol",
+    "side",
+    "quantity",
+    "entry_price",
+    "signal_thesis",
+    "signal_inputs",
+    "data_quality",
+    "no_trade_checklist",
+    "risk_envelope_check",
+    "sizing_calculation",
+    "daily_trade_count_check",
+    "daily_loss_check",
+    "stop_exit_plan",
+    "bracket_simulation",
+    "advisory_only_statement",
+    "broker_execution_path",
+    "human_review_checklist",
+    "proposed_by",
+    "model",
+    "rejection_reasons",
+    "evidence_hash"
+  ],
+  "properties": {
+    "proposal_id": {
+      "type": "string",
+      "pattern": "^prop-\\d{8}-\\d{3,}$",
+      "description": "Unique proposal ID: prop-YYYYMMDD-NNN"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp"
+    },
+    "strategy_version": {
+      "type": "string",
+      "const": "v1.0.0",
+      "description": "Must reference strategy v1.0.0"
+    },
+    "strategy_doc_ref": {
+      "type": "string",
+      "const": "docs/strategy_v1.md",
+      "description": "Must reference the strategy governance document"
+    },
+    "symbol": {
+      "type": "string",
+      "enum": ["AAPL", "META", "NVDA", "AMD"],
+      "description": "Allowed instrument symbols"
+    },
+    "side": {
+      "type": "string",
+      "enum": ["BUY", "SELL"],
+      "description": "BUY (long) or SELL (close-only, never short)"
+    },
+    "quantity": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Positive integer share count"
+    },
+    "entry_price": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Planned entry price"
+    },
+    "signal_thesis": {
+      "type": "string",
+      "minLength": 20,
+      "description": "Free-text thesis explaining why this trade"
+    },
+    "signal_inputs": {
+      "type": "object",
+      "required": ["signals_aligned_count", "min_signals_met", "atr_14"],
+      "properties": {
+        "trend_context": {
+          "type": "object",
+          "required": ["aligned"],
+          "properties": {
+            "aligned": {"type": "boolean"},
+            "detail": {"type": "string"}
+          }
+        },
+        "volume_confirmation": {
+          "type": "object",
+          "required": ["aligned"],
+          "properties": {
+            "aligned": {"type": "boolean"},
+            "detail": {"type": "string"}
+          }
+        },
+        "structure": {
+          "type": "object",
+          "required": ["aligned"],
+          "properties": {
+            "aligned": {"type": "boolean"},
+            "detail": {"type": "string"}
+          }
+        },
+        "relative_strength": {
+          "type": "object",
+          "required": ["aligned"],
+          "properties": {
+            "aligned": {"type": "boolean"},
+            "detail": {"type": "string"}
+          }
+        },
+        "atr_14": {"type": "number", "exclusiveMinimum": 0},
+        "vix_level": {"type": ["number", "null"]},
+        "signals_aligned_count": {"type": "integer", "minimum": 0, "maximum": 4},
+        "min_signals_met": {"type": "boolean"}
+      }
+    },
+    "data_quality": {
+      "type": "object",
+      "required": ["overall", "bar_data_ok", "atr_ok", "contract_lookup_ok"],
+      "properties": {
+        "bar_data_freshness_days": {"type": "integer", "minimum": 0},
+        "bar_data_ok": {"type": "boolean"},
+        "atr_valid_closes": {"type": "integer", "minimum": 0},
+        "atr_ok": {"type": "boolean"},
+        "sma_valid_closes": {"type": "integer", "minimum": 0},
+        "sma_ok": {"type": "boolean"},
+        "volume_nonzero": {"type": "boolean"},
+        "contract_lookup_ok": {"type": "boolean"},
+        "market_open_ok": {"type": "boolean"},
+        "overall": {"type": "string", "enum": ["PASS", "FAIL"]}
+      }
+    },
+    "no_trade_checklist": {
+      "type": "object",
+      "required": ["overall", "symbol_in_allowlist", "ibkr_gateway_connected"],
+      "properties": {
+        "ibkr_allow_orders_false": {"type": "boolean"},
+        "rules_enforced_false": {"type": "boolean"},
+        "system_locked": {"type": "boolean"},
+        "daily_loss_halt_active": {"type": "boolean"},
+        "weekly_loss_halt_active": {"type": "boolean"},
+        "daily_trade_count": {"type": "integer", "minimum": 0},
+        "daily_trade_count_ok": {"type": "boolean"},
+        "ibkr_gateway_connected": {"type": "boolean"},
+        "rth_window_open": {"type": "boolean"},
+        "vix_spike_30pct": {"type": "boolean"},
+        "earnings_48h": {"type": "boolean"},
+        "symbol_in_allowlist": {"type": "boolean"},
+        "overall": {"type": "string", "enum": ["PASS", "FAIL"]}
+      }
+    },
+    "risk_envelope_check": {
+      "type": "object",
+      "required": ["notional_ok", "risk_ok", "total_exposure_ok", "overall"],
+      "properties": {
+        "net_liquidation_eur": {"type": "number", "minimum": 0},
+        "max_notional_5pct_eur": {"type": "number", "minimum": 0},
+        "proposed_notional_eur": {"type": "number", "minimum": 0},
+        "notional_ok": {"type": "boolean"},
+        "max_risk_2pct_eur": {"type": "number", "minimum": 0},
+        "proposed_risk_eur": {"type": "number", "minimum": 0},
+        "risk_ok": {"type": "boolean"},
+        "total_exposure_30pct_eur": {"type": "number", "minimum": 0},
+        "proposed_total_exposure_eur": {"type": "number", "minimum": 0},
+        "total_exposure_ok": {"type": "boolean"},
+        "overall": {"type": "string", "enum": ["PASS", "FAIL"]}
+      }
+    },
+    "sizing_calculation": {
+      "type": "object",
+      "required": ["final_shares", "sizing_method", "stop_distance_pct", "overall"],
+      "properties": {
+        "notional_cap_shares": {"type": "integer", "minimum": 0},
+        "risk_cap_shares": {"type": "integer", "minimum": 0},
+        "allowlist_max_shares": {"type": "integer", "minimum": 0},
+        "final_shares": {"type": "integer", "minimum": 1},
+        "sizing_method": {"type": "string"},
+        "entry_price": {"type": "number", "exclusiveMinimum": 0},
+        "stop_loss": {"type": "number", "exclusiveMinimum": 0},
+        "stop_distance": {"type": "number", "minimum": 0},
+        "stop_distance_pct": {"type": "number", "minimum": 0, "maximum": 5.0},
+        "fx_eurusd": {"type": "number", "exclusiveMinimum": 0},
+        "overall": {"type": "string", "enum": ["PASS", "FAIL"]}
+      }
+    },
+    "daily_trade_count_check": {
+      "type": "object",
+      "required": ["current_count", "max_allowed", "ok"],
+      "properties": {
+        "current_count": {"type": "integer", "minimum": 0},
+        "max_allowed": {"type": "integer", "const": 2},
+        "ok": {"type": "boolean"}
+      }
+    },
+    "daily_loss_check": {
+      "type": "object",
+      "required": ["loss_pct", "loss_halt_1pct", "ok"],
+      "properties": {
+        "day_start_nl_eur": {"type": "number", "minimum": 0},
+        "current_nl_eur": {"type": "number", "minimum": 0},
+        "loss_pct": {"type": "number"},
+        "loss_halt_1pct": {"type": "boolean"},
+        "ok": {"type": "boolean"}
+      }
+    },
+    "stop_exit_plan": {
+      "type": "object",
+      "required": ["initial_stop_loss", "stop_type", "bracket_required", "chosen_stop", "overall"],
+      "properties": {
+        "initial_stop_loss": {"type": "number", "exclusiveMinimum": 0},
+        "stop_type": {"type": "string", "const": "STP"},
+        "stop_calculation_method": {"type": "string"},
+        "stop_candidates": {"type": "object"},
+        "chosen_stop": {"type": "number", "exclusiveMinimum": 0},
+        "bracket_required": {"type": "boolean"},
+        "profit_target_2r": {"type": "number", "exclusiveMinimum": 0},
+        "partial_exit_50pct_at_2r": {"type": "boolean"},
+        "trailing_activation_4pct": {"type": "boolean"},
+        "invalidation_triggers": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1
+        },
+        "overall": {"type": "string", "enum": ["PASS", "FAIL"]}
+      }
+    },
+    "bracket_simulation": {
+      "type": "object",
+      "required": ["bracket_required", "fail_closed", "overall"],
+      "properties": {
+        "bracket_required": {"type": "boolean"},
+        "parent_order_type": {"type": "string"},
+        "child_stop_type": {"type": "string", "const": "STP"},
+        "child_stop_price": {"type": "number", "exclusiveMinimum": 0},
+        "child_stop_quantity": {"type": "integer", "minimum": 1},
+        "oco_group": {"type": "boolean"},
+        "oco_note": {"type": "string"},
+        "fail_closed": {"type": "boolean"},
+        "overall": {"type": "string", "enum": ["PASS", "FAIL"]}
+      }
+    },
+    "advisory_only_statement": {
+      "type": "string",
+      "minLength": 10,
+      "description": "Must contain 'advisory-only' or 'no broker execution'"
+    },
+    "broker_execution_path": {
+      "type": "string",
+      "minLength": 10,
+      "description": "Must reference guard→preflight→approve→submit chain"
+    },
+    "human_review_checklist": {
+      "type": "object",
+      "required": ["overall"],
+      "properties": {
+        "gate_a_allowlist": {"type": "boolean"},
+        "gate_b_notional": {"type": "boolean"},
+        "gate_c_risk": {"type": "boolean"},
+        "gate_d_daily_count": {"type": "boolean"},
+        "gate_e_loss_halt": {"type": "boolean"},
+        "gate_h_proposal": {"type": "boolean"},
+        "p5_stop_check": {"type": "boolean"},
+        "rth_window": {"type": "boolean"},
+        "bridge_health": {"type": "boolean"},
+        "data_quality": {"type": "boolean"},
+        "advisory_boundary": {"type": "boolean"},
+        "broker_execution_path": {"type": "boolean"},
+        "strategy_v1_referenced": {"type": "boolean"},
+        "chris_review_complete": {"type": "boolean"},
+        "overall": {"type": "string"}
+      }
+    },
+    "proposed_by": {
+      "type": "string",
+      "enum": ["Hermes", "Werner", "Chris"],
+      "description": "Who proposed this trade"
+    },
+    "model": {
+      "type": "string",
+      "description": "Resolved model string or 'human'"
+    },
+    "rejection_reasons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["check", "reason", "severity"],
+        "properties": {
+          "check": {"type": "string"},
+          "reason": {"type": "string"},
+          "severity": {"type": "string", "enum": ["HARD_BLOCK", "ADVISORY_CAUTION", "DATA_MISSING"]}
+        }
+      }
+    },
+    "evidence_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 hex digest of canonical JSON"
+    },
+    "export_path": {
+      "type": ["string", "null"],
+      "description": "Optional persistence path"
+    }
+  }
+}

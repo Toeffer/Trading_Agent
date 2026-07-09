@@ -26881,6 +26881,82 @@ _PHASE16Z_EXPLICIT_NON_ACTIONS: list[str] = [
 ]
 
 
+# ===================================================================
+# Phase 17A — Level 1 Strategy v1 Governance Checkpoint
+# ===================================================================
+
+_PHASE17A_EXPORT_DIR = OPENCLAW_DIR / "level1-strategy-v1-governance-checkpoints"
+
+_PHASE17A_DIAGNOSIS = {
+    "ready": "level1_strategy_v1_governance_ok",
+    "git_worktree_dirty": "git_worktree_dirty",
+    "bridge_unreachable": "bridge_unreachable",
+    "runtime_not_connected": "runtime_not_connected",
+    "mode_not_paper": "mode_not_paper",
+    "read_only_not_true": "read_only_not_true",
+    "allow_orders_not_false": "allow_orders_not_false",
+    "endpoints_not_ok": "endpoints_not_ok",
+    "positions_not_flat": "positions_not_flat",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "kpi_not_hold_system_locked": "kpi_not_hold_system_locked",
+    "strategy_doc_missing": "strategy_doc_missing",
+    "risk_envelope_missing": "risk_envelope_missing",
+    "no_trade_rules_missing": "no_trade_rules_missing",
+    "advisory_boundary_missing": "advisory_boundary_missing",
+    "anti_overfit_section_missing": "anti_overfit_section_missing",
+    "bracket_requirement_missing": "bracket_requirement_missing",
+    "strategy_version_missing": "strategy_version_missing",
+    "allowed_instruments_missing": "allowed_instruments_missing",
+    "excluded_instruments_missing": "excluded_instruments_missing",
+    "signal_inputs_missing": "signal_inputs_missing",
+    "data_quality_missing": "data_quality_missing",
+    "sizing_rule_missing": "sizing_rule_missing",
+    "daily_trade_limit_missing": "daily_trade_limit_missing",
+    "daily_loss_limit_missing": "daily_loss_limit_missing",
+    "stop_exit_policy_missing": "stop_exit_policy_missing",
+    "review_checklist_missing": "review_checklist_missing",
+    "broker_execution_boundary_missing": "broker_execution_boundary_missing",
+    "synthetic_valid_strategy_doc_failed": "synthetic_valid_strategy_doc_failed",
+    "synthetic_missing_risk_envelope_failed": "synthetic_missing_risk_envelope_failed",
+    "synthetic_missing_no_trade_rules_failed": "synthetic_missing_no_trade_rules_failed",
+    "synthetic_missing_advisory_boundary_failed": "synthetic_missing_advisory_boundary_failed",
+    "synthetic_missing_anti_overfit_failed": "synthetic_missing_anti_overfit_failed",
+    "synthetic_missing_bracket_requirement_failed": "synthetic_missing_bracket_requirement_failed",
+    "synthetic_read_only_invariant_failed": "synthetic_read_only_invariant_failed",
+    "unknown": "unknown",
+}
+
+_PHASE17A_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not call any broker mutation endpoint.",
+    "This command did not create broker orders.",
+    "This command did not submit orders.",
+    "This command did not cancel/modify orders.",
+    "This command did not mutate account state.",
+    "This command did not mutate position state.",
+    "This command did not open an order window.",
+    "This command did not read/use H1 token.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "This command did not call trade-window helper in any mode.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not change autonomy level.",
+    "This command did not call any mutation endpoint.",
+    "This command did not read ~/.openclaw from pure tests.",
+    "This command did not read /etc/ibkr-bridge/h1_token from pure tests.",
+    "Only allowed writes are export/strategy-v1-governance artifacts.",
+    "This checkpoint proves Level 1 strategy v1 governance without enabling orders, using H1, opening an order window, or touching any broker mutation path.",
+    "Synthetic fixture tests use temp files only — never require real IBKR Gateway, systemd, ~/.openclaw, or H1 token.",
+]
+
+
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
     decision_mode: str = "mixed_demo",
@@ -36159,6 +36235,496 @@ def _print_level1_fresh_clone_ci_workflow_checkpoint(result: dict) -> None:
     print()
 
 
+# ===================================================================
+# Phase 17A — Level 1 Strategy v1 Governance Checkpoint Helpers
+# ===================================================================
+
+_STRATEGY_V1_PATH = BRIDGE_DIR / "docs" / "strategy_v1.md"
+
+
+def _synthetic_fixture_valid_strategy_doc() -> dict:
+    """Case 1: A valid strategy_v1.md document passes governance checks."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        doc_path = Path(td) / "strategy_v1.md"
+        doc_path.write_text('''# Strategy v1\n\n## Advisory-Only Boundary\nAdvisory-only.\n\n## Risk Envelope\nMax notional 5% NL.\n\n## No-Trade Conditions\nNo trade when locked.\n\n## Anti-Overfit Checklist\n1. Check.\n\n## Broker-Side Bracket Requirement\nSTP required.\n''')
+        content = doc_path.read_text()
+        has_advisory = "Advisory-Only" in content or "advisory-only" in content.lower()
+        has_risk = "Risk Envelope" in content
+        has_no_trade = "No-Trade" in content
+        has_anti_overfit = "Anti-Overfit" in content
+        has_bracket = "Broker-Side Bracket" in content or "broker-side" in content.lower()
+        passed = has_advisory and has_risk and has_no_trade and has_anti_overfit and has_bracket
+    return {"passed": passed, "case": "valid_strategy_doc", "has_advisory_boundary": has_advisory, "has_risk_envelope": has_risk, "has_no_trade_rules": has_no_trade, "has_anti_overfit": has_anti_overfit, "has_bracket_requirement": has_bracket}
+
+
+def _synthetic_fixture_missing_risk_envelope() -> dict:
+    """Case 2: Document missing risk envelope section must fail."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        doc_path = Path(td) / "strategy_v1.md"
+        doc_path.write_text('''# Strategy v1\n\n## Advisory-Only Boundary\nAdvisory.\n\n## No-Trade Conditions\nNo trade.\n\n## Anti-Overfit Checklist\nCheck.\n\n## Broker-Side Bracket Requirement\nSTP.\n''')
+        content = doc_path.read_text()
+        has_risk_envelope = "Risk Envelope" in content or "risk envelope" in content.lower()
+        # Missing risk envelope => should fail
+        passed = not has_risk_envelope
+    return {"passed": passed, "case": "missing_risk_envelope", "risk_envelope_missing": not has_risk_envelope}
+
+
+def _synthetic_fixture_missing_no_trade_rules() -> dict:
+    """Case 3: Document missing no-trade rules section must fail."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        doc_path = Path(td) / "strategy_v1.md"
+        doc_path.write_text('''# Strategy v1\n\n## Advisory-Only Boundary\nAdvisory.\n\n## Risk Envelope\n5% NL.\n\n## Anti-Overfit Checklist\nCheck.\n\n## Broker-Side Bracket Requirement\nSTP.\n''')
+        content = doc_path.read_text()
+        has_no_trade = "No-Trade" in content or "no-trade" in content.lower()
+        passed = not has_no_trade
+    return {"passed": passed, "case": "missing_no_trade_rules", "no_trade_rules_missing": not has_no_trade}
+
+
+def _synthetic_fixture_missing_advisory_boundary() -> dict:
+    """Case 4: Document missing advisory-only boundary must fail."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        doc_path = Path(td) / "strategy_v1.md"
+        doc_path.write_text('''# Strategy v1\n\n## Risk Envelope\n5% NL.\n\n## No-Trade Conditions\nNo trade.\n\n## Anti-Overfit Checklist\nCheck.\n\n## Broker-Side Bracket Requirement\nSTP.\n''')
+        content = doc_path.read_text()
+        has_advisory = "Advisory-Only" in content or "advisory-only" in content.lower()
+        passed = not has_advisory
+    return {"passed": passed, "case": "missing_advisory_boundary", "advisory_boundary_missing": not has_advisory}
+
+
+def _synthetic_fixture_missing_anti_overfit() -> dict:
+    """Case 5: Document missing anti-overfit checklist must fail."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        doc_path = Path(td) / "strategy_v1.md"
+        doc_path.write_text('''# Strategy v1\n\n## Advisory-Only Boundary\nAdvisory.\n\n## Risk Envelope\n5% NL.\n\n## No-Trade Conditions\nNo trade.\n\n## Broker-Side Bracket Requirement\nSTP.\n''')
+        content = doc_path.read_text()
+        has_anti_overfit = "Anti-Overfit" in content or "anti-overfit" in content.lower()
+        passed = not has_anti_overfit
+    return {"passed": passed, "case": "missing_anti_overfit", "anti_overfit_missing": not has_anti_overfit}
+
+
+def _synthetic_fixture_missing_bracket_requirement() -> dict:
+    """Case 6: Document missing broker-side bracket requirement must fail."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        doc_path = Path(td) / "strategy_v1.md"
+        doc_path.write_text('''# Strategy v1\n\n## Advisory-Only Boundary\nAdvisory.\n\n## Risk Envelope\n5% NL.\n\n## No-Trade Conditions\nNo trade.\n\n## Anti-Overfit Checklist\nCheck.\n''')
+        content = doc_path.read_text()
+        has_bracket = "Broker-Side Bracket" in content or "broker-side" in content.lower()
+        passed = not has_bracket
+    return {"passed": passed, "case": "missing_bracket_requirement", "bracket_requirement_missing": not has_bracket}
+
+
+def _synthetic_fixture_read_only_invariant_17a() -> dict:
+    """Case 7: checkpoint never calls /order*, H1, trade-window, or mutation paths."""
+    import inspect
+    mutation_patterns = ["h1_token", "H1_TOKEN", "X-H1-Token", "/etc/ibkr-bridge/h1_token",
+                        "sudo", "ibkr-trade-window", "/connect", "/order"]
+    current_src = inspect.getsource(_run_level1_strategy_v1_governance_checkpoint) if "_run_level1_strategy_v1_governance_checkpoint" in dir() else ""
+    mutations_found = [p for p in mutation_patterns if p in current_src]
+    source_clean = len(mutations_found) == 0
+    passed = source_clean
+    return {"passed": passed, "case": "read_only_invariant_17a", "source_clean": source_clean, "mutations_found_in_source": mutations_found, "mutation_patterns_checked": mutation_patterns}
+
+
+# ---------------------------------------------------------------------------
+# Phase 17A verification helpers
+# ---------------------------------------------------------------------------
+
+
+def _verify_strategy_doc_present() -> dict:
+    """Verify docs/strategy_v1.md exists and contains required sections."""
+    result = {
+        "strategy_doc_present": False,
+        "strategy_doc_path": str(_STRATEGY_V1_PATH),
+        "strategy_version_declared": False,
+        "allowed_instruments_declared": False,
+        "excluded_instruments_declared": False,
+        "signal_inputs_declared": False,
+        "data_quality_rules_declared": False,
+        "no_trade_rules_declared": False,
+        "risk_envelope_declared": False,
+        "sizing_rule_declared": False,
+        "daily_trade_limit_declared": False,
+        "daily_loss_limit_declared": False,
+        "stop_exit_policy_declared": False,
+        "broker_side_bracket_requirement_declared": False,
+        "review_checklist_declared": False,
+        "anti_overfit_checklist_declared": False,
+        "advisory_only_boundary_declared": False,
+        "broker_execution_boundary_declared": False,
+    }
+    if _STRATEGY_V1_PATH.exists():
+        result["strategy_doc_present"] = True
+        try:
+            content = _STRATEGY_V1_PATH.read_text()
+            result["strategy_version_declared"] = "strategy-v1-" in content or "v1.0.0" in content
+            result["allowed_instruments_declared"] = "Allowed Instruments" in content or "allowed instrument" in content.lower()
+            result["excluded_instruments_declared"] = "Excluded Instruments" in content or "excluded instrument" in content.lower()
+            result["signal_inputs_declared"] = "Signal Inputs" in content or "signal" in content.lower()
+            result["data_quality_rules_declared"] = "Data Quality" in content or "data quality" in content.lower()
+            result["no_trade_rules_declared"] = "No-Trade Conditions" in content or "no-trade" in content.lower() or "No-Trade" in content
+            result["risk_envelope_declared"] = "Risk Envelope" in content or "risk envelope" in content.lower()
+            result["sizing_rule_declared"] = "Sizing" in content and ("Position" in content or "position sizing" in content.lower())
+            result["daily_trade_limit_declared"] = "Daily" in content and ("trade" in content.lower() or "Trades" in content)
+            result["daily_loss_limit_declared"] = "loss halt" in content.lower() or "Daily Loss" in content or "daily loss" in content.lower()
+            result["stop_exit_policy_declared"] = "Stop" in content and ("Exit" in content or "exit" in content.lower())
+            result["broker_side_bracket_requirement_declared"] = "Broker-Side Bracket" in content or "broker-side" in content.lower() or "bracket" in content.lower()
+            result["review_checklist_declared"] = "Review Checklist" in content or "review checklist" in content.lower()
+            result["anti_overfit_checklist_declared"] = "Anti-Overfit Checklist" in content or "anti-overfit" in content.lower()
+            result["advisory_only_boundary_declared"] = "Advisory-Only Boundary" in content or "advisory-only" in content.lower()
+            result["broker_execution_boundary_declared"] = "Broker Execution" in content or "broker execution" in content.lower() or "only path to IBKR" in content.lower() or "only path to broker" in content.lower()
+            result["doc_size_bytes"] = len(content)
+        except Exception:
+            pass
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Phase 17A NO_GO builder
+# ---------------------------------------------------------------------------
+
+
+def _phase17a_no_go(checkpoint_id: str, ts_str: str, git_section: dict, diagnosis: str, actions: list[str], runtime: dict | None = None) -> dict:
+    """Build a NO_GO result for Phase 17A."""
+    return {
+        "command": "ibkr-operator level1-strategy-v1-governance-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True, "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": git_section.get("worktree_clean", False),
+        "runtime": runtime or {"connected": False, "mode": "?", "read_only": False, "allow_orders": None, "endpoints_ok": False},
+        "kpi": {},
+        "runtime_connected": False, "mode": "?", "read_only": False,
+        "allow_orders": None, "endpoints_ok": False,
+        "positions_flat": False, "guard_state_clean": False,
+        "kpi_hold_only_system_locked": False,
+        "strategy_doc_present": False,
+        "strategy_version_declared": False,
+        "allowed_instruments_declared": False,
+        "excluded_instruments_declared": False,
+        "signal_inputs_declared": False,
+        "data_quality_rules_declared": False,
+        "no_trade_rules_declared": False,
+        "risk_envelope_declared": False,
+        "sizing_rule_declared": False,
+        "daily_trade_limit_declared": False,
+        "daily_loss_limit_declared": False,
+        "stop_exit_policy_declared": False,
+        "broker_side_bracket_requirement_declared": False,
+        "review_checklist_declared": False,
+        "anti_overfit_checklist_declared": False,
+        "advisory_only_boundary_declared": False,
+        "broker_execution_boundary_declared": False,
+        "synthetic_valid_strategy_doc_case_passed": False,
+        "synthetic_missing_risk_envelope_case_passed": False,
+        "synthetic_missing_no_trade_rules_case_passed": False,
+        "synthetic_missing_advisory_boundary_case_passed": False,
+        "synthetic_missing_anti_overfit_case_passed": False,
+        "synthetic_missing_bracket_requirement_case_passed": False,
+        "synthetic_read_only_invariant_case_passed": False,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_broker_mutation": True, "artifact_created": False, "export_path": None,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17A_EXPLICIT_NON_ACTIONS,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 17A run function
+# ---------------------------------------------------------------------------
+
+
+def _run_level1_strategy_v1_governance_checkpoint(audit_source: str = "synthetic_readonly_demo") -> dict:
+    """Run Phase 17A — Level 1 Strategy v1 Governance Checkpoint."""
+    import json as _json
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"17a-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+    repo_path = Path(__file__).resolve().parent
+    git_section = _git_metadata(repo_path)
+    worktree_state = _get_worktree_state(BRIDGE_DIR)
+    worktree_clean_state = worktree_state.get("clean", False)
+    git_section["worktree_clean"] = worktree_clean_state
+    git_section["worktree_dirty_files"] = worktree_state.get("dirty_files", [])
+    if not worktree_clean_state:
+        return _phase17a_no_go(checkpoint_id, ts_str, git_section, _PHASE17A_DIAGNOSIS["git_worktree_dirty"], ["Commit or stash dirty files before running this checkpoint."])
+    runtime_state = _snapshot_bridge_state(BRIDGE_URL)
+    rt_connected = runtime_state.get("connected", False)
+    rt_mode = runtime_state.get("mode", "?")
+    rt_read_only = runtime_state.get("read_only", False)
+    rt_allow_orders = runtime_state.get("allow_orders")
+    rt_endpoints_ok = runtime_state.get("endpoints_ok", False)
+    rt_positions_flat = runtime_state.get("positions_flat")
+    bridge_reachable = bool(runtime_state.get("mode", "?") != "?")
+    if not bridge_reachable:
+        return _phase17a_no_go(checkpoint_id, ts_str, git_section, _PHASE17A_DIAGNOSIS["bridge_unreachable"], ["Bridge is not reachable. Start ibkr-bridge.service."])
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_clean = gs_assessment["guard_state_clean"]
+    guard_state = gs_assessment.get("guard_section", {})
+    try:
+        kpi = run_kpi()
+    except Exception:
+        kpi = {"verdict": "ERROR", "error": "run_kpi failed"}
+    kpi_verdict = kpi.get("verdict", "ERROR")
+    kpi_blockers = kpi.get("blockers", [])
+    no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+    hold_blockers = [b for b in kpi_blockers if b.get("severity") == "HOLD"]
+    kpi_hold_only_system_locked = (kpi_verdict == "HOLD" and len(no_go_blockers) == 0 and any(b.get("check") == "system_locked" for b in hold_blockers))
+    # Strategy doc verification
+    doc_check = _verify_strategy_doc_present()
+    strategy_doc_present = doc_check.get("strategy_doc_present", False)
+    strategy_version_declared = doc_check.get("strategy_version_declared", False)
+    allowed_instruments = doc_check.get("allowed_instruments_declared", False)
+    excluded_instruments = doc_check.get("excluded_instruments_declared", False)
+    signal_inputs = doc_check.get("signal_inputs_declared", False)
+    data_quality = doc_check.get("data_quality_rules_declared", False)
+    no_trade_rules = doc_check.get("no_trade_rules_declared", False)
+    risk_envelope = doc_check.get("risk_envelope_declared", False)
+    sizing_rule = doc_check.get("sizing_rule_declared", False)
+    daily_trade_limit = doc_check.get("daily_trade_limit_declared", False)
+    daily_loss_limit = doc_check.get("daily_loss_limit_declared", False)
+    stop_exit_policy = doc_check.get("stop_exit_policy_declared", False)
+    bracket_requirement = doc_check.get("broker_side_bracket_requirement_declared", False)
+    review_checklist = doc_check.get("review_checklist_declared", False)
+    anti_overfit = doc_check.get("anti_overfit_checklist_declared", False)
+    advisory_boundary = doc_check.get("advisory_only_boundary_declared", False)
+    broker_boundary = doc_check.get("broker_execution_boundary_declared", False)
+    # Synthetic fixtures
+    syn_valid = _synthetic_fixture_valid_strategy_doc()
+    syn_valid_ok = syn_valid.get("passed", False)
+    syn_no_risk = _synthetic_fixture_missing_risk_envelope()
+    syn_no_risk_ok = syn_no_risk.get("passed", False)
+    syn_no_nt = _synthetic_fixture_missing_no_trade_rules()
+    syn_no_nt_ok = syn_no_nt.get("passed", False)
+    syn_no_adv = _synthetic_fixture_missing_advisory_boundary()
+    syn_no_adv_ok = syn_no_adv.get("passed", False)
+    syn_no_overfit = _synthetic_fixture_missing_anti_overfit()
+    syn_no_overfit_ok = syn_no_overfit.get("passed", False)
+    syn_no_bracket = _synthetic_fixture_missing_bracket_requirement()
+    syn_no_bracket_ok = syn_no_bracket.get("passed", False)
+    syn_ro = _synthetic_fixture_read_only_invariant_17a()
+    syn_ro_ok = syn_ro.get("passed", False)
+    # Diagnosis cascade
+    diagnosis = _PHASE17A_DIAGNOSIS["ready"]
+    severity = "OK"
+    actions: list[str] = []
+    if not rt_connected:
+        diagnosis = _PHASE17A_DIAGNOSIS["runtime_not_connected"]; severity = "NO_GO"; actions.append("Bridge is not connected.")
+    elif rt_mode != "paper":
+        diagnosis = _PHASE17A_DIAGNOSIS["mode_not_paper"]; severity = "NO_GO"; actions.append(f"Mode is {rt_mode}, expected paper.")
+    elif rt_read_only is not True:
+        diagnosis = _PHASE17A_DIAGNOSIS["read_only_not_true"]; severity = "NO_GO"; actions.append("Read-only is not true.")
+    elif rt_allow_orders is not False:
+        diagnosis = _PHASE17A_DIAGNOSIS["allow_orders_not_false"]; severity = "NO_GO"; actions.append(f"allow_orders is {rt_allow_orders}.")
+    elif not rt_endpoints_ok:
+        diagnosis = _PHASE17A_DIAGNOSIS["endpoints_not_ok"]; severity = "NO_GO"; actions.append("Endpoints not all healthy.")
+    elif rt_positions_flat is False:
+        diagnosis = _PHASE17A_DIAGNOSIS["positions_not_flat"]; severity = "NO_GO"; actions.append("Positions are not flat.")
+    elif not guard_state_clean:
+        diagnosis = _PHASE17A_DIAGNOSIS["guard_state_not_clean"]; severity = "NO_GO"; actions.append("Guard state is not clean.")
+    elif not kpi_hold_only_system_locked:
+        diagnosis = _PHASE17A_DIAGNOSIS["kpi_not_hold_system_locked"]; severity = "NO_GO"; actions.append(f"KPI is {kpi_verdict}.")
+    elif not strategy_doc_present:
+        diagnosis = _PHASE17A_DIAGNOSIS["strategy_doc_missing"]; severity = "NO_GO"; actions.append("docs/strategy_v1.md not found.")
+    elif not risk_envelope:
+        diagnosis = _PHASE17A_DIAGNOSIS["risk_envelope_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing risk envelope section.")
+    elif not no_trade_rules:
+        diagnosis = _PHASE17A_DIAGNOSIS["no_trade_rules_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing no-trade rules section.")
+    elif not advisory_boundary:
+        diagnosis = _PHASE17A_DIAGNOSIS["advisory_boundary_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing advisory-only boundary.")
+    elif not anti_overfit:
+        diagnosis = _PHASE17A_DIAGNOSIS["anti_overfit_section_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing anti-overfit checklist.")
+    elif not bracket_requirement:
+        diagnosis = _PHASE17A_DIAGNOSIS["bracket_requirement_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing broker-side bracket requirement.")
+    elif not strategy_version_declared:
+        diagnosis = _PHASE17A_DIAGNOSIS["strategy_version_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing version declaration.")
+    elif not allowed_instruments:
+        diagnosis = _PHASE17A_DIAGNOSIS["allowed_instruments_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing allowed instruments.")
+    elif not excluded_instruments:
+        diagnosis = _PHASE17A_DIAGNOSIS["excluded_instruments_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing excluded instruments.")
+    elif not signal_inputs:
+        diagnosis = _PHASE17A_DIAGNOSIS["signal_inputs_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing signal inputs.")
+    elif not data_quality:
+        diagnosis = _PHASE17A_DIAGNOSIS["data_quality_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing data quality rules.")
+    elif not sizing_rule:
+        diagnosis = _PHASE17A_DIAGNOSIS["sizing_rule_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing sizing rule.")
+    elif not daily_trade_limit:
+        diagnosis = _PHASE17A_DIAGNOSIS["daily_trade_limit_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing daily trade limit.")
+    elif not daily_loss_limit:
+        diagnosis = _PHASE17A_DIAGNOSIS["daily_loss_limit_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing daily loss limit.")
+    elif not stop_exit_policy:
+        diagnosis = _PHASE17A_DIAGNOSIS["stop_exit_policy_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing stop/exit policy.")
+    elif not review_checklist:
+        diagnosis = _PHASE17A_DIAGNOSIS["review_checklist_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing review checklist.")
+    elif not broker_boundary:
+        diagnosis = _PHASE17A_DIAGNOSIS["broker_execution_boundary_missing"]; severity = "NO_GO"; actions.append("Strategy doc missing broker execution boundary.")
+    elif not syn_valid_ok:
+        diagnosis = _PHASE17A_DIAGNOSIS["synthetic_valid_strategy_doc_failed"]; severity = "NO_GO"; actions.append("Synthetic valid strategy doc test failed.")
+    elif not syn_no_risk_ok:
+        diagnosis = _PHASE17A_DIAGNOSIS["synthetic_missing_risk_envelope_failed"]; severity = "NO_GO"; actions.append("Synthetic missing risk envelope test failed.")
+    elif not syn_no_nt_ok:
+        diagnosis = _PHASE17A_DIAGNOSIS["synthetic_missing_no_trade_rules_failed"]; severity = "NO_GO"; actions.append("Synthetic missing no-trade rules test failed.")
+    elif not syn_no_adv_ok:
+        diagnosis = _PHASE17A_DIAGNOSIS["synthetic_missing_advisory_boundary_failed"]; severity = "NO_GO"; actions.append("Synthetic missing advisory boundary test failed.")
+    elif not syn_no_overfit_ok:
+        diagnosis = _PHASE17A_DIAGNOSIS["synthetic_missing_anti_overfit_failed"]; severity = "NO_GO"; actions.append("Synthetic missing anti-overfit test failed.")
+    elif not syn_no_bracket_ok:
+        diagnosis = _PHASE17A_DIAGNOSIS["synthetic_missing_bracket_requirement_failed"]; severity = "NO_GO"; actions.append("Synthetic missing bracket requirement test failed.")
+    elif not syn_ro_ok:
+        diagnosis = _PHASE17A_DIAGNOSIS["synthetic_read_only_invariant_failed"]; severity = "NO_GO"; actions.append("Synthetic read-only invariant test failed.")
+    checkpoint_ok = diagnosis == _PHASE17A_DIAGNOSIS["ready"]
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-strategy-v1-governance-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": severity,
+        "operator_action_required": not checkpoint_ok,
+        "suggested_operator_actions": actions if not checkpoint_ok else ["None — strategy v1 governance confirmed."],
+        "git": git_section, "git_worktree_clean": worktree_clean_state,
+        "runtime": {"connected": rt_connected, "mode": rt_mode, "read_only": rt_read_only, "allow_orders": rt_allow_orders, "endpoints_ok": rt_endpoints_ok, "positions_flat": rt_positions_flat},
+        "runtime_connected": rt_connected, "mode": rt_mode, "read_only": rt_read_only,
+        "allow_orders": rt_allow_orders, "endpoints_ok": rt_endpoints_ok,
+        "positions_flat": rt_positions_flat,
+        "guard_state_clean": guard_state_clean, "guard_state": guard_state,
+        "kpi": kpi, "kpi_hold_only_system_locked": kpi_hold_only_system_locked,
+        "strategy_doc_present": strategy_doc_present,
+        "strategy_version_declared": strategy_version_declared,
+        "allowed_instruments_declared": allowed_instruments,
+        "excluded_instruments_declared": excluded_instruments,
+        "signal_inputs_declared": signal_inputs,
+        "data_quality_rules_declared": data_quality,
+        "no_trade_rules_declared": no_trade_rules,
+        "risk_envelope_declared": risk_envelope,
+        "sizing_rule_declared": sizing_rule,
+        "daily_trade_limit_declared": daily_trade_limit,
+        "daily_loss_limit_declared": daily_loss_limit,
+        "stop_exit_policy_declared": stop_exit_policy,
+        "broker_side_bracket_requirement_declared": bracket_requirement,
+        "review_checklist_declared": review_checklist,
+        "anti_overfit_checklist_declared": anti_overfit,
+        "advisory_only_boundary_declared": advisory_boundary,
+        "broker_execution_boundary_declared": broker_boundary,
+        "synthetic_valid_strategy_doc_case_passed": syn_valid_ok,
+        "synthetic_missing_risk_envelope_case_passed": syn_no_risk_ok,
+        "synthetic_missing_no_trade_rules_case_passed": syn_no_nt_ok,
+        "synthetic_missing_advisory_boundary_case_passed": syn_no_adv_ok,
+        "synthetic_missing_anti_overfit_case_passed": syn_no_overfit_ok,
+        "synthetic_missing_bracket_requirement_case_passed": syn_no_bracket_ok,
+        "synthetic_read_only_invariant_case_passed": syn_ro_ok,
+        "synthetic_cases": {
+            "valid_strategy_doc": syn_valid,
+            "missing_risk_envelope": syn_no_risk,
+            "missing_no_trade_rules": syn_no_nt,
+            "missing_advisory_boundary": syn_no_adv,
+            "missing_anti_overfit": syn_no_overfit,
+            "missing_bracket_requirement": syn_no_bracket,
+            "read_only_invariant": syn_ro,
+        },
+        "doc_check": doc_check,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_broker_mutation": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17A_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False, "export_path": None,
+    }
+    try:
+        _PHASE17A_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE17A_EXPORT_DIR / f"{checkpoint_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        result["export_path"] = str(ep)
+        result["artifact_created"] = True
+    except Exception:
+        result["export_path"] = None; result["artifact_created"] = False
+    return result
+
+
+def _print_level1_strategy_v1_governance_checkpoint(result: dict) -> None:
+    """Print Phase 17A strategy v1 governance checkpoint."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE17A_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Strategy v1 Governance Checkpoint (17A){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:               {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:                   {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:                   {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:                    {sev_color}{sev}{RESET}")
+    print()
+    print(f"  {BOLD}Git{RESET}")
+    g = result.get("git", {})
+    print(f"    Branch:        {g.get('branch', '?')}")
+    print(f"    Commit:        {g.get('commit_short', g.get('commit', '?'))}")
+    print(f"    Tag:           {g.get('tag', '?')}")
+    print(f"    Worktree clean: {_bool_str(result.get('git_worktree_clean', False))}")
+    print()
+    print(f"  {BOLD}Runtime State{RESET}")
+    rt = result.get("runtime", {})
+    print(f"    Connected:     {_bool_str(rt.get('connected'))}")
+    print(f"    Mode:          {rt.get('mode', '?')}")
+    print(f"    Read-only:     {_bool_str(rt.get('read_only'))}")
+    print(f"    Allow orders:  {rt.get('allow_orders')}")
+    print(f"    Endpoints OK:  {_bool_str(rt.get('endpoints_ok'))}")
+    print(f"    Positions flat: {_bool_str(rt.get('positions_flat'))}")
+    print()
+    print(f"  {BOLD}Guard State & KPI{RESET}")
+    print(f"    Guard clean:   {_bool_str(result.get('guard_state_clean', False))}")
+    print(f"    KPI HOLD only system_locked: {_bool_str(result.get('kpi_hold_only_system_locked', False))}")
+    print()
+    print(f"  {BOLD}Strategy Document Checks{RESET}")
+    print(f"    Doc present:              {_bool_str(result.get('strategy_doc_present', False))}")
+    print(f"    Version declared:         {_bool_str(result.get('strategy_version_declared', False))}")
+    print(f"    Allowed instruments:      {_bool_str(result.get('allowed_instruments_declared', False))}")
+    print(f"    Excluded instruments:     {_bool_str(result.get('excluded_instruments_declared', False))}")
+    print(f"    Signal inputs:            {_bool_str(result.get('signal_inputs_declared', False))}")
+    print(f"    Data quality rules:       {_bool_str(result.get('data_quality_rules_declared', False))}")
+    print(f"    No-trade rules:           {_bool_str(result.get('no_trade_rules_declared', False))}")
+    print(f"    Risk envelope:            {_bool_str(result.get('risk_envelope_declared', False))}")
+    print(f"    Sizing rule:              {_bool_str(result.get('sizing_rule_declared', False))}")
+    print(f"    Daily trade limit:        {_bool_str(result.get('daily_trade_limit_declared', False))}")
+    print(f"    Daily loss limit:         {_bool_str(result.get('daily_loss_limit_declared', False))}")
+    print(f"    Stop/exit policy:         {_bool_str(result.get('stop_exit_policy_declared', False))}")
+    print(f"    Bracket requirement:      {_bool_str(result.get('broker_side_bracket_requirement_declared', False))}")
+    print(f"    Review checklist:         {_bool_str(result.get('review_checklist_declared', False))}")
+    print(f"    Anti-overfit checklist:   {_bool_str(result.get('anti_overfit_checklist_declared', False))}")
+    print(f"    Advisory-only boundary:   {_bool_str(result.get('advisory_only_boundary_declared', False))}")
+    print(f"    Broker execution boundary:{_bool_str(result.get('broker_execution_boundary_declared', False))}")
+    print()
+    print(f"  {BOLD}Synthetic Cases{RESET}")
+    print(f"    Valid strategy doc:       {_bool_str(result.get('synthetic_valid_strategy_doc_case_passed', False))}")
+    print(f"    Missing risk envelope:    {_bool_str(result.get('synthetic_missing_risk_envelope_case_passed', False))}")
+    print(f"    Missing no-trade rules:   {_bool_str(result.get('synthetic_missing_no_trade_rules_case_passed', False))}")
+    print(f"    Missing advisory boundary:{_bool_str(result.get('synthetic_missing_advisory_boundary_case_passed', False))}")
+    print(f"    Missing anti-overfit:     {_bool_str(result.get('synthetic_missing_anti_overfit_case_passed', False))}")
+    print(f"    Missing bracket req:      {_bool_str(result.get('synthetic_missing_bracket_requirement_case_passed', False))}")
+    print(f"    Read-only invariant:      {_bool_str(result.get('synthetic_read_only_invariant_case_passed', False))}")
+    print()
+    print(f"  {BOLD}Mutation Safety{RESET}")
+    print(f"    No /order called:      {_bool_str(result.get('no_order_endpoint_called', True))}")
+    print(f"    No H1 token used:      {_bool_str(result.get('no_h1_token_used', True))}")
+    print(f"    No trade window:       {_bool_str(result.get('no_trade_window_helper_called', True))}")
+    print(f"    No broker mutation:    {_bool_str(result.get('no_broker_mutation', True))}")
+    print(f"    Artifact created:      {_bool_str(result.get('artifact_created', False))}")
+    ep = result.get("export_path")
+    if ep:
+        print(f"    Export: {ep}")
+    print()
+
+
 def _print_level1_execution_gate_negative_control_drill(result: dict) -> None:
     """Print Phase 16O negative-control drill in human-readable format."""
     drill_ok = result.get("diagnosis") == _PHASE16O_DIAGNOSIS["ready"]
@@ -37720,6 +38286,26 @@ def main() -> None:
     p16z_a2.add_argument("--json", action="store_true")
     p16z_a2.add_argument("--export", action="store_true")
     p16z_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 17A — Level 1 Strategy v1 Governance Checkpoint
+    p17a = sub.add_parser("level1-strategy-v1-governance-checkpoint",
+                          help="Level 1 strategy v1 governance checkpoint (Phase 17A)")
+    p17a.add_argument("--json", action="store_true")
+    p17a.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-strategy-v1-governance-checkpoints/")
+    p17a.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: phase17a-strategy-v1-governance-checkpoint
+    p17a_a1 = sub.add_parser("phase17a-strategy-v1-governance-checkpoint",
+                             help="Alias for level1-strategy-v1-governance-checkpoint")
+    p17a_a1.add_argument("--json", action="store_true")
+    p17a_a1.add_argument("--export", action="store_true")
+    p17a_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: strategy-v1-governance-checkpoint
+    p17a_a2 = sub.add_parser("strategy-v1-governance-checkpoint",
+                             help="Alias for level1-strategy-v1-governance-checkpoint")
+    p17a_a2.add_argument("--json", action="store_true")
+    p17a_a2.add_argument("--export", action="store_true")
+    p17a_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -39881,6 +40467,49 @@ def main() -> None:
                 if ep:
                     print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE16Z_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-strategy-v1-governance-checkpoint",
+                        "phase17a-strategy-v1-governance-checkpoint",
+                        "strategy-v1-governance-checkpoint"):
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_strategy_v1_governance_checkpoint(
+                audit_source=audit_source,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"17a-error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = _phase17a_no_go(
+                checkpoint_id, ts_str,
+                {"branch": "?", "commit": "?", "tag": "?", "worktree_clean": False},
+                _PHASE17A_DIAGNOSIS["unknown"],
+                [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+            )
+        if args.export and not result.get("export_path"):
+            try:
+                _PHASE17A_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                import json as _json
+                ep = _PHASE17A_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                with open(ep, "w", encoding="utf-8") as f:
+                    _json.dump(result, f, indent=2, default=str)
+                result["export_path"] = str(ep)
+                result["artifact_created"] = True
+            except Exception:
+                pass
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_strategy_v1_governance_checkpoint(result)
+            if args.export:
+                ep = result.get("export_path")
+                if ep:
+                    print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE17A_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

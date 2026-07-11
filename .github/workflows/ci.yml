@@ -1,16 +1,16 @@
 # ============================================================================
-# IBKR Bridge — CI Workflow (Phase 16Z)
+# IBKR Bridge — CI Workflow
 #
 # Pure Level 1 safety test layer only.
 # No IBKR Gateway, ~/.openclaw, H1 token, systemd, or broker credentials required.
-# Excludes acceptance / integration / live / host tests via marker filter.
+# Uses the curated local CI runner so GitHub and local CI execute the same scope.
 # ============================================================================
 
 name: CI
 
 on:
   push:
-    branches: [main, master, 'phase*']
+    branches: [main, master, 'phase*', 'ci-*']
   pull_request:
     branches: [main, master]
 
@@ -36,16 +36,11 @@ jobs:
           pip install -r requirements.txt
           pip install pytest pytest-timeout
 
-      - name: Compile check (fail-fast)
+      - name: Compile check
         run: |
           python -m py_compile bridge.py guard.py ibkr_operator.py
 
-      - name: Collection check (pure tests only)
-        run: |
-          python -m pytest --collect-only -q tests/ \
-            -m "not integration and not live and not acceptance"
-
-      - name: Run pure tests (Level 1 safety layer)
+      - name: Run curated Level 1 CI suite
         run: |
           chmod +x scripts/run-ci-local
           scripts/run-ci-local

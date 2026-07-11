@@ -117,7 +117,7 @@ class TestPhase17BConstants:
     def test_explicit_non_actions_contains_proposal_protection(self):
         na = _PHASE17B_EXPLICIT_NON_ACTIONS
         assert any("~/.openclaw" in s for s in na)
-        assert any("/etc/ibkr-bridge/h1_token" in s for s in na)
+        assert any("raw H1 token file" in s or "H1 token" in s for s in na)
         assert any("proposal" in s.lower() for s in na)
 
 

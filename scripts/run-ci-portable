@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+PYTHON="python3"
+[ -x ".venv/bin/python" ] && PYTHON=".venv/bin/python"
+
+TESTS=(
+  tests/test_ci_collection_safety.py
+  tests/test_ci_invariant_assertions.py
+  tests/test_strategy_autonomy_docs.py
+  tests/test_kpi_dashboard.py
+)
+
+echo "==> Portable CI"
+echo "==> Python: $($PYTHON --version)"
+
+$PYTHON -m py_compile bridge.py guard.py ibkr_operator.py
+
+$PYTHON -m pytest --collect-only -q "${TESTS[@]}" \
+  -m "not integration and not live and not acceptance"
+
+$PYTHON -m pytest -q "${TESTS[@]}" \
+  -m "not integration and not live and not acceptance"

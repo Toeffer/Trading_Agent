@@ -47,8 +47,5 @@ jobs:
 
       - name: Run pure tests (Level 1 safety layer)
         run: |
-          python -m pytest tests/ \
-            -m "not integration and not live and not acceptance" \
-            -v \
-            --tb=short \
-            --timeout=120
+          chmod +x scripts/run-ci-local
+          scripts/run-ci-local

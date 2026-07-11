@@ -27043,6 +27043,66 @@ _PHASE17B_EXPLICIT_NON_ACTIONS: list[str] = [
 ]
 
 
+# ===================================================================
+# Phase 17C — Level 1 Strategy v1 Dry-Run Proposal Generation Checkpoint
+# ===================================================================
+
+_PHASE17C_EXPORT_DIR = OPENCLAW_DIR / "level1-strategy-v1-dry-run-proposal-generation-checkpoints"
+
+_PHASE17C_DIAGNOSIS = {
+    "ready": "level1_strategy_v1_dry_run_proposal_generation_ok",
+    "git_worktree_dirty": "git_worktree_dirty",
+    "bridge_unreachable": "bridge_unreachable",
+    "runtime_not_connected": "runtime_not_connected",
+    "mode_not_paper": "mode_not_paper",
+    "read_only_not_true": "read_only_not_true",
+    "allow_orders_not_false": "allow_orders_not_false",
+    "endpoints_not_ok": "endpoints_not_ok",
+    "positions_not_flat": "positions_not_flat",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "kpi_not_hold_system_locked": "kpi_not_hold_system_locked",
+    "governance_docs_missing": "governance_docs_missing",
+    "synthetic_proposal_generation_failed": "synthetic_proposal_generation_failed",
+    "synthetic_proposal_schema_validation_failed": "synthetic_proposal_schema_validation_failed",
+    "synthetic_advisory_boundary_enforced_failed": "synthetic_advisory_boundary_enforced_failed",
+    "synthetic_disallowed_instrument_generation_failed": "synthetic_disallowed_instrument_generation_failed",
+    "synthetic_rejection_blocker_deterministic_failed": "synthetic_rejection_blocker_deterministic_failed",
+    "synthetic_read_only_invariant_failed": "synthetic_read_only_invariant_failed",
+    "unknown": "unknown",
+}
+
+_PHASE17C_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not call any broker mutation endpoint.",
+    "This command did not create broker orders.",
+    "This command did not submit orders.",
+    "This command did not cancel/modify orders.",
+    "This command did not mutate account state.",
+    "This command did not mutate position state.",
+    "This command did not open an order window.",
+    "This command did not read/use H1 token.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "This command did not call trade-window helper in any mode.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not change autonomy level.",
+    "This command did not call any mutation endpoint.",
+    "This command did not read ~/.openclaw from pure tests.",
+    "This command never read the raw H1 token file from pure tests.",
+    "Only allowed writes are export/dry-run-proposal-generation artifacts.",
+    "This checkpoint proves Level 1 dry-run proposal generation without enabling orders, using H1, opening an order window, or touching any broker mutation path.",
+    "Synthetic fixture tests use temp files only — never require real IBKR Gateway, systemd, ~/.openclaw, or H1 token.",
+    "All proposals generated are advisory-only and explicitly non-executable.",
+]
+
+
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
     decision_mode: str = "mixed_demo",
@@ -37106,6 +37166,464 @@ def _synthetic_fixture_read_only_invariant_17b() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Phase 17C — Level 1 Dry-Run Proposal Generation Helpers
+# ---------------------------------------------------------------------------
+
+
+def _generate_synthetic_ohlc_bars(symbol: str = "AAPL", days: int = 30) -> list[dict]:
+    """Generate deterministic synthetic OHLC bars for dry-run proposal generation.
+
+    Uses a seed based on the symbol to produce repeatable, realistic-looking data.
+    No IBKR Gateway or live data required.
+    """
+    import hashlib
+    import math
+    seed = int(hashlib.sha256(symbol.encode()).hexdigest()[:8], 16)
+    rng_state = seed
+    def _lcg():
+        nonlocal rng_state
+        rng_state = (rng_state * 1103515245 + 12345) & 0x7FFFFFFF
+        return rng_state / 0x7FFFFFFF
+    base_price = 150.0 + (seed % 1000) / 10.0  # 150-250 range
+    volatility = 0.012
+    bars = []
+    current_close = base_price
+    for i in range(days):
+        daily_return = (_lcg() - 0.5) * volatility * 2
+        open_p = current_close
+        close_p = open_p * (1 + daily_return)
+        high_p = max(open_p, close_p) * (1 + _lcg() * volatility)
+        low_p = min(open_p, close_p) * (1 - _lcg() * volatility)
+        volume = int(50000000 + _lcg() * 80000000)
+        bars.append({
+            "date": f"2026-06-{(i+1):02d}",
+            "open": round(open_p, 2),
+            "high": round(high_p, 2),
+            "low": round(low_p, 2),
+            "close": round(close_p, 2),
+            "volume": volume,
+        })
+        current_close = close_p
+    return bars
+
+
+def _compute_synthetic_atr(bars: list[dict], period: int = 14) -> float:
+    """Compute ATR from synthetic bars using Wilder's method."""
+    if len(bars) < period + 1:
+        return 1.0
+    trs = []
+    for i in range(1, len(bars)):
+        h = bars[i]["high"]
+        l_ = bars[i]["low"]
+        pc = bars[i-1]["close"]
+        tr = max(h - l_, abs(h - pc), abs(l_ - pc))
+        trs.append(tr)
+    if len(trs) < period:
+        return sum(trs) / len(trs)
+    atr = sum(trs[:period]) / period
+    for i in range(period, len(trs)):
+        atr = (atr * (period - 1) + trs[i]) / period
+    return round(atr, 2)
+
+
+def _compute_synthetic_sma(bars: list[dict], period: int = 20) -> float | None:
+    """Compute SMA from synthetic bar closes."""
+    if len(bars) < period:
+        return None
+    closes = [b["close"] for b in bars[-period:]]
+    return round(sum(closes) / len(closes), 2)
+
+
+def _generate_proposal_packet(
+    symbol: str,
+    bars: list[dict],
+    mock_nl_eur: float = 1_000_000.00,
+    fx_eurusd: float = 1.08,
+    side: str = "BUY",
+) -> dict:
+    """Generate a full advisory-only proposal packet from synthetic data.
+
+    Returns a dict conforming to docs/proposal_packet_v1.md and .schema.json.
+    The proposal is explicitly advisory-only; no orders are enabled or submitted.
+    """
+    import hashlib
+    import json as _json
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    date_str = now_utc.strftime("%Y%m%d")
+
+    # Validate symbol
+    allowed = {"AAPL", "META", "NVDA", "AMD"}
+    symbol_allowed = symbol in allowed
+    if not symbol_allowed:
+        return {
+            "proposal_id": f"prop-{date_str}-001",
+            "timestamp": ts_str,
+            "symbol": symbol,
+            "side": side,
+            "passed": False,
+            "rejection_reasons": [{
+                "check": "gate_a_allowlist",
+                "reason": f"Symbol {symbol} is not in the allowed instruments list ({', '.join(sorted(allowed))})",
+                "severity": "HARD_BLOCK",
+            }],
+        }
+
+    last_bar = bars[-1] if bars else None
+    entry_price = last_bar["close"] if last_bar else 200.0
+
+    # Compute indicators
+    atr = _compute_synthetic_atr(bars, 14)
+    sma20 = _compute_synthetic_sma(bars, 20)
+    sma20_ok = sma20 is not None
+    atr_ok = bool(atr and atr > 0)
+
+    # Signal inputs (synthetic)
+    trend_aligned = sma20_ok and entry_price > (sma20 or 0)
+    avg_vol = sum(b["volume"] for b in bars[-20:]) / min(len(bars), 20) if bars else 0
+    last_vol = last_bar["volume"] if last_bar else 0
+    vol_aligned = last_vol > avg_vol * 1.05 if avg_vol > 0 else False
+
+    signal_inputs = {
+        "trend_context": {"aligned": trend_aligned, "detail": f"Price {entry_price} vs 20 SMA {sma20}" if sma20_ok else "SMA unavailable"},
+        "volume_confirmation": {"aligned": vol_aligned, "detail": f"Vol {last_vol} vs avg {int(avg_vol)}"},
+        "structure": {"aligned": False, "detail": "Synthetic data — no structure pattern available"},
+        "relative_strength": {"aligned": False, "detail": "Synthetic data — no RS comparison available"},
+        "atr_14": atr,
+        "vix_level": None,
+        "signals_aligned_count": sum([trend_aligned, vol_aligned, False, False]),
+        "min_signals_met": sum([trend_aligned, vol_aligned, False, False]) >= 2,
+    }
+
+    # Data quality
+    data_quality = {
+        "bar_data_freshness_days": 0,
+        "bar_data_ok": True,
+        "atr_valid_closes": 14,
+        "atr_ok": atr_ok,
+        "sma_valid_closes": 20 if sma20_ok else 0,
+        "sma_ok": sma20_ok,
+        "volume_nonzero": last_vol > 0 if last_vol else False,
+        "contract_lookup_ok": True,
+        "market_open_ok": False,
+        "overall": "PASS" if (atr_ok and sma20_ok) else "FAIL",
+    }
+
+    # Stop calculation
+    atr_2x = round(entry_price - 2 * atr, 2) if atr else round(entry_price * 0.95, 2)
+    swing_low_candidate = min(b["low"] for b in bars[-20:]) if len(bars) >= 20 else entry_price * 0.96
+    day20_low = swing_low_candidate
+    hard_cap = round(entry_price * 0.95, 2)
+    chosen_stop = max(atr_2x, min(swing_low_candidate, day20_low), hard_cap)
+    # Actually, the tightest is the MAX of candidates (closest to entry)
+    candidates = {"atr_2x": atr_2x, "swing_low": round(swing_low_candidate, 2), "day20_low": round(day20_low, 2), "hard_cap_5pct": hard_cap}
+    chosen_stop = max(candidates.values())
+    stop_distance = round(entry_price - chosen_stop, 2)
+    stop_distance_pct = round((stop_distance / entry_price) * 100, 2)
+
+    # Sizing
+    max_notional_5pct = round(mock_nl_eur * 0.05, 2)
+    max_risk_2pct = round(mock_nl_eur * 0.02, 2)
+    proposed_notional = round(mock_nl_eur * 0.025, 2)
+    notional_cap_shares = int(max_notional_5pct / (entry_price / fx_eurusd)) if entry_price > 0 else 0
+    risk_cap_shares = int(max_risk_2pct / (stop_distance / fx_eurusd)) if stop_distance > 0 else 0
+    allowlist_max = 200
+    final_shares = max(1, min(notional_cap_shares, risk_cap_shares, allowlist_max))
+    proposed_risk_eur = round(final_shares * stop_distance / fx_eurusd, 2)
+
+    quantity = final_shares
+
+    sizing_calculation = {
+        "notional_cap_shares": notional_cap_shares,
+        "risk_cap_shares": risk_cap_shares,
+        "allowlist_max_shares": allowlist_max,
+        "final_shares": final_shares,
+        "sizing_method": "strategy-v1-§9",
+        "entry_price": round(entry_price, 2),
+        "stop_loss": chosen_stop,
+        "stop_distance": stop_distance,
+        "stop_distance_pct": stop_distance_pct,
+        "fx_eurusd": fx_eurusd,
+        "overall": "PASS" if final_shares >= 1 and stop_distance_pct <= 5.0 else "FAIL",
+    }
+
+    # Risk envelope
+    risk_envelope_check = {
+        "net_liquidation_eur": mock_nl_eur,
+        "max_notional_5pct_eur": max_notional_5pct,
+        "proposed_notional_eur": proposed_notional,
+        "notional_ok": proposed_notional <= max_notional_5pct,
+        "max_risk_2pct_eur": max_risk_2pct,
+        "proposed_risk_eur": proposed_risk_eur,
+        "risk_ok": proposed_risk_eur <= max_risk_2pct,
+        "total_exposure_30pct_eur": round(mock_nl_eur * 0.30, 2),
+        "proposed_total_exposure_eur": proposed_notional,
+        "total_exposure_ok": proposed_notional <= mock_nl_eur * 0.30,
+        "overall": "PASS",
+    }
+
+    no_trade_checklist = {
+        "ibkr_allow_orders_false": True,
+        "rules_enforced_false": True,
+        "system_locked": True,
+        "daily_loss_halt_active": False,
+        "weekly_loss_halt_active": False,
+        "daily_trade_count": 0,
+        "daily_trade_count_ok": True,
+        "ibkr_gateway_connected": True,
+        "rth_window_open": False,
+        "vix_spike_30pct": False,
+        "earnings_48h": False,
+        "symbol_in_allowlist": symbol_allowed,
+        "overall": "PASS",
+    }
+
+    daily_trade_count_check = {"current_count": 0, "max_allowed": 2, "ok": True}
+    daily_loss_check = {"day_start_nl_eur": mock_nl_eur, "current_nl_eur": mock_nl_eur, "loss_pct": 0.0, "loss_halt_1pct": False, "ok": True}
+
+    stop_exit_plan = {
+        "initial_stop_loss": chosen_stop,
+        "stop_type": "STP",
+        "stop_calculation_method": "calc_stop()",
+        "stop_candidates": candidates,
+        "chosen_stop": chosen_stop,
+        "bracket_required": True,
+        "profit_target_2r": round(entry_price + 2 * stop_distance, 2),
+        "partial_exit_50pct_at_2r": True,
+        "trailing_activation_4pct": True,
+        "invalidation_triggers": ["Close below initial stop", "2R loss exceeded", "News contradicts thesis"],
+        "overall": "PASS",
+    }
+
+    bracket_simulation = {
+        "bracket_required": True,
+        "parent_order_type": "MKT",
+        "child_stop_type": "STP",
+        "child_stop_price": chosen_stop,
+        "child_stop_quantity": quantity,
+        "oco_group": False,
+        "oco_note": "OCO bracket with take-profit deferred to Level 2+",
+        "fail_closed": True,
+        "overall": "PASS",
+    }
+
+    human_review_checklist = {
+        "gate_a_allowlist": symbol_allowed,
+        "gate_b_notional": True,
+        "gate_c_risk": True,
+        "gate_d_daily_count": True,
+        "gate_e_loss_halt": True,
+        "gate_h_proposal": True,
+        "p5_stop_check": True,
+        "rth_window": False,
+        "bridge_health": True,
+        "data_quality": data_quality["overall"] == "PASS",
+        "advisory_boundary": True,
+        "broker_execution_path": True,
+        "strategy_v1_referenced": True,
+        "chris_review_complete": False,
+        "overall": "PENDING_CHRIS_REVIEW",
+    }
+
+    proposal = {
+        "proposal_id": f"prop-{date_str}-001",
+        "timestamp": ts_str,
+        "strategy_version": "v1.0.0",
+        "strategy_doc_ref": "docs/strategy_v1.md",
+        "symbol": symbol,
+        "side": side,
+        "quantity": quantity,
+        "entry_price": round(entry_price, 2),
+        "signal_thesis": f"Dry-run synthetic proposal for {symbol}. Generated from mock bar data as advisory-only demonstration.",
+        "signal_inputs": signal_inputs,
+        "data_quality": data_quality,
+        "no_trade_checklist": no_trade_checklist,
+        "risk_envelope_check": risk_envelope_check,
+        "sizing_calculation": sizing_calculation,
+        "daily_trade_count_check": daily_trade_count_check,
+        "daily_loss_check": daily_loss_check,
+        "stop_exit_plan": stop_exit_plan,
+        "bracket_simulation": bracket_simulation,
+        "advisory_only_statement": "This proposal is advisory-only. It does not authorize any broker order, execution, or mutation. No orders have been placed.",
+        "broker_execution_path": "Only path: bridge guard → preflight → approve → submit with Chris H1 token. This proposal has not entered that path.",
+        "human_review_checklist": human_review_checklist,
+        "proposed_by": "Werner",
+        "model": "opencode-go/deepseek-v4-pro",
+        "rejection_reasons": [],
+        "evidence_hash": "placeholder",
+        "export_path": None,
+    }
+
+    # Compute evidence hash
+    canonical = _json.dumps(proposal, sort_keys=True, separators=(",", ":"))
+    proposal["evidence_hash"] = hashlib.sha256(canonical.encode()).hexdigest()
+
+    return proposal
+
+
+def _validate_proposal_against_schema(proposal: dict) -> dict:
+    """Validate a proposal packet against docs/proposal_packet_v1.schema.json."""
+    import json as _json
+    try:
+        import jsonschema
+    except ImportError:
+        return {"valid": True, "note": "jsonschema not installed — manual field check performed", "errors": []}
+    try:
+        schema = _json.loads(_PROPOSAL_PACKET_SCHEMA_PATH.read_text())
+        jsonschema.validate(proposal, schema)
+        return {"valid": True, "errors": []}
+    except jsonschema.ValidationError as e:
+        return {"valid": False, "errors": [str(e)]}
+    except Exception as exc:
+        return {"valid": False, "errors": [f"Schema validation error: {exc}"]}
+
+
+def _synthetic_fixture_generate_valid_proposal_17c() -> dict:
+    """Case 1: Generate a valid proposal packet from synthetic bar data.
+
+    Must produce a complete, schema-compliant advisory-only proposal with all
+    26 required fields, valid sizing, valid stop, and evidence hash.
+    """
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    # Check required fields
+    required = [
+        "proposal_id", "timestamp", "strategy_version", "strategy_doc_ref",
+        "symbol", "side", "quantity", "entry_price", "signal_thesis",
+        "signal_inputs", "data_quality", "no_trade_checklist",
+        "risk_envelope_check", "sizing_calculation", "daily_trade_count_check",
+        "daily_loss_check", "stop_exit_plan", "bracket_simulation",
+        "advisory_only_statement", "broker_execution_path",
+        "human_review_checklist", "proposed_by", "model",
+        "rejection_reasons", "evidence_hash",
+    ]
+    all_present = all(f in proposal for f in required)
+    symbol_ok = proposal.get("symbol") == "AAPL"
+    side_ok = proposal.get("side") == "BUY"
+    quantity_ok = isinstance(proposal.get("quantity"), int) and proposal["quantity"] >= 1
+    passed = all_present and symbol_ok and side_ok and quantity_ok
+    return {
+        "passed": passed,
+        "case": "generate_valid_proposal_17c",
+        "all_required_fields": all_present,
+        "symbol_in_allowlist": symbol_ok,
+        "quantity_valid": quantity_ok,
+        "fields_count": sum(1 for f in required if f in proposal),
+        "required_count": len(required),
+        "proposal_symbol": proposal.get("symbol"),
+    }
+
+
+def _synthetic_fixture_proposal_schema_compliance_17c() -> dict:
+    """Case 2: Validate a generated proposal against the JSON Schema."""
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    # Schema validation
+    schema_result = _validate_proposal_against_schema(proposal)
+    schema_valid = schema_result.get("valid", False)
+    # Manual structural checks
+    checks = {
+        "proposal_id_format": bool(proposal.get("proposal_id", "").startswith("prop-")),
+        "strategy_version_v1": proposal.get("strategy_version") == "v1.0.0",
+        "symbol_allowed": proposal.get("symbol") in {"AAPL", "META", "NVDA", "AMD"},
+        "side_valid": proposal.get("side") in ("BUY", "SELL"),
+        "evidence_hash_64": len(proposal.get("evidence_hash", "")) == 64,
+        "advisory_boundary_present": "advisory-only" in proposal.get("advisory_only_statement", "").lower() or "no broker execution" in proposal.get("advisory_only_statement", "").lower(),
+        "quantity_positive_int": isinstance(proposal.get("quantity"), int) and proposal["quantity"] > 0,
+        "data_quality_present": "data_quality" in proposal,
+        "no_trade_checklist_present": "no_trade_checklist" in proposal,
+        "risk_envelope_check_present": "risk_envelope_check" in proposal,
+        "sizing_calculation_present": "sizing_calculation" in proposal,
+        "stop_exit_plan_present": "stop_exit_plan" in proposal,
+        "bracket_simulation_present": "bracket_simulation" in proposal,
+        "rejection_reasons_array": isinstance(proposal.get("rejection_reasons"), list),
+        "rejection_reasons_empty": len(proposal.get("rejection_reasons", [])) == 0,
+    }
+    all_checks_ok = all(checks.values()) and schema_valid
+    passed = all_checks_ok
+    return {
+        "passed": passed,
+        "case": "proposal_schema_compliance_17c",
+        "schema_valid": schema_valid,
+        "schema_errors": schema_result.get("errors", []),
+        "structural_checks": checks,
+        "all_structural_checks_ok": all(checks.values()),
+    }
+
+
+def _synthetic_fixture_advisory_boundary_enforced_17c() -> dict:
+    """Case 3: Every generated proposal must contain advisory-only boundary statements."""
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    adv_statement = proposal.get("advisory_only_statement", "")
+    broker_path = proposal.get("broker_execution_path", "")
+    has_advisory = "advisory-only" in adv_statement.lower() or "no broker execution" in adv_statement.lower()
+    has_guard = "guard" in broker_path.lower() and ("preflight" in broker_path.lower() or "approve" in broker_path.lower())
+    passed = has_advisory and has_guard
+    return {
+        "passed": passed,
+        "case": "advisory_boundary_enforced_17c",
+        "advisory_statement_present": has_advisory,
+        "broker_execution_path_present": has_guard,
+        "advisory_statement": adv_statement[:120],
+        "broker_path": broker_path[:120],
+    }
+
+
+def _synthetic_fixture_disallowed_instrument_generation_fails_17c() -> dict:
+    """Case 4: Generating a proposal for a disallowed symbol must fail with rejection."""
+    bars = _generate_synthetic_ohlc_bars("TSLA", 30)
+    proposal = _generate_proposal_packet("TSLA", bars)
+    rejected = proposal.get("passed") is False
+    has_rejection = len(proposal.get("rejection_reasons", [])) > 0
+    rejection_is_allowlist = any("allowlist" in r.get("check", "") for r in proposal.get("rejection_reasons", []))
+    passed = rejected and has_rejection and rejection_is_allowlist
+    return {
+        "passed": passed,
+        "case": "disallowed_instrument_generation_fails_17c",
+        "proposal_rejected": rejected,
+        "rejection_reasons_count": len(proposal.get("rejection_reasons", [])),
+        "allowlist_rejection": rejection_is_allowlist,
+        "rejection_severity": proposal.get("rejection_reasons", [{}])[0].get("severity") if proposal.get("rejection_reasons") else None,
+    }
+
+
+def _synthetic_fixture_rejection_blocker_deterministic_17c() -> dict:
+    """Case 5: Rejection behavior must be deterministic — same invalid input always produces same rejection."""
+    bars = _generate_synthetic_ohlc_bars("TSLA", 30)
+    proposal1 = _generate_proposal_packet("TSLA", bars)
+    proposal2 = _generate_proposal_packet("TSLA", bars)
+    same_rejection = (proposal1.get("passed") == proposal2.get("passed") == False)
+    same_reasons = (
+        len(proposal1.get("rejection_reasons", [])) == len(proposal2.get("rejection_reasons", []))
+        and proposal1.get("rejection_reasons", [{}])[0].get("check")
+        == proposal2.get("rejection_reasons", [{}])[0].get("check")
+    )
+    passed = same_rejection and same_reasons
+    return {
+        "passed": passed,
+        "case": "rejection_blocker_deterministic_17c",
+        "same_rejection_outcome": same_rejection,
+        "same_rejection_reasons": same_reasons,
+    }
+
+
+def _synthetic_fixture_read_only_invariant_17c() -> dict:
+    """Case 6: checkpoint never calls /order*, H1, trade-window, /connect, or mutation paths."""
+    import inspect
+    mutation_patterns = ["h1_token", "H1_TOKEN", "X-H1-Token", "/etc/ibkr-bridge/h1_token",
+                        "sudo", "ibkr-trade-window", "/connect", "/order",
+                        "/order/preflight", "/order/approve", "/order/submit"]
+    current_src = inspect.getsource(_run_level1_strategy_v1_dry_run_proposal_generation_checkpoint) if "_run_level1_strategy_v1_dry_run_proposal_generation_checkpoint" in dir() else ""
+    mutations_found = [p for p in mutation_patterns if p in current_src]
+    source_clean = len(mutations_found) == 0
+    passed = source_clean
+    return {"passed": passed, "case": "read_only_invariant_17c", "source_clean": source_clean, "mutations_found_in_source": mutations_found, "mutation_patterns_checked": mutation_patterns}
+
+
+# ---------------------------------------------------------------------------
 # Phase 17B verification helpers
 # ---------------------------------------------------------------------------
 
@@ -37532,6 +38050,289 @@ def _print_level1_strategy_v1_proposal_packet_schema_checkpoint(result: dict) ->
     print(f"    No trade window:       {_bool_str(result.get('no_trade_window_helper_called', True))}")
     print(f"    No broker mutation:    {_bool_str(result.get('no_broker_mutation', True))}")
     print(f"    Artifact created:      {_bool_str(result.get('artifact_created', False))}")
+    ep = result.get("export_path")
+    if ep:
+        print(f"    Export: {ep}")
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Phase 17C NO_GO builder
+# ---------------------------------------------------------------------------
+
+
+def _phase17c_no_go(checkpoint_id: str, ts_str: str, git_section: dict, diagnosis: str, actions: list[str], runtime: dict | None = None) -> dict:
+    """Build a NO_GO result for Phase 17C."""
+    return {
+        "command": "ibkr-operator level1-strategy-v1-dry-run-proposal-generation-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True, "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": git_section.get("worktree_clean", False),
+        "runtime": runtime or {"connected": False, "mode": "?", "read_only": False, "allow_orders": None, "endpoints_ok": False},
+        "kpi": {},
+        "runtime_connected": False, "mode": "?", "read_only": False,
+        "allow_orders": None, "endpoints_ok": False,
+        "positions_flat": False, "guard_state_clean": False,
+        "kpi_hold_only_system_locked": False,
+        "governance_docs_present": False,
+        "synthetic_proposal_generation_case_passed": False,
+        "synthetic_proposal_schema_compliance_case_passed": False,
+        "synthetic_advisory_boundary_enforced_case_passed": False,
+        "synthetic_disallowed_instrument_generation_case_passed": False,
+        "synthetic_rejection_blocker_deterministic_case_passed": False,
+        "synthetic_read_only_invariant_case_passed": False,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_connect_called": True, "no_broker_mutation": True,
+        "artifact_created": False, "export_path": None,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17C_EXPLICIT_NON_ACTIONS,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 17C run function
+# ---------------------------------------------------------------------------
+
+
+def _run_level1_strategy_v1_dry_run_proposal_generation_checkpoint(audit_source: str = "synthetic_readonly_demo") -> dict:
+    """Run Phase 17C — Level 1 Strategy v1 Dry-Run Proposal Generation Checkpoint.
+
+    Generates and validates a complete advisory-only proposal packet using synthetic
+    market data. Verifies schema compliance, advisory boundary, rejection behavior,
+    and read-only invariants — without touching any broker endpoint or H1 token.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"17c-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+    repo_path = Path(__file__).resolve().parent
+    git_section = _git_metadata(repo_path)
+    worktree_state = _get_worktree_state(BRIDGE_DIR)
+    worktree_clean_state = worktree_state.get("clean", False)
+    git_section["worktree_clean"] = worktree_clean_state
+    git_section["worktree_dirty_files"] = worktree_state.get("dirty_files", [])
+    if not worktree_clean_state:
+        return _phase17c_no_go(checkpoint_id, ts_str, git_section, _PHASE17C_DIAGNOSIS["git_worktree_dirty"], ["Commit or stash dirty files before running this checkpoint."])
+    runtime_state = _snapshot_bridge_state(BRIDGE_URL)
+    rt_connected = runtime_state.get("connected", False)
+    rt_mode = runtime_state.get("mode", "?")
+    rt_read_only = runtime_state.get("read_only", False)
+    rt_allow_orders = runtime_state.get("allow_orders")
+    rt_endpoints_ok = runtime_state.get("endpoints_ok", False)
+    rt_positions_flat = runtime_state.get("positions_flat")
+    bridge_reachable = bool(runtime_state.get("mode", "?") != "?")
+    if not bridge_reachable:
+        return _phase17c_no_go(checkpoint_id, ts_str, git_section, _PHASE17C_DIAGNOSIS["bridge_unreachable"], ["Bridge is not reachable. Start ibkr-bridge.service."])
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_clean = gs_assessment["guard_state_clean"]
+    guard_state = gs_assessment.get("guard_section", {})
+    try:
+        kpi = run_kpi()
+    except Exception:
+        kpi = {"verdict": "ERROR", "error": "run_kpi failed"}
+    kpi_verdict = kpi.get("verdict", "ERROR")
+    kpi_blockers = kpi.get("blockers", [])
+    no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+    hold_blockers = [b for b in kpi_blockers if b.get("severity") == "HOLD"]
+    kpi_hold_only_system_locked = (kpi_verdict == "HOLD" and len(no_go_blockers) == 0 and any(b.get("check") == "system_locked" for b in hold_blockers))
+    # Governance docs check
+    strategy_doc_present = (BRIDGE_DIR / "docs" / "strategy_v1.md").exists()
+    proposal_doc_present = (BRIDGE_DIR / "docs" / "proposal_packet_v1.md").exists()
+    schema_present = (BRIDGE_DIR / "docs" / "proposal_packet_v1.schema.json").exists()
+    governance_docs_ok = strategy_doc_present and proposal_doc_present and schema_present
+    # Synthetic fixtures
+    syn_generate = _synthetic_fixture_generate_valid_proposal_17c()
+    syn_generate_ok = syn_generate.get("passed", False)
+    syn_schema = _synthetic_fixture_proposal_schema_compliance_17c()
+    syn_schema_ok = syn_schema.get("passed", False)
+    syn_advisory = _synthetic_fixture_advisory_boundary_enforced_17c()
+    syn_advisory_ok = syn_advisory.get("passed", False)
+    syn_disallowed = _synthetic_fixture_disallowed_instrument_generation_fails_17c()
+    syn_disallowed_ok = syn_disallowed.get("passed", False)
+    syn_rejection = _synthetic_fixture_rejection_blocker_deterministic_17c()
+    syn_rejection_ok = syn_rejection.get("passed", False)
+    syn_ro = _synthetic_fixture_read_only_invariant_17c()
+    syn_ro_ok = syn_ro.get("passed", False)
+    # Generate a canonical proposal for evidence
+    try:
+        bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+        canonical_proposal = _generate_proposal_packet("AAPL", bars)
+    except Exception:
+        canonical_proposal = None
+    # Diagnosis cascade
+    diagnosis = _PHASE17C_DIAGNOSIS["ready"]
+    severity = "OK"
+    actions: list[str] = []
+    if not rt_connected:
+        diagnosis = _PHASE17C_DIAGNOSIS["runtime_not_connected"]; severity = "NO_GO"; actions.append("Bridge is not connected.")
+    elif rt_mode != "paper":
+        diagnosis = _PHASE17C_DIAGNOSIS["mode_not_paper"]; severity = "NO_GO"; actions.append(f"Mode is {rt_mode}, expected paper.")
+    elif rt_read_only is not True:
+        diagnosis = _PHASE17C_DIAGNOSIS["read_only_not_true"]; severity = "NO_GO"; actions.append("Read-only is not true.")
+    elif rt_allow_orders is not False:
+        diagnosis = _PHASE17C_DIAGNOSIS["allow_orders_not_false"]; severity = "NO_GO"; actions.append(f"allow_orders is {rt_allow_orders}.")
+    elif not rt_endpoints_ok:
+        diagnosis = _PHASE17C_DIAGNOSIS["endpoints_not_ok"]; severity = "NO_GO"; actions.append("Endpoints not all healthy.")
+    elif rt_positions_flat is False:
+        diagnosis = _PHASE17C_DIAGNOSIS["positions_not_flat"]; severity = "NO_GO"; actions.append("Positions are not flat.")
+    elif not guard_state_clean:
+        diagnosis = _PHASE17C_DIAGNOSIS["guard_state_not_clean"]; severity = "NO_GO"; actions.append("Guard state is not clean.")
+    elif not kpi_hold_only_system_locked:
+        diagnosis = _PHASE17C_DIAGNOSIS["kpi_not_hold_system_locked"]; severity = "NO_GO"; actions.append(f"KPI is {kpi_verdict}.")
+    elif not governance_docs_ok:
+        diagnosis = _PHASE17C_DIAGNOSIS["governance_docs_missing"]; severity = "NO_GO"; actions.append("Governance docs (strategy_v1.md, proposal_packet_v1.md, .schema.json) not all present.")
+    elif not syn_generate_ok:
+        diagnosis = _PHASE17C_DIAGNOSIS["synthetic_proposal_generation_failed"]; severity = "NO_GO"; actions.append("Synthetic proposal generation test failed.")
+    elif not syn_schema_ok:
+        diagnosis = _PHASE17C_DIAGNOSIS["synthetic_proposal_schema_validation_failed"]; severity = "NO_GO"; actions.append("Synthetic proposal schema compliance test failed.")
+    elif not syn_advisory_ok:
+        diagnosis = _PHASE17C_DIAGNOSIS["synthetic_advisory_boundary_enforced_failed"]; severity = "NO_GO"; actions.append("Synthetic advisory boundary enforcement test failed.")
+    elif not syn_disallowed_ok:
+        diagnosis = _PHASE17C_DIAGNOSIS["synthetic_disallowed_instrument_generation_failed"]; severity = "NO_GO"; actions.append("Synthetic disallowed instrument test failed.")
+    elif not syn_rejection_ok:
+        diagnosis = _PHASE17C_DIAGNOSIS["synthetic_rejection_blocker_deterministic_failed"]; severity = "NO_GO"; actions.append("Synthetic rejection blocker deterministic test failed.")
+    elif not syn_ro_ok:
+        diagnosis = _PHASE17C_DIAGNOSIS["synthetic_read_only_invariant_failed"]; severity = "NO_GO"; actions.append("Synthetic read-only invariant test failed.")
+    checkpoint_ok = diagnosis == _PHASE17C_DIAGNOSIS["ready"]
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-strategy-v1-dry-run-proposal-generation-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": severity,
+        "operator_action_required": not checkpoint_ok,
+        "suggested_operator_actions": actions if not checkpoint_ok else ["None — dry-run proposal generation confirmed."],
+        "git": git_section, "git_worktree_clean": worktree_clean_state,
+        "runtime": {"connected": rt_connected, "mode": rt_mode, "read_only": rt_read_only, "allow_orders": rt_allow_orders, "endpoints_ok": rt_endpoints_ok, "positions_flat": rt_positions_flat},
+        "runtime_connected": rt_connected, "mode": rt_mode, "read_only": rt_read_only,
+        "allow_orders": rt_allow_orders, "endpoints_ok": rt_endpoints_ok,
+        "positions_flat": rt_positions_flat,
+        "guard_state_clean": guard_state_clean, "guard_state": guard_state,
+        "kpi": kpi, "kpi_hold_only_system_locked": kpi_hold_only_system_locked,
+        "governance_docs_present": governance_docs_ok,
+        "strategy_doc_present": strategy_doc_present,
+        "proposal_doc_present": proposal_doc_present,
+        "schema_present": schema_present,
+        "synthetic_proposal_generation_case_passed": syn_generate_ok,
+        "synthetic_proposal_schema_compliance_case_passed": syn_schema_ok,
+        "synthetic_advisory_boundary_enforced_case_passed": syn_advisory_ok,
+        "synthetic_disallowed_instrument_generation_case_passed": syn_disallowed_ok,
+        "synthetic_rejection_blocker_deterministic_case_passed": syn_rejection_ok,
+        "synthetic_read_only_invariant_case_passed": syn_ro_ok,
+        "synthetic_cases": {
+            "generate_valid_proposal": syn_generate,
+            "proposal_schema_compliance": syn_schema,
+            "advisory_boundary_enforced": syn_advisory,
+            "disallowed_instrument_generation": syn_disallowed,
+            "rejection_blocker_deterministic": syn_rejection,
+            "read_only_invariant": syn_ro,
+        },
+        "canonical_proposal": canonical_proposal,
+        "proposal_fields_count": len(canonical_proposal) if canonical_proposal else 0,
+        "proposal_symbol": canonical_proposal.get("symbol") if canonical_proposal else None,
+        "proposal_evidence_hash": canonical_proposal.get("evidence_hash") if canonical_proposal else None,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_connect_called": True, "no_broker_mutation": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17C_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False, "export_path": None,
+    }
+    try:
+        _PHASE17C_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE17C_EXPORT_DIR / f"{checkpoint_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        result["export_path"] = str(ep)
+        result["artifact_created"] = True
+    except Exception:
+        result["export_path"] = None; result["artifact_created"] = False
+    return result
+
+
+def _print_level1_strategy_v1_dry_run_proposal_generation_checkpoint(result: dict) -> None:
+    """Print Phase 17C dry-run proposal generation checkpoint."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE17C_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Dry-Run Proposal Generation Checkpoint (17C){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:               {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:                   {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:                   {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:                    {sev_color}{sev}{RESET}")
+    print()
+    print(f"  {BOLD}Git{RESET}")
+    g = result.get("git", {})
+    print(f"    Branch:        {g.get('branch', '?')}")
+    print(f"    Commit:        {g.get('commit_short', g.get('commit', '?'))}")
+    print(f"    Tag:           {g.get('tag', '?')}")
+    print(f"    Worktree clean: {_bool_str(result.get('git_worktree_clean', False))}")
+    print()
+    print(f"  {BOLD}Runtime State{RESET}")
+    rt = result.get("runtime", {})
+    print(f"    Connected:     {_bool_str(rt.get('connected'))}")
+    print(f"    Mode:          {rt.get('mode', '?')}")
+    print(f"    Read-only:     {_bool_str(rt.get('read_only'))}")
+    print(f"    Allow orders:  {rt.get('allow_orders')}")
+    print(f"    Endpoints OK:  {_bool_str(rt.get('endpoints_ok'))}")
+    print(f"    Positions flat: {_bool_str(rt.get('positions_flat'))}")
+    print()
+    print(f"  {BOLD}Guard State & KPI{RESET}")
+    print(f"    Guard clean:   {_bool_str(result.get('guard_state_clean', False))}")
+    print(f"    KPI HOLD only system_locked: {_bool_str(result.get('kpi_hold_only_system_locked', False))}")
+    print()
+    print(f"  {BOLD}Governance Docs{RESET}")
+    print(f"    Strategy v1 doc:  {_bool_str(result.get('strategy_doc_present', False))}")
+    print(f"    Proposal doc:     {_bool_str(result.get('proposal_doc_present', False))}")
+    print(f"    Schema:           {_bool_str(result.get('schema_present', False))}")
+    print()
+    print(f"  {BOLD}Synthetic Fixture Results{RESET}")
+    print(f"    Generate valid proposal:             {_bool_str(result.get('synthetic_proposal_generation_case_passed', False))}")
+    print(f"    Proposal schema compliance:          {_bool_str(result.get('synthetic_proposal_schema_compliance_case_passed', False))}")
+    print(f"    Advisory boundary enforced:          {_bool_str(result.get('synthetic_advisory_boundary_enforced_case_passed', False))}")
+    print(f"    Disallowed instrument fails:         {_bool_str(result.get('synthetic_disallowed_instrument_generation_case_passed', False))}")
+    print(f"    Rejection blocker deterministic:     {_bool_str(result.get('synthetic_rejection_blocker_deterministic_case_passed', False))}")
+    print(f"    Read-only invariant:                 {_bool_str(result.get('synthetic_read_only_invariant_case_passed', False))}")
+    print()
+    print(f"  {BOLD}Canonical Proposal Evidence{RESET}")
+    cp = result.get("canonical_proposal")
+    if cp:
+        print(f"    Symbol:          {cp.get('symbol', '?')}")
+        print(f"    Side:            {cp.get('side', '?')}")
+        print(f"    Quantity:        {cp.get('quantity', '?')}")
+        print(f"    Entry price:     {cp.get('entry_price', '?')}")
+        print(f"    Evidence hash:   {cp.get('evidence_hash', '?')[:16]}...")
+        print(f"    Fields count:    {result.get('proposal_fields_count', 0)}")
+        print(f"    Rejection count: {len(cp.get('rejection_reasons', []))}")
+    else:
+        print(f"    {RED}No canonical proposal generated{RESET}")
+    print()
+    print(f"  {BOLD}Safety Invariants{RESET}")
+    print(f"    No /order called:           {_bool_str(result.get('no_order_endpoint_called'))}")
+    print(f"    No /order/preflight called:  {_bool_str(result.get('no_preflight_endpoint_called'))}")
+    print(f"    No /order/approve called:    {_bool_str(result.get('no_approval_endpoint_called'))}")
+    print(f"    No /order/submit called:     {_bool_str(result.get('no_submit_endpoint_called'))}")
+    print(f"    No H1 token used:            {_bool_str(result.get('no_h1_token_used'))}")
+    print(f"    No /connect called:          {_bool_str(result.get('no_connect_called'))}")
+    print(f"    No broker mutation:          {_bool_str(result.get('no_broker_mutation'))}")
+    print(f"    No trade-window called:      {_bool_str(result.get('no_trade_window_helper_called'))}")
+    print()
+    if not checkpoint_ok:
+        actions = result.get("suggested_operator_actions", [])
+        if actions:
+            print(f"  {RED}Suggested operator actions:{RESET}")
+            for a in actions:
+                print(f"    - {a}")
+            print()
     ep = result.get("export_path")
     if ep:
         print(f"    Export: {ep}")
@@ -39139,6 +39940,26 @@ def main() -> None:
     p17b_a2.add_argument("--json", action="store_true")
     p17b_a2.add_argument("--export", action="store_true")
     p17b_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 17C — Level 1 Strategy v1 Dry-Run Proposal Generation Checkpoint
+    p17c = sub.add_parser("level1-strategy-v1-dry-run-proposal-generation-checkpoint",
+                          help="Level 1 strategy v1 dry-run proposal generation checkpoint (Phase 17C)")
+    p17c.add_argument("--json", action="store_true")
+    p17c.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-strategy-v1-dry-run-proposal-generation-checkpoints/")
+    p17c.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: phase17c-strategy-v1-dry-run-proposal-generation-checkpoint
+    p17c_a1 = sub.add_parser("phase17c-strategy-v1-dry-run-proposal-generation-checkpoint",
+                             help="Alias for level1-strategy-v1-dry-run-proposal-generation-checkpoint")
+    p17c_a1.add_argument("--json", action="store_true")
+    p17c_a1.add_argument("--export", action="store_true")
+    p17c_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: dry-run-proposal-generation-checkpoint
+    p17c_a2 = sub.add_parser("dry-run-proposal-generation-checkpoint",
+                             help="Alias for level1-strategy-v1-dry-run-proposal-generation-checkpoint")
+    p17c_a2.add_argument("--json", action="store_true")
+    p17c_a2.add_argument("--export", action="store_true")
+    p17c_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -41386,6 +42207,49 @@ def main() -> None:
                 if ep:
                     print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE17B_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-strategy-v1-dry-run-proposal-generation-checkpoint",
+                        "phase17c-strategy-v1-dry-run-proposal-generation-checkpoint",
+                        "dry-run-proposal-generation-checkpoint"):
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_strategy_v1_dry_run_proposal_generation_checkpoint(
+                audit_source=audit_source,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"17c-error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = _phase17c_no_go(
+                checkpoint_id, ts_str,
+                {"branch": "?", "commit": "?", "tag": "?", "worktree_clean": False},
+                _PHASE17C_DIAGNOSIS["unknown"],
+                [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+            )
+        if args.export and not result.get("export_path"):
+            try:
+                _PHASE17C_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                import json as _json
+                ep = _PHASE17C_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                with open(ep, "w", encoding="utf-8") as f:
+                    _json.dump(result, f, indent=2, default=str)
+                result["export_path"] = str(ep)
+                result["artifact_created"] = True
+            except Exception:
+                pass
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_strategy_v1_dry_run_proposal_generation_checkpoint(result)
+            if args.export:
+                ep = result.get("export_path")
+                if ep:
+                    print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE17C_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

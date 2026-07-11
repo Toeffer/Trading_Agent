@@ -149,11 +149,11 @@ class TestAutonomyDocument:
             f"AUTONOMY_CRITERIA.md missing required sections:\n" + \
             "\n".join(f"  - {s}" for s in missing)
 
-    def test_autonomy_defines_current_level_zero(self):
-        """AUTONOMY_CRITERIA.md defines current autonomy as Level 0."""
+    def test_autonomy_defines_current_level_one(self):
+        """AUTONOMY_CRITERIA.md defines current autonomy as Level 1."""
         content = AUTONOMY_PATH.read_text()
-        assert "**0 (current)**" in content or "Level 0" in content or "level 0" in content.lower(), \
-            "AUTONOMY_CRITERIA.md must define current autonomy as Level 0"
+        assert "**1 (current)**" in content or "Level 1" in content or "level 1" in content.lower(), \
+            "AUTONOMY_CRITERIA.md must define current autonomy as Level 1"
         assert "Zero autonomy" in content or "zero autonomy" in content.lower(), \
             "AUTONOMY_CRITERIA.md must state zero autonomy at current level"
 

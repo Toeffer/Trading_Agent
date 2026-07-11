@@ -1,5 +1,7 @@
 # Autonomous Cycle Criteria
 
+> **Current autonomy:** Level 1 — read-only, advisory-only, locked execution baseline.
+
 > **Status:** Chris-approved governance document.  
 > **Scope:** Defines when and how Werner/OpenClaw may operate autonomously within the IBKR paper-trading system.  
 > **Default state:** Zero autonomy. All orders require Chris's manual approval via H1 token.  

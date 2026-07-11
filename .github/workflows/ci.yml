@@ -42,5 +42,5 @@ jobs:
 
       - name: Run curated Level 1 CI suite
         run: |
-          chmod +x scripts/run-ci-local
-          scripts/run-ci-local
+          chmod +x scripts/run-ci-portable
+          scripts/run-ci-portable

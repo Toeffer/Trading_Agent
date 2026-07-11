@@ -71,8 +71,9 @@ TARGET_TESTS=(
     "tests/test_p2b_gate_e_close_only_exempt.py"
     "tests/test_p3_gate_h_proposal_discipline.py"
     "tests/test_p5_bracket_stops.py"
-    "tests/test_p7_heartbeat.py"
-    "tests/test_p8_systemd_hardening.py"
+    # Host/workstation acceptance tests intentionally excluded from portable CI:
+    # "tests/test_p7_heartbeat.py"
+    # "tests/test_p8_systemd_hardening.py"
     "tests/test_ci_collection_safety.py"
     "tests/test_ci_invariant_assertions.py"
     "tests/test_strategy_autonomy_docs.py"
@@ -80,7 +81,8 @@ TARGET_TESTS=(
     "tests/test_step13_remediation.py"
     "tests/test_clean_cycle_rehearsal.py"
     "tests/test_candidate_dryrun.py"
-    "tests/test_step15c_liveness_stress.py"
+    # Host/liveness stress intentionally excluded from portable CI:
+    # "tests/test_step15c_liveness_stress.py"
 )
 
 echo "--- Targeted test suite ---"

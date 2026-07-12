@@ -1249,7 +1249,7 @@ def run_doctor(skip_h1_canary: bool = False) -> dict:
     """
     checks: list[dict[str, Any]] = []
     all_pass = True
-    repo = Path.home() / "agents" / "ibkr-bridge"
+    repo = Path(__file__).resolve().parent
 
     # K2: RUNBOOK.md exists
     rb_path = repo / "RUNBOOK.md"
@@ -1562,7 +1562,7 @@ def print_doctor(result: dict) -> None:
 def _get_git_timeline() -> dict:
     """Collect git branch, current commit, and recent tags."""
     import subprocess as _sp
-    repo = Path.home() / "agents" / "ibkr-bridge"
+    repo = Path(__file__).resolve().parent
     try:
         branch = _sp.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -1601,7 +1601,7 @@ def _run_regression_check() -> dict:
     """
     import subprocess as _sp
     import json as _json
-    op = Path.home() / "agents" / "ibkr-bridge" / "ibkr_operator.py"
+    op = Path(__file__).resolve().parent / "ibkr_operator.py"
     if not op.exists():
         return {"pass": False, "detail": "ibkr_operator.py not found"}
 
@@ -1677,7 +1677,7 @@ def run_freeze() -> dict:
         maintenance_result = {"mode": "error", "detail": "maintenance_report() failed"}
 
     # L7: RUNBOOK.md metadata
-    rb_path = Path.home() / "agents" / "ibkr-bridge" / "RUNBOOK.md"
+    rb_path = Path(__file__).resolve().parent / "RUNBOOK.md"
     if rb_path.exists():
         runbook_info = {
             "exists": True,

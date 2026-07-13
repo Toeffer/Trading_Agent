@@ -12,6 +12,7 @@ TESTS=(
   tests/test_strategy_autonomy_docs.py
   tests/test_kpi_dashboard.py
   tests/test_phase17c_level1_strategy_v1_dry_run_proposal_generation_checkpoint.py
+  tests/test_phase17d_level1_proposal_review_rejection_dossier_checkpoint.py
 )
 
 echo "==> Portable CI"

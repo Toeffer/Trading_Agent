@@ -26963,8 +26963,9 @@ _PHASE17A_EXPLICIT_NON_ACTIONS: list[str] = [
 
 _PHASE17B_EXPORT_DIR = OPENCLAW_DIR / "level1-strategy-v1-proposal-packet-schema-checkpoints"
 
-_PROPOSAL_PACKET_DOC_PATH = BRIDGE_DIR / "docs" / "proposal_packet_v1.md"
-_PROPOSAL_PACKET_SCHEMA_PATH = BRIDGE_DIR / "docs" / "proposal_packet_v1.schema.json"
+_PHASE17_REPO_ROOT = Path(__file__).resolve().parent
+_PROPOSAL_PACKET_DOC_PATH = _PHASE17_REPO_ROOT / "docs" / "proposal_packet_v1.md"
+_PROPOSAL_PACKET_SCHEMA_PATH = _PHASE17_REPO_ROOT / "docs" / "proposal_packet_v1.schema.json"
 
 _PHASE17B_DIAGNOSIS = {
     "ready": "level1_strategy_v1_proposal_packet_schema_ok",
@@ -38140,9 +38141,9 @@ def _run_level1_strategy_v1_dry_run_proposal_generation_checkpoint(audit_source:
     hold_blockers = [b for b in kpi_blockers if b.get("severity") == "HOLD"]
     kpi_hold_only_system_locked = (kpi_verdict == "HOLD" and len(no_go_blockers) == 0 and any(b.get("check") == "system_locked" for b in hold_blockers))
     # Governance docs check
-    strategy_doc_present = (BRIDGE_DIR / "docs" / "strategy_v1.md").exists()
-    proposal_doc_present = (BRIDGE_DIR / "docs" / "proposal_packet_v1.md").exists()
-    schema_present = (BRIDGE_DIR / "docs" / "proposal_packet_v1.schema.json").exists()
+    strategy_doc_present = (_PHASE17_REPO_ROOT / "docs" / "strategy_v1.md").exists()
+    proposal_doc_present = _PROPOSAL_PACKET_DOC_PATH.exists()
+    schema_present = _PROPOSAL_PACKET_SCHEMA_PATH.exists()
     governance_docs_ok = strategy_doc_present and proposal_doc_present and schema_present
     # Synthetic fixtures
     syn_generate = _synthetic_fixture_generate_valid_proposal_17c()

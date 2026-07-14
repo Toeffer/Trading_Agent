@@ -15,6 +15,7 @@ TESTS=(
   tests/test_phase17d_level1_proposal_review_rejection_dossier_checkpoint.py
   tests/test_phase17e_level1_human_review_decision_record_checkpoint.py
   tests/test_phase17f_level1_planning_only_order_plan_draft_checkpoint.py
+  tests/test_phase17g_level1_planning_only_preflight_simulation_dossier_checkpoint.py
 )
 
 echo "==> Portable CI"

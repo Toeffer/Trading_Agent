@@ -27314,6 +27314,82 @@ _PHASE17F_EXPLICIT_NON_ACTIONS: list[str] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Phase 17G — Level 1 Planning-Only Preflight Simulation Dossier Checkpoint
+# ---------------------------------------------------------------------------
+
+_PHASE17G_EXPORT_DIR = OPENCLAW_DIR / "level1-planning-only-preflight-simulation-dossier-checkpoints"
+
+_PHASE17G_DIAGNOSIS = {
+    "ready": "level1_planning_only_preflight_simulation_dossier_ok",
+    "git_worktree_dirty": "git_worktree_dirty",
+    "bridge_unreachable": "bridge_unreachable",
+    "runtime_not_connected": "runtime_not_connected",
+    "mode_not_paper": "mode_not_paper",
+    "read_only_not_true": "read_only_not_true",
+    "allow_orders_not_false": "allow_orders_not_false",
+    "endpoints_not_ok": "endpoints_not_ok",
+    "positions_not_flat": "positions_not_flat",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "kpi_not_hold_system_locked": "kpi_not_hold_system_locked",
+    "simulation_ready_case_failed": "simulation_ready_case_failed",
+    "blocked_plan_blocked_case_failed": "blocked_plan_blocked_case_failed",
+    "executable_false_case_failed": "executable_false_case_failed",
+    "broker_authorized_false_case_failed": "broker_authorized_false_case_failed",
+    "preflight_authorized_false_case_failed": "preflight_authorized_false_case_failed",
+    "approval_authorized_false_case_failed": "approval_authorized_false_case_failed",
+    "submission_authorized_false_case_failed": "submission_authorized_false_case_failed",
+    "broker_preflight_called_false_case_failed": "broker_preflight_called_false_case_failed",
+    "hash_mismatch_blocked_case_failed": "hash_mismatch_blocked_case_failed",
+    "disallowed_instrument_blocked_case_failed": "disallowed_instrument_blocked_case_failed",
+    "invalid_side_blocked_case_failed": "invalid_side_blocked_case_failed",
+    "invalid_quantity_blocked_case_failed": "invalid_quantity_blocked_case_failed",
+    "stop_below_entry_case_failed": "stop_below_entry_case_failed",
+    "stop_quantity_match_case_failed": "stop_quantity_match_case_failed",
+    "data_quality_fail_blocked_case_failed": "data_quality_fail_blocked_case_failed",
+    "no_trade_fail_blocked_case_failed": "no_trade_fail_blocked_case_failed",
+    "deterministic_case_failed": "deterministic_case_failed",
+    "read_only_invariant_case_failed": "read_only_invariant_case_failed",
+    "fresh_clone_case_failed": "fresh_clone_case_failed",
+    "full_chain_case_failed": "full_chain_case_failed",
+    "unknown": "unknown",
+}
+
+_PHASE17G_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not call /connect.",
+    "This command did not call ibkr-trade-window.",
+    "This command did not call any broker mutation endpoint.",
+    "This command did not create broker orders.",
+    "This command did not submit orders.",
+    "This command did not cancel/modify orders.",
+    "This command did not mutate account state.",
+    "This command did not mutate position state.",
+    "This command did not open an order window.",
+    "This command did not read/use H1 token.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "This command did not call trade-window helper in any mode.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not change autonomy level.",
+    "This command did not call any mutation endpoint.",
+    "This command did not read ~/.openclaw from pure tests.",
+    "This command never read the raw H1 token file from pure tests.",
+    "Only allowed writes are export/simulated-preflight-dossier artifacts.",
+    "This checkpoint simulates preflight checks locally from immutable evidence without calling any broker preflight endpoint, enabling orders, using H1, or opening an order window.",
+    "Synthetic fixture tests use in-memory data only — never require real IBKR Gateway, systemd, ~/.openclaw, or H1 token.",
+    "All simulated preflight dossiers produced are advisory-only, non-executable, and non-authorized.",
+    "SIMULATION_READY means a simulated preflight passed local checks for human review; it does not authorize broker execution, preflight, approval, or submission.",
+]
+
+
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
     decision_mode: str = "mixed_demo",
@@ -39691,6 +39767,790 @@ def _synthetic_fixture_full_chain_non_executable_17f() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Phase 17G — Planning-Only Preflight Simulation Dossier
+# ---------------------------------------------------------------------------
+
+
+def _build_ready_plan_draft() -> dict:
+    """Helper: build a PLANNING_DRAFT_READY order-plan draft for fixture tests."""
+    decision = _build_accepted_decision_record()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    dossier = _review_proposal_dossier(proposal)
+    decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+    decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+    return _create_order_plan_draft(decision, proposal, dossier)
+
+
+def _build_blocked_plan_draft() -> dict:
+    """Helper: build a BLOCKED order-plan draft (TSLA)."""
+    decision = _build_accepted_decision_record()
+    bars = _generate_synthetic_ohlc_bars("TSLA", 30)
+    proposal = _generate_proposal_packet("TSLA", bars)
+    decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+    return _create_order_plan_draft(decision, proposal)
+
+
+def _create_simulated_preflight_dossier(
+    order_plan_draft: dict,
+    proposal: dict,
+    dossier: dict | None = None,
+    decision_record: dict | None = None,
+) -> dict:
+    """Create a deterministic simulated-preflight dossier from a Phase 17F order-plan draft.
+
+    Simulates preflight checks locally from immutable evidence.
+    Never calls the broker preflight endpoint or creates execution authority.
+
+    States: SIMULATION_READY, BLOCKED, PENDING_INPUT
+
+    Only a Phase 17F draft with plan_state PLANNING_DRAFT_READY and all auth
+    fields false may produce SIMULATION_READY.
+    """
+    import hashlib
+    import json as _json
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    date_str = now_utc.strftime("%Y%m%d")
+
+    pid = order_plan_draft.get("proposal_id", "unknown")
+    sim_id = f"simpre-{date_str}-{pid}"
+
+    allowed_symbols = {"AAPL", "META", "NVDA", "AMD"}
+
+    # ---- Extract plan draft fields ----
+    plan_state = order_plan_draft.get("plan_state", "UNKNOWN")
+    planning_scope = order_plan_draft.get("planning_scope", "")
+    plan_executable = order_plan_draft.get("executable", None)
+    plan_broker_authorized = order_plan_draft.get("broker_authorized", None)
+    plan_preflight_authorized = order_plan_draft.get("preflight_authorized", None)
+    plan_approval_authorized = order_plan_draft.get("approval_authorized", None)
+    plan_submission_authorized = order_plan_draft.get("submission_authorized", None)
+    order_plan_hash = order_plan_draft.get("deterministic_plan_hash", "")
+    proposal_evidence_hash_from_plan = order_plan_draft.get("proposal_evidence_hash", "")
+    dossier_evidence_hash_from_plan = order_plan_draft.get("dossier_evidence_hash", "")
+    decision_record_hash_from_plan = order_plan_draft.get("decision_record_hash", "")
+    strategy_version = order_plan_draft.get("strategy_version", "unknown")
+    symbol = order_plan_draft.get("symbol", "UNKNOWN")
+    side = order_plan_draft.get("side", "UNKNOWN")
+    quantity = order_plan_draft.get("quantity", 0)
+    reviewer = order_plan_draft.get("reviewer_identifier", "")
+
+    # ---- Extract plan sub-fields ----
+    entry_plan = order_plan_draft.get("entry_plan", {})
+    stop_exit_plan = order_plan_draft.get("stop_exit_plan", {})
+    bracket_sim = order_plan_draft.get("bracket_simulation", {})
+    tif_plan = order_plan_draft.get("time_in_force_plan", {})
+    risk_summary = order_plan_draft.get("risk_summary", {})
+    sizing_calc = order_plan_draft.get("sizing_calculation", {})
+    dq_ref = order_plan_draft.get("data_quality_reference", {})
+    nt_ref = order_plan_draft.get("no_trade_checklist_reference", {})
+
+    # ---- Proposal fields (cross-verify) ----
+    proposal_evidence_hash = proposal.get("evidence_hash", "")
+    prop_risk = proposal.get("risk_envelope_check", {})
+    prop_sizing = proposal.get("sizing_calculation", {})
+    prop_stop = proposal.get("stop_exit_plan", {})
+    prop_bracket = proposal.get("bracket_simulation", {})
+    prop_dq = proposal.get("data_quality", {})
+    prop_nt = proposal.get("no_trade_checklist", {})
+
+    # ---- Build explicit non-actions ----
+    explicit_non_actions = [
+        "This simulated preflight dossier does not authorize any broker order.",
+        "This simulated preflight dossier does not authorize broker preflight.",
+        "This simulated preflight dossier does not authorize order execution.",
+        "This simulated preflight dossier does not authorize order approval.",
+        "This simulated preflight dossier does not authorize order submission.",
+        "This simulated preflight dossier does not authorize H1 token usage.",
+        "This simulated preflight dossier does not enable orders.",
+        "This simulated preflight dossier does not mutate broker state.",
+        "This simulated preflight dossier does not mutate guard state.",
+        "SIMULATION_READY means local simulation passed for human review; it is not broker preflight authorization.",
+        "This is a PLANNING_ONLY simulation. It does not predict actual broker acceptance.",
+    ]
+
+    # ---- Build blocker list (deterministic ordering) ----
+    blockers: list[dict] = []
+
+    # -- Validate plan draft --
+    oph_valid = bool(order_plan_hash and len(order_plan_hash) == 64
+                     and all(c in "0123456789abcdef" for c in order_plan_hash))
+    if not oph_valid:
+        blockers.append({
+            "blocker": "invalid_order_plan_hash",
+            "detail": f"Order-plan hash is missing or invalid: '{order_plan_hash}'",
+            "severity": "HARD_BLOCK",
+        })
+
+    # 1. Plan state must be PLANNING_DRAFT_READY
+    if plan_state != "PLANNING_DRAFT_READY":
+        blockers.append({
+            "blocker": "plan_not_ready",
+            "detail": f"Order-plan state is '{plan_state}', must be PLANNING_DRAFT_READY.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # 2. planning_scope must be PLANNING_ONLY
+    if planning_scope != "PLANNING_ONLY":
+        blockers.append({
+            "blocker": "scope_not_planning_only",
+            "detail": f"Planning scope is '{planning_scope}', must be PLANNING_ONLY.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # 3-7. All auth fields must be false
+    auth_checks = [
+        ("executable", plan_executable),
+        ("broker_authorized", plan_broker_authorized),
+        ("preflight_authorized", plan_preflight_authorized),
+        ("approval_authorized", plan_approval_authorized),
+        ("submission_authorized", plan_submission_authorized),
+    ]
+    for field_name, value in auth_checks:
+        if value is not False:
+            blockers.append({
+                "blocker": f"{field_name}_not_false",
+                "detail": f"Plan has {field_name}={value}, must be false.",
+                "severity": "HARD_BLOCK",
+            })
+
+    # -- Evidence hash validation --
+    peh_valid = bool(proposal_evidence_hash and len(proposal_evidence_hash) == 64
+                     and all(c in "0123456789abcdef" for c in proposal_evidence_hash))
+    deh_valid = bool(dossier_evidence_hash_from_plan and len(dossier_evidence_hash_from_plan) == 64
+                     and all(c in "0123456789abcdef" for c in dossier_evidence_hash_from_plan))
+    drh_valid = bool(decision_record_hash_from_plan and len(decision_record_hash_from_plan) == 64
+                     and all(c in "0123456789abcdef" for c in decision_record_hash_from_plan))
+
+    if not peh_valid:
+        blockers.append({
+            "blocker": "invalid_proposal_evidence_hash",
+            "detail": f"Proposal evidence hash missing or invalid.",
+            "severity": "HARD_BLOCK",
+        })
+    if not deh_valid:
+        blockers.append({
+            "blocker": "invalid_dossier_evidence_hash",
+            "detail": f"Dossier evidence hash missing or invalid.",
+            "severity": "HARD_BLOCK",
+        })
+    if not drh_valid:
+        blockers.append({
+            "blocker": "invalid_decision_record_hash",
+            "detail": f"Decision record hash missing or invalid.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # -- Cross-verify hashes against proposal --
+    if peh_valid and proposal_evidence_hash_from_plan != proposal_evidence_hash:
+        blockers.append({
+            "blocker": "proposal_evidence_hash_mismatch",
+            "detail": f"Plan proposal hash does not match actual proposal hash.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # -- Cross-verify dossier hash if provided --
+    if dossier is not None and deh_valid:
+        actual_dossier_hash = dossier.get("evidence_hash", "")
+        if actual_dossier_hash and actual_dossier_hash != dossier_evidence_hash_from_plan:
+            blockers.append({
+                "blocker": "dossier_evidence_hash_mismatch",
+                "detail": f"Plan dossier hash does not match actual dossier hash.",
+                "severity": "HARD_BLOCK",
+            })
+
+    # -- Cross-verify decision record hash if provided --
+    if decision_record is not None and drh_valid:
+        actual_dr_hash = decision_record.get("deterministic_record_hash", "")
+        if actual_dr_hash and actual_dr_hash != decision_record_hash_from_plan:
+            blockers.append({
+                "blocker": "decision_record_hash_mismatch",
+                "detail": f"Plan decision-record hash does not match actual decision record hash.",
+                "severity": "HARD_BLOCK",
+            })
+
+    # -- Instrument check --
+    if symbol not in allowed_symbols:
+        blockers.append({
+            "blocker": "disallowed_instrument",
+            "detail": f"Symbol '{symbol}' not in allowed list ({', '.join(sorted(allowed_symbols))}).",
+            "severity": "HARD_BLOCK",
+        })
+
+    # -- Side validation --
+    if side not in ("BUY", "SELL"):
+        blockers.append({
+            "blocker": "invalid_side",
+            "detail": f"Side '{side}' is invalid. Must be BUY or SELL.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # -- Quantity validation --
+    if not isinstance(quantity, int) or quantity <= 0:
+        blockers.append({
+            "blocker": "invalid_quantity",
+            "detail": f"Quantity '{quantity}' must be a positive integer.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # -- Simulated gate results (deterministic ordering) --
+    entry_price = entry_plan.get("entry_price", 0)
+
+    # Gate: contract assumptions
+    contract_ok = symbol in allowed_symbols
+    contract_assumptions = {
+        "symbol": symbol,
+        "exchange": "SMART",
+        "currency": "USD",
+        "security_type": "STK",
+        "contract_assumed_valid": contract_ok,
+        "note": "Contract not verified against IBKR; simulated from evidence only.",
+    }
+
+    # Gate: market data assumptions
+    market_data_assumptions = {
+        "bar_data_source": "Phase 17C synthetic OHLC",
+        "quote_source": "simulated",
+        "market_data_freshness": "derived from Phase 17C evidence",
+        "note": "No live market data accessed. All values from immutable evidence.",
+    }
+
+    # Gate: data quality
+    dq_overall = dq_ref.get("overall", "FAIL")
+    dq_check_ok = dq_overall == "PASS"
+    data_quality_check = {
+        "plan_dq_overall": dq_overall,
+        "proposal_dq_overall": prop_dq.get("overall", "FAIL"),
+        "bar_data_ok": dq_ref.get("bar_data_ok"),
+        "atr_ok": dq_ref.get("atr_ok"),
+        "sma_ok": dq_ref.get("sma_ok"),
+        "contract_lookup_ok": dq_ref.get("contract_lookup_ok"),
+        "passed": dq_check_ok,
+    }
+    if not dq_check_ok:
+        blockers.append({
+            "blocker": "data_quality_failed",
+            "detail": f"Data quality check failed (overall={dq_overall}).",
+            "severity": "HARD_BLOCK",
+        })
+
+    # Gate: instrument check
+    instrument_check = {
+        "symbol": symbol,
+        "in_allowlist": symbol in allowed_symbols,
+        "symbol_length_ok": 1 <= len(symbol) <= 5,
+        "passed": symbol in allowed_symbols,
+    }
+
+    # Gate: quantity check
+    quantity_check = {
+        "quantity": quantity,
+        "is_positive_integer": isinstance(quantity, int) and quantity > 0,
+        "max_allowlist_shares": sizing_calc.get("allowlist_max_shares"),
+        "within_allowlist_max": isinstance(quantity, int) and quantity <= (sizing_calc.get("allowlist_max_shares") or 200),
+        "passed": isinstance(quantity, int) and quantity > 0,
+    }
+
+    # Gate: protective stop
+    initial_stop = stop_exit_plan.get("initial_stop_loss", 0)
+    stop_below_entry = isinstance(initial_stop, (int, float)) and initial_stop > 0 and initial_stop < entry_price
+    protective_stop_check = {
+        "initial_stop_loss": initial_stop,
+        "entry_price": entry_price,
+        "stop_below_entry": stop_below_entry,
+        "stop_distance": sizing_calc.get("stop_distance"),
+        "stop_distance_pct": sizing_calc.get("stop_distance_pct"),
+        "passed": stop_below_entry,
+    }
+    if side == "BUY" and not stop_below_entry:
+        blockers.append({
+            "blocker": "protective_stop_failed",
+            "detail": f"BUY requires protective stop below entry. Stop={initial_stop}, Entry={entry_price}.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # Gate: stop quantity match
+    stop_qty = bracket_sim.get("child_stop_quantity", quantity)
+    stop_qty_ok = stop_qty == quantity
+    stop_quantity_check = {
+        "planned_quantity": quantity,
+        "stop_quantity": stop_qty,
+        "match": stop_qty_ok,
+        "passed": stop_qty_ok,
+    }
+    if side == "BUY" and not stop_qty_ok:
+        blockers.append({
+            "blocker": "stop_quantity_mismatch",
+            "detail": f"Stop quantity ({stop_qty}) != planned quantity ({quantity}).",
+            "severity": "HARD_BLOCK",
+        })
+
+    # Gate: risk envelope
+    risk_notional_ok = risk_summary.get("notional_ok", False)
+    risk_risk_ok = risk_summary.get("risk_ok", False)
+    risk_exposure_ok = risk_summary.get("total_exposure_ok", False)
+    risk_passed = risk_notional_ok and risk_risk_ok and risk_exposure_ok
+    risk_envelope_check = {
+        "notional_ok": risk_notional_ok,
+        "risk_ok": risk_risk_ok,
+        "total_exposure_ok": risk_exposure_ok,
+        "net_liquidation_eur": risk_summary.get("net_liquidation_eur"),
+        "proposed_notional_eur": risk_summary.get("proposed_notional_eur"),
+        "proposed_risk_eur": risk_summary.get("proposed_risk_eur"),
+        "passed": risk_passed,
+    }
+    if not risk_passed:
+        blockers.append({
+            "blocker": "risk_envelope_failed",
+            "detail": f"Risk envelope check failed. Notional OK={risk_notional_ok}, Risk OK={risk_risk_ok}, Exposure OK={risk_exposure_ok}.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # Gate: sizing consistency (cross-verify plan vs proposal)
+    plan_final_shares = sizing_calc.get("final_shares", 0)
+    prop_final_shares = prop_sizing.get("final_shares", 0)
+    sizing_consistent = plan_final_shares == prop_final_shares and plan_final_shares == quantity
+    sizing_consistency_check = {
+        "plan_final_shares": plan_final_shares,
+        "proposal_final_shares": prop_final_shares,
+        "plan_quantity": quantity,
+        "consistent": sizing_consistent,
+        "passed": sizing_consistent,
+    }
+    if not sizing_consistent:
+        blockers.append({
+            "blocker": "sizing_inconsistency",
+            "detail": f"Plan shares ({plan_final_shares}) / proposal shares ({prop_final_shares}) / quantity ({quantity}) mismatch.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # Gate: no-trade checklist
+    nt_overall = nt_ref.get("overall", "FAIL")
+    nt_ok = nt_overall == "PASS"
+    no_trade_check = {
+        "plan_nt_overall": nt_overall,
+        "proposal_nt_overall": prop_nt.get("overall", "FAIL"),
+        "ibkr_allow_orders_false": nt_ref.get("ibkr_allow_orders_false"),
+        "system_locked": nt_ref.get("system_locked"),
+        "daily_trade_count_ok": nt_ref.get("daily_trade_count_ok"),
+        "symbol_in_allowlist": nt_ref.get("symbol_in_allowlist"),
+        "passed": nt_ok,
+    }
+    if not nt_ok:
+        blockers.append({
+            "blocker": "no_trade_checklist_failed",
+            "detail": f"No-trade checklist failed (overall={nt_overall}).",
+            "severity": "HARD_BLOCK",
+        })
+
+    # Gate: evidence chain integrity
+    eci_ok = peh_valid and deh_valid and drh_valid and oph_valid
+    evidence_chain_check = {
+        "proposal_hash_valid": peh_valid,
+        "dossier_hash_valid": deh_valid,
+        "decision_hash_valid": drh_valid,
+        "plan_hash_valid": oph_valid,
+        "chain_intact": eci_ok,
+        "passed": eci_ok,
+    }
+
+    # ---- Compile simulated gate results ----
+    simulated_gate_results = {
+        "contract_assumptions": contract_assumptions,
+        "market_data_assumptions": market_data_assumptions,
+        "data_quality_check": data_quality_check,
+        "instrument_check": instrument_check,
+        "quantity_check": quantity_check,
+        "protective_stop_check": protective_stop_check,
+        "stop_quantity_check": stop_quantity_check,
+        "risk_envelope_check": risk_envelope_check,
+        "sizing_consistency_check": sizing_consistency_check,
+        "no_trade_check": no_trade_check,
+        "evidence_chain_check": evidence_chain_check,
+        "all_gates_passed": len(blockers) == 0,
+    }
+
+    # ---- Determine simulation state ----
+    if len(blockers) > 0:
+        simulation_state = "BLOCKED"
+    else:
+        simulation_state = "SIMULATION_READY"
+
+    # ---- Build simulated preflight dossier ----
+    sim_dossier = {
+        "simulation_record_version": "simulated-preflight-dossier-v1.0.0",
+        "simulation_state": simulation_state,
+        "simulation_id": sim_id,
+        "proposal_id": pid,
+        "proposal_evidence_hash": proposal_evidence_hash_from_plan,
+        "dossier_evidence_hash": dossier_evidence_hash_from_plan,
+        "decision_record_hash": decision_record_hash_from_plan,
+        "order_plan_hash": order_plan_hash,
+        "strategy_version": strategy_version,
+        "symbol": symbol,
+        "side": side,
+        "quantity": quantity,
+        "simulated_entry": {
+            "entry_price": entry_price,
+            "entry_method": entry_plan.get("entry_method", "strategy-v1-MKT"),
+            "note": "Simulated entry from Phase 17F plan; no live market data accessed.",
+        },
+        "simulated_stop": {
+            "initial_stop_loss": initial_stop,
+            "stop_type": stop_exit_plan.get("stop_type", "STP"),
+            "chosen_stop": stop_exit_plan.get("chosen_stop"),
+            "stop_candidates": stop_exit_plan.get("stop_candidates", {}),
+            "invalidations": stop_exit_plan.get("invalidations", []),
+        },
+        "simulated_stop_quantity": stop_qty,
+        "simulated_time_in_force": {
+            "tif": tif_plan.get("tif", "DAY"),
+            "note": "Simulated TIF; not submitted to broker.",
+        },
+        "contract_assumptions": contract_assumptions,
+        "market_data_assumptions": market_data_assumptions,
+        "data_quality_check": data_quality_check,
+        "instrument_check": instrument_check,
+        "quantity_check": quantity_check,
+        "protective_stop_check": protective_stop_check,
+        "stop_quantity_check": stop_quantity_check,
+        "risk_envelope_check": risk_envelope_check,
+        "sizing_consistency_check": sizing_consistency_check,
+        "no_trade_check": no_trade_check,
+        "evidence_chain_check": evidence_chain_check,
+        "simulated_gate_results": simulated_gate_results,
+        "blockers": blockers,
+        "blocker_count": len(blockers),
+        "planning_scope": "PLANNING_ONLY",
+        "executable": False,
+        "broker_authorized": False,
+        "preflight_authorized": False,
+        "approval_authorized": False,
+        "submission_authorized": False,
+        "broker_preflight_called": False,
+        "immutable_evidence_references": {
+            "proposal_evidence_hash": proposal_evidence_hash_from_plan,
+            "dossier_evidence_hash": dossier_evidence_hash_from_plan,
+            "decision_record_hash": decision_record_hash_from_plan,
+            "order_plan_hash": order_plan_hash,
+            "strategy_version_ref": "docs/strategy_v1.md v1.0.0",
+            "proposal_schema_ref": "docs/proposal_packet_v1.md",
+            "dossier_ref": "Phase 17D review dossier",
+            "decision_record_ref": "Phase 17E decision record",
+            "plan_ref": "Phase 17F order-plan draft",
+            "simulation_ref": "Phase 17G simulated preflight dossier",
+        },
+        "explicit_non_actions": explicit_non_actions,
+        "simulation_timestamp": ts_str,
+    }
+
+    # ---- Compute deterministic simulation hash ----
+    canonical = _json.dumps({k: v for k, v in sim_dossier.items() if k != "deterministic_simulation_hash"},
+                            sort_keys=True, separators=(",", ":"))
+    sim_dossier["deterministic_simulation_hash"] = hashlib.sha256(canonical.encode()).hexdigest()
+
+    return sim_dossier
+
+
+# ---------------------------------------------------------------------------
+# Phase 17G synthetic fixtures
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_fixture_simulation_ready_17g() -> dict:
+    """Case 1: Valid PLANNING_DRAFT_READY plan → SIMULATION_READY."""
+    plan = _build_ready_plan_draft()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    dossier = _review_proposal_dossier(proposal)
+    decision = _build_accepted_decision_record()
+    decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+    decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+    sim = _create_simulated_preflight_dossier(plan, proposal, dossier, decision)
+    state_ok = sim.get("simulation_state") == "SIMULATION_READY"
+    non_exec = sim.get("executable") is False
+    broker_auth_false = sim.get("broker_authorized") is False
+    preflight_called_false = sim.get("broker_preflight_called") is False
+    has_hash = len(sim.get("deterministic_simulation_hash", "")) == 64
+    passed = state_ok and non_exec and broker_auth_false and preflight_called_false and has_hash
+    return {
+        "passed": passed,
+        "case": "simulation_ready_17g",
+        "simulation_state": sim.get("simulation_state"),
+        "executable": sim.get("executable"),
+        "broker_authorized": sim.get("broker_authorized"),
+        "broker_preflight_called": sim.get("broker_preflight_called"),
+    }
+
+
+def _synthetic_fixture_blocked_plan_blocked_17g() -> dict:
+    """Case 2: BLOCKED order-plan draft → BLOCKED."""
+    plan = _build_blocked_plan_draft()
+    bars = _generate_synthetic_ohlc_bars("TSLA", 30)
+    proposal = _generate_proposal_packet("TSLA", bars)
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    blocked = sim.get("simulation_state") == "BLOCKED"
+    has_blocker = any("plan_not_ready" in b.get("blocker", "")
+                      for b in sim.get("blockers", []))
+    passed = blocked and has_blocker
+    return {
+        "passed": passed,
+        "case": "blocked_plan_blocked_17g",
+        "simulation_state": sim.get("simulation_state"),
+    }
+
+
+def _synthetic_fixture_executable_false_17g() -> dict:
+    """Case 3: SIMULATION_READY has executable=false."""
+    plan = _build_ready_plan_draft()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    passed = sim.get("executable") is False
+    return {"passed": passed, "case": "executable_false_17g", "executable": sim.get("executable")}
+
+
+def _synthetic_fixture_broker_authorized_false_17g() -> dict:
+    """Case 4: SIMULATION_READY has broker_authorized=false."""
+    plan = _build_ready_plan_draft()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    passed = sim.get("broker_authorized") is False
+    return {"passed": passed, "case": "broker_authorized_false_17g", "broker_authorized": sim.get("broker_authorized")}
+
+
+def _synthetic_fixture_preflight_authorized_false_17g() -> dict:
+    """Case 5: SIMULATION_READY has preflight_authorized=false."""
+    plan = _build_ready_plan_draft()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    passed = sim.get("preflight_authorized") is False
+    return {"passed": passed, "case": "preflight_authorized_false_17g", "preflight_authorized": sim.get("preflight_authorized")}
+
+
+def _synthetic_fixture_approval_authorized_false_17g() -> dict:
+    """Case 6: SIMULATION_READY has approval_authorized=false."""
+    plan = _build_ready_plan_draft()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    passed = sim.get("approval_authorized") is False
+    return {"passed": passed, "case": "approval_authorized_false_17g", "approval_authorized": sim.get("approval_authorized")}
+
+
+def _synthetic_fixture_submission_authorized_false_17g() -> dict:
+    """Case 7: SIMULATION_READY has submission_authorized=false."""
+    plan = _build_ready_plan_draft()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    passed = sim.get("submission_authorized") is False
+    return {"passed": passed, "case": "submission_authorized_false_17g", "submission_authorized": sim.get("submission_authorized")}
+
+
+def _synthetic_fixture_broker_preflight_called_false_17g() -> dict:
+    """Case 8: SIMULATION_READY has broker_preflight_called=false."""
+    plan = _build_ready_plan_draft()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    passed = sim.get("broker_preflight_called") is False
+    return {"passed": passed, "case": "broker_preflight_called_false_17g", "broker_preflight_called": sim.get("broker_preflight_called")}
+
+
+def _synthetic_fixture_hash_mismatch_blocked_17g() -> dict:
+    """Case 9: Evidence hash mismatch → BLOCKED."""
+    plan = _build_ready_plan_draft()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    # Tamper the plan's proposal hash
+    plan["proposal_evidence_hash"] = "0" * 64
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    blocked = sim.get("simulation_state") == "BLOCKED"
+    has_mismatch = any("hash_mismatch" in b.get("blocker", "")
+                       for b in sim.get("blockers", []))
+    passed = blocked and has_mismatch
+    return {"passed": passed, "case": "hash_mismatch_blocked_17g", "simulation_state": sim.get("simulation_state")}
+
+
+def _synthetic_fixture_disallowed_instrument_blocked_17g() -> dict:
+    """Case 10: Disallowed instrument → BLOCKED."""
+    plan = _build_ready_plan_draft()
+    # Tamper the plan symbol to TSLA
+    plan["symbol"] = "TSLA"
+    bars = _generate_synthetic_ohlc_bars("TSLA", 30)
+    proposal = _generate_proposal_packet("TSLA", bars)
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    blocked = sim.get("simulation_state") == "BLOCKED"
+    has_disallowed = any("disallowed_instrument" in b.get("blocker", "")
+                         for b in sim.get("blockers", []))
+    passed = blocked and has_disallowed
+    return {"passed": passed, "case": "disallowed_instrument_blocked_17g", "simulation_state": sim.get("simulation_state")}
+
+
+def _synthetic_fixture_invalid_side_blocked_17g() -> dict:
+    """Case 11: Invalid side → BLOCKED."""
+    plan = _build_ready_plan_draft()
+    plan["side"] = "SHORT"
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    blocked = sim.get("simulation_state") == "BLOCKED"
+    has_side = any("invalid_side" in b.get("blocker", "")
+                   for b in sim.get("blockers", []))
+    passed = blocked and has_side
+    return {"passed": passed, "case": "invalid_side_blocked_17g", "simulation_state": sim.get("simulation_state")}
+
+
+def _synthetic_fixture_invalid_quantity_blocked_17g() -> dict:
+    """Case 12: Invalid quantity → BLOCKED."""
+    plan = _build_ready_plan_draft()
+    plan["quantity"] = 0
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    blocked = sim.get("simulation_state") == "BLOCKED"
+    has_qty = any("invalid_quantity" in b.get("blocker", "")
+                  for b in sim.get("blockers", []))
+    passed = blocked and has_qty
+    return {"passed": passed, "case": "invalid_quantity_blocked_17g", "simulation_state": sim.get("simulation_state")}
+
+
+def _synthetic_fixture_stop_below_entry_blocked_17g() -> dict:
+    """Case 13: Stop above entry → BLOCKED."""
+    plan = _build_ready_plan_draft()
+    plan["stop_exit_plan"]["initial_stop_loss"] = plan["entry_plan"]["entry_price"] + 10
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    blocked = sim.get("simulation_state") == "BLOCKED"
+    has_stop = any("protective_stop_failed" in b.get("blocker", "")
+                   for b in sim.get("blockers", []))
+    passed = blocked and has_stop
+    return {"passed": passed, "case": "stop_below_entry_blocked_17g", "simulation_state": sim.get("simulation_state")}
+
+
+def _synthetic_fixture_stop_quantity_mismatch_blocked_17g() -> dict:
+    """Case 14: Stop quantity mismatch → BLOCKED."""
+    plan = _build_ready_plan_draft()
+    plan["bracket_simulation"]["child_stop_quantity"] = plan["quantity"] + 100
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    blocked = sim.get("simulation_state") == "BLOCKED"
+    has_match = any("stop_quantity_mismatch" in b.get("blocker", "")
+                    for b in sim.get("blockers", []))
+    passed = blocked and has_match
+    return {"passed": passed, "case": "stop_quantity_mismatch_blocked_17g", "simulation_state": sim.get("simulation_state")}
+
+
+def _synthetic_fixture_data_quality_fail_blocked_17g() -> dict:
+    """Case 15: Failed data quality → BLOCKED."""
+    plan = _build_ready_plan_draft()
+    plan["data_quality_reference"]["overall"] = "FAIL"
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    blocked = sim.get("simulation_state") == "BLOCKED"
+    has_dq = any("data_quality_failed" in b.get("blocker", "")
+                 for b in sim.get("blockers", []))
+    passed = blocked and has_dq
+    return {"passed": passed, "case": "data_quality_fail_blocked_17g", "simulation_state": sim.get("simulation_state")}
+
+
+def _synthetic_fixture_no_trade_fail_blocked_17g() -> dict:
+    """Case 16: Failed no-trade checklist → BLOCKED."""
+    plan = _build_ready_plan_draft()
+    plan["no_trade_checklist_reference"]["overall"] = "FAIL"
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    sim = _create_simulated_preflight_dossier(plan, proposal)
+    blocked = sim.get("simulation_state") == "BLOCKED"
+    has_nt = any("no_trade_checklist_failed" in b.get("blocker", "")
+                 for b in sim.get("blockers", []))
+    passed = blocked and has_nt
+    return {"passed": passed, "case": "no_trade_fail_blocked_17g", "simulation_state": sim.get("simulation_state")}
+
+
+def _synthetic_fixture_deterministic_17g() -> dict:
+    """Case 17: Identical inputs produce identical simulation hash."""
+    plan = _build_ready_plan_draft()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    dossier = _review_proposal_dossier(proposal)
+    decision = _build_accepted_decision_record()
+    decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+    decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+    sim1 = _create_simulated_preflight_dossier(plan, proposal, dossier, decision)
+    sim2 = _create_simulated_preflight_dossier(plan, proposal, dossier, decision)
+    same_state = sim1.get("simulation_state") == sim2.get("simulation_state")
+    same_hash = sim1.get("deterministic_simulation_hash") == sim2.get("deterministic_simulation_hash")
+    passed = same_state and same_hash
+    return {"passed": passed, "case": "deterministic_17g", "same_state": same_state, "same_hash": same_hash}
+
+
+def _synthetic_fixture_read_only_invariant_17g() -> dict:
+    """Case 18: No forbidden endpoint references."""
+    import inspect
+    mutation_patterns = ["h1_token", "H1_TOKEN", "X-H1-Token", "/etc/ibkr-bridge/h1_token",
+                "sudo", "ibkr-trade-window", "/connect", "/order",
+                "/order/preflight", "/order/approve", "/order/submit"]
+    src = inspect.getsource(_create_simulated_preflight_dossier)
+    found = [p for p in mutation_patterns if p in src]
+    passed = len(found) == 0
+    return {"passed": passed, "case": "read_only_invariant_17g", "source_clean": len(found) == 0, "mutations_found": found}
+
+
+def _synthetic_fixture_fresh_clone_17g() -> dict:
+    """Case 19: Executes without HOME dependency."""
+    import inspect
+    src = inspect.getsource(_create_simulated_preflight_dossier)
+    forbidden = ["~/.openclaw", "Path.home()", "OPENCLAW_DIR", "getenv('HOME'"]
+    violations = [p for p in forbidden if p in src]
+    clean = len(violations) == 0
+    try:
+        plan = _build_ready_plan_draft()
+        bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+        proposal = _generate_proposal_packet("AAPL", bars)
+        sim = _create_simulated_preflight_dossier(plan, proposal)
+        runs_ok = sim is not None and "deterministic_simulation_hash" in sim
+    except Exception:
+        runs_ok = False
+    passed = clean and runs_ok
+    return {"passed": passed, "case": "fresh_clone_17g", "no_home_refs": clean, "runs": runs_ok}
+
+
+def _synthetic_fixture_full_chain_17g() -> dict:
+    """Case 20: Full 17C→17D→17E→17F→17G chain stays non-executable."""
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    dossier = _review_proposal_dossier(proposal)
+    decision = _create_decision_record(dossier, decision="ACCEPT", reviewer="Chris",
+                                       decision_reason="Full-chain 17G test.")
+    decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+    decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+    plan = _create_order_plan_draft(decision, proposal, dossier)
+    sim = _create_simulated_preflight_dossier(plan, proposal, dossier, decision)
+    all_non_exec = all([
+        plan.get("executable") is False,
+        sim.get("executable") is False,
+        sim.get("broker_authorized") is False,
+        sim.get("preflight_authorized") is False,
+        sim.get("approval_authorized") is False,
+        sim.get("submission_authorized") is False,
+        sim.get("broker_preflight_called") is False,
+        sim.get("planning_scope") == "PLANNING_ONLY",
+    ])
+    passed = all_non_exec and plan.get("plan_state") == "PLANNING_DRAFT_READY"
+    return {"passed": passed, "case": "full_chain_17g", "plan_ready": plan.get("plan_state") == "PLANNING_DRAFT_READY", "all_non_exec": all_non_exec}
+
+
+# ---------------------------------------------------------------------------
 # Phase 17B verification helpers
 # ---------------------------------------------------------------------------
 
@@ -41402,6 +42262,348 @@ def _print_level1_planning_only_order_plan_draft_checkpoint(result: dict) -> Non
     print()
 
 
+# ---------------------------------------------------------------------------
+# Phase 17G NO_GO builder
+# ---------------------------------------------------------------------------
+
+
+def _phase17g_no_go(checkpoint_id: str, ts_str: str, git_section: dict, diagnosis: str, actions: list[str], runtime: dict | None = None) -> dict:
+    """Build a NO_GO result for Phase 17G."""
+    return {
+        "command": "ibkr-operator level1-planning-only-preflight-simulation-dossier-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True, "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": git_section.get("worktree_clean", False),
+        "runtime": runtime or {"connected": False, "mode": "?", "read_only": False, "allow_orders": None, "endpoints_ok": False},
+        "runtime_connected": False, "mode": "?", "read_only": False,
+        "allow_orders": None, "endpoints_ok": False,
+        "positions_flat": False, "guard_state_clean": False,
+        "kpi_hold_only_system_locked": False,
+        "simulation_ready_case_passed": False,
+        "blocked_plan_blocked_case_passed": False,
+        "executable_false_case_passed": False,
+        "broker_authorized_false_case_passed": False,
+        "preflight_authorized_false_case_passed": False,
+        "approval_authorized_false_case_passed": False,
+        "submission_authorized_false_case_passed": False,
+        "broker_preflight_called_false_case_passed": False,
+        "hash_mismatch_blocked_case_passed": False,
+        "disallowed_instrument_blocked_case_passed": False,
+        "invalid_side_blocked_case_passed": False,
+        "invalid_quantity_blocked_case_passed": False,
+        "stop_below_entry_blocked_case_passed": False,
+        "stop_quantity_mismatch_blocked_case_passed": False,
+        "data_quality_fail_blocked_case_passed": False,
+        "no_trade_fail_blocked_case_passed": False,
+        "deterministic_case_passed": False,
+        "read_only_invariant_case_passed": False,
+        "fresh_clone_case_passed": False,
+        "full_chain_case_passed": False,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_connect_called": True, "no_broker_mutation": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17G_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False, "export_path": None,
+        "canonical_simulation_dossier": None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 17G checkpoint runner
+# ---------------------------------------------------------------------------
+
+
+def _run_level1_planning_only_preflight_simulation_dossier_checkpoint(audit_source: str = "synthetic_readonly_demo") -> dict:
+    """Run Phase 17G — Level 1 Planning-Only Preflight Simulation Dossier Checkpoint.
+
+    Consumes a Phase 17F PLANNING_DRAFT_READY order-plan draft and produces
+    a deterministic simulated-preflight dossier.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"17g-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+    repo_path = Path(__file__).resolve().parent
+    git_section = _git_metadata(repo_path)
+    worktree_state = _get_worktree_state(BRIDGE_DIR)
+    worktree_clean_state = worktree_state.get("clean", False)
+    git_section["worktree_clean"] = worktree_clean_state
+    git_section["worktree_dirty_files"] = worktree_state.get("dirty_files", [])
+    if not worktree_clean_state:
+        return _phase17g_no_go(checkpoint_id, ts_str, git_section, _PHASE17G_DIAGNOSIS["git_worktree_dirty"], ["Commit or stash dirty files before running this checkpoint."])
+    runtime_state = _snapshot_bridge_state(BRIDGE_URL)
+    rt_connected = runtime_state.get("connected", False)
+    rt_mode = runtime_state.get("mode", "?")
+    rt_read_only = runtime_state.get("read_only", False)
+    rt_allow_orders = runtime_state.get("allow_orders")
+    rt_endpoints_ok = runtime_state.get("endpoints_ok", False)
+    rt_positions_flat = runtime_state.get("positions_flat")
+    bridge_reachable = bool(runtime_state.get("mode", "?") != "?")
+    if not bridge_reachable:
+        return _phase17g_no_go(checkpoint_id, ts_str, git_section, _PHASE17G_DIAGNOSIS["bridge_unreachable"], ["Bridge is not reachable. Start ibkr-bridge.service."])
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_clean = gs_assessment["guard_state_clean"]
+    try:
+        gs_clean = bool(guard_state_clean)
+    except Exception:
+        gs_clean = False
+    if not gs_clean:
+        return _phase17g_no_go(checkpoint_id, ts_str, git_section, _PHASE17G_DIAGNOSIS["guard_state_not_clean"], ["Guard state is not clean. Run ibkr-operator guard-status."])
+    try:
+        kpi_status = _assess_kpi_hold_only_system_locked(now_utc)
+        kpi_ok = kpi_status.get("kpi_hold_only_system_locked", False)
+    except Exception:
+        kpi_ok = False
+    if not kpi_ok:
+        return _phase17g_no_go(checkpoint_id, ts_str, git_section, _PHASE17G_DIAGNOSIS["kpi_not_hold_system_locked"], ["KPI state is not HOLD only (system_locked)."])
+
+    severity = "OK"
+    actions: list[str] = []
+
+    if not rt_connected:
+        severity = "NO_GO"
+        actions.append("Bridge is not connected.")
+    if rt_mode != "paper":
+        severity = "NO_GO"
+        actions.append(f"Mode is {rt_mode}, expected paper.")
+    if rt_read_only is not True:
+        severity = "NO_GO"
+        actions.append("Read-only is not true.")
+    if rt_allow_orders is not False and rt_allow_orders is not None:
+        severity = "NO_GO"
+        actions.append(f"allow_orders is {rt_allow_orders}.")
+    if not rt_endpoints_ok:
+        severity = "NO_GO"
+        actions.append("Endpoints not all healthy.")
+    if rt_positions_flat is not True and rt_positions_flat is not None:
+        severity = "NO_GO"
+        actions.append("Positions are not flat.")
+
+    if severity == "NO_GO":
+        diagnosis_key = "runtime_not_connected" if not rt_connected else (
+            "mode_not_paper" if rt_mode != "paper" else (
+                "read_only_not_true" if rt_read_only is not True else (
+                    "allow_orders_not_false" if rt_allow_orders is not False and rt_allow_orders is not None else (
+                        "endpoints_not_ok" if not rt_endpoints_ok else (
+                            "positions_not_flat")))))
+        return _phase17g_no_go(checkpoint_id, ts_str, git_section, _PHASE17G_DIAGNOSIS.get(diagnosis_key, _PHASE17G_DIAGNOSIS["unknown"]), actions, runtime=runtime_state)
+
+    # ---- Run synthetic fixtures ----
+    syn_sr = _synthetic_fixture_simulation_ready_17g()
+    syn_bp = _synthetic_fixture_blocked_plan_blocked_17g()
+    syn_ef = _synthetic_fixture_executable_false_17g()
+    syn_bf = _synthetic_fixture_broker_authorized_false_17g()
+    syn_pf = _synthetic_fixture_preflight_authorized_false_17g()
+    syn_af = _synthetic_fixture_approval_authorized_false_17g()
+    syn_sf = _synthetic_fixture_submission_authorized_false_17g()
+    syn_bpc = _synthetic_fixture_broker_preflight_called_false_17g()
+    syn_hm = _synthetic_fixture_hash_mismatch_blocked_17g()
+    syn_di = _synthetic_fixture_disallowed_instrument_blocked_17g()
+    syn_iv = _synthetic_fixture_invalid_side_blocked_17g()
+    syn_iq = _synthetic_fixture_invalid_quantity_blocked_17g()
+    syn_sb = _synthetic_fixture_stop_below_entry_blocked_17g()
+    syn_sq = _synthetic_fixture_stop_quantity_mismatch_blocked_17g()
+    syn_dq = _synthetic_fixture_data_quality_fail_blocked_17g()
+    syn_nt = _synthetic_fixture_no_trade_fail_blocked_17g()
+    syn_det = _synthetic_fixture_deterministic_17g()
+    syn_ri = _synthetic_fixture_read_only_invariant_17g()
+    syn_fc = _synthetic_fixture_fresh_clone_17g()
+    syn_fce = _synthetic_fixture_full_chain_17g()
+
+    all_cases_passed = all([
+        syn_sr["passed"], syn_bp["passed"], syn_ef["passed"], syn_bf["passed"],
+        syn_pf["passed"], syn_af["passed"], syn_sf["passed"], syn_bpc["passed"],
+        syn_hm["passed"], syn_di["passed"], syn_iv["passed"], syn_iq["passed"],
+        syn_sb["passed"], syn_sq["passed"], syn_dq["passed"], syn_nt["passed"],
+        syn_det["passed"], syn_ri["passed"], syn_fc["passed"], syn_fce["passed"],
+    ])
+
+    diagnosis = _PHASE17G_DIAGNOSIS["ready"] if all_cases_passed else _PHASE17G_DIAGNOSIS["unknown"]
+    if not syn_sr["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["simulation_ready_case_failed"]; severity = "NO_GO"
+    if not syn_bp["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["blocked_plan_blocked_case_failed"]; severity = "NO_GO"
+    if not syn_ef["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["executable_false_case_failed"]; severity = "NO_GO"
+    if not syn_bf["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["broker_authorized_false_case_failed"]; severity = "NO_GO"
+    if not syn_pf["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["preflight_authorized_false_case_failed"]; severity = "NO_GO"
+    if not syn_af["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["approval_authorized_false_case_failed"]; severity = "NO_GO"
+    if not syn_sf["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["submission_authorized_false_case_failed"]; severity = "NO_GO"
+    if not syn_bpc["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["broker_preflight_called_false_case_failed"]; severity = "NO_GO"
+    if not syn_hm["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["hash_mismatch_blocked_case_failed"]; severity = "NO_GO"
+    if not syn_di["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["disallowed_instrument_blocked_case_failed"]; severity = "NO_GO"
+    if not syn_iv["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["invalid_side_blocked_case_failed"]; severity = "NO_GO"
+    if not syn_iq["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["invalid_quantity_blocked_case_failed"]; severity = "NO_GO"
+    if not syn_sb["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["stop_below_entry_case_failed"]; severity = "NO_GO"
+    if not syn_sq["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["stop_quantity_match_case_failed"]; severity = "NO_GO"
+    if not syn_dq["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["data_quality_fail_blocked_case_failed"]; severity = "NO_GO"
+    if not syn_nt["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["no_trade_fail_blocked_case_failed"]; severity = "NO_GO"
+    if not syn_det["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["deterministic_case_failed"]; severity = "NO_GO"
+    if not syn_ri["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["read_only_invariant_case_failed"]; severity = "NO_GO"
+    if not syn_fc["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["fresh_clone_case_failed"]; severity = "NO_GO"
+    if not syn_fce["passed"]:
+        diagnosis = _PHASE17G_DIAGNOSIS["full_chain_case_failed"]; severity = "NO_GO"
+
+    # ---- Build canonical simulation dossier for export ----
+    canonical_sim = None
+    try:
+        plan = _build_ready_plan_draft()
+        bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+        proposal = _generate_proposal_packet("AAPL", bars)
+        dossier = _review_proposal_dossier(proposal)
+        decision = _build_accepted_decision_record()
+        decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+        decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+        canonical_sim = _create_simulated_preflight_dossier(plan, proposal, dossier, decision)
+    except Exception:
+        canonical_sim = None
+
+    result = {
+        "command": "ibkr-operator level1-planning-only-preflight-simulation-dossier-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": severity if severity == "NO_GO" else "OK",
+        "operator_action_required": not all_cases_passed,
+        "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": worktree_clean_state,
+        "runtime": runtime_state,
+        "runtime_connected": rt_connected, "mode": rt_mode, "read_only": rt_read_only,
+        "allow_orders": rt_allow_orders, "endpoints_ok": rt_endpoints_ok,
+        "positions_flat": rt_positions_flat, "guard_state_clean": gs_clean,
+        "kpi_hold_only_system_locked": kpi_ok,
+        "simulation_ready_case_passed": syn_sr["passed"],
+        "blocked_plan_blocked_case_passed": syn_bp["passed"],
+        "executable_false_case_passed": syn_ef["passed"],
+        "broker_authorized_false_case_passed": syn_bf["passed"],
+        "preflight_authorized_false_case_passed": syn_pf["passed"],
+        "approval_authorized_false_case_passed": syn_af["passed"],
+        "submission_authorized_false_case_passed": syn_sf["passed"],
+        "broker_preflight_called_false_case_passed": syn_bpc["passed"],
+        "hash_mismatch_blocked_case_passed": syn_hm["passed"],
+        "disallowed_instrument_blocked_case_passed": syn_di["passed"],
+        "invalid_side_blocked_case_passed": syn_iv["passed"],
+        "invalid_quantity_blocked_case_passed": syn_iq["passed"],
+        "stop_below_entry_blocked_case_passed": syn_sb["passed"],
+        "stop_quantity_mismatch_blocked_case_passed": syn_sq["passed"],
+        "data_quality_fail_blocked_case_passed": syn_dq["passed"],
+        "no_trade_fail_blocked_case_passed": syn_nt["passed"],
+        "deterministic_case_passed": syn_det["passed"],
+        "read_only_invariant_case_passed": syn_ri["passed"],
+        "fresh_clone_case_passed": syn_fc["passed"],
+        "full_chain_case_passed": syn_fce["passed"],
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_connect_called": True, "no_broker_mutation": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17G_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False, "export_path": None,
+        "canonical_simulation_dossier": canonical_sim,
+    }
+    return result
+
+
+def _print_level1_planning_only_preflight_simulation_dossier_checkpoint(result: dict) -> None:
+    """Print Phase 17G planning-only preflight simulation dossier checkpoint."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE17G_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Planning-Only Preflight Simulation Dossier (17G){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:               {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:                   {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:                   {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:                    {sev_color}{sev}{RESET}")
+    print()
+    print(f"  {BOLD}Git{RESET}")
+    g = result.get("git", {})
+    print(f"    Branch:        {g.get('branch', '?')}")
+    print(f"    Commit:        {g.get('commit_short', g.get('commit', '?'))}")
+    print(f"    Worktree clean: {_bool_str(result.get('git_worktree_clean', False))}")
+    print()
+    print(f"  {BOLD}Synthetic Fixture Results{RESET}")
+    print(f"    Simulation ready (plan → SIM):          {_bool_str(result.get('simulation_ready_case_passed', False))}")
+    print(f"    BLOCKED plan → BLOCKED:                 {_bool_str(result.get('blocked_plan_blocked_case_passed', False))}")
+    print(f"    SIM executable=false:                    {_bool_str(result.get('executable_false_case_passed', False))}")
+    print(f"    SIM broker_authorized=false:            {_bool_str(result.get('broker_authorized_false_case_passed', False))}")
+    print(f"    SIM preflight_authorized=false:         {_bool_str(result.get('preflight_authorized_false_case_passed', False))}")
+    print(f"    SIM approval_authorized=false:          {_bool_str(result.get('approval_authorized_false_case_passed', False))}")
+    print(f"    SIM submission_authorized=false:        {_bool_str(result.get('submission_authorized_false_case_passed', False))}")
+    print(f"    SIM broker_preflight_called=false:      {_bool_str(result.get('broker_preflight_called_false_case_passed', False))}")
+    print(f"    Hash mismatch → BLOCKED:                 {_bool_str(result.get('hash_mismatch_blocked_case_passed', False))}")
+    print(f"    Disallowed instrument → BLOCKED:         {_bool_str(result.get('disallowed_instrument_blocked_case_passed', False))}")
+    print(f"    Invalid side → BLOCKED:                  {_bool_str(result.get('invalid_side_blocked_case_passed', False))}")
+    print(f"    Invalid quantity → BLOCKED:              {_bool_str(result.get('invalid_quantity_blocked_case_passed', False))}")
+    print(f"    Stop above entry → BLOCKED:              {_bool_str(result.get('stop_below_entry_blocked_case_passed', False))}")
+    print(f"    Stop quantity mismatch → BLOCKED:        {_bool_str(result.get('stop_quantity_mismatch_blocked_case_passed', False))}")
+    print(f"    Data quality fail → BLOCKED:             {_bool_str(result.get('data_quality_fail_blocked_case_passed', False))}")
+    print(f"    No-trade fail → BLOCKED:                 {_bool_str(result.get('no_trade_fail_blocked_case_passed', False))}")
+    print(f"    Deterministic:                           {_bool_str(result.get('deterministic_case_passed', False))}")
+    print(f"    Read-only invariant:                     {_bool_str(result.get('read_only_invariant_case_passed', False))}")
+    print(f"    Fresh-clone execution:                   {_bool_str(result.get('fresh_clone_case_passed', False))}")
+    print(f"    Full chain non-executable:               {_bool_str(result.get('full_chain_case_passed', False))}")
+    print()
+    print(f"  {BOLD}Canonical Simulation Dossier{RESET}")
+    cs = result.get("canonical_simulation_dossier")
+    if cs:
+        print(f"    Simulation state:  {cs.get('simulation_state', '?')}")
+        print(f"    Symbol/Side:       {cs.get('symbol', '?')} / {cs.get('side', '?')}")
+        print(f"    Quantity:          {cs.get('quantity', '?')}")
+        print(f"    Executable:        {cs.get('executable', '?')}")
+        print(f"    Preflight called:  {cs.get('broker_preflight_called', '?')}")
+        print(f"    Sim hash:          {cs.get('deterministic_simulation_hash', '?')[:16]}...")
+    else:
+        print(f"    {RED}No canonical simulation dossier generated{RESET}")
+    print()
+    print(f"  {BOLD}Safety Invariants{RESET}")
+    print(f"    No /order called:           {_bool_str(result.get('no_order_endpoint_called'))}")
+    print(f"    No /order/preflight called:  {_bool_str(result.get('no_preflight_endpoint_called'))}")
+    print(f"    No /order/approve called:    {_bool_str(result.get('no_approval_endpoint_called'))}")
+    print(f"    No /order/submit called:     {_bool_str(result.get('no_submit_endpoint_called'))}")
+    print(f"    No H1 token used:            {_bool_str(result.get('no_h1_token_used'))}")
+    print(f"    No /connect called:          {_bool_str(result.get('no_connect_called'))}")
+    print(f"    No broker mutation:          {_bool_str(result.get('no_broker_mutation'))}")
+    print()
+    if not checkpoint_ok:
+        actions = result.get("suggested_operator_actions", [])
+        if actions:
+            print(f"  {RED}Suggested operator actions:{RESET}")
+            for a in actions:
+                print(f"    - {a}")
+            print()
+    ep = result.get("export_path")
+    if ep:
+        print(f"    Export: {ep}")
+    print()
+
+
 def _print_level1_execution_gate_negative_control_drill(result: dict) -> None:
     """Print Phase 16O negative-control drill in human-readable format."""
     drill_ok = result.get("diagnosis") == _PHASE16O_DIAGNOSIS["ready"]
@@ -43083,6 +44285,26 @@ def main() -> None:
     p17f_a2.add_argument("--json", action="store_true")
     p17f_a2.add_argument("--export", action="store_true")
     p17f_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 17G — Level 1 Planning-Only Preflight Simulation Dossier Checkpoint
+    p17g = sub.add_parser("level1-planning-only-preflight-simulation-dossier-checkpoint",
+                          help="Level 1 planning-only preflight simulation dossier checkpoint (Phase 17G)")
+    p17g.add_argument("--json", action="store_true")
+    p17g.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-planning-only-preflight-simulation-dossier-checkpoints/")
+    p17g.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: phase17g-planning-only-preflight-simulation-dossier-checkpoint
+    p17g_a1 = sub.add_parser("phase17g-planning-only-preflight-simulation-dossier-checkpoint",
+                             help="Alias for level1-planning-only-preflight-simulation-dossier-checkpoint")
+    p17g_a1.add_argument("--json", action="store_true")
+    p17g_a1.add_argument("--export", action="store_true")
+    p17g_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: preflight-simulation-dossier-checkpoint
+    p17g_a2 = sub.add_parser("preflight-simulation-dossier-checkpoint",
+                             help="Alias for level1-planning-only-preflight-simulation-dossier-checkpoint")
+    p17g_a2.add_argument("--json", action="store_true")
+    p17g_a2.add_argument("--export", action="store_true")
+    p17g_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -45502,6 +46724,49 @@ def main() -> None:
                 if ep:
                     print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE17F_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-planning-only-preflight-simulation-dossier-checkpoint",
+                        "phase17g-planning-only-preflight-simulation-dossier-checkpoint",
+                        "preflight-simulation-dossier-checkpoint"):
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_planning_only_preflight_simulation_dossier_checkpoint(
+                audit_source=audit_source,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"17g-error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = _phase17g_no_go(
+                checkpoint_id, ts_str,
+                {"branch": "?", "commit": "?", "tag": "?", "worktree_clean": False},
+                _PHASE17G_DIAGNOSIS["unknown"],
+                [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+            )
+        if args.export and not result.get("export_path"):
+            try:
+                _PHASE17G_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                import json as _json
+                ep = _PHASE17G_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                with open(ep, "w", encoding="utf-8") as f:
+                    _json.dump(result, f, indent=2, default=str)
+                result["export_path"] = str(ep)
+                result["artifact_created"] = True
+            except Exception:
+                pass
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_planning_only_preflight_simulation_dossier_checkpoint(result)
+            if args.export:
+                ep = result.get("export_path")
+                if ep:
+                    print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE17G_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

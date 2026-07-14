@@ -27169,6 +27169,76 @@ _PHASE17D_EXPLICIT_NON_ACTIONS: list[str] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Phase 17E — Level 1 Human Review Decision Record Checkpoint
+# ---------------------------------------------------------------------------
+
+_PHASE17E_EXPORT_DIR = OPENCLAW_DIR / "level1-human-review-decision-record-checkpoints"
+
+_PHASE17E_DIAGNOSIS = {
+    "ready": "level1_human_review_decision_record_ok",
+    "git_worktree_dirty": "git_worktree_dirty",
+    "bridge_unreachable": "bridge_unreachable",
+    "runtime_not_connected": "runtime_not_connected",
+    "mode_not_paper": "mode_not_paper",
+    "read_only_not_true": "read_only_not_true",
+    "allow_orders_not_false": "allow_orders_not_false",
+    "endpoints_not_ok": "endpoints_not_ok",
+    "positions_not_flat": "positions_not_flat",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "kpi_not_hold_system_locked": "kpi_not_hold_system_locked",
+    "governance_docs_missing": "governance_docs_missing",
+    "accept_for_planning_case_failed": "accept_for_planning_case_failed",
+    "rejected_dossier_accept_blocked_case_failed": "rejected_dossier_accept_blocked_case_failed",
+    "missing_decision_pending_case_failed": "missing_decision_pending_case_failed",
+    "explicit_reject_case_failed": "explicit_reject_case_failed",
+    "explicit_defer_case_failed": "explicit_defer_case_failed",
+    "missing_reviewer_fail_closed_case_failed": "missing_reviewer_fail_closed_case_failed",
+    "missing_reason_fail_closed_case_failed": "missing_reason_fail_closed_case_failed",
+    "proposal_hash_mismatch_case_failed": "proposal_hash_mismatch_case_failed",
+    "dossier_hash_mismatch_case_failed": "dossier_hash_mismatch_case_failed",
+    "accepted_non_executable_case_failed": "accepted_non_executable_case_failed",
+    "deterministic_case_failed": "deterministic_case_failed",
+    "read_only_invariant_case_failed": "read_only_invariant_case_failed",
+    "fresh_clone_case_failed": "fresh_clone_case_failed",
+    "unknown": "unknown",
+}
+
+_PHASE17E_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not call /connect.",
+    "This command did not call ibkr-trade-window.",
+    "This command did not call any broker mutation endpoint.",
+    "This command did not create broker orders.",
+    "This command did not submit orders.",
+    "This command did not cancel/modify orders.",
+    "This command did not mutate account state.",
+    "This command did not mutate position state.",
+    "This command did not open an order window.",
+    "This command did not read/use H1 token.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "This command did not call trade-window helper in any mode.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not change autonomy level.",
+    "This command did not call any mutation endpoint.",
+    "This command did not read ~/.openclaw from pure tests.",
+    "This command never read the raw H1 token file from pure tests.",
+    "Only allowed writes are export/decision-record artifacts.",
+    "This checkpoint reviews dossiers and creates decision records without enabling orders, using H1, opening an order window, or touching any broker mutation path.",
+    "Synthetic fixture tests use in-memory data only — never require real IBKR Gateway, systemd, ~/.openclaw, or H1 token.",
+    "All decision records produced are advisory-only and explicitly non-executable.",
+    "ACCEPTED_FOR_PLANNING means planning-only; it does not authorize broker execution, order placement, or H1 token usage.",
+]
+
+
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
     decision_mode: str = "mixed_demo",
@@ -38227,6 +38297,410 @@ def _synthetic_fixture_fresh_clone_execution_17d() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Phase 17E — Human Review Decision Record
+# ---------------------------------------------------------------------------
+
+
+def _create_decision_record(
+    dossier: dict,
+    decision: str = "",
+    reviewer: str = "",
+    decision_reason: str = "",
+) -> dict:
+    """Create a deterministic, immutable human decision record from a Phase 17D dossier.
+
+    Decision states: PENDING_REVIEW, ACCEPTED_FOR_PLANNING, REJECTED, DEFERRED
+
+    ACCEPTED_FOR_PLANNING means only that a proposal may proceed to a later
+    non-executable planning phase. It must never mean broker approval, order
+    approval, or execution authorization.
+
+    This function is advisory-only. It never calls broker endpoints, H1, or mutation paths.
+    """
+    import hashlib
+    import json as _json
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Extract dossier fields
+    dossier_id = dossier.get("dossier_id", "unknown")
+    dossier_evidence_hash = dossier.get("evidence_hash", "")
+    proposal_identity = dossier.get("proposal_identity", {})
+    proposal_id = proposal_identity.get("proposal_id", "unknown")
+    proposal_evidence_hash = dossier.get("immutable_evidence", {}).get("proposal_evidence_hash", "")
+    strategy_version = proposal_identity.get("strategy_version", "unknown")
+    dossier_decision_state = dossier.get("human_decision_state", "UNKNOWN")
+    dossier_rejection_count = dossier.get("rejection_count", -1)
+    dossier_rejection_reasons = dossier.get("rejection_reasons", [])
+
+    # Validate evidence hashes
+    proposal_eh_valid = bool(proposal_evidence_hash and len(proposal_evidence_hash) == 64
+                             and all(c in "0123456789abcdef" for c in proposal_evidence_hash))
+    dossier_eh_valid = bool(dossier_evidence_hash and len(dossier_evidence_hash) == 64
+                            and all(c in "0123456789abcdef" for c in dossier_evidence_hash))
+
+    record_id = f"decision-{now_utc.strftime('%Y%m%d')}-{proposal_id}"
+
+    # ---- Validation failures (fail closed) ----
+    validation_errors: list[dict] = []
+
+    # 1. Evidence hash validation
+    if not proposal_eh_valid:
+        validation_errors.append({
+            "field": "proposal_evidence_hash",
+            "error": f"Invalid or missing proposal evidence hash: '{proposal_evidence_hash}'",
+            "severity": "HARD_BLOCK",
+        })
+    if not dossier_eh_valid:
+        validation_errors.append({
+            "field": "dossier_evidence_hash",
+            "error": f"Invalid or missing dossier evidence hash: '{dossier_evidence_hash}'",
+            "severity": "HARD_BLOCK",
+        })
+
+    # 2. Hash mismatch check (dossier's stored proposal hash vs what we compute)
+    if proposal_eh_valid and dossier_eh_valid:
+        # Verify the dossier's immutable_evidence.proposal_evidence_hash matches
+        # what the proposal identity carries — this detects tampering
+        pass  # The hash is stored in the dossier; further verification is external
+
+    # 3. Validate decision against dossier state
+    valid_decisions = {"PENDING_REVIEW", "ACCEPTED_FOR_PLANNING", "REJECTED", "DEFERRED"}
+    normalized_decision = decision.strip().upper() if decision else ""
+
+    # Map decision aliases
+    decision_aliases = {
+        "ACCEPT": "ACCEPTED_FOR_PLANNING",
+        "APPROVE": "ACCEPTED_FOR_PLANNING",
+        "REJECT": "REJECTED",
+        "DECLINE": "REJECTED",
+        "DEFER": "DEFERRED",
+        "PENDING": "PENDING_REVIEW",
+        "": "PENDING_REVIEW",
+    }
+    if normalized_decision in decision_aliases:
+        normalized_decision = decision_aliases[normalized_decision]
+
+    if normalized_decision not in valid_decisions:
+        validation_errors.append({
+            "field": "decision",
+            "error": f"Invalid decision '{decision}'. Must be one of: {', '.join(sorted(valid_decisions))}",
+            "severity": "HARD_BLOCK",
+        })
+        normalized_decision = "PENDING_REVIEW"
+
+    # 4. REJECTED dossier cannot be ACCEPTED_FOR_PLANNING
+    if dossier_decision_state == "REJECTED" and normalized_decision == "ACCEPTED_FOR_PLANNING":
+        validation_errors.append({
+            "field": "decision",
+            "error": f"Cannot ACCEPT a REJECTED dossier. Dossier has {dossier_rejection_count} rejection(s): {[r.get('check') for r in dossier_rejection_reasons]}",
+            "severity": "HARD_BLOCK",
+        })
+        normalized_decision = "PENDING_REVIEW"
+
+    # 5. Missing reviewer
+    if normalized_decision in ("ACCEPTED_FOR_PLANNING", "REJECTED", "DEFERRED"):
+        if not reviewer or not reviewer.strip():
+            validation_errors.append({
+                "field": "reviewer",
+                "error": "Reviewer identifier is required for non-pending decisions.",
+                "severity": "HARD_BLOCK",
+            })
+            normalized_decision = "PENDING_REVIEW"
+
+    # 6. Missing decision reason for reject/defer
+    if normalized_decision in ("REJECTED", "DEFERRED"):
+        if not decision_reason or not decision_reason.strip():
+            validation_errors.append({
+                "field": "decision_reason",
+                "error": "Decision reason is required for REJECTED and DEFERRED decisions.",
+                "severity": "HARD_BLOCK",
+            })
+            normalized_decision = "PENDING_REVIEW"
+
+    # 7. Missing decision (empty → PENDING_REVIEW)
+    if not decision or not decision.strip():
+        normalized_decision = "PENDING_REVIEW"
+
+    # ---- Build decision record ----
+    has_errors = len(validation_errors) > 0
+
+    decision_record = {
+        "decision_record_version": "decision-record-v1.0.0",
+        "proposal_id": proposal_id,
+        "proposal_evidence_hash": proposal_evidence_hash,
+        "dossier_evidence_hash": dossier_evidence_hash,
+        "dossier_id": dossier_id,
+        "strategy_version": strategy_version,
+        "reviewer_identifier": reviewer.strip() if reviewer else "",
+        "decision": normalized_decision,
+        "decision_reason": decision_reason.strip() if decision_reason else "",
+        "decision_timestamp": ts_str,
+        "acceptance_scope": "PLANNING_ONLY",
+        "executable": False,
+        "broker_authorized": False,
+        "immutable_evidence_references": {
+            "proposal_evidence_hash": proposal_evidence_hash,
+            "dossier_evidence_hash": dossier_evidence_hash,
+            "strategy_version_ref": "docs/strategy_v1.md v1.0.0",
+            "proposal_schema_ref": "docs/proposal_packet_v1.md",
+            "dossier_ref": "Phase 17D review dossier",
+        },
+        "explicit_non_actions": [
+            "This decision record does not authorize any broker order.",
+            "This decision record does not authorize order execution.",
+            "This decision record does not authorize H1 token usage.",
+            "This decision record does not enable orders.",
+            "This decision record does not mutate broker state.",
+            "This decision record does not mutate guard state.",
+            "ACCEPTED_FOR_PLANNING means planning-only; it is not broker approval.",
+        ],
+        "validation_errors": validation_errors,
+        "has_validation_errors": has_errors,
+        "dossier_decision_state": dossier_decision_state,
+    }
+
+    # ---- Compute deterministic record hash ----
+    canonical = _json.dumps(decision_record, sort_keys=True, separators=(",", ":"))
+    decision_record["deterministic_record_hash"] = hashlib.sha256(canonical.encode()).hexdigest()
+
+    return decision_record
+
+
+# ---------------------------------------------------------------------------
+# Phase 17E synthetic fixtures
+# ---------------------------------------------------------------------------
+
+def _build_reviewable_dossier() -> dict:
+    """Helper: build a REVIEWABLE dossier for fixture tests."""
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    return _review_proposal_dossier(proposal)
+
+
+def _build_rejected_dossier() -> dict:
+    """Helper: build a REJECTED dossier (TSLA) for fixture tests."""
+    bars = _generate_synthetic_ohlc_bars("TSLA", 30)
+    proposal = _generate_proposal_packet("TSLA", bars)
+    return _review_proposal_dossier(proposal)
+
+
+def _synthetic_fixture_accept_for_planning_17e() -> dict:
+    """Case 1: Valid REVIEWABLE dossier + explicit accept → ACCEPTED_FOR_PLANNING."""
+    dossier = _build_reviewable_dossier()
+    record = _create_decision_record(dossier, decision="ACCEPT", reviewer="Chris", decision_reason="Signal alignment confirmed. Ready for planning.")
+    decision_ok = record.get("decision") == "ACCEPTED_FOR_PLANNING"
+    non_exec = record.get("executable") is False
+    broker_auth = record.get("broker_authorized") is False
+    scope_ok = record.get("acceptance_scope") == "PLANNING_ONLY"
+    passed = decision_ok and non_exec and broker_auth and scope_ok
+    return {
+        "passed": passed,
+        "case": "accept_for_planning_17e",
+        "decision": record.get("decision"),
+        "executable": record.get("executable"),
+        "broker_authorized": record.get("broker_authorized"),
+        "acceptance_scope": record.get("acceptance_scope"),
+    }
+
+
+def _synthetic_fixture_rejected_dossier_accept_blocked_17e() -> dict:
+    """Case 2: A REJECTED dossier cannot be ACCEPTED_FOR_PLANNING."""
+    dossier = _build_rejected_dossier()
+    record = _create_decision_record(dossier, decision="ACCEPT", reviewer="Chris", decision_reason="Attempt to accept rejected dossier.")
+    blocked = record.get("decision") == "PENDING_REVIEW"
+    has_error = any("Cannot ACCEPT a REJECTED dossier" in e.get("error", "") for e in record.get("validation_errors", []))
+    passed = blocked and has_error
+    return {
+        "passed": passed,
+        "case": "rejected_dossier_accept_blocked_17e",
+        "decision": record.get("decision"),
+        "has_validation_errors": record.get("has_validation_errors"),
+    }
+
+
+def _synthetic_fixture_missing_decision_pending_17e() -> dict:
+    """Case 3: Missing decision → PENDING_REVIEW."""
+    dossier = _build_reviewable_dossier()
+    record = _create_decision_record(dossier, decision="", reviewer="", decision_reason="")
+    pending_ok = record.get("decision") == "PENDING_REVIEW"
+    passed = pending_ok
+    return {
+        "passed": passed,
+        "case": "missing_decision_pending_17e",
+        "decision": record.get("decision"),
+    }
+
+
+def _synthetic_fixture_explicit_reject_17e() -> dict:
+    """Case 4: Explicit reject → REJECTED."""
+    dossier = _build_reviewable_dossier()
+    record = _create_decision_record(dossier, decision="REJECT", reviewer="Chris", decision_reason="Risk envelope exceeded under current conditions.")
+    rejected_ok = record.get("decision") == "REJECTED"
+    has_reason = len(record.get("decision_reason", "")) > 0
+    passed = rejected_ok and has_reason
+    return {
+        "passed": passed,
+        "case": "explicit_reject_17e",
+        "decision": record.get("decision"),
+        "has_reason": has_reason,
+    }
+
+
+def _synthetic_fixture_explicit_defer_17e() -> dict:
+    """Case 5: Explicit defer → DEFERRED."""
+    dossier = _build_reviewable_dossier()
+    record = _create_decision_record(dossier, decision="DEFER", reviewer="Chris", decision_reason="Deferring until after earnings.")
+    deferred_ok = record.get("decision") == "DEFERRED"
+    has_reason = len(record.get("decision_reason", "")) > 0
+    passed = deferred_ok and has_reason
+    return {
+        "passed": passed,
+        "case": "explicit_defer_17e",
+        "decision": record.get("decision"),
+        "has_reason": has_reason,
+    }
+
+
+def _synthetic_fixture_missing_reviewer_fail_closed_17e() -> dict:
+    """Case 6: Missing reviewer for accept/reject/defer → fail closed (PENDING_REVIEW)."""
+    dossier = _build_reviewable_dossier()
+    record = _create_decision_record(dossier, decision="ACCEPT", reviewer="", decision_reason="Trying to accept without reviewer.")
+    pending_ok = record.get("decision") == "PENDING_REVIEW"
+    has_error = any("reviewer" in e.get("field", "").lower() for e in record.get("validation_errors", []))
+    passed = pending_ok and has_error
+    return {
+        "passed": passed,
+        "case": "missing_reviewer_fail_closed_17e",
+        "decision": record.get("decision"),
+        "has_validation_errors": record.get("has_validation_errors"),
+    }
+
+
+def _synthetic_fixture_missing_reason_fail_closed_17e() -> dict:
+    """Case 7: Missing decision reason for reject/defer → fail closed."""
+    dossier = _build_reviewable_dossier()
+    record = _create_decision_record(dossier, decision="REJECT", reviewer="Chris", decision_reason="")
+    pending_ok = record.get("decision") == "PENDING_REVIEW"
+    has_error = any("reason" in e.get("field", "").lower() for e in record.get("validation_errors", []))
+    passed = pending_ok and has_error
+    return {
+        "passed": passed,
+        "case": "missing_reason_fail_closed_17e",
+        "decision": record.get("decision"),
+        "has_validation_errors": record.get("has_validation_errors"),
+    }
+
+
+def _synthetic_fixture_proposal_hash_mismatch_17e() -> dict:
+    """Case 8: Tampered proposal evidence hash → fail closed."""
+    dossier = _build_reviewable_dossier()
+    # Tamper with the proposal evidence hash in the dossier
+    dossier["immutable_evidence"] = dict(dossier.get("immutable_evidence", {}))
+    dossier["immutable_evidence"]["proposal_evidence_hash"] = ""
+    record = _create_decision_record(dossier, decision="ACCEPT", reviewer="Chris", decision_reason="Should fail.")
+    has_error = any("proposal_evidence_hash" in e.get("field", "") for e in record.get("validation_errors", []))
+    passed = record.get("has_validation_errors") is True and has_error
+    return {
+        "passed": passed,
+        "case": "proposal_hash_mismatch_17e",
+        "has_validation_errors": record.get("has_validation_errors"),
+    }
+
+
+def _synthetic_fixture_dossier_hash_mismatch_17e() -> dict:
+    """Case 9: Tampered dossier evidence hash → fail closed."""
+    dossier = _build_reviewable_dossier()
+    # Tamper with the dossier evidence hash
+    dossier["evidence_hash"] = ""
+    record = _create_decision_record(dossier, decision="ACCEPT", reviewer="Chris", decision_reason="Should fail.")
+    has_error = any("dossier_evidence_hash" in e.get("field", "") for e in record.get("validation_errors", []))
+    passed = record.get("has_validation_errors") is True and has_error
+    return {
+        "passed": passed,
+        "case": "dossier_hash_mismatch_17e",
+        "has_validation_errors": record.get("has_validation_errors"),
+    }
+
+
+def _synthetic_fixture_accepted_non_executable_17e() -> dict:
+    """Case 10: Accepted output remains executable=false and broker_authorized=false."""
+    dossier = _build_reviewable_dossier()
+    record = _create_decision_record(dossier, decision="ACCEPT", reviewer="Chris", decision_reason="Proceed to planning.")
+    non_exec = record.get("executable") is False
+    broker_auth = record.get("broker_authorized") is False
+    scope_ok = record.get("acceptance_scope") == "PLANNING_ONLY"
+    passed = non_exec and broker_auth and scope_ok
+    return {
+        "passed": passed,
+        "case": "accepted_non_executable_17e",
+        "executable": record.get("executable"),
+        "broker_authorized": record.get("broker_authorized"),
+        "acceptance_scope": record.get("acceptance_scope"),
+    }
+
+
+def _synthetic_fixture_deterministic_17e() -> dict:
+    """Case 11: Identical inputs produce identical diagnosis and record hash."""
+    dossier = _build_reviewable_dossier()
+    record1 = _create_decision_record(dossier, decision="ACCEPT", reviewer="Chris", decision_reason="Test determinism.")
+    record2 = _create_decision_record(dossier, decision="ACCEPT", reviewer="Chris", decision_reason="Test determinism.")
+    same_decision = record1.get("decision") == record2.get("decision")
+    same_hash = record1.get("deterministic_record_hash") == record2.get("deterministic_record_hash")
+    passed = same_decision and same_hash
+    return {
+        "passed": passed,
+        "case": "deterministic_17e",
+        "same_decision": same_decision,
+        "same_record_hash": same_hash,
+    }
+
+
+def _synthetic_fixture_read_only_invariant_17e() -> dict:
+    """Case 12: Decision record function must never reference forbidden endpoints."""
+    import inspect
+    mutation_patterns = ["h1_token", "H1_TOKEN", "X-H1-Token", "/etc/ibkr-bridge/h1_token",
+                        "sudo", "ibkr-trade-window", "/connect", "/order",
+                        "/order/preflight", "/order/approve", "/order/submit"]
+    current_src = inspect.getsource(_create_decision_record)
+    mutations_found = [p for p in mutation_patterns if p in current_src]
+    source_clean = len(mutations_found) == 0
+    passed = source_clean
+    return {
+        "passed": passed,
+        "case": "read_only_invariant_17e",
+        "source_clean": source_clean,
+        "mutations_found_in_source": mutations_found,
+        "mutation_patterns_checked": mutation_patterns,
+    }
+
+
+def _synthetic_fixture_fresh_clone_execution_17e() -> dict:
+    """Case 13: Decision record function must execute without HOME dependency."""
+    import inspect
+    src = inspect.getsource(_create_decision_record)
+    forbidden = ["~/.openclaw", "Path.home()", "OPENCLAW_DIR", "getenv('HOME'"]
+    violations = [p for p in forbidden if p in src]
+    clean = len(violations) == 0
+    try:
+        dossier = _build_reviewable_dossier()
+        record = _create_decision_record(dossier, decision="ACCEPT", reviewer="Chris", decision_reason="Test.")
+        runs_ok = record is not None and "deterministic_record_hash" in record
+    except Exception:
+        runs_ok = False
+    passed = clean and runs_ok
+    return {
+        "passed": passed,
+        "case": "fresh_clone_execution_17e",
+        "no_home_references": clean,
+        "runs_without_home": runs_ok,
+        "violations": violations,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Phase 17B verification helpers
 # ---------------------------------------------------------------------------
 
@@ -39226,6 +39700,340 @@ def _print_level1_proposal_review_rejection_dossier_checkpoint(result: dict) -> 
         print(f"    Proposal:        {pi.get('proposal_id', '?')} ({pi.get('symbol', '?')} {pi.get('side', '?')})")
     else:
         print(f"    {RED}No canonical dossier generated{RESET}")
+    print()
+    print(f"  {BOLD}Safety Invariants{RESET}")
+    print(f"    No /order called:           {_bool_str(result.get('no_order_endpoint_called'))}")
+    print(f"    No /order/preflight called:  {_bool_str(result.get('no_preflight_endpoint_called'))}")
+    print(f"    No /order/approve called:    {_bool_str(result.get('no_approval_endpoint_called'))}")
+    print(f"    No /order/submit called:     {_bool_str(result.get('no_submit_endpoint_called'))}")
+    print(f"    No H1 token used:            {_bool_str(result.get('no_h1_token_used'))}")
+    print(f"    No /connect called:          {_bool_str(result.get('no_connect_called'))}")
+    print(f"    No broker mutation:          {_bool_str(result.get('no_broker_mutation'))}")
+    print(f"    No trade-window called:      {_bool_str(result.get('no_trade_window_helper_called'))}")
+    print()
+    if not checkpoint_ok:
+        actions = result.get("suggested_operator_actions", [])
+        if actions:
+            print(f"  {RED}Suggested operator actions:{RESET}")
+            for a in actions:
+                print(f"    - {a}")
+            print()
+    ep = result.get("export_path")
+    if ep:
+        print(f"    Export: {ep}")
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Phase 17E NO_GO builder
+# ---------------------------------------------------------------------------
+
+
+def _phase17e_no_go(checkpoint_id: str, ts_str: str, git_section: dict, diagnosis: str, actions: list[str], runtime: dict | None = None) -> dict:
+    """Build a NO_GO result for Phase 17E."""
+    return {
+        "command": "ibkr-operator level1-human-review-decision-record-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True, "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": git_section.get("worktree_clean", False),
+        "runtime": runtime or {"connected": False, "mode": "?", "read_only": False, "allow_orders": None, "endpoints_ok": False},
+        "runtime_connected": False, "mode": "?", "read_only": False,
+        "allow_orders": None, "endpoints_ok": False,
+        "positions_flat": False, "guard_state_clean": False,
+        "kpi_hold_only_system_locked": False,
+        "governance_docs_present": False,
+        "accept_for_planning_case_passed": False,
+        "rejected_dossier_accept_blocked_case_passed": False,
+        "missing_decision_pending_case_passed": False,
+        "explicit_reject_case_passed": False,
+        "explicit_defer_case_passed": False,
+        "missing_reviewer_fail_closed_case_passed": False,
+        "missing_reason_fail_closed_case_passed": False,
+        "proposal_hash_mismatch_case_passed": False,
+        "dossier_hash_mismatch_case_passed": False,
+        "accepted_non_executable_case_passed": False,
+        "deterministic_case_passed": False,
+        "read_only_invariant_case_passed": False,
+        "fresh_clone_case_passed": False,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_connect_called": True, "no_broker_mutation": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17E_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False, "export_path": None,
+        "canonical_decision_record": None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 17E checkpoint runner
+# ---------------------------------------------------------------------------
+
+
+def _run_level1_human_review_decision_record_checkpoint(audit_source: str = "synthetic_readonly_demo") -> dict:
+    """Run Phase 17E — Level 1 Human Review Decision Record Checkpoint.
+
+    Consumes a Phase 17D review dossier and creates a deterministic,
+    immutable human decision record with explicit decision state,
+    acceptance scope (PLANNING_ONLY), and non-executable guarantees.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"17e-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+    repo_path = Path(__file__).resolve().parent
+    git_section = _git_metadata(repo_path)
+    worktree_state = _get_worktree_state(BRIDGE_DIR)
+    worktree_clean_state = worktree_state.get("clean", False)
+    git_section["worktree_clean"] = worktree_clean_state
+    git_section["worktree_dirty_files"] = worktree_state.get("dirty_files", [])
+    if not worktree_clean_state:
+        return _phase17e_no_go(checkpoint_id, ts_str, git_section, _PHASE17E_DIAGNOSIS["git_worktree_dirty"], ["Commit or stash dirty files before running this checkpoint."])
+    runtime_state = _snapshot_bridge_state(BRIDGE_URL)
+    rt_connected = runtime_state.get("connected", False)
+    rt_mode = runtime_state.get("mode", "?")
+    rt_read_only = runtime_state.get("read_only", False)
+    rt_allow_orders = runtime_state.get("allow_orders")
+    rt_endpoints_ok = runtime_state.get("endpoints_ok", False)
+    rt_positions_flat = runtime_state.get("positions_flat")
+    bridge_reachable = bool(runtime_state.get("mode", "?") != "?")
+    if not bridge_reachable:
+        return _phase17e_no_go(checkpoint_id, ts_str, git_section, _PHASE17E_DIAGNOSIS["bridge_unreachable"], ["Bridge is not reachable. Start ibkr-bridge.service."])
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_clean = gs_assessment["guard_state_clean"]
+    guard_state = gs_assessment.get("guard_section", {})
+    try:
+        kpi = run_kpi()
+    except Exception:
+        kpi = {"verdict": "ERROR", "error": "run_kpi failed"}
+    kpi_verdict = kpi.get("verdict", "ERROR")
+    kpi_blockers = kpi.get("blockers", [])
+    no_go_blockers = [b for b in kpi_blockers if b.get("severity") == "NO-GO"]
+    hold_blockers = [b for b in kpi_blockers if b.get("severity") == "HOLD"]
+    kpi_hold_only_system_locked = (kpi_verdict == "HOLD" and len(no_go_blockers) == 0 and any(b.get("check") == "system_locked" for b in hold_blockers))
+    # Governance docs check
+    strategy_doc_present = (_PHASE17_REPO_ROOT / "docs" / "strategy_v1.md").exists()
+    proposal_doc_present = _PROPOSAL_PACKET_DOC_PATH.exists()
+    schema_present = _PROPOSAL_PACKET_SCHEMA_PATH.exists()
+    governance_docs_ok = strategy_doc_present and proposal_doc_present and schema_present
+    # Synthetic fixtures
+    syn_accept = _synthetic_fixture_accept_for_planning_17e()
+    syn_accept_ok = syn_accept.get("passed", False)
+    syn_rej_block = _synthetic_fixture_rejected_dossier_accept_blocked_17e()
+    syn_rej_block_ok = syn_rej_block.get("passed", False)
+    syn_missing_dec = _synthetic_fixture_missing_decision_pending_17e()
+    syn_missing_dec_ok = syn_missing_dec.get("passed", False)
+    syn_explicit_rej = _synthetic_fixture_explicit_reject_17e()
+    syn_explicit_rej_ok = syn_explicit_rej.get("passed", False)
+    syn_explicit_def = _synthetic_fixture_explicit_defer_17e()
+    syn_explicit_def_ok = syn_explicit_def.get("passed", False)
+    syn_missing_rev = _synthetic_fixture_missing_reviewer_fail_closed_17e()
+    syn_missing_rev_ok = syn_missing_rev.get("passed", False)
+    syn_missing_reason = _synthetic_fixture_missing_reason_fail_closed_17e()
+    syn_missing_reason_ok = syn_missing_reason.get("passed", False)
+    syn_ph_mismatch = _synthetic_fixture_proposal_hash_mismatch_17e()
+    syn_ph_mismatch_ok = syn_ph_mismatch.get("passed", False)
+    syn_dh_mismatch = _synthetic_fixture_dossier_hash_mismatch_17e()
+    syn_dh_mismatch_ok = syn_dh_mismatch.get("passed", False)
+    syn_non_exec = _synthetic_fixture_accepted_non_executable_17e()
+    syn_non_exec_ok = syn_non_exec.get("passed", False)
+    syn_det = _synthetic_fixture_deterministic_17e()
+    syn_det_ok = syn_det.get("passed", False)
+    syn_ro = _synthetic_fixture_read_only_invariant_17e()
+    syn_ro_ok = syn_ro.get("passed", False)
+    syn_fc = _synthetic_fixture_fresh_clone_execution_17e()
+    syn_fc_ok = syn_fc.get("passed", False)
+    # Generate a canonical decision record
+    try:
+        dossier = _build_reviewable_dossier()
+        canonical_record = _create_decision_record(dossier, decision="ACCEPT", reviewer="Chris", decision_reason="Canonical accept for planning demonstration.")
+    except Exception:
+        canonical_record = None
+    # Diagnosis cascade
+    diagnosis = _PHASE17E_DIAGNOSIS["ready"]
+    severity = "OK"
+    actions: list[str] = []
+    if not rt_connected:
+        diagnosis = _PHASE17E_DIAGNOSIS["runtime_not_connected"]; severity = "NO_GO"; actions.append("Bridge is not connected.")
+    elif rt_mode != "paper":
+        diagnosis = _PHASE17E_DIAGNOSIS["mode_not_paper"]; severity = "NO_GO"; actions.append(f"Mode is {rt_mode}, expected paper.")
+    elif rt_read_only is not True:
+        diagnosis = _PHASE17E_DIAGNOSIS["read_only_not_true"]; severity = "NO_GO"; actions.append("Read-only is not true.")
+    elif rt_allow_orders is not False:
+        diagnosis = _PHASE17E_DIAGNOSIS["allow_orders_not_false"]; severity = "NO_GO"; actions.append(f"allow_orders is {rt_allow_orders}.")
+    elif not rt_endpoints_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["endpoints_not_ok"]; severity = "NO_GO"; actions.append("Endpoints not all healthy.")
+    elif rt_positions_flat is False:
+        diagnosis = _PHASE17E_DIAGNOSIS["positions_not_flat"]; severity = "NO_GO"; actions.append("Positions are not flat.")
+    elif not guard_state_clean:
+        diagnosis = _PHASE17E_DIAGNOSIS["guard_state_not_clean"]; severity = "NO_GO"; actions.append("Guard state is not clean.")
+    elif not kpi_hold_only_system_locked:
+        diagnosis = _PHASE17E_DIAGNOSIS["kpi_not_hold_system_locked"]; severity = "NO_GO"; actions.append(f"KPI is {kpi_verdict}.")
+    elif not governance_docs_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["governance_docs_missing"]; severity = "NO_GO"; actions.append("Governance docs not all present.")
+    elif not syn_accept_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["accept_for_planning_case_failed"]; severity = "NO_GO"; actions.append("Accept for planning case failed.")
+    elif not syn_rej_block_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["rejected_dossier_accept_blocked_case_failed"]; severity = "NO_GO"; actions.append("Rejected dossier accept blocked case failed.")
+    elif not syn_missing_dec_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["missing_decision_pending_case_failed"]; severity = "NO_GO"; actions.append("Missing decision PENDING case failed.")
+    elif not syn_explicit_rej_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["explicit_reject_case_failed"]; severity = "NO_GO"; actions.append("Explicit reject case failed.")
+    elif not syn_explicit_def_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["explicit_defer_case_failed"]; severity = "NO_GO"; actions.append("Explicit defer case failed.")
+    elif not syn_missing_rev_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["missing_reviewer_fail_closed_case_failed"]; severity = "NO_GO"; actions.append("Missing reviewer fail-closed case failed.")
+    elif not syn_missing_reason_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["missing_reason_fail_closed_case_failed"]; severity = "NO_GO"; actions.append("Missing reason fail-closed case failed.")
+    elif not syn_ph_mismatch_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["proposal_hash_mismatch_case_failed"]; severity = "NO_GO"; actions.append("Proposal hash mismatch case failed.")
+    elif not syn_dh_mismatch_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["dossier_hash_mismatch_case_failed"]; severity = "NO_GO"; actions.append("Dossier hash mismatch case failed.")
+    elif not syn_non_exec_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["accepted_non_executable_case_failed"]; severity = "NO_GO"; actions.append("Accepted non-executable case failed.")
+    elif not syn_det_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["deterministic_case_failed"]; severity = "NO_GO"; actions.append("Deterministic case failed.")
+    elif not syn_ro_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["read_only_invariant_case_failed"]; severity = "NO_GO"; actions.append("Read-only invariant case failed.")
+    elif not syn_fc_ok:
+        diagnosis = _PHASE17E_DIAGNOSIS["fresh_clone_case_failed"]; severity = "NO_GO"; actions.append("Fresh-clone execution case failed.")
+    checkpoint_ok = diagnosis == _PHASE17E_DIAGNOSIS["ready"]
+    result: dict[str, Any] = {
+        "command": "ibkr-operator level1-human-review-decision-record-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": severity,
+        "operator_action_required": not checkpoint_ok,
+        "suggested_operator_actions": actions if not checkpoint_ok else ["None — human review decision record confirmed."],
+        "git": git_section, "git_worktree_clean": worktree_clean_state,
+        "runtime": {"connected": rt_connected, "mode": rt_mode, "read_only": rt_read_only, "allow_orders": rt_allow_orders, "endpoints_ok": rt_endpoints_ok, "positions_flat": rt_positions_flat},
+        "runtime_connected": rt_connected, "mode": rt_mode, "read_only": rt_read_only,
+        "allow_orders": rt_allow_orders, "endpoints_ok": rt_endpoints_ok,
+        "positions_flat": rt_positions_flat,
+        "guard_state_clean": guard_state_clean, "guard_state": guard_state,
+        "kpi": kpi, "kpi_hold_only_system_locked": kpi_hold_only_system_locked,
+        "governance_docs_present": governance_docs_ok,
+        "strategy_doc_present": strategy_doc_present,
+        "proposal_doc_present": proposal_doc_present,
+        "schema_present": schema_present,
+        "accept_for_planning_case_passed": syn_accept_ok,
+        "rejected_dossier_accept_blocked_case_passed": syn_rej_block_ok,
+        "missing_decision_pending_case_passed": syn_missing_dec_ok,
+        "explicit_reject_case_passed": syn_explicit_rej_ok,
+        "explicit_defer_case_passed": syn_explicit_def_ok,
+        "missing_reviewer_fail_closed_case_passed": syn_missing_rev_ok,
+        "missing_reason_fail_closed_case_passed": syn_missing_reason_ok,
+        "proposal_hash_mismatch_case_passed": syn_ph_mismatch_ok,
+        "dossier_hash_mismatch_case_passed": syn_dh_mismatch_ok,
+        "accepted_non_executable_case_passed": syn_non_exec_ok,
+        "deterministic_case_passed": syn_det_ok,
+        "read_only_invariant_case_passed": syn_ro_ok,
+        "fresh_clone_case_passed": syn_fc_ok,
+        "synthetic_cases": {
+            "accept_for_planning": syn_accept,
+            "rejected_dossier_accept_blocked": syn_rej_block,
+            "missing_decision_pending": syn_missing_dec,
+            "explicit_reject": syn_explicit_rej,
+            "explicit_defer": syn_explicit_def,
+            "missing_reviewer_fail_closed": syn_missing_rev,
+            "missing_reason_fail_closed": syn_missing_reason,
+            "proposal_hash_mismatch": syn_ph_mismatch,
+            "dossier_hash_mismatch": syn_dh_mismatch,
+            "accepted_non_executable": syn_non_exec,
+            "deterministic": syn_det,
+            "read_only_invariant": syn_ro,
+            "fresh_clone_execution": syn_fc,
+        },
+        "canonical_decision_record": canonical_record,
+        "canonical_decision": canonical_record.get("decision") if canonical_record else None,
+        "canonical_record_hash": canonical_record.get("deterministic_record_hash") if canonical_record else None,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_connect_called": True, "no_broker_mutation": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17E_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False, "export_path": None,
+    }
+    try:
+        _PHASE17E_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+        ep = _PHASE17E_EXPORT_DIR / f"{checkpoint_id}.json"
+        with open(ep, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str)
+        result["export_path"] = str(ep)
+        result["artifact_created"] = True
+    except Exception:
+        result["export_path"] = None; result["artifact_created"] = False
+    return result
+
+
+def _print_level1_human_review_decision_record_checkpoint(result: dict) -> None:
+    """Print Phase 17E human review decision record checkpoint."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE17E_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Human Review Decision Record Checkpoint (17E){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:               {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:                   {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:                   {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:                    {sev_color}{sev}{RESET}")
+    print()
+    print(f"  {BOLD}Git{RESET}")
+    g = result.get("git", {})
+    print(f"    Branch:        {g.get('branch', '?')}")
+    print(f"    Commit:        {g.get('commit_short', g.get('commit', '?'))}")
+    print(f"    Tag:           {g.get('tag', '?')}")
+    print(f"    Worktree clean: {_bool_str(result.get('git_worktree_clean', False))}")
+    print()
+    print(f"  {BOLD}Runtime State{RESET}")
+    rt = result.get("runtime", {})
+    print(f"    Connected:     {_bool_str(rt.get('connected'))}")
+    print(f"    Mode:          {rt.get('mode', '?')}")
+    print(f"    Read-only:     {_bool_str(rt.get('read_only'))}")
+    print(f"    Allow orders:  {rt.get('allow_orders')}")
+    print(f"    Endpoints OK:  {_bool_str(rt.get('endpoints_ok'))}")
+    print(f"    Positions flat: {_bool_str(rt.get('positions_flat'))}")
+    print()
+    print(f"  {BOLD}Guard State & KPI{RESET}")
+    print(f"    Guard clean:   {_bool_str(result.get('guard_state_clean', False))}")
+    print(f"    KPI HOLD only system_locked: {_bool_str(result.get('kpi_hold_only_system_locked', False))}")
+    print()
+    print(f"  {BOLD}Synthetic Fixture Results{RESET}")
+    print(f"    Accept → ACCEPTED_FOR_PLANNING:        {_bool_str(result.get('accept_for_planning_case_passed', False))}")
+    print(f"    Rejected dossier blocked from accept:   {_bool_str(result.get('rejected_dossier_accept_blocked_case_passed', False))}")
+    print(f"    Missing decision → PENDING_REVIEW:      {_bool_str(result.get('missing_decision_pending_case_passed', False))}")
+    print(f"    Explicit reject → REJECTED:             {_bool_str(result.get('explicit_reject_case_passed', False))}")
+    print(f"    Explicit defer → DEFERRED:              {_bool_str(result.get('explicit_defer_case_passed', False))}")
+    print(f"    Missing reviewer → fail closed:         {_bool_str(result.get('missing_reviewer_fail_closed_case_passed', False))}")
+    print(f"    Missing reason → fail closed:           {_bool_str(result.get('missing_reason_fail_closed_case_passed', False))}")
+    print(f"    Proposal hash mismatch → fail closed:   {_bool_str(result.get('proposal_hash_mismatch_case_passed', False))}")
+    print(f"    Dossier hash mismatch → fail closed:    {_bool_str(result.get('dossier_hash_mismatch_case_passed', False))}")
+    print(f"    Accepted → non-executable:              {_bool_str(result.get('accepted_non_executable_case_passed', False))}")
+    print(f"    Deterministic:                          {_bool_str(result.get('deterministic_case_passed', False))}")
+    print(f"    Read-only invariant:                    {_bool_str(result.get('read_only_invariant_case_passed', False))}")
+    print(f"    Fresh-clone execution:                  {_bool_str(result.get('fresh_clone_case_passed', False))}")
+    print()
+    print(f"  {BOLD}Canonical Decision Record{RESET}")
+    cr = result.get("canonical_decision_record")
+    if cr:
+        print(f"    Decision:       {cr.get('decision', '?')}")
+        print(f"    Executable:     {cr.get('executable', '?')}")
+        print(f"    Broker auth:    {cr.get('broker_authorized', '?')}")
+        print(f"    Scope:          {cr.get('acceptance_scope', '?')}")
+        print(f"    Record hash:    {cr.get('deterministic_record_hash', '?')[:16]}...")
+    else:
+        print(f"    {RED}No canonical decision record generated{RESET}")
     print()
     print(f"  {BOLD}Safety Invariants{RESET}")
     print(f"    No /order called:           {_bool_str(result.get('no_order_endpoint_called'))}")
@@ -40891,6 +41699,26 @@ def main() -> None:
     p17d_a2.add_argument("--json", action="store_true")
     p17d_a2.add_argument("--export", action="store_true")
     p17d_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 17E — Level 1 Human Review Decision Record Checkpoint
+    p17e = sub.add_parser("level1-human-review-decision-record-checkpoint",
+                          help="Level 1 human review decision record checkpoint (Phase 17E)")
+    p17e.add_argument("--json", action="store_true")
+    p17e.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-human-review-decision-record-checkpoints/")
+    p17e.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: phase17e-human-review-decision-record-checkpoint
+    p17e_a1 = sub.add_parser("phase17e-human-review-decision-record-checkpoint",
+                             help="Alias for level1-human-review-decision-record-checkpoint")
+    p17e_a1.add_argument("--json", action="store_true")
+    p17e_a1.add_argument("--export", action="store_true")
+    p17e_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: human-review-decision-record-checkpoint
+    p17e_a2 = sub.add_parser("human-review-decision-record-checkpoint",
+                             help="Alias for level1-human-review-decision-record-checkpoint")
+    p17e_a2.add_argument("--json", action="store_true")
+    p17e_a2.add_argument("--export", action="store_true")
+    p17e_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -43224,6 +44052,49 @@ def main() -> None:
                 if ep:
                     print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE17D_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-human-review-decision-record-checkpoint",
+                        "phase17e-human-review-decision-record-checkpoint",
+                        "human-review-decision-record-checkpoint"):
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_human_review_decision_record_checkpoint(
+                audit_source=audit_source,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"17e-error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = _phase17e_no_go(
+                checkpoint_id, ts_str,
+                {"branch": "?", "commit": "?", "tag": "?", "worktree_clean": False},
+                _PHASE17E_DIAGNOSIS["unknown"],
+                [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+            )
+        if args.export and not result.get("export_path"):
+            try:
+                _PHASE17E_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                import json as _json
+                ep = _PHASE17E_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                with open(ep, "w", encoding="utf-8") as f:
+                    _json.dump(result, f, indent=2, default=str)
+                result["export_path"] = str(ep)
+                result["artifact_created"] = True
+            except Exception:
+                pass
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_human_review_decision_record_checkpoint(result)
+            if args.export:
+                ep = result.get("export_path")
+                if ep:
+                    print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE17E_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

@@ -663,3 +663,83 @@ class TestPhase17GCLI:
             assert cs is not None, "canonical_simulation_dossier must not be None when diagnosis is ready"
             assert "simulation_state" in cs
             assert "deterministic_simulation_hash" in cs
+
+
+# ── Regression: Determinism at scale ────────────────────────────────────────
+
+class TestRegressionDeterminismAtScale17G:
+    """Prove that 20+ identical calls produce identical results."""
+
+    def test_20_ready_sims_all_same_state(self):
+        """20 identical simulations → all SIMULATION_READY, all all_gates_passed=true."""
+        sims = [_make_ready_sim() for _ in range(20)]
+        for i, sim in enumerate(sims):
+            assert sim["simulation_state"] == "SIMULATION_READY", \
+                f"Sim {i}: expected SIMULATION_READY, got {sim['simulation_state']}"
+            assert sim["simulated_gate_results"]["all_gates_passed"] is True, \
+                f"Sim {i}: all_gates_passed should be True"
+            assert sim["executable"] is False, f"Sim {i}: executable should be False"
+            assert sim["broker_preflight_called"] is False, f"Sim {i}: broker_preflight_called should be False"
+
+    def test_20_ready_sims_all_identical_hash(self):
+        """20 identical simulations → all have the same deterministic hash."""
+        sims = [_make_ready_sim() for _ in range(20)]
+        hashes = [s["deterministic_simulation_hash"] for s in sims]
+        first_hash = hashes[0]
+        for i, h in enumerate(hashes):
+            assert h == first_hash, \
+                f"Sim {i} hash differs: {h[:16]}... vs {first_hash[:16]}..."
+
+    def test_20_ready_sims_all_identical_blocker_count(self):
+        """20 identical simulations → all have zero blockers."""
+        sims = [_make_ready_sim() for _ in range(20)]
+        for i, sim in enumerate(sims):
+            assert sim["blocker_count"] == 0, \
+                f"Sim {i}: expected 0 blockers, got {sim['blocker_count']}: {sim.get('blockers', [])}"
+
+
+# ── Regression: Upstream records unchanged after 17G build ────────────────
+
+class TestRegressionUpstreamRecordsUnchanged17G:
+    """Prove that Phase 17G builder does not mutate upstream evidence records."""
+
+    def test_proposal_unchanged_after_17g(self):
+        import copy
+        plan = _build_ready_plan_draft()
+        bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+        proposal = _generate_proposal_packet("AAPL", bars)
+        proposal_before = copy.deepcopy(proposal)
+        _create_simulated_preflight_dossier(plan, proposal)
+        assert proposal == proposal_before, "Proposal was mutated by _create_simulated_preflight_dossier"
+
+    def test_dossier_unchanged_after_17g(self):
+        import copy
+        plan = _build_ready_plan_draft()
+        bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+        proposal = _generate_proposal_packet("AAPL", bars)
+        dossier = _review_proposal_dossier(proposal)
+        dossier_before = copy.deepcopy(dossier)
+        _create_simulated_preflight_dossier(plan, proposal, dossier=dossier)
+        assert dossier == dossier_before, "Dossier was mutated by _create_simulated_preflight_dossier"
+
+    def test_plan_unchanged_after_17g(self):
+        import copy
+        plan = _build_ready_plan_draft()
+        plan_before = copy.deepcopy(plan)
+        bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+        proposal = _generate_proposal_packet("AAPL", bars)
+        _create_simulated_preflight_dossier(plan, proposal)
+        assert plan == plan_before, "Plan was mutated by _create_simulated_preflight_dossier"
+
+    def test_decision_unchanged_after_17g(self):
+        import copy
+        plan = _build_ready_plan_draft()
+        bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+        proposal = _generate_proposal_packet("AAPL", bars)
+        dossier = _review_proposal_dossier(proposal)
+        decision = _build_accepted_decision_record()
+        decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+        decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+        decision_before = copy.deepcopy(decision)
+        _create_simulated_preflight_dossier(plan, proposal, dossier=dossier, decision_record=decision)
+        assert decision == decision_before, "Decision was mutated by _create_simulated_preflight_dossier"

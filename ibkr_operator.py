@@ -13115,14 +13115,27 @@ def _compute_evidence_hash(data: object) -> str:
     """Compute a SHA-256 hash of canonicalised review evidence.
 
     Used to provide tamper-evident packaging for manual review.
-    Excludes volatile fields (timestamp, review_id, evidence_hash itself).
+    Excludes volatile fields (timestamps, IDs, export paths, evidence_hash itself)
+    so the hash is deterministic regardless of wall-clock time or environment.
     """
     import hashlib
+    # Fields excluded from hash: any timestamp, any generated ID, export paths,
+    # the evidence hash itself, and any field whose key ends with _timestamp or
+    # contains _id (except proposal_id which identifies the proposal).
+    _volatile_keys = {
+        "timestamp", "review_id", "evidence_hash", "generated_at_utc",
+        "dossier_id", "record_id", "decision_timestamp", "review_timestamp",
+        "simulation_timestamp", "plan_timestamp", "checkpoint_id",
+        "simulation_id", "plan_checkpoint_id", "export_path", "_export_path",
+        "generated_at", "synthetic_at",
+    }
     if isinstance(data, dict):
         canonical = {
             k: _compute_evidence_hash(v)
             for k, v in sorted(data.items())
-            if k not in ("timestamp", "review_id", "evidence_hash", "generated_at_utc")
+            if k not in _volatile_keys
+               and not k.endswith("_at_utc")
+               and not (k.endswith("_id") and k != "proposal_id")
         }
         raw = json.dumps(canonical, sort_keys=True, default=str, ensure_ascii=False)
     elif isinstance(data, list):
@@ -27389,6 +27402,95 @@ _PHASE17G_EXPLICIT_NON_ACTIONS: list[str] = [
     "SIMULATION_READY means a simulated preflight passed local checks for human review; it does not authorize broker execution, preflight, approval, or submission.",
 ]
 
+# ---------------------------------------------------------------------------
+# Phase 17H — Level 1 Human Simulation Review Decision Record Checkpoint
+# ---------------------------------------------------------------------------
+
+_PHASE17H_EXPORT_DIR = OPENCLAW_DIR / "level1-human-simulation-review-decision-record-checkpoints"
+
+_PHASE17H_DIAGNOSIS = {
+    "ready": "level1_human_simulation_review_decision_record_ok",
+    "git_worktree_dirty": "git_worktree_dirty",
+    "bridge_unreachable": "bridge_unreachable",
+    "runtime_not_connected": "runtime_not_connected",
+    "mode_not_paper": "mode_not_paper",
+    "read_only_not_true": "read_only_not_true",
+    "allow_orders_not_false": "allow_orders_not_false",
+    "endpoints_not_ok": "endpoints_not_ok",
+    "positions_not_flat": "positions_not_flat",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "kpi_not_hold_system_locked": "kpi_not_hold_system_locked",
+    "accept_case_failed": "accept_case_failed",
+    "pending_missing_decision_failed": "pending_missing_decision_failed",
+    "reject_case_failed": "reject_case_failed",
+    "defer_case_failed": "defer_case_failed",
+    "missing_reason_fail_closed_failed": "missing_reason_fail_closed_failed",
+    "missing_reviewer_fail_closed_failed": "missing_reviewer_fail_closed_failed",
+    "blocked_sim_accept_blocked_failed": "blocked_sim_accept_blocked_failed",
+    "pending_input_accept_blocked_failed": "pending_input_accept_blocked_failed",
+    "non_ready_sim_accept_blocked_failed": "non_ready_sim_accept_blocked_failed",
+    "failed_gate_accept_blocked_failed": "failed_gate_accept_blocked_failed",
+    "broker_preflight_called_accept_blocked_failed": "broker_preflight_called_accept_blocked_failed",
+    "executable_true_accept_blocked_failed": "executable_true_accept_blocked_failed",
+    "broker_authorized_true_accept_blocked_failed": "broker_authorized_true_accept_blocked_failed",
+    "missing_proposal_hash_failed": "missing_proposal_hash_failed",
+    "missing_dossier_hash_failed": "missing_dossier_hash_failed",
+    "missing_decision_hash_failed": "missing_decision_hash_failed",
+    "missing_order_plan_hash_failed": "missing_order_plan_hash_failed",
+    "missing_simulation_hash_failed": "missing_simulation_hash_failed",
+    "proposal_hash_mismatch_failed": "proposal_hash_mismatch_failed",
+    "dossier_hash_mismatch_failed": "dossier_hash_mismatch_failed",
+    "decision_hash_mismatch_failed": "decision_hash_mismatch_failed",
+    "order_plan_hash_mismatch_failed": "order_plan_hash_mismatch_failed",
+    "simulation_hash_mismatch_failed": "simulation_hash_mismatch_failed",
+    "tampered_evidence_ref_failed": "tampered_evidence_ref_failed",
+    "blocker_ordering_failed": "blocker_ordering_failed",
+    "deterministic_failed": "deterministic_failed",
+    "timestamp_independent_failed": "timestamp_independent_failed",
+    "immutable_evidence_failed": "immutable_evidence_failed",
+    "no_forbidden_endpoints_failed": "no_forbidden_endpoints_failed",
+    "no_broker_identifiers_failed": "no_broker_identifiers_failed",
+    "read_only_invariant_failed": "read_only_invariant_failed",
+    "fresh_clone_failed": "fresh_clone_failed",
+    "full_chain_non_executable_failed": "full_chain_non_executable_failed",
+    "unknown": "unknown",
+}
+
+_PHASE17H_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not call /connect.",
+    "This command did not call ibkr-trade-window.",
+    "This command did not call any broker mutation endpoint.",
+    "This command did not create broker orders.",
+    "This command did not submit orders.",
+    "This command did not cancel/modify orders.",
+    "This command did not mutate account state.",
+    "This command did not mutate position state.",
+    "This command did not open an order window.",
+    "This command did not read/use H1 token.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "This command did not call trade-window helper in any mode.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not change autonomy level.",
+    "This command did not call any mutation endpoint.",
+    "This command did not read ~/.openclaw from pure tests.",
+    "This command never read the raw H1 token file from pure tests.",
+    "Only allowed writes are export/simulated-review-decision-record artifacts.",
+    "This checkpoint produces human review decision records from simulated-preflight dossiers without calling any broker endpoint, enabling orders, using H1, or opening an order window.",
+    "Synthetic fixture tests use in-memory data only — never require real IBKR Gateway, systemd, ~/.openclaw, or H1 token.",
+    "All decision records produced are advisory-only, non-executable, and non-authorized.",
+    "ACCEPTED_FOR_CANDIDATE_PACKAGING means candidate packaging only; it does not authorize broker preflight, execution, approval, or submission.",
+    "CANDIDATE_PACKAGING_ONLY means only non-executable planning candidate packaging is permitted, not broker interaction.",
+]
+
 
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
@@ -37743,9 +37845,8 @@ def _generate_proposal_packet(
         "export_path": None,
     }
 
-    # Compute evidence hash
-    canonical = _json.dumps(proposal, sort_keys=True, separators=(",", ":"))
-    proposal["evidence_hash"] = hashlib.sha256(canonical.encode()).hexdigest()
+    # Compute evidence hash (excludes timestamp and volatile IDs)
+    proposal["evidence_hash"] = _compute_evidence_hash(proposal)
 
     return proposal
 
@@ -38235,9 +38336,8 @@ def _review_proposal_dossier(proposal: dict) -> dict:
         },
     }
 
-    # ---- Compute deterministic dossier evidence hash ----
-    canonical_dossier = _json.dumps(dossier, sort_keys=True, separators=(",", ":"))
-    dossier["evidence_hash"] = hashlib.sha256(canonical_dossier.encode()).hexdigest()
+    # ---- Compute deterministic dossier evidence hash (excludes timestamps) ----
+    dossier["evidence_hash"] = _compute_evidence_hash(dossier)
     dossier["immutable_evidence"]["dossier_evidence_hash"] = dossier["evidence_hash"]
 
     return dossier
@@ -38613,9 +38713,8 @@ def _create_decision_record(
         "dossier_decision_state": dossier_decision_state,
     }
 
-    # ---- Compute deterministic record hash ----
-    canonical = _json.dumps(decision_record, sort_keys=True, separators=(",", ":"))
-    decision_record["deterministic_record_hash"] = hashlib.sha256(canonical.encode()).hexdigest()
+    # ---- Compute deterministic record hash (excludes timestamps) ----
+    decision_record["deterministic_record_hash"] = _compute_evidence_hash(decision_record)
 
     return decision_record
 
@@ -39177,10 +39276,8 @@ def _create_order_plan_draft(
         "plan_timestamp": ts_str,
     }
 
-    # ---- Compute deterministic plan hash (exclude the hash field itself) ----
-    canonical = _json.dumps({k: v for k, v in order_plan_draft.items() if k != "deterministic_plan_hash"},
-                            sort_keys=True, separators=(",", ":"))
-    order_plan_draft["deterministic_plan_hash"] = hashlib.sha256(canonical.encode()).hexdigest()
+    # ---- Compute deterministic plan hash (excludes timestamps and volatile fields) ----
+    order_plan_draft["deterministic_plan_hash"] = _compute_evidence_hash(order_plan_draft)
 
     return order_plan_draft
 
@@ -39806,10 +39903,22 @@ def _create_simulated_preflight_dossier(
 
     Only a Phase 17F draft with plan_state PLANNING_DRAFT_READY and all auth
     fields false may produce SIMULATION_READY.
+
+    Input dicts are deep-copied to prevent downstream mutation of upstream
+    evidence records.
     """
+    import copy
     import hashlib
     import json as _json
     from datetime import datetime, timezone
+
+    # Deep-copy all inputs to prevent mutation leaks
+    order_plan_draft = copy.deepcopy(order_plan_draft)
+    proposal = copy.deepcopy(proposal)
+    if dossier is not None:
+        dossier = copy.deepcopy(dossier)
+    if decision_record is not None:
+        decision_record = copy.deepcopy(decision_record)
 
     now_utc = datetime.now(timezone.utc)
     ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -40247,10 +40356,8 @@ def _create_simulated_preflight_dossier(
         "simulation_timestamp": ts_str,
     }
 
-    # ---- Compute deterministic simulation hash ----
-    canonical = _json.dumps({k: v for k, v in sim_dossier.items() if k != "deterministic_simulation_hash"},
-                            sort_keys=True, separators=(",", ":"))
-    sim_dossier["deterministic_simulation_hash"] = hashlib.sha256(canonical.encode()).hexdigest()
+    # ---- Compute deterministic simulation hash (excludes timestamps) ----
+    sim_dossier["deterministic_simulation_hash"] = _compute_evidence_hash(sim_dossier)
 
     return sim_dossier
 
@@ -40548,6 +40655,939 @@ def _synthetic_fixture_full_chain_17g() -> dict:
     ])
     passed = all_non_exec and plan.get("plan_state") == "PLANNING_DRAFT_READY"
     return {"passed": passed, "case": "full_chain_17g", "plan_ready": plan.get("plan_state") == "PLANNING_DRAFT_READY", "all_non_exec": all_non_exec}
+
+
+# ---------------------------------------------------------------------------
+# Phase 17H — Human Simulation Review Decision Record
+# ---------------------------------------------------------------------------
+
+
+def _build_ready_sim_dossier() -> dict:
+    """Helper: build a SIMULATION_READY dossier for Phase 17H fixture tests."""
+    plan = _build_ready_plan_draft()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    dossier = _review_proposal_dossier(proposal)
+    decision = _build_accepted_decision_record()
+    decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+    decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+    return _create_simulated_preflight_dossier(plan, proposal, dossier, decision)
+
+
+def _build_blocked_sim_dossier() -> dict:
+    """Helper: build a BLOCKED simulation dossier (TSLA)."""
+    plan = _build_blocked_plan_draft()
+    bars = _generate_synthetic_ohlc_bars("TSLA", 30)
+    proposal = _generate_proposal_packet("TSLA", bars)
+    return _create_simulated_preflight_dossier(plan, proposal)
+
+
+def _create_simulation_review_decision_record(
+    sim_dossier: dict,
+    proposal: dict,
+    dossier: dict | None = None,
+    decision_record: dict | None = None,
+    order_plan: dict | None = None,
+    decision: str = "",
+    reviewer: str = "",
+    decision_reason: str = "",
+) -> dict:
+    """Create a deterministic, immutable human simulation review decision record.
+
+    Consumes a Phase 17G simulated-preflight dossier and produces a human review
+    decision record. This is planning-only and advisory-only.
+
+    Decision states:
+    - PENDING_REVIEW
+    - ACCEPTED_FOR_CANDIDATE_PACKAGING
+    - REJECTED
+    - DEFERRED
+    - BLOCKED
+
+    Only a Phase 17G dossier with:
+    - simulation_state == SIMULATION_READY
+    - planning_scope == PLANNING_ONLY
+    - executable == false
+    - broker_authorized == false
+    - preflight_authorized == false
+    - approval_authorized == false
+    - submission_authorized == false
+    - broker_preflight_called == false
+
+    may receive ACCEPTED_FOR_CANDIDATE_PACKAGING.
+
+    Input dicts are deep-copied to prevent downstream mutation of upstream
+    evidence records.
+    """
+    import copy
+    import hashlib
+    import json as _json
+    from datetime import datetime, timezone
+
+    # Deep-copy all inputs to prevent mutation leaks
+    sim_dossier = copy.deepcopy(sim_dossier)
+    proposal = copy.deepcopy(proposal)
+    if dossier is not None:
+        dossier = copy.deepcopy(dossier)
+    if decision_record is not None:
+        decision_record = copy.deepcopy(decision_record)
+    if order_plan is not None:
+        order_plan = copy.deepcopy(order_plan)
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    date_str = now_utc.strftime("%Y%m%d")
+
+    # ---- Extract simulation dossier fields ----
+    simulation_state = sim_dossier.get("simulation_state", "UNKNOWN")
+    planning_scope = sim_dossier.get("planning_scope", "")
+    sim_executable = sim_dossier.get("executable", None)
+    sim_broker_authorized = sim_dossier.get("broker_authorized", None)
+    sim_preflight_authorized = sim_dossier.get("preflight_authorized", None)
+    sim_approval_authorized = sim_dossier.get("approval_authorized", None)
+    sim_submission_authorized = sim_dossier.get("submission_authorized", None)
+    sim_broker_preflight_called = sim_dossier.get("broker_preflight_called", None)
+    simulation_record_hash = sim_dossier.get("deterministic_simulation_hash", "")
+    proposal_id = sim_dossier.get("proposal_id", "unknown")
+    proposal_evidence_hash_from_sim = sim_dossier.get("proposal_evidence_hash", "")
+    dossier_evidence_hash_from_sim = sim_dossier.get("dossier_evidence_hash", "")
+    decision_record_hash_from_sim = sim_dossier.get("decision_record_hash", "")
+    order_plan_hash_from_sim = sim_dossier.get("order_plan_hash", "")
+    strategy_version = sim_dossier.get("strategy_version", "unknown")
+    symbol = sim_dossier.get("symbol", "UNKNOWN")
+    side = sim_dossier.get("side", "UNKNOWN")
+    quantity = sim_dossier.get("quantity", 0)
+    simulated_gates = sim_dossier.get("simulated_gate_results", {})
+    all_gates_passed = simulated_gates.get("all_gates_passed", False)
+    sim_blockers = sim_dossier.get("blockers", [])
+    immutable_refs = sim_dossier.get("immutable_evidence_references", {})
+
+    # ---- Validate evidence hashes ----
+    peh_valid = bool(proposal_evidence_hash_from_sim and len(proposal_evidence_hash_from_sim) == 64
+                     and all(c in "0123456789abcdef" for c in proposal_evidence_hash_from_sim))
+    deh_valid = bool(dossier_evidence_hash_from_sim and len(dossier_evidence_hash_from_sim) == 64
+                     and all(c in "0123456789abcdef" for c in dossier_evidence_hash_from_sim))
+    drh_valid = bool(decision_record_hash_from_sim and len(decision_record_hash_from_sim) == 64
+                     and all(c in "0123456789abcdef" for c in decision_record_hash_from_sim))
+    oph_valid = bool(order_plan_hash_from_sim and len(order_plan_hash_from_sim) == 64
+                     and all(c in "0123456789abcdef" for c in order_plan_hash_from_sim))
+    srh_valid = bool(simulation_record_hash and len(simulation_record_hash) == 64
+                     and all(c in "0123456789abcdef" for c in simulation_record_hash))
+
+    # ---- Actual evidence hashes for cross-verification ----
+    actual_proposal_hash = proposal.get("evidence_hash", "") if proposal else ""
+    actual_dossier_hash = dossier.get("evidence_hash", "") if dossier else ""
+    actual_decision_hash = decision_record.get("deterministic_record_hash", "") if decision_record else ""
+    actual_order_plan_hash = order_plan.get("deterministic_plan_hash", "") if order_plan else ""
+
+    # ---- Build blocker list (deterministic ordering) ----
+    blockers: list[dict] = []
+
+    # 1. Validate simulation record hash
+    if not srh_valid:
+        blockers.append({
+            "blocker": "invalid_simulation_record_hash",
+            "detail": f"Simulation record hash is missing or invalid.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # 2. Validate all evidence hashes
+    if not peh_valid:
+        blockers.append({
+            "blocker": "missing_or_invalid_proposal_hash",
+            "detail": "Proposal evidence hash is missing or invalid.",
+            "severity": "HARD_BLOCK",
+        })
+    if not deh_valid:
+        blockers.append({
+            "blocker": "missing_or_invalid_dossier_hash",
+            "detail": "Dossier evidence hash is missing or invalid.",
+            "severity": "HARD_BLOCK",
+        })
+    if not drh_valid:
+        blockers.append({
+            "blocker": "missing_or_invalid_decision_hash",
+            "detail": "Phase 17E decision record hash is missing or invalid.",
+            "severity": "HARD_BLOCK",
+        })
+    if not oph_valid:
+        blockers.append({
+            "blocker": "missing_or_invalid_order_plan_hash",
+            "detail": "Order plan hash is missing or invalid.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # 3. Hash mismatches (cross-verify against actual evidence)
+    if peh_valid and actual_proposal_hash and proposal_evidence_hash_from_sim != actual_proposal_hash:
+        blockers.append({
+            "blocker": "proposal_hash_mismatch",
+            "detail": "Proposal evidence hash in simulation does not match actual proposal.",
+            "severity": "HARD_BLOCK",
+        })
+    if deh_valid and actual_dossier_hash and dossier_evidence_hash_from_sim != actual_dossier_hash:
+        blockers.append({
+            "blocker": "dossier_hash_mismatch",
+            "detail": "Dossier evidence hash in simulation does not match actual dossier.",
+            "severity": "HARD_BLOCK",
+        })
+    if drh_valid and actual_decision_hash and decision_record_hash_from_sim != actual_decision_hash:
+        blockers.append({
+            "blocker": "decision_hash_mismatch",
+            "detail": "Decision record hash in simulation does not match actual decision record.",
+            "severity": "HARD_BLOCK",
+        })
+    if oph_valid and actual_order_plan_hash and order_plan_hash_from_sim != actual_order_plan_hash:
+        blockers.append({
+            "blocker": "order_plan_hash_mismatch",
+            "detail": "Order plan hash in simulation does not match actual order plan.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # 4. Validate immutable evidence references against sim dossier
+    ref_proposal_hash = immutable_refs.get("proposal_evidence_hash", "")
+    ref_dossier_hash = immutable_refs.get("dossier_evidence_hash", "")
+    ref_decision_hash = immutable_refs.get("decision_record_hash", "")
+    ref_order_plan_hash = immutable_refs.get("order_plan_hash", "")
+
+    if ref_proposal_hash != proposal_evidence_hash_from_sim:
+        blockers.append({
+            "blocker": "tampered_evidence_reference",
+            "detail": "Immutable evidence proposal hash reference does not match simulation dossier.",
+            "severity": "HARD_BLOCK",
+        })
+    if ref_dossier_hash != dossier_evidence_hash_from_sim:
+        blockers.append({
+            "blocker": "tampered_evidence_reference",
+            "detail": "Immutable evidence dossier hash reference does not match simulation dossier.",
+            "severity": "HARD_BLOCK",
+        })
+    if ref_decision_hash != decision_record_hash_from_sim:
+        blockers.append({
+            "blocker": "tampered_evidence_reference",
+            "detail": "Immutable evidence decision record hash reference does not match simulation dossier.",
+            "severity": "HARD_BLOCK",
+        })
+    if ref_order_plan_hash != order_plan_hash_from_sim:
+        blockers.append({
+            "blocker": "tampered_evidence_reference",
+            "detail": "Immutable evidence order plan hash reference does not match simulation dossier.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # 5. Simulation state must be SIMULATION_READY
+    if simulation_state != "SIMULATION_READY":
+        blockers.append({
+            "blocker": "simulation_not_ready",
+            "detail": f"Simulation state is '{simulation_state}', must be SIMULATION_READY.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # 6. Planning scope must be PLANNING_ONLY
+    if planning_scope != "PLANNING_ONLY":
+        blockers.append({
+            "blocker": "scope_not_planning_only",
+            "detail": f"Planning scope is '{planning_scope}', must be PLANNING_ONLY.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # 7. All auth fields must be false
+    auth_checks = [
+        ("executable", sim_executable),
+        ("broker_authorized", sim_broker_authorized),
+        ("preflight_authorized", sim_preflight_authorized),
+        ("approval_authorized", sim_approval_authorized),
+        ("submission_authorized", sim_submission_authorized),
+    ]
+    for field_name, value in auth_checks:
+        if value is not False:
+            blockers.append({
+                "blocker": f"{field_name}_not_false",
+                "detail": f"Simulation has {field_name}={value}, must be false.",
+                "severity": "HARD_BLOCK",
+            })
+
+    # 8. broker_preflight_called must be false
+    if sim_broker_preflight_called is not False:
+        blockers.append({
+            "blocker": "broker_preflight_called_not_false",
+            "detail": f"Simulation has broker_preflight_called={sim_broker_preflight_called}, must be false.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # 9. All simulated gates must have passed
+    if not all_gates_passed:
+        blockers.append({
+            "blocker": "simulated_gate_failure",
+            "detail": "Not all simulated gates passed — dossier must have all_gates_passed=true.",
+            "severity": "HARD_BLOCK",
+        })
+
+    # 10. Any blockers from the sim dossier itself
+    for b in sim_blockers:
+        blockers.append({
+            "blocker": f"sim_dossier_{b.get('blocker', 'unknown')}",
+            "detail": f"Simulation dossier carries blocker: {b.get('detail', 'unknown')}",
+            "severity": "HARD_BLOCK",
+        })
+
+    # 11. Missing or duplicated blocker checks
+    blocker_names = [b.get("blocker") for b in blockers]
+    if len(blocker_names) != len(set(blocker_names)):
+        pass  # Duplicates not blocked separately
+
+    # ---- Normalize decision ----
+    normalized_decision = decision.strip().upper() if decision else ""
+
+    decision_aliases = {
+        "ACCEPT": "ACCEPTED_FOR_CANDIDATE_PACKAGING",
+        "APPROVE": "ACCEPTED_FOR_CANDIDATE_PACKAGING",
+        "REJECT": "REJECTED",
+        "DECLINE": "REJECTED",
+        "DEFER": "DEFERRED",
+        "PENDING": "PENDING_REVIEW",
+        "": "PENDING_REVIEW",
+    }
+    if normalized_decision in decision_aliases:
+        normalized_decision = decision_aliases[normalized_decision]
+
+    valid_decisions = {"PENDING_REVIEW", "ACCEPTED_FOR_CANDIDATE_PACKAGING", "REJECTED", "DEFERRED", "BLOCKED"}
+    if normalized_decision not in valid_decisions:
+        blockers.append({
+            "blocker": "invalid_decision",
+            "detail": f"Invalid decision '{decision}'.",
+            "severity": "HARD_BLOCK",
+        })
+        normalized_decision = "BLOCKED"
+
+    # ---- ACCEPTED_FOR_CANDIDATE_PACKAGING must pass all gates ----
+    if normalized_decision == "ACCEPTED_FOR_CANDIDATE_PACKAGING":
+        if len(blockers) > 0:
+            normalized_decision = "BLOCKED"
+        if not reviewer or not reviewer.strip():
+            blockers.append({
+                "blocker": "missing_reviewer",
+                "detail": "Reviewer identifier is required for ACCEPTED_FOR_CANDIDATE_PACKAGING.",
+                "severity": "HARD_BLOCK",
+            })
+            normalized_decision = "BLOCKED"
+
+    # ---- Missing decision → PENDING_REVIEW ----
+    if not decision or not decision.strip():
+        if len(blockers) == 0:
+            normalized_decision = "PENDING_REVIEW"
+        else:
+            normalized_decision = "BLOCKED"
+
+    # ---- REJECTED / DEFERRED require reason ----
+    if normalized_decision in ("REJECTED", "DEFERRED"):
+        if not decision_reason or not decision_reason.strip():
+            blockers.append({
+                "blocker": "missing_decision_reason",
+                "detail": "Decision reason is required for REJECTED and DEFERRED.",
+                "severity": "HARD_BLOCK",
+            })
+            normalized_decision = "BLOCKED"
+        if not reviewer or not reviewer.strip():
+            blockers.append({
+                "blocker": "missing_reviewer",
+                "detail": "Reviewer identifier is required for explicit decisions.",
+                "severity": "HARD_BLOCK",
+            })
+            normalized_decision = "BLOCKED"
+
+    # ---- BLOCKED if any gate failures ----
+    if len(blockers) > 0 and normalized_decision not in ("BLOCKED",):
+        normalized_decision = "BLOCKED"
+
+    # ---- Determine acceptance scope ----
+    if normalized_decision == "ACCEPTED_FOR_CANDIDATE_PACKAGING":
+        acceptance_scope = "CANDIDATE_PACKAGING_ONLY"
+        candidate_packaging_permitted = True
+    else:
+        acceptance_scope = "NONE"
+        candidate_packaging_permitted = False
+
+    # ---- Build explicit non-actions ----
+    explicit_non_actions = [
+        "This review decision record does not authorize any broker order.",
+        "This review decision record does not authorize broker preflight.",
+        "This review decision record does not authorize order execution.",
+        "This review decision record does not authorize order approval.",
+        "This review decision record does not authorize order submission.",
+        "This review decision record does not authorize H1 token usage.",
+        "This review decision record does not enable orders.",
+        "This review decision record does not mutate broker state.",
+        "This review decision record does not mutate guard state.",
+        "ACCEPTED_FOR_CANDIDATE_PACKAGING means only non-executable candidate packaging; it is not broker preflight, approval, or execution authorization.",
+        "CANDIDATE_PACKAGING_ONLY is advisory-only and non-executable.",
+    ]
+
+    # ---- Build immutable evidence references ----
+    review_immutable_ev = {
+        "proposal_evidence_hash": proposal_evidence_hash_from_sim,
+        "dossier_evidence_hash": dossier_evidence_hash_from_sim,
+        "decision_record_hash": decision_record_hash_from_sim,
+        "order_plan_hash": order_plan_hash_from_sim,
+        "simulation_record_hash": simulation_record_hash,
+        "strategy_version_ref": "docs/strategy_v1.md v1.0.0",
+        "proposal_schema_ref": "docs/proposal_packet_v1.md",
+        "dossier_ref": "Phase 17D review dossier",
+        "decision_record_ref": "Phase 17E decision record",
+        "plan_ref": "Phase 17F order-plan draft",
+        "simulation_ref": "Phase 17G simulated preflight dossier",
+        "review_ref": "Phase 17H simulation review decision record",
+    }
+
+    # ---- Build review record ----
+    review_id = f"simreview-{date_str}-{proposal_id}"
+
+    review_record = {
+        "simulation_review_record_version": "simulation-review-decision-record-v1.0.0",
+        "review_state": normalized_decision,
+        "review_id": review_id,
+        "proposal_id": proposal_id,
+        "proposal_evidence_hash": proposal_evidence_hash_from_sim,
+        "dossier_evidence_hash": dossier_evidence_hash_from_sim,
+        "decision_record_hash": decision_record_hash_from_sim,
+        "order_plan_hash": order_plan_hash_from_sim,
+        "simulation_record_hash": simulation_record_hash,
+        "strategy_version": strategy_version,
+        "symbol": symbol,
+        "side": side,
+        "quantity": quantity,
+        "reviewer_identifier": reviewer.strip() if reviewer else "",
+        "decision": normalized_decision,
+        "decision_reason": decision_reason.strip() if decision_reason else "",
+        "review_timestamp": ts_str,
+        "acceptance_scope": acceptance_scope,
+        "candidate_packaging_permitted": candidate_packaging_permitted,
+        "planning_scope": "PLANNING_ONLY",
+        "executable": False,
+        "broker_authorized": False,
+        "preflight_authorized": False,
+        "approval_authorized": False,
+        "submission_authorized": False,
+        "broker_preflight_called": False,
+        "immutable_evidence_references": review_immutable_ev,
+        "blockers": blockers,
+        "blocker_count": len(blockers),
+        "explicit_non_actions": explicit_non_actions,
+    }
+
+    # ---- Compute deterministic review hash (excludes timestamps) ----
+    review_record["deterministic_review_hash"] = _compute_evidence_hash(review_record)
+
+    return review_record
+
+
+# ---------------------------------------------------------------------------
+# Phase 17H synthetic fixtures
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_fixture_missing_decision_pending_17h() -> dict:
+    """Case 1: Missing decision → PENDING_REVIEW."""
+    sim = _build_ready_sim_dossier()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(sim, proposal, decision="", reviewer="", decision_reason="")
+    review_ok = record.get("review_state") == "PENDING_REVIEW"
+    non_exec = record.get("executable") is False
+    passed = review_ok and non_exec
+    return {"passed": passed, "case": "missing_decision_pending_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_accept_for_candidate_packaging_17h() -> dict:
+    """Case 2: Explicit accept of valid SIMULATION_READY → ACCEPTED_FOR_CANDIDATE_PACKAGING."""
+    sim = _build_ready_sim_dossier()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    dossier = _review_proposal_dossier(proposal)
+    decision = _build_accepted_decision_record()
+    decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+    decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+    plan = _build_ready_plan_draft()
+    record = _create_simulation_review_decision_record(
+        sim, proposal, dossier=dossier, decision_record=decision, order_plan=plan,
+        decision="ACCEPT", reviewer="Chris", decision_reason="Simulation gates passed — ready for candidate packaging."
+    )
+    review_ok = record.get("review_state") == "ACCEPTED_FOR_CANDIDATE_PACKAGING"
+    scope_ok = record.get("acceptance_scope") == "CANDIDATE_PACKAGING_ONLY"
+    cp_ok = record.get("candidate_packaging_permitted") is True
+    non_exec = record.get("executable") is False
+    ba_ok = record.get("broker_authorized") is False
+    pa_ok = record.get("preflight_authorized") is False
+    ap_ok = record.get("approval_authorized") is False
+    sa_ok = record.get("submission_authorized") is False
+    bpc_ok = record.get("broker_preflight_called") is False
+    has_hash = len(record.get("deterministic_review_hash", "")) == 64
+    passed = all([review_ok, scope_ok, cp_ok, non_exec, ba_ok, pa_ok, ap_ok, sa_ok, bpc_ok, has_hash])
+    return {"passed": passed, "case": "accept_for_candidate_packaging_17h",
+            "review_state": record.get("review_state"), "acceptance_scope": record.get("acceptance_scope"),
+            "candidate_packaging_permitted": record.get("candidate_packaging_permitted")}
+
+
+def _synthetic_fixture_explicit_reject_17h() -> dict:
+    """Case 3: Explicit reject succeeds."""
+    sim = _build_ready_sim_dossier()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="REJECT", reviewer="Chris", decision_reason="Risk appetite changed."
+    )
+    review_ok = record.get("review_state") == "REJECTED"
+    non_exec = record.get("executable") is False
+    passed = review_ok and non_exec
+    return {"passed": passed, "case": "explicit_reject_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_explicit_defer_17h() -> dict:
+    """Case 4: Explicit defer succeeds."""
+    sim = _build_ready_sim_dossier()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="DEFER", reviewer="Chris", decision_reason="Waiting for earnings report."
+    )
+    review_ok = record.get("review_state") == "DEFERRED"
+    non_exec = record.get("executable") is False
+    passed = review_ok and non_exec
+    return {"passed": passed, "case": "explicit_defer_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_missing_reason_fail_closed_17h() -> dict:
+    """Case 5: Reject without reason fails closed."""
+    sim = _build_ready_sim_dossier()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="REJECT", reviewer="Chris", decision_reason=""
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("missing_decision_reason" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "missing_reason_fail_closed_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_missing_reviewer_fail_closed_17h() -> dict:
+    """Case 6: Missing reviewer for explicit decision fails closed."""
+    sim = _build_ready_sim_dossier()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="", decision_reason="Try without reviewer."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("missing_reviewer" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "missing_reviewer_fail_closed_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_blocked_sim_accept_blocked_17h() -> dict:
+    """Case 7: BLOCKED simulation cannot be accepted."""
+    sim = _build_blocked_sim_dossier()
+    bars = _generate_synthetic_ohlc_bars("TSLA", 30)
+    proposal = _generate_proposal_packet("TSLA", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Try to accept blocked sim."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("simulation_not_ready" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "blocked_sim_accept_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_non_ready_sim_accept_blocked_17h() -> dict:
+    """Case 8: Non-SIMULATION_READY state cannot be accepted."""
+    sim = _build_ready_sim_dossier()
+    sim["simulation_state"] = "PENDING_INPUT"
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Try to accept non-ready sim."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("simulation_not_ready" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "non_ready_sim_accept_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_failed_gate_accept_blocked_17h() -> dict:
+    """Case 9: Failed simulated gate prevents acceptance."""
+    sim = _build_ready_sim_dossier()
+    sim["simulated_gate_results"]["all_gates_passed"] = False
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Try to accept with failed gate."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("simulated_gate_failure" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "failed_gate_accept_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_broker_preflight_called_accept_blocked_17h() -> dict:
+    """Case 10: broker_preflight_called=true prevents acceptance."""
+    sim = _build_ready_sim_dossier()
+    sim["broker_preflight_called"] = True
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Try with preflight called."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("broker_preflight_called_not_false" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "broker_preflight_called_accept_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_executable_true_accept_blocked_17h() -> dict:
+    """Case 11: executable=true prevents acceptance."""
+    sim = _build_ready_sim_dossier()
+    sim["executable"] = True
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Try with executable=true."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("executable_not_false" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "executable_true_accept_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_broker_authorized_true_accept_blocked_17h() -> dict:
+    """Case 12: broker_authorized=true prevents acceptance."""
+    sim = _build_ready_sim_dossier()
+    sim["broker_authorized"] = True
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Try with broker_authorized=true."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("broker_authorized_not_false" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "broker_authorized_true_accept_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_missing_proposal_hash_blocked_17h() -> dict:
+    """Case 13: Missing proposal hash fails closed."""
+    sim = _build_ready_sim_dossier()
+    sim["proposal_evidence_hash"] = ""
+    sim["immutable_evidence_references"]["proposal_evidence_hash"] = ""
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Try with missing proposal hash."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("missing_or_invalid_proposal_hash" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "missing_proposal_hash_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_missing_dossier_hash_blocked_17h() -> dict:
+    """Case 14: Missing dossier hash fails closed."""
+    sim = _build_ready_sim_dossier()
+    sim["dossier_evidence_hash"] = ""
+    sim["immutable_evidence_references"]["dossier_evidence_hash"] = ""
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Try with missing dossier hash."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("missing_or_invalid_dossier_hash" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "missing_dossier_hash_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_missing_decision_hash_blocked_17h() -> dict:
+    """Case 15: Missing Phase 17E decision hash fails closed."""
+    sim = _build_ready_sim_dossier()
+    sim["decision_record_hash"] = ""
+    sim["immutable_evidence_references"]["decision_record_hash"] = ""
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Try with missing decision hash."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("missing_or_invalid_decision_hash" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "missing_decision_hash_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_missing_order_plan_hash_blocked_17h() -> dict:
+    """Case 16: Missing order-plan hash fails closed."""
+    sim = _build_ready_sim_dossier()
+    sim["order_plan_hash"] = ""
+    sim["immutable_evidence_references"]["order_plan_hash"] = ""
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Try with missing order-plan hash."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("missing_or_invalid_order_plan_hash" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "missing_order_plan_hash_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_missing_simulation_hash_blocked_17h() -> dict:
+    """Case 17: Missing simulation-record hash fails closed."""
+    sim = _build_ready_sim_dossier()
+    sim["deterministic_simulation_hash"] = ""
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Try with missing simulation hash."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("invalid_simulation_record_hash" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "missing_simulation_hash_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_proposal_hash_mismatch_blocked_17h() -> dict:
+    """Case 18: Proposal hash mismatch fails closed."""
+    sim = _build_ready_sim_dossier()
+    sim["proposal_evidence_hash"] = "0" * 64
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Try with mismatched proposal hash."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("proposal_hash_mismatch" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "proposal_hash_mismatch_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_dossier_hash_mismatch_blocked_17h() -> dict:
+    """Case 19: Dossier hash mismatch fails closed."""
+    sim = _build_ready_sim_dossier()
+    sim["dossier_evidence_hash"] = "0" * 64
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    dossier = _review_proposal_dossier(proposal)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, dossier=dossier, decision="ACCEPT", reviewer="Chris", decision_reason="Try with mismatched dossier hash."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("dossier_hash_mismatch" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "dossier_hash_mismatch_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_decision_hash_mismatch_blocked_17h() -> dict:
+    """Case 20: Decision-record hash mismatch fails closed."""
+    sim = _build_ready_sim_dossier()
+    sim["decision_record_hash"] = "0" * 64
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    dossier = _review_proposal_dossier(proposal)
+    decision = _build_accepted_decision_record()
+    decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+    decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+    record = _create_simulation_review_decision_record(
+        sim, proposal, dossier=dossier, decision_record=decision, decision="ACCEPT", reviewer="Chris", decision_reason="Try with mismatched decision hash."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("decision_hash_mismatch" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "decision_hash_mismatch_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_order_plan_hash_mismatch_blocked_17h() -> dict:
+    """Case 21: Order-plan hash mismatch fails closed."""
+    sim = _build_ready_sim_dossier()
+    sim["order_plan_hash"] = "0" * 64
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    plan = _build_ready_plan_draft()
+    record = _create_simulation_review_decision_record(
+        sim, proposal, order_plan=plan, decision="ACCEPT", reviewer="Chris", decision_reason="Try with mismatched order-plan hash."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("order_plan_hash_mismatch" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "order_plan_hash_mismatch_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_tampered_evidence_ref_blocked_17h() -> dict:
+    """Case 22: Tampered immutable evidence reference fails closed."""
+    sim = _build_ready_sim_dossier()
+    sim["immutable_evidence_references"]["proposal_evidence_hash"] = "f" * 64
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Try with tampered evidence ref."
+    )
+    review_ok = record.get("review_state") == "BLOCKED"
+    has_blocker = any("tampered_evidence_reference" in b.get("blocker", "") for b in record.get("blockers", []))
+    passed = review_ok and has_blocker
+    return {"passed": passed, "case": "tampered_evidence_ref_blocked_17h", "review_state": record.get("review_state")}
+
+
+def _synthetic_fixture_blocker_ordering_deterministic_17h() -> dict:
+    """Case 23: Blocker ordering is deterministic."""
+    sim = _build_ready_sim_dossier()
+    sim["proposal_evidence_hash"] = ""
+    sim["dossier_evidence_hash"] = ""
+    sim["immutable_evidence_references"]["proposal_evidence_hash"] = ""
+    sim["immutable_evidence_references"]["dossier_evidence_hash"] = ""
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    r1 = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Ordering test 1."
+    )
+    r2 = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="Ordering test 2."
+    )
+    b1 = [b.get("blocker") for b in r1.get("blockers", [])]
+    b2 = [b.get("blocker") for b in r2.get("blockers", [])]
+    same_order = b1 == b2
+    passed = same_order and r1.get("review_state") == r2.get("review_state")
+    return {"passed": passed, "case": "blocker_ordering_deterministic_17h", "same_order": same_order}
+
+
+def _synthetic_fixture_deterministic_review_hash_17h() -> dict:
+    """Case 24: Identical semantic inputs produce identical review hash."""
+    sim = _build_ready_sim_dossier()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    dossier = _review_proposal_dossier(proposal)
+    decision = _build_accepted_decision_record()
+    decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+    decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+    plan = _build_ready_plan_draft()
+    r1 = _create_simulation_review_decision_record(
+        sim, proposal, dossier=dossier, decision_record=decision, order_plan=plan,
+        decision="ACCEPT", reviewer="Chris", decision_reason="Determinism test."
+    )
+    r2 = _create_simulation_review_decision_record(
+        sim, proposal, dossier=dossier, decision_record=decision, order_plan=plan,
+        decision="ACCEPT", reviewer="Chris", decision_reason="Determinism test."
+    )
+    same_state = r1.get("review_state") == r2.get("review_state")
+    same_hash = r1.get("deterministic_review_hash") == r2.get("deterministic_review_hash")
+    passed = same_state and same_hash
+    return {"passed": passed, "case": "deterministic_review_hash_17h", "same_state": same_state, "same_hash": same_hash}
+
+
+def _synthetic_fixture_no_forbidden_endpoints_17h() -> dict:
+    """Case 25: No forbidden endpoint, H1, trade-window calls in source."""
+    import inspect
+    src = inspect.getsource(_create_simulation_review_decision_record)
+    forbidden = ["/order", "/connect", "ibkr-trade-window", "sudo", "Path.home()",
+                 "~/.openclaw", "H1_TOKEN", "X-H1-Token"]
+    found = [p for p in forbidden if p in src]
+    passed = len(found) == 0
+    return {"passed": passed, "case": "no_forbidden_endpoints_17h", "found": found}
+
+
+def _synthetic_fixture_no_broker_identifiers_17h() -> dict:
+    """Case 26: No approval, order, contract, or broker identifiers are generated."""
+    import json as _json
+    sim = _build_ready_sim_dossier()
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, decision="ACCEPT", reviewer="Chris", decision_reason="No identifiers test."
+    )
+    rec_json = _json.dumps(record, sort_keys=True)
+    forbidden_ids = ["permId", "order_id", "orderId", "approval_id", "approvalId",
+                     "submission_id", "submissionId", "exec_id", "execId", "conId",
+                     "broker_order_id"]
+    found = [fid for fid in forbidden_ids if fid.lower() in rec_json.lower()]
+    passed = len(found) == 0
+    return {"passed": passed, "case": "no_broker_identifiers_17h", "found": found}
+
+
+def _synthetic_fixture_read_only_invariant_17h() -> dict:
+    """Case 27: Source code of core function does not mutate broker state."""
+    import inspect
+    src = inspect.getsource(_create_simulation_review_decision_record)
+    forbidden_mutations = ["subprocess.run", "os.system", "write_text", "open(", ".env", "systemd",
+                           "allow_orders", "rules.enforced", "system_locked"]
+    found = [p for p in forbidden_mutations if p in src]
+    passed = len(found) == 0
+    return {"passed": passed, "case": "read_only_invariant_17h", "found": found}
+
+
+def _synthetic_fixture_fresh_clone_17h() -> dict:
+    """Case 28: Fresh-clone execution with empty HOME succeeds."""
+    import subprocess as _sp
+    import tempfile
+    import os as _os
+    repo = Path(__file__).resolve().parent
+    with tempfile.TemporaryDirectory() as td:
+        env = _os.environ.copy()
+        env["HOME"] = td
+        env["PYTHONPATH"] = str(repo)
+        code = f"""
+import sys
+sys.path.insert(0, r'{repo}')
+from ibkr_operator import (
+    _create_simulation_review_decision_record, _build_ready_sim_dossier,
+    _generate_synthetic_ohlc_bars, _generate_proposal_packet,
+    _review_proposal_dossier, _build_accepted_decision_record,
+    _build_ready_plan_draft,
+)
+sim = _build_ready_sim_dossier()
+bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+proposal = _generate_proposal_packet("AAPL", bars)
+dossier = _review_proposal_dossier(proposal)
+decision = _build_accepted_decision_record()
+decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+plan = _build_ready_plan_draft()
+record = _create_simulation_review_decision_record(
+    sim, proposal, dossier=dossier, decision_record=decision, order_plan=plan,
+    decision="ACCEPT", reviewer="Chris", decision_reason="Fresh clone test."
+)
+assert record["review_state"] == "ACCEPTED_FOR_CANDIDATE_PACKAGING"
+assert record["executable"] is False
+print("OK")
+"""
+        cp = _sp.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30, env=env)
+        runs = "OK" in cp.stdout
+        no_home = "Path.home()" not in code and "~/.openclaw" not in code
+        passed = runs and no_home
+    return {"passed": passed, "case": "fresh_clone_17h", "runs": runs, "no_home_refs": no_home}
+
+
+def _synthetic_fixture_full_chain_17h() -> dict:
+    """Case 29: Full 17C→17D→17E→17F→17G→17H chain remains non-executable."""
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    dossier = _review_proposal_dossier(proposal)
+    decision = _create_decision_record(dossier, decision="ACCEPT", reviewer="Chris",
+                                       decision_reason="Full-chain 17H test.")
+    decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+    decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+    plan = _create_order_plan_draft(decision, proposal, dossier)
+    sim = _create_simulated_preflight_dossier(plan, proposal, dossier, decision)
+    record = _create_simulation_review_decision_record(
+        sim, proposal, dossier=dossier, decision_record=decision, order_plan=plan,
+        decision="ACCEPT", reviewer="Chris", decision_reason="Full chain test."
+    )
+    all_non_exec = all([
+        plan.get("executable") is False,
+        sim.get("executable") is False,
+        record.get("executable") is False,
+        record.get("broker_authorized") is False,
+        record.get("preflight_authorized") is False,
+        record.get("approval_authorized") is False,
+        record.get("submission_authorized") is False,
+        record.get("broker_preflight_called") is False,
+        record.get("planning_scope") == "PLANNING_ONLY",
+    ])
+    passed = all_non_exec and record.get("review_state") == "ACCEPTED_FOR_CANDIDATE_PACKAGING"
+    return {"passed": passed, "case": "full_chain_17h", "review_state": record.get("review_state"), "all_non_exec": all_non_exec}
 
 
 # ---------------------------------------------------------------------------
@@ -42604,6 +43644,410 @@ def _print_level1_planning_only_preflight_simulation_dossier_checkpoint(result: 
     print()
 
 
+# ---------------------------------------------------------------------------
+# Phase 17H NO_GO builder
+# ---------------------------------------------------------------------------
+
+
+def _phase17h_no_go(checkpoint_id: str, ts_str: str, git_section: dict, diagnosis: str, actions: list[str], runtime: dict | None = None) -> dict:
+    """Build a NO_GO result for Phase 17H."""
+    return {
+        "command": "ibkr-operator level1-human-simulation-review-decision-record-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True, "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": git_section.get("worktree_clean", False),
+        "runtime": runtime or {"connected": False, "mode": "?", "read_only": False, "allow_orders": None, "endpoints_ok": False},
+        "runtime_connected": False, "mode": "?", "read_only": False,
+        "allow_orders": None, "endpoints_ok": False,
+        "positions_flat": False, "guard_state_clean": False,
+        "kpi_hold_only_system_locked": False,
+        "missing_decision_pending_case_passed": False,
+        "accept_case_passed": False,
+        "explicit_reject_case_passed": False,
+        "explicit_defer_case_passed": False,
+        "missing_reason_fail_closed_case_passed": False,
+        "missing_reviewer_fail_closed_case_passed": False,
+        "blocked_sim_accept_blocked_case_passed": False,
+        "non_ready_sim_accept_blocked_case_passed": False,
+        "failed_gate_accept_blocked_case_passed": False,
+        "broker_preflight_called_accept_blocked_case_passed": False,
+        "executable_true_accept_blocked_case_passed": False,
+        "broker_authorized_true_accept_blocked_case_passed": False,
+        "missing_proposal_hash_blocked_case_passed": False,
+        "missing_dossier_hash_blocked_case_passed": False,
+        "missing_decision_hash_blocked_case_passed": False,
+        "missing_order_plan_hash_blocked_case_passed": False,
+        "missing_simulation_hash_blocked_case_passed": False,
+        "proposal_hash_mismatch_blocked_case_passed": False,
+        "dossier_hash_mismatch_blocked_case_passed": False,
+        "decision_hash_mismatch_blocked_case_passed": False,
+        "order_plan_hash_mismatch_blocked_case_passed": False,
+        "tampered_evidence_ref_blocked_case_passed": False,
+        "blocker_ordering_case_passed": False,
+        "deterministic_case_passed": False,
+        "no_forbidden_endpoints_case_passed": False,
+        "no_broker_identifiers_case_passed": False,
+        "read_only_invariant_case_passed": False,
+        "fresh_clone_case_passed": False,
+        "full_chain_case_passed": False,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_connect_called": True, "no_broker_mutation": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17H_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False, "export_path": None,
+        "canonical_review_record": None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 17H checkpoint runner
+# ---------------------------------------------------------------------------
+
+
+def _run_level1_human_simulation_review_decision_record_checkpoint(audit_source: str = "synthetic_readonly_demo") -> dict:
+    """Run Phase 17H — Level 1 Human Simulation Review Decision Record Checkpoint.
+
+    Consumes a Phase 17G simulated-preflight dossier and creates a deterministic,
+    immutable human review decision record.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"17h-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+    repo_path = Path(__file__).resolve().parent
+    git_section = _git_metadata(repo_path)
+    worktree_state = _get_worktree_state(BRIDGE_DIR)
+    worktree_clean_state = worktree_state.get("clean", False)
+    git_section["worktree_clean"] = worktree_clean_state
+    git_section["worktree_dirty_files"] = worktree_state.get("dirty_files", [])
+    if not worktree_clean_state:
+        return _phase17h_no_go(checkpoint_id, ts_str, git_section, _PHASE17H_DIAGNOSIS["git_worktree_dirty"], ["Commit or stash dirty files before running this checkpoint."])
+    runtime_state = _snapshot_bridge_state(BRIDGE_URL)
+    rt_connected = runtime_state.get("connected", False)
+    rt_mode = runtime_state.get("mode", "?")
+    rt_read_only = runtime_state.get("read_only", False)
+    rt_allow_orders = runtime_state.get("allow_orders")
+    rt_endpoints_ok = runtime_state.get("endpoints_ok", False)
+    rt_positions_flat = runtime_state.get("positions_flat")
+    bridge_reachable = bool(runtime_state.get("mode", "?") != "?")
+    if not bridge_reachable:
+        return _phase17h_no_go(checkpoint_id, ts_str, git_section, _PHASE17H_DIAGNOSIS["bridge_unreachable"], ["Bridge is not reachable. Start ibkr-bridge.service."])
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_clean = gs_assessment["guard_state_clean"]
+    try:
+        gs_clean = bool(guard_state_clean)
+    except Exception:
+        gs_clean = False
+    if not gs_clean:
+        return _phase17h_no_go(checkpoint_id, ts_str, git_section, _PHASE17H_DIAGNOSIS["guard_state_not_clean"], ["Guard state is not clean. Run ibkr-operator guard-status."])
+    try:
+        kpi_status = _assess_kpi_hold_only_system_locked(now_utc)
+        kpi_ok = kpi_status.get("kpi_hold_only_system_locked", False)
+    except Exception:
+        kpi_ok = False
+    if not kpi_ok:
+        return _phase17h_no_go(checkpoint_id, ts_str, git_section, _PHASE17H_DIAGNOSIS["kpi_not_hold_system_locked"], ["KPI state is not HOLD only (system_locked)."])
+
+    severity = "OK"
+    actions: list[str] = []
+
+    if not rt_connected:
+        severity = "NO_GO"
+        actions.append("Bridge is not connected.")
+    if rt_mode != "paper":
+        severity = "NO_GO"
+        actions.append(f"Mode is {rt_mode}, expected paper.")
+    if rt_read_only is not True:
+        severity = "NO_GO"
+        actions.append("Read-only is not true.")
+    if rt_allow_orders is not False and rt_allow_orders is not None:
+        severity = "NO_GO"
+        actions.append(f"allow_orders is {rt_allow_orders}.")
+    if not rt_endpoints_ok:
+        severity = "NO_GO"
+        actions.append("Endpoints not all healthy.")
+    if rt_positions_flat is not True and rt_positions_flat is not None:
+        severity = "NO_GO"
+        actions.append("Positions are not flat.")
+
+    if severity == "NO_GO":
+        diagnosis_key = "runtime_not_connected" if not rt_connected else (
+            "mode_not_paper" if rt_mode != "paper" else (
+                "read_only_not_true" if rt_read_only is not True else (
+                    "allow_orders_not_false" if rt_allow_orders is not False and rt_allow_orders is not None else (
+                        "endpoints_not_ok" if not rt_endpoints_ok else (
+                            "positions_not_flat")))))
+        return _phase17h_no_go(checkpoint_id, ts_str, git_section, _PHASE17H_DIAGNOSIS.get(diagnosis_key, _PHASE17H_DIAGNOSIS["unknown"]), actions, runtime=runtime_state)
+
+    # ---- Run synthetic fixtures ----
+    syn_md = _synthetic_fixture_missing_decision_pending_17h()
+    syn_acc = _synthetic_fixture_accept_for_candidate_packaging_17h()
+    syn_rej = _synthetic_fixture_explicit_reject_17h()
+    syn_def = _synthetic_fixture_explicit_defer_17h()
+    syn_mr = _synthetic_fixture_missing_reason_fail_closed_17h()
+    syn_mrv = _synthetic_fixture_missing_reviewer_fail_closed_17h()
+    syn_bsa = _synthetic_fixture_blocked_sim_accept_blocked_17h()
+    syn_nrs = _synthetic_fixture_non_ready_sim_accept_blocked_17h()
+    syn_fga = _synthetic_fixture_failed_gate_accept_blocked_17h()
+    syn_bpc = _synthetic_fixture_broker_preflight_called_accept_blocked_17h()
+    syn_eta = _synthetic_fixture_executable_true_accept_blocked_17h()
+    syn_bta = _synthetic_fixture_broker_authorized_true_accept_blocked_17h()
+    syn_mph = _synthetic_fixture_missing_proposal_hash_blocked_17h()
+    syn_mdh = _synthetic_fixture_missing_dossier_hash_blocked_17h()
+    syn_mch = _synthetic_fixture_missing_decision_hash_blocked_17h()
+    syn_moh = _synthetic_fixture_missing_order_plan_hash_blocked_17h()
+    syn_msh = _synthetic_fixture_missing_simulation_hash_blocked_17h()
+    syn_phm = _synthetic_fixture_proposal_hash_mismatch_blocked_17h()
+    syn_dhm = _synthetic_fixture_dossier_hash_mismatch_blocked_17h()
+    syn_chm = _synthetic_fixture_decision_hash_mismatch_blocked_17h()
+    syn_ohm = _synthetic_fixture_order_plan_hash_mismatch_blocked_17h()
+    syn_ter = _synthetic_fixture_tampered_evidence_ref_blocked_17h()
+    syn_bod = _synthetic_fixture_blocker_ordering_deterministic_17h()
+    syn_det = _synthetic_fixture_deterministic_review_hash_17h()
+    syn_nfe = _synthetic_fixture_no_forbidden_endpoints_17h()
+    syn_nbi = _synthetic_fixture_no_broker_identifiers_17h()
+    syn_roi = _synthetic_fixture_read_only_invariant_17h()
+    syn_fc = _synthetic_fixture_fresh_clone_17h()
+    syn_fce = _synthetic_fixture_full_chain_17h()
+
+    all_cases_passed = all([
+        syn_md["passed"], syn_acc["passed"], syn_rej["passed"], syn_def["passed"],
+        syn_mr["passed"], syn_mrv["passed"], syn_bsa["passed"], syn_nrs["passed"],
+        syn_fga["passed"], syn_bpc["passed"], syn_eta["passed"], syn_bta["passed"],
+        syn_mph["passed"], syn_mdh["passed"], syn_mch["passed"], syn_moh["passed"],
+        syn_msh["passed"], syn_phm["passed"], syn_dhm["passed"], syn_chm["passed"],
+        syn_ohm["passed"], syn_ter["passed"], syn_bod["passed"], syn_det["passed"],
+        syn_nfe["passed"], syn_nbi["passed"], syn_roi["passed"], syn_fc["passed"],
+        syn_fce["passed"],
+    ])
+
+    diagnosis = _PHASE17H_DIAGNOSIS["ready"] if all_cases_passed else _PHASE17H_DIAGNOSIS["unknown"]
+    if not syn_md["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["pending_missing_decision_failed"]; severity = "NO_GO"
+    if not syn_acc["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["accept_case_failed"]; severity = "NO_GO"
+    if not syn_rej["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["reject_case_failed"]; severity = "NO_GO"
+    if not syn_def["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["defer_case_failed"]; severity = "NO_GO"
+    if not syn_mr["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["missing_reason_fail_closed_failed"]; severity = "NO_GO"
+    if not syn_mrv["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["missing_reviewer_fail_closed_failed"]; severity = "NO_GO"
+    if not syn_bsa["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["blocked_sim_accept_blocked_failed"]; severity = "NO_GO"
+    if not syn_nrs["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["pending_input_accept_blocked_failed"]; severity = "NO_GO"
+    if not syn_fga["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["failed_gate_accept_blocked_failed"]; severity = "NO_GO"
+    if not syn_bpc["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["broker_preflight_called_accept_blocked_failed"]; severity = "NO_GO"
+    if not syn_eta["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["executable_true_accept_blocked_failed"]; severity = "NO_GO"
+    if not syn_bta["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["broker_authorized_true_accept_blocked_failed"]; severity = "NO_GO"
+    if not syn_mph["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["missing_proposal_hash_failed"]; severity = "NO_GO"
+    if not syn_mdh["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["missing_dossier_hash_failed"]; severity = "NO_GO"
+    if not syn_mch["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["missing_decision_hash_failed"]; severity = "NO_GO"
+    if not syn_moh["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["missing_order_plan_hash_failed"]; severity = "NO_GO"
+    if not syn_msh["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["missing_simulation_hash_failed"]; severity = "NO_GO"
+    if not syn_phm["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["proposal_hash_mismatch_failed"]; severity = "NO_GO"
+    if not syn_dhm["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["dossier_hash_mismatch_failed"]; severity = "NO_GO"
+    if not syn_chm["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["decision_hash_mismatch_failed"]; severity = "NO_GO"
+    if not syn_ohm["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["order_plan_hash_mismatch_failed"]; severity = "NO_GO"
+    if not syn_ter["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["tampered_evidence_ref_failed"]; severity = "NO_GO"
+    if not syn_bod["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["blocker_ordering_failed"]; severity = "NO_GO"
+    if not syn_det["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["deterministic_failed"]; severity = "NO_GO"
+    if not syn_nfe["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["no_forbidden_endpoints_failed"]; severity = "NO_GO"
+    if not syn_nbi["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["no_broker_identifiers_failed"]; severity = "NO_GO"
+    if not syn_roi["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["read_only_invariant_failed"]; severity = "NO_GO"
+    if not syn_fc["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["fresh_clone_failed"]; severity = "NO_GO"
+    if not syn_fce["passed"]:
+        diagnosis = _PHASE17H_DIAGNOSIS["full_chain_non_executable_failed"]; severity = "NO_GO"
+
+    # ---- Build canonical review record for export ----
+    canonical_record = None
+    try:
+        sim = _build_ready_sim_dossier()
+        bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+        proposal = _generate_proposal_packet("AAPL", bars)
+        dossier = _review_proposal_dossier(proposal)
+        decision = _build_accepted_decision_record()
+        decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+        decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+        plan = _build_ready_plan_draft()
+        canonical_record = _create_simulation_review_decision_record(
+            sim, proposal, dossier=dossier, decision_record=decision, order_plan=plan,
+            decision="ACCEPT", reviewer="Chris", decision_reason="Canonical accept for candidate packaging demonstration."
+        )
+    except Exception:
+        canonical_record = None
+
+    result = {
+        "command": "ibkr-operator level1-human-simulation-review-decision-record-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": severity if severity == "NO_GO" else "OK",
+        "operator_action_required": not all_cases_passed,
+        "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": worktree_clean_state,
+        "runtime": runtime_state,
+        "runtime_connected": rt_connected, "mode": rt_mode, "read_only": rt_read_only,
+        "allow_orders": rt_allow_orders, "endpoints_ok": rt_endpoints_ok,
+        "positions_flat": rt_positions_flat, "guard_state_clean": gs_clean,
+        "kpi_hold_only_system_locked": kpi_ok,
+        "missing_decision_pending_case_passed": syn_md["passed"],
+        "accept_case_passed": syn_acc["passed"],
+        "explicit_reject_case_passed": syn_rej["passed"],
+        "explicit_defer_case_passed": syn_def["passed"],
+        "missing_reason_fail_closed_case_passed": syn_mr["passed"],
+        "missing_reviewer_fail_closed_case_passed": syn_mrv["passed"],
+        "blocked_sim_accept_blocked_case_passed": syn_bsa["passed"],
+        "non_ready_sim_accept_blocked_case_passed": syn_nrs["passed"],
+        "failed_gate_accept_blocked_case_passed": syn_fga["passed"],
+        "broker_preflight_called_accept_blocked_case_passed": syn_bpc["passed"],
+        "executable_true_accept_blocked_case_passed": syn_eta["passed"],
+        "broker_authorized_true_accept_blocked_case_passed": syn_bta["passed"],
+        "missing_proposal_hash_blocked_case_passed": syn_mph["passed"],
+        "missing_dossier_hash_blocked_case_passed": syn_mdh["passed"],
+        "missing_decision_hash_blocked_case_passed": syn_mch["passed"],
+        "missing_order_plan_hash_blocked_case_passed": syn_moh["passed"],
+        "missing_simulation_hash_blocked_case_passed": syn_msh["passed"],
+        "proposal_hash_mismatch_blocked_case_passed": syn_phm["passed"],
+        "dossier_hash_mismatch_blocked_case_passed": syn_dhm["passed"],
+        "decision_hash_mismatch_blocked_case_passed": syn_chm["passed"],
+        "order_plan_hash_mismatch_blocked_case_passed": syn_ohm["passed"],
+        "tampered_evidence_ref_blocked_case_passed": syn_ter["passed"],
+        "blocker_ordering_case_passed": syn_bod["passed"],
+        "deterministic_case_passed": syn_det["passed"],
+        "no_forbidden_endpoints_case_passed": syn_nfe["passed"],
+        "no_broker_identifiers_case_passed": syn_nbi["passed"],
+        "read_only_invariant_case_passed": syn_roi["passed"],
+        "fresh_clone_case_passed": syn_fc["passed"],
+        "full_chain_case_passed": syn_fce["passed"],
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_connect_called": True, "no_broker_mutation": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17H_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False, "export_path": None,
+        "canonical_review_record": canonical_record,
+    }
+    return result
+
+
+def _print_level1_human_simulation_review_decision_record_checkpoint(result: dict) -> None:
+    """Print Phase 17H human simulation review decision record checkpoint."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE17H_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Level 1 Human Simulation Review Decision Record (17H){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:               {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:                   {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:                   {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:                    {sev_color}{sev}{RESET}")
+    print()
+    print(f"  {BOLD}Git{RESET}")
+    g = result.get("git", {})
+    print(f"    Branch:        {g.get('branch', '?')}")
+    print(f"    Commit:        {g.get('commit_short', g.get('commit', '?'))}")
+    print(f"    Worktree clean: {_bool_str(result.get('git_worktree_clean', False))}")
+    print()
+    print(f"  {BOLD}Synthetic Fixture Results{RESET}")
+    print(f"    Missing decision → PENDING:               {_bool_str(result.get('missing_decision_pending_case_passed', False))}")
+    print(f"    ACCEPT → ACCEPTED_FOR_CANDIDATE_PKG:      {_bool_str(result.get('accept_case_passed', False))}")
+    print(f"    Explicit REJECT:                           {_bool_str(result.get('explicit_reject_case_passed', False))}")
+    print(f"    Explicit DEFER:                            {_bool_str(result.get('explicit_defer_case_passed', False))}")
+    print(f"    Missing reason fail-closed:                {_bool_str(result.get('missing_reason_fail_closed_case_passed', False))}")
+    print(f"    Missing reviewer fail-closed:              {_bool_str(result.get('missing_reviewer_fail_closed_case_passed', False))}")
+    print(f"    BLOCKED sim accept blocked:                {_bool_str(result.get('blocked_sim_accept_blocked_case_passed', False))}")
+    print(f"    Non-ready sim accept blocked:              {_bool_str(result.get('non_ready_sim_accept_blocked_case_passed', False))}")
+    print(f"    Failed gate accept blocked:                {_bool_str(result.get('failed_gate_accept_blocked_case_passed', False))}")
+    print(f"    Preflight=true accept blocked:             {_bool_str(result.get('broker_preflight_called_accept_blocked_case_passed', False))}")
+    print(f"    Executable=true accept blocked:            {_bool_str(result.get('executable_true_accept_blocked_case_passed', False))}")
+    print(f"    Broker auth=true accept blocked:           {_bool_str(result.get('broker_authorized_true_accept_blocked_case_passed', False))}")
+    print(f"    Missing proposal hash → BLOCKED:           {_bool_str(result.get('missing_proposal_hash_blocked_case_passed', False))}")
+    print(f"    Missing dossier hash → BLOCKED:             {_bool_str(result.get('missing_dossier_hash_blocked_case_passed', False))}")
+    print(f"    Missing decision hash → BLOCKED:           {_bool_str(result.get('missing_decision_hash_blocked_case_passed', False))}")
+    print(f"    Missing order-plan hash → BLOCKED:         {_bool_str(result.get('missing_order_plan_hash_blocked_case_passed', False))}")
+    print(f"    Missing sim hash → BLOCKED:                {_bool_str(result.get('missing_simulation_hash_blocked_case_passed', False))}")
+    print(f"    Proposal hash mismatch → BLOCKED:          {_bool_str(result.get('proposal_hash_mismatch_blocked_case_passed', False))}")
+    print(f"    Dossier hash mismatch → BLOCKED:           {_bool_str(result.get('dossier_hash_mismatch_blocked_case_passed', False))}")
+    print(f"    Decision hash mismatch → BLOCKED:          {_bool_str(result.get('decision_hash_mismatch_blocked_case_passed', False))}")
+    print(f"    Order-plan hash mismatch → BLOCKED:        {_bool_str(result.get('order_plan_hash_mismatch_blocked_case_passed', False))}")
+    print(f"    Tampered evidence ref → BLOCKED:           {_bool_str(result.get('tampered_evidence_ref_blocked_case_passed', False))}")
+    print(f"    Blocker ordering deterministic:            {_bool_str(result.get('blocker_ordering_case_passed', False))}")
+    print(f"    Deterministic review hash:                 {_bool_str(result.get('deterministic_case_passed', False))}")
+    print(f"    No forbidden endpoints:                    {_bool_str(result.get('no_forbidden_endpoints_case_passed', False))}")
+    print(f"    No broker identifiers:                     {_bool_str(result.get('no_broker_identifiers_case_passed', False))}")
+    print(f"    Read-only invariant:                       {_bool_str(result.get('read_only_invariant_case_passed', False))}")
+    print(f"    Fresh-clone execution:                     {_bool_str(result.get('fresh_clone_case_passed', False))}")
+    print(f"    Full chain non-executable:                 {_bool_str(result.get('full_chain_case_passed', False))}")
+    print()
+    print(f"  {BOLD}Canonical Review Record{RESET}")
+    cr = result.get("canonical_review_record")
+    if cr:
+        print(f"    Review state:                 {cr.get('review_state', '?')}")
+        print(f"    Symbol/Side:                  {cr.get('symbol', '?')} / {cr.get('side', '?')}")
+        print(f"    Acceptance scope:             {cr.get('acceptance_scope', '?')}")
+        print(f"    Candidate pkg permitted:      {cr.get('candidate_packaging_permitted', '?')}")
+        print(f"    Executable:                   {cr.get('executable', '?')}")
+        print(f"    Preflight called:             {cr.get('broker_preflight_called', '?')}")
+        print(f"    Review hash:                  {cr.get('deterministic_review_hash', '?')[:16]}...")
+    else:
+        print(f"    {RED}No canonical review record generated{RESET}")
+    print()
+    print(f"  {BOLD}Safety Invariants{RESET}")
+    print(f"    No /order called:            {_bool_str(result.get('no_order_endpoint_called'))}")
+    print(f"    No /order/preflight called:   {_bool_str(result.get('no_preflight_endpoint_called'))}")
+    print(f"    No /order/approve called:     {_bool_str(result.get('no_approval_endpoint_called'))}")
+    print(f"    No /order/submit called:      {_bool_str(result.get('no_submit_endpoint_called'))}")
+    print(f"    No H1 token used:             {_bool_str(result.get('no_h1_token_used'))}")
+    print(f"    No /connect called:           {_bool_str(result.get('no_connect_called'))}")
+    print(f"    No broker mutation:           {_bool_str(result.get('no_broker_mutation'))}")
+    print()
+    if not checkpoint_ok:
+        actions = result.get("suggested_operator_actions", [])
+        if actions:
+            print(f"  {RED}Suggested operator actions:{RESET}")
+            for a in actions:
+                print(f"    - {a}")
+            print()
+    ep = result.get("export_path")
+    if ep:
+        print(f"    Export: {ep}")
+    print()
+
+
 def _print_level1_execution_gate_negative_control_drill(result: dict) -> None:
     """Print Phase 16O negative-control drill in human-readable format."""
     drill_ok = result.get("diagnosis") == _PHASE16O_DIAGNOSIS["ready"]
@@ -44305,6 +45749,26 @@ def main() -> None:
     p17g_a2.add_argument("--json", action="store_true")
     p17g_a2.add_argument("--export", action="store_true")
     p17g_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+
+    # Phase 17H — Level 1 Human Simulation Review Decision Record Checkpoint
+    p17h = sub.add_parser("level1-human-simulation-review-decision-record-checkpoint",
+                          help="Level 1 human simulation review decision record checkpoint (Phase 17H)")
+    p17h.add_argument("--json", action="store_true")
+    p17h.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-human-simulation-review-decision-record-checkpoints/")
+    p17h.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: phase17h-human-simulation-review-decision-record-checkpoint
+    p17h_a1 = sub.add_parser("phase17h-human-simulation-review-decision-record-checkpoint",
+                             help="Alias for level1-human-simulation-review-decision-record-checkpoint")
+    p17h_a1.add_argument("--json", action="store_true")
+    p17h_a1.add_argument("--export", action="store_true")
+    p17h_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: human-simulation-review-decision-record-checkpoint
+    p17h_a2 = sub.add_parser("human-simulation-review-decision-record-checkpoint",
+                             help="Alias for level1-human-simulation-review-decision-record-checkpoint")
+    p17h_a2.add_argument("--json", action="store_true")
+    p17h_a2.add_argument("--export", action="store_true")
+    p17h_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -46767,6 +48231,49 @@ def main() -> None:
                 if ep:
                     print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE17G_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-human-simulation-review-decision-record-checkpoint",
+                        "phase17h-human-simulation-review-decision-record-checkpoint",
+                        "human-simulation-review-decision-record-checkpoint"):
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_human_simulation_review_decision_record_checkpoint(
+                audit_source=audit_source,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"17h-error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = _phase17h_no_go(
+                checkpoint_id, ts_str,
+                {"branch": "?", "commit": "?", "tag": "?", "worktree_clean": False},
+                _PHASE17H_DIAGNOSIS["unknown"],
+                [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+            )
+        if args.export and not result.get("export_path"):
+            try:
+                _PHASE17H_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                import json as _json
+                ep = _PHASE17H_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                with open(ep, "w", encoding="utf-8") as f:
+                    _json.dump(result, f, indent=2, default=str)
+                result["export_path"] = str(ep)
+                result["artifact_created"] = True
+            except Exception:
+                pass
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_human_simulation_review_decision_record_checkpoint(result)
+            if args.export:
+                ep = result.get("export_path")
+                if ep:
+                    print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE17H_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

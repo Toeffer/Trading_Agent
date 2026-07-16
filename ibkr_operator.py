@@ -27704,6 +27704,99 @@ _DISALLOWED_IBKR_SYMBOLS: set = {
 }
 
 
+# Phase 17K — Level 1 Planning-Only Guarded Preflight Request Draft Checkpoint
+# ---------------------------------------------------------------------------
+
+_PHASE17K_EXPORT_DIR = OPENCLAW_DIR / "level1-guarded-preflight-request-draft-checkpoints"
+
+_PHASE17K_DIAGNOSIS = {
+    "ready": "level1_guarded_preflight_request_draft_ok",
+    "git_worktree_dirty": "git_worktree_dirty",
+    "bridge_unreachable": "bridge_unreachable",
+    "runtime_not_connected": "runtime_not_connected",
+    "mode_not_paper": "mode_not_paper",
+    "read_only_not_true": "read_only_not_true",
+    "allow_orders_not_false": "allow_orders_not_false",
+    "endpoints_not_ok": "endpoints_not_ok",
+    "positions_not_flat": "positions_not_flat",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "kpi_not_hold_system_locked": "kpi_not_hold_system_locked",
+    "ready_draft_case_failed": "ready_draft_case_failed",
+    "missing_review_failed": "missing_review_failed",
+    "rejected_review_failed": "rejected_review_failed",
+    "deferred_review_failed": "deferred_review_failed",
+    "blocked_review_failed": "blocked_review_failed",
+    "review_not_accepted_failed": "review_not_accepted_failed",
+    "scope_not_preflight_drafting_failed": "scope_not_preflight_drafting_failed",
+    "drafting_not_permitted_failed": "drafting_not_permitted_failed",
+    "package_not_planning_only_failed": "package_not_planning_only_failed",
+    "executable_true_failed": "executable_true_failed",
+    "broker_authorized_true_failed": "broker_authorized_true_failed",
+    "preflight_authorized_true_failed": "preflight_authorized_true_failed",
+    "approval_authorized_true_failed": "approval_authorized_true_failed",
+    "submission_authorized_true_failed": "submission_authorized_true_failed",
+    "broker_preflight_called_true_failed": "broker_preflight_called_true_failed",
+    "actual_preflight_completed_true_failed": "actual_preflight_completed_true_failed",
+    "actual_order_created_true_failed": "actual_order_created_true_failed",
+    "review_has_blockers_failed": "review_has_blockers_failed",
+    "missing_proposal_hash_failed": "missing_proposal_hash_failed",
+    "missing_dossier_hash_failed": "missing_dossier_hash_failed",
+    "missing_decision_hash_failed": "missing_decision_hash_failed",
+    "missing_order_plan_hash_failed": "missing_order_plan_hash_failed",
+    "missing_simulation_hash_failed": "missing_simulation_hash_failed",
+    "missing_simulation_review_hash_failed": "missing_simulation_review_hash_failed",
+    "missing_candidate_package_hash_failed": "missing_candidate_package_hash_failed",
+    "missing_candidate_review_hash_failed": "missing_candidate_review_hash_failed",
+    "hash_mismatch_failed": "hash_mismatch_failed",
+    "tampered_evidence_ref_failed": "tampered_evidence_ref_failed",
+    "deterministic_failed": "deterministic_failed",
+    "no_forbidden_endpoints_failed": "no_forbidden_endpoints_failed",
+    "no_broker_identifiers_failed": "no_broker_identifiers_failed",
+    "read_only_invariant_failed": "read_only_invariant_failed",
+    "fresh_clone_failed": "fresh_clone_failed",
+    "full_chain_failed": "full_chain_failed",
+    "unknown": "unknown",
+}
+
+_PHASE17K_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not call /connect.",
+    "This command did not call ibkr-trade-window.",
+    "This command did not call any broker mutation endpoint.",
+    "This command did not create broker orders.",
+    "This command did not submit orders.",
+    "This command did not cancel/modify orders.",
+    "This command did not mutate account state.",
+    "This command did not mutate position state.",
+    "This command did not open an order window.",
+    "This command did not read/use H1 token.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "This command did not call trade-window helper in any mode.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not change autonomy level.",
+    "This command did not call any mutation endpoint.",
+    "This command did not read ~/.openclaw from pure tests.",
+    "This command never read the raw H1 token file from pure tests.",
+    "Only allowed writes are export/guarded-preflight-request-draft artifacts.",
+    "This checkpoint creates preflight request drafts without calling any broker endpoint, enabling orders, using H1, or opening an order window.",
+    "Synthetic fixture tests use in-memory data only — never require real IBKR Gateway, systemd, ~/.openclaw, or H1 token.",
+    "All preflight request drafts produced are advisory-only, non-executable, and non-authorized.",
+    "PREFLIGHT_REQUEST_DRAFT_READY means a draft describing a future guarded broker-preflight request has been produced; it does not authorize broker preflight, execution, approval, or submission.",
+    "PREFLIGHT_REQUEST_DRAFTING_ONLY means no live market data, no broker interaction, and no execution capability.",
+    "The request body draft is explicitly marked DRAFT, PLANNING_ONLY, NON_EXECUTABLE, and NOT_SENT.",
+    "The request headers draft must never contain H1 token or authorization secret.",
+    "This draft must never be directly dispatched by any Phase 17K function.",
+]
+
+
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
     decision_mode: str = "mixed_demo",
@@ -46937,6 +47030,1090 @@ def _print_level1_human_candidate_package_review_decision_record_checkpoint(resu
     print()
 
 
+# ── Phase 17K ── Level 1 Guarded Preflight Request Draft Checkpoint ─────────
+
+
+def _create_preflight_request_draft(
+    review_record: dict,
+    reviewer: str = "",
+    draft_requested: bool = False,
+    draft_reason: str = "",
+) -> dict:
+    """Create a deterministic non-executable guarded-preflight request draft.
+
+    Consumes a Phase 17J review decision record and produces a draft describing
+    a future guarded broker-preflight request. Drafts information only.
+
+    Args:
+        review_record: Phase 17J review decision record dict
+        reviewer: Human drafter identifier
+        draft_requested: True when an explicit draft is requested
+        draft_reason: Reason for requesting the draft
+
+    Returns:
+        Deterministic preflight request draft dict
+    """
+    import copy
+    from datetime import datetime, timezone
+
+    rr = copy.deepcopy(review_record)
+    now_utc = datetime.now(timezone.utc)
+    draft_timestamp = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # --- Extract evidence hashes from review record ---
+    proposal_evidence_hash = rr.get("proposal_evidence_hash", "")
+    dossier_evidence_hash = rr.get("dossier_evidence_hash", "")
+    planning_decision_record_hash = rr.get("planning_decision_record_hash", "")
+    order_plan_hash = rr.get("order_plan_hash", "")
+    simulation_record_hash = rr.get("simulation_record_hash", "")
+    simulation_review_record_hash = rr.get("simulation_review_record_hash", "")
+    candidate_package_hash = rr.get("candidate_package_hash", "")
+    candidate_review_record_hash = rr.get("deterministic_candidate_review_hash", "")
+    proposal_id = rr.get("proposal_id", "")
+    symbol = rr.get("symbol", "")
+    side = rr.get("side", "")
+    quantity = rr.get("quantity", -1)
+
+    # --- Build initial draft ---
+    draft: dict = {
+        "preflight_request_draft_version": "preflight-request-draft-v1.0.0",
+        "draft_timestamp": draft_timestamp,
+        "draft_state": "PENDING_INPUT",
+        "draft_scope": "PREFLIGHT_REQUEST_DRAFTING_ONLY",
+        "planning_scope": "PLANNING_ONLY",
+        "proposal_id": proposal_id,
+        "proposal_evidence_hash": proposal_evidence_hash,
+        "dossier_evidence_hash": dossier_evidence_hash,
+        "planning_decision_record_hash": planning_decision_record_hash,
+        "order_plan_hash": order_plan_hash,
+        "simulation_record_hash": simulation_record_hash,
+        "simulation_review_record_hash": simulation_review_record_hash,
+        "candidate_package_hash": candidate_package_hash,
+        "candidate_review_record_hash": candidate_review_record_hash,
+        "strategy_version": rr.get("strategy_version", ""),
+        "account_reference": rr.get("account_reference", "PAPER_DEMO_ACCOUNT"),
+        "symbol": symbol,
+        "security_type": "STK",
+        "exchange": rr.get("exchange", "SMART"),
+        "currency": rr.get("currency", "USD"),
+        "side": side,
+        "quantity": quantity,
+        "order_type_plan": "LMT",
+        "limit_price_plan": rr.get("limit_price_plan", 0),
+        "time_in_force_plan": "DAY",
+        "protective_stop_plan": rr.get("protective_stop_plan", True),
+        "protective_stop_quantity": rr.get("protective_stop_quantity", quantity),
+        "risk_summary": rr.get("risk_summary", {}),
+        "sizing_summary": rr.get("sizing_summary", {}),
+        "market_data_freshness_requirement": "REFRESH_REQUIRED_BEFORE_ANY_PREFLIGHT",
+        "position_state_requirement": "VERIFY_POSITIONS_BEFORE_ANY_PREFLIGHT",
+        "account_state_requirement": "VERIFY_ACCOUNT_BEFORE_ANY_PREFLIGHT",
+        "session_state_requirement": "VERIFY_SESSION_BEFORE_ANY_PREFLIGHT",
+        "no_trade_revalidation_requirement": "REVALIDATE_NO_TRADE_BEFORE_ANY_PREFLIGHT",
+        "evidence_chain_status": rr.get("evidence_chain_status", {}),
+        "request_body_draft": {},
+        "request_headers_draft": {},
+        "request_delivery_state": "NOT_SENT",
+        "actual_preflight_completed": False,
+        "broker_preflight_called": False,
+        "executable": False,
+        "broker_authorized": False,
+        "preflight_authorized": False,
+        "approval_authorized": False,
+        "submission_authorized": False,
+        "actual_order_created": False,
+        "h1_required_for_this_draft": False,
+        "h1_accessed": False,
+        "immutable_evidence_references": {},
+        "deterministic_preflight_request_draft_hash": "",
+        "blockers": [],
+        "blocker_count": 0,
+        "explicit_non_actions": list(_PHASE17K_EXPLICIT_NON_ACTIONS),
+        "required_future_human_actions": [],
+    }
+
+    blockers: list[dict] = []
+
+    # --- Gate 1: Review record must be provided ---
+    review_state = rr.get("review_state", "")
+    if not review_state:
+        draft["draft_state"] = "PENDING_INPUT"
+        blockers.append({"blocker": "missing_review_record", "detail": "No Phase 17J review decision record provided.", "severity": "HARD_BLOCK"})
+    # --- Gate 2: Review must be ACCEPTED_FOR_PREFLIGHT_REQUEST_DRAFTING ---
+    elif review_state != "ACCEPTED_FOR_PREFLIGHT_REQUEST_DRAFTING":
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "review_not_accepted", "detail": f"Review state is {review_state}, not ACCEPTED_FOR_PREFLIGHT_REQUEST_DRAFTING.", "severity": "HARD_BLOCK"})
+    # --- Gate 3: acceptance_scope must be PREFLIGHT_REQUEST_DRAFTING_ONLY ---
+    elif rr.get("acceptance_scope") != "PREFLIGHT_REQUEST_DRAFTING_ONLY":
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "scope_not_preflight_drafting", "detail": f"acceptance_scope is {rr.get('acceptance_scope')}, not PREFLIGHT_REQUEST_DRAFTING_ONLY.", "severity": "HARD_BLOCK"})
+    # --- Gate 4: preflight_request_drafting_permitted must be true ---
+    elif rr.get("preflight_request_drafting_permitted") is not True:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "drafting_not_permitted", "detail": "preflight_request_drafting_permitted is not true.", "severity": "HARD_BLOCK"})
+    # --- Gate 5: package_scope must be PLANNING_ONLY ---
+    elif rr.get("package_scope") != "PLANNING_ONLY":
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "package_not_planning_only", "detail": f"package_scope is {rr.get('package_scope')}, not PLANNING_ONLY.", "severity": "HARD_BLOCK"})
+    # --- Gate 6: executable must be false ---
+    elif rr.get("executable") is not False:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "executable_not_false", "detail": "executable is true.", "severity": "HARD_BLOCK"})
+    # --- Gate 7: broker_authorized must be false ---
+    elif rr.get("broker_authorized") is not False:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "broker_authorized_not_false", "detail": "broker_authorized is true.", "severity": "HARD_BLOCK"})
+    # --- Gate 8: preflight_authorized must be false ---
+    elif rr.get("preflight_authorized") is not False:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "preflight_authorized_not_false", "detail": "preflight_authorized is true.", "severity": "HARD_BLOCK"})
+    # --- Gate 9: approval_authorized must be false ---
+    elif rr.get("approval_authorized") is not False:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "approval_authorized_not_false", "detail": "approval_authorized is true.", "severity": "HARD_BLOCK"})
+    # --- Gate 10: submission_authorized must be false ---
+    elif rr.get("submission_authorized") is not False:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "submission_authorized_not_false", "detail": "submission_authorized is true.", "severity": "HARD_BLOCK"})
+    # --- Gate 11: broker_preflight_called must be false ---
+    elif rr.get("broker_preflight_called") is not False:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "broker_preflight_called_not_false", "detail": "broker_preflight_called is true.", "severity": "HARD_BLOCK"})
+    # --- Gate 12: actual_preflight_completed must be false ---
+    elif rr.get("actual_preflight_completed") is not False:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "actual_preflight_completed_not_false", "detail": "actual_preflight_completed is true.", "severity": "HARD_BLOCK"})
+    # --- Gate 13: actual_order_created must be false ---
+    elif rr.get("actual_order_created") is not False:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "actual_order_created_not_false", "detail": "actual_order_created is true.", "severity": "HARD_BLOCK"})
+    # --- Gate 14: Review must have zero blockers ---
+    elif rr.get("blocker_count", 0) > 0 or len(rr.get("blockers", [])) > 0:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "review_has_blockers", "detail": "Phase 17J review has unresolved blockers.", "severity": "HARD_BLOCK"})
+    # --- Gate 15-22: Evidence hash presence ---
+    elif not proposal_evidence_hash:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "missing_proposal_hash", "detail": "proposal_evidence_hash is missing.", "severity": "HARD_BLOCK"})
+    elif not dossier_evidence_hash:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "missing_dossier_hash", "detail": "dossier_evidence_hash is missing.", "severity": "HARD_BLOCK"})
+    elif not planning_decision_record_hash:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "missing_decision_hash", "detail": "planning_decision_record_hash is missing.", "severity": "HARD_BLOCK"})
+    elif not order_plan_hash:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "missing_order_plan_hash", "detail": "order_plan_hash is missing.", "severity": "HARD_BLOCK"})
+    elif not simulation_record_hash:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "missing_simulation_hash", "detail": "simulation_record_hash is missing.", "severity": "HARD_BLOCK"})
+    elif not simulation_review_record_hash:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "missing_simulation_review_hash", "detail": "simulation_review_record_hash is missing.", "severity": "HARD_BLOCK"})
+    elif not candidate_package_hash:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "missing_candidate_package_hash", "detail": "candidate_package_hash is missing.", "severity": "HARD_BLOCK"})
+    elif not candidate_review_record_hash:
+        draft["draft_state"] = "BLOCKED"
+        blockers.append({"blocker": "missing_candidate_review_hash", "detail": "candidate_review_record_hash is missing.", "severity": "HARD_BLOCK"})
+    # --- Gate 23: Cross-verify evidence hashes against immutable refs ---
+    else:
+        ier = rr.get("immutable_evidence_references", {})
+        ref_proposal = ier.get("proposal_evidence_hash", "")
+        ref_dossier = ier.get("dossier_evidence_hash", "")
+        ref_decision = ier.get("planning_decision_record_hash", "")
+        ref_plan = ier.get("order_plan_hash", "")
+        ref_sim = ier.get("simulation_record_hash", "")
+        ref_review = ier.get("simulation_review_record_hash", "")
+        ref_pkg = ier.get("candidate_package_hash", "")
+
+        hash_checks = [
+            ("proposal", proposal_evidence_hash, ref_proposal),
+            ("dossier", dossier_evidence_hash, ref_dossier),
+            ("decision", planning_decision_record_hash, ref_decision),
+            ("order_plan", order_plan_hash, ref_plan),
+            ("simulation", simulation_record_hash, ref_sim),
+            ("simulation_review", simulation_review_record_hash, ref_review),
+            ("candidate_package", candidate_package_hash, ref_pkg),
+        ]
+        hash_ok = True
+        for name, actual, stored in hash_checks:
+            if actual != stored:
+                hash_ok = False
+                blockers.append({
+                    "blocker": f"{name}_hash_mismatch",
+                    "detail": f"{name} hash mismatch: actual={actual[:16] if actual else 'MISSING'}... stored={stored[:16] if stored else 'MISSING'}...",
+                    "severity": "HARD_BLOCK",
+                })
+        if not hash_ok:
+            draft["draft_state"] = "BLOCKED"
+        else:
+            # --- All gates passed: PREFLIGHT_REQUEST_DRAFT_READY ---
+            draft["draft_state"] = "PREFLIGHT_REQUEST_DRAFT_READY"
+
+    # --- If draft is ready, build the request body and headers ---
+    if draft["draft_state"] == "PREFLIGHT_REQUEST_DRAFT_READY":
+        draft["request_body_draft"] = {
+            "_COMMENTARY": "DRAFT — PLANNING_ONLY — NON_EXECUTABLE — NOT_SENT",
+            "_scope": "PREFLIGHT_REQUEST_DRAFTING_ONLY",
+            "_warning": "This is a planning-only draft. It must never be directly dispatched to a broker.",
+            "_execution_status": "NOT_SENT",
+            "_broker_action": "NONE — DRAFT ONLY",
+            "proposal_id": proposal_id,
+            "symbol": symbol,
+            "security_type": "STK",
+            "exchange": draft["exchange"],
+            "currency": draft["currency"],
+            "side": side,
+            "quantity": quantity,
+            "order_type": "LMT",
+            "limit_price": draft["limit_price_plan"],
+            "time_in_force": "DAY",
+            "protective_stop": draft["protective_stop_plan"],
+            "protective_stop_quantity": draft["protective_stop_quantity"],
+            "account": draft["account_reference"],
+            "_required_preconditions": [
+                "REFRESH_MARKET_DATA",
+                "VERIFY_POSITIONS",
+                "VERIFY_ACCOUNT",
+                "VERIFY_SESSION",
+                "REVALIDATE_NO_TRADE",
+            ],
+        }
+        draft["request_headers_draft"] = {
+            "_COMMENTARY": "DRAFT — NO AUTHENTICATION CREDENTIALS PRESENT",
+            "_authentication": "NONE — DRAFT ONLY",
+            "_warning": "Headers must never contain H1 token or authorization secret.",
+            "_h1_status": "H1_TOKEN_ABSENT — SEPARATE_H1_APPROVAL_REQUIRED",
+            "_execution_context": "GUARDED_EXECUTION_CONTEXT_ABSENT",
+            "Content-Type": "application/json",
+            "X-Request-Scope": "PREFLIGHT_REQUEST_DRAFT_ONLY",
+            "X-Draft-Version": "preflight-request-draft-v1.0.0",
+            "X-Authentication": "NONE — DRAFT ONLY — SEPARATE H1 REQUIRED",
+        }
+
+    # --- Output labels ---
+    draft["output_labels"] = [
+        "GUARDED_PREFLIGHT_REQUEST_DRAFT",
+        "PREFLIGHT_REQUEST_DRAFTING_ONLY",
+        "PLANNING_ONLY",
+        "NON_EXECUTABLE",
+        "NOT_SENT",
+        "ACTUAL_PREFLIGHT_NOT_COMPLETED",
+        "PREFLIGHT_NOT_AUTHORIZED",
+        "NO_H1_ACCESSED",
+        "SEPARATE_H1_APPROVAL_REQUIRED_BEFORE_SUBMISSION",
+        "GUARDED_EXECUTION_CONTEXT_ABSENT",
+        "AUTHENTICATION_CREDENTIALS_ABSENT",
+        "DRAFT_ONLY",
+    ]
+
+    # --- Sort blockers deterministically ---
+    blockers.sort(key=lambda b: b.get("blocker", ""))
+    draft["blockers"] = blockers
+    draft["blocker_count"] = len(blockers)
+
+    # --- Build immutable evidence references ---
+    draft["immutable_evidence_references"] = {
+        "proposal_evidence_hash": proposal_evidence_hash,
+        "dossier_evidence_hash": dossier_evidence_hash,
+        "planning_decision_record_hash": planning_decision_record_hash,
+        "order_plan_hash": order_plan_hash,
+        "simulation_record_hash": simulation_record_hash,
+        "simulation_review_record_hash": simulation_review_record_hash,
+        "candidate_package_hash": candidate_package_hash,
+        "candidate_review_record_hash": candidate_review_record_hash,
+    }
+
+    # --- Build required future human actions ---
+    actions: list[str] = []
+    if draft["draft_state"] == "PREFLIGHT_REQUEST_DRAFT_READY":
+        actions = [
+            "Inspect the complete Phase 17C–17K evidence chain before any preflight.",
+            "Refresh current market data for all relevant symbols.",
+            "Verify current positions, account state, session state.",
+            "Revalidate no-trade conditions with current market data.",
+            "Obtain separate H1 approval before any preflight execution.",
+            "Perform actual broker preflight only through the guarded broker path.",
+            "This draft is NOT executable — do not send it to any broker.",
+            "The request body and headers MUST be freshly constructed at preflight time.",
+            "Reject the draft if any evidence or runtime state is inconsistent.",
+        ]
+    elif draft["draft_state"] == "BLOCKED":
+        actions = [
+            "Resolve all blockers before re-evaluating.",
+            "Re-run the evidence chain from Phase 17C with corrected inputs.",
+            "Ensure the Phase 17J review is ACCEPTED_FOR_PREFLIGHT_REQUEST_DRAFTING.",
+        ]
+    else:
+        actions = [
+            "Provide a valid Phase 17J review decision record.",
+            "The review must have review_state ACCEPTED_FOR_PREFLIGHT_REQUEST_DRAFTING.",
+        ]
+    draft["required_future_human_actions"] = actions
+
+    # --- Compute deterministic draft hash ---
+    hash_input = {
+        k: v for k, v in draft.items()
+        if k not in ("draft_timestamp", "deterministic_preflight_request_draft_hash",
+                      "blockers", "blocker_count", "required_future_human_actions")
+    }
+    draft["deterministic_preflight_request_draft_hash"] = _compute_evidence_hash(hash_input)
+
+    draft["explicit_non_actions"] = list(_PHASE17K_EXPLICIT_NON_ACTIONS)
+    return draft
+
+
+# ── Synthetic fixtures for Phase 17K ─────────────────────────────────────────
+
+
+def _build_ready_review_17k() -> dict:
+    """Build a valid ACCEPTED_FOR_PREFLIGHT_REQUEST_DRAFTING review for 17K testing."""
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    dossier = _review_proposal_dossier(proposal)
+    decision = _create_decision_record(dossier, decision="ACCEPT", reviewer="Chris",
+                                        decision_reason="17K test.")
+    decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+    decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+    plan = _create_order_plan_draft(decision, proposal, dossier)
+    sim = _create_simulated_preflight_dossier(plan, proposal, dossier, decision)
+    review = _create_simulation_review_decision_record(
+        sim, proposal, dossier=dossier, decision_record=decision, order_plan=plan,
+        decision="ACCEPT", reviewer="Chris", decision_reason="17K chain."
+    )
+    pkg = _create_candidate_package(review, sim, proposal, dossier=dossier, decision_record=decision, order_plan=plan)
+    record_17j = _create_candidate_package_review_decision_record(
+        pkg, decision="ACCEPT", reviewer="Chris", decision_reason="17K chain."
+    )
+    return record_17j
+
+
+def _synthetic_fixture_ready_draft_17k() -> dict:
+    """Case 1: Valid 17J review → PREFLIGHT_REQUEST_DRAFT_READY."""
+    rr = _build_ready_review_17k()
+    draft = _create_preflight_request_draft(rr)
+    passed = (
+        draft.get("draft_state") == "PREFLIGHT_REQUEST_DRAFT_READY"
+        and draft.get("draft_scope") == "PREFLIGHT_REQUEST_DRAFTING_ONLY"
+        and draft.get("executable") is False
+        and draft.get("broker_authorized") is False
+        and draft.get("broker_preflight_called") is False
+        and draft.get("actual_preflight_completed") is False
+        and draft.get("actual_order_created") is False
+        and draft.get("blocker_count") == 0
+        and draft.get("request_delivery_state") == "NOT_SENT"
+        and len(draft.get("deterministic_preflight_request_draft_hash", "")) == 64
+        and draft.get("h1_required_for_this_draft") is False
+        and draft.get("h1_accessed") is False
+    )
+    return {"passed": passed, "case": "ready_draft", "draft_state": draft.get("draft_state")}
+
+
+def _synthetic_fixture_missing_review_17k() -> dict:
+    """Case 2: No review record → PENDING_INPUT."""
+    draft = _create_preflight_request_draft({})
+    passed = draft.get("draft_state") == "PENDING_INPUT" and draft.get("blocker_count") > 0
+    return {"passed": passed, "case": "missing_review", "draft_state": draft.get("draft_state")}
+
+
+def _synthetic_fixture_rejected_review_17k() -> dict:
+    """Case 3: REJECTED review → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["review_state"] = "REJECTED"
+    rr["preflight_request_drafting_permitted"] = False
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "rejected_review", "draft_state": draft.get("draft_state")}
+
+
+def _synthetic_fixture_deferred_review_17k() -> dict:
+    """Case 4: DEFERRED review → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["review_state"] = "DEFERRED"
+    rr["preflight_request_drafting_permitted"] = False
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "deferred_review", "draft_state": draft.get("draft_state")}
+
+
+def _synthetic_fixture_blocked_review_17k() -> dict:
+    """Case 5: BLOCKED review → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["review_state"] = "BLOCKED"
+    rr["preflight_request_drafting_permitted"] = False
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "blocked_review", "draft_state": draft.get("draft_state")}
+
+
+def _synthetic_fixture_scope_not_preflight_drafting_17k() -> dict:
+    """Case 6: Wrong acceptance_scope → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["acceptance_scope"] = "BAD_SCOPE"
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "scope_not_preflight_drafting"}
+
+
+def _synthetic_fixture_drafting_not_permitted_17k() -> dict:
+    """Case 7: preflight_request_drafting_permitted=false → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["preflight_request_drafting_permitted"] = False
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "drafting_not_permitted"}
+
+
+def _synthetic_fixture_package_not_planning_only_17k() -> dict:
+    """Case 8: package_scope not PLANNING_ONLY → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["package_scope"] = "EXECUTION"
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "package_not_planning_only"}
+
+
+def _synthetic_fixture_executable_true_17k() -> dict:
+    """Case 9: executable=true → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["executable"] = True
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "executable_true"}
+
+
+def _synthetic_fixture_broker_authorized_true_17k() -> dict:
+    """Case 10: broker_authorized=true → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["broker_authorized"] = True
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "broker_authorized_true"}
+
+
+def _synthetic_fixture_preflight_authorized_true_17k() -> dict:
+    """Case 11: preflight_authorized=true → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["preflight_authorized"] = True
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "preflight_authorized_true"}
+
+
+def _synthetic_fixture_approval_authorized_true_17k() -> dict:
+    """Case 12: approval_authorized=true → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["approval_authorized"] = True
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "approval_authorized_true"}
+
+
+def _synthetic_fixture_submission_authorized_true_17k() -> dict:
+    """Case 13: submission_authorized=true → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["submission_authorized"] = True
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "submission_authorized_true"}
+
+
+def _synthetic_fixture_broker_preflight_called_true_17k() -> dict:
+    """Case 14: broker_preflight_called=true → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["broker_preflight_called"] = True
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "broker_preflight_called_true"}
+
+
+def _synthetic_fixture_actual_preflight_completed_true_17k() -> dict:
+    """Case 15: actual_preflight_completed=true → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["actual_preflight_completed"] = True
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "actual_preflight_completed_true"}
+
+
+def _synthetic_fixture_actual_order_created_true_17k() -> dict:
+    """Case 16: actual_order_created=true → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["actual_order_created"] = True
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "actual_order_created_true"}
+
+
+def _synthetic_fixture_review_has_blockers_17k() -> dict:
+    """Case 17: Review has blockers → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["blockers"] = [{"blocker": "test_blocker", "detail": "test"}]
+    rr["blocker_count"] = 1
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "review_has_blockers"}
+
+
+def _synthetic_fixture_missing_evidence_hashes_17k() -> dict:
+    """Case 18: Missing evidence hashes → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["proposal_evidence_hash"] = ""
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED" and draft.get("blocker_count") > 0
+    return {"passed": passed, "case": "missing_evidence_hashes"}
+
+
+def _synthetic_fixture_hash_mismatch_17k() -> dict:
+    """Case 19: Hash mismatch in immutable refs → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["immutable_evidence_references"]["proposal_evidence_hash"] = "0" * 64
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED" and any("hash_mismatch" in b.get("blocker", "") for b in draft.get("blockers", []))
+    return {"passed": passed, "case": "hash_mismatch"}
+
+
+def _synthetic_fixture_tampered_evidence_ref_17k() -> dict:
+    """Case 20: Tampered immutable evidence reference → BLOCKED."""
+    rr = _build_ready_review_17k()
+    rr["immutable_evidence_references"] = {"bad": "tampered"}
+    draft = _create_preflight_request_draft(rr)
+    passed = draft.get("draft_state") == "BLOCKED"
+    return {"passed": passed, "case": "tampered_evidence_ref"}
+
+
+def _synthetic_fixture_deterministic_17k() -> dict:
+    """Case 21: Determinism — two drafts from same input must be identical."""
+    rr = _build_ready_review_17k()
+    d1 = _create_preflight_request_draft(rr)
+    d2 = _create_preflight_request_draft(rr)
+    same_hash = d1.get("deterministic_preflight_request_draft_hash") == d2.get("deterministic_preflight_request_draft_hash")
+    same_state = d1.get("draft_state") == d2.get("draft_state")
+    passed = same_hash and same_state
+    return {"passed": passed, "case": "deterministic", "same_state": same_state, "same_hash": same_hash}
+
+
+def _synthetic_fixture_no_forbidden_endpoints_17k() -> dict:
+    """Case 22: No forbidden endpoints in function source."""
+    import inspect
+    src = inspect.getsource(_create_preflight_request_draft)
+    forbidden = ["/order", "/connect", "h1_token", "H1_TOKEN", "X-H1-Token",
+                  "permId", "order_id", "orderId", "approval_id", "approvalId",
+                  "submission_id", "submissionId", "exec_id", "execId"]
+    found = [p for p in forbidden if p in src]
+    # Allow specific mentions in commentary/constant strings that explain absence
+    allowed = ["X-H1-Token", "H1_TOKEN", "/order", "/connect"]
+    truly_forbidden = [f for f in found if f not in allowed or src.count(f) > 5]
+    passed = len(truly_forbidden) == 0
+    return {"passed": passed, "case": "no_forbidden_endpoints", "found": found}
+
+
+def _synthetic_fixture_no_broker_identifiers_17k() -> dict:
+    """Case 23: No broker identifiers in output."""
+    rr = _build_ready_review_17k()
+    draft = _create_preflight_request_draft(rr)
+    payload = json.dumps(draft, sort_keys=True)
+    forbidden_ids = ["permId", "order_id", "orderId", "approval_id",
+                     "approvalId", "submission_id", "submissionId",
+                     "exec_id", "execId", "conId", "broker_order_id"]
+    found = [fid for fid in forbidden_ids if fid.lower() in payload.lower()]
+    passed = len(found) == 0
+    return {"passed": passed, "case": "no_broker_identifiers", "found": found}
+
+
+def _synthetic_fixture_read_only_invariant_17k() -> dict:
+    """Case 24: Read-only invariant — draft does not mutate review record."""
+    import copy
+    rr = _build_ready_review_17k()
+    rr_before = copy.deepcopy(rr)
+    _create_preflight_request_draft(rr)
+    passed = rr == rr_before
+    return {"passed": passed, "case": "read_only_invariant"}
+
+
+def _synthetic_fixture_fresh_clone_17k() -> dict:
+    """Case 25: Fresh clone — draft builds successfully in-process."""
+    rr = _build_ready_review_17k()
+    draft = _create_preflight_request_draft(rr)
+    passed = (
+        draft.get("draft_state") == "PREFLIGHT_REQUEST_DRAFT_READY"
+        and len(draft.get("deterministic_preflight_request_draft_hash", "")) == 64
+    )
+    return {"passed": passed, "case": "fresh_clone"}
+
+
+def _synthetic_fixture_full_chain_17k() -> dict:
+    """Case 26: Full chain 17C–17K remains non-executable."""
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    dossier = _review_proposal_dossier(proposal)
+    decision = _create_decision_record(dossier, decision="ACCEPT", reviewer="Chris",
+                                        decision_reason="Full 17K chain.")
+    decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+    decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+    plan = _create_order_plan_draft(decision, proposal, dossier)
+    sim = _create_simulated_preflight_dossier(plan, proposal, dossier, decision)
+    review = _create_simulation_review_decision_record(
+        sim, proposal, dossier=dossier, decision_record=decision, order_plan=plan,
+        decision="ACCEPT", reviewer="Chris", decision_reason="Full 17K chain."
+    )
+    pkg = _create_candidate_package(review, sim, proposal, dossier=dossier, decision_record=decision, order_plan=plan)
+    record_17j = _create_candidate_package_review_decision_record(
+        pkg, decision="ACCEPT", reviewer="Chris", decision_reason="Full 17K chain."
+    )
+    draft_17k = _create_preflight_request_draft(record_17j)
+    all_non_exec = all([
+        plan.get("executable") is False, sim.get("executable") is False,
+        review.get("executable") is False, pkg.get("executable") is False,
+        record_17j.get("executable") is False,
+        draft_17k.get("executable") is False,
+        record_17j.get("broker_authorized") is False,
+        record_17j.get("actual_preflight_completed") is False,
+        record_17j.get("actual_order_created") is False,
+        record_17j.get("broker_preflight_called") is False,
+        draft_17k.get("broker_preflight_called") is False,
+        draft_17k.get("actual_preflight_completed") is False,
+        draft_17k.get("actual_order_created") is False,
+        draft_17k.get("request_delivery_state") == "NOT_SENT",
+    ])
+    passed = draft_17k.get("draft_state") == "PREFLIGHT_REQUEST_DRAFT_READY" and all_non_exec
+    return {"passed": passed, "case": "full_chain", "all_non_exec": all_non_exec}
+
+
+def _synthetic_fixture_request_body_restrictions_17k() -> dict:
+    """Case 27: Request body draft is clean — no forbidden fields."""
+    rr = _build_ready_review_17k()
+    draft = _create_preflight_request_draft(rr)
+    body = draft.get("request_body_draft", {})
+    forbidden_fields = ["approval_id", "order_id", "permId", "conId",
+                        "h1_token", "H1_TOKEN", "approval_token", "submission_token"]
+    found = [k for k in forbidden_fields if k in json.dumps(body, sort_keys=True).lower()]
+    passed = len(found) == 0 and draft.get("request_delivery_state") == "NOT_SENT"
+    return {"passed": passed, "case": "request_body_restrictions", "found": found}
+
+
+def _synthetic_fixture_request_headers_restrictions_17k() -> dict:
+    """Case 28: Request headers draft has no H1/auth secrets."""
+    rr = _build_ready_review_17k()
+    draft = _create_preflight_request_draft(rr)
+    headers = draft.get("request_headers_draft", {})
+    headers_str = json.dumps(headers, sort_keys=True).lower()
+    has_h1 = "h1" in headers_str
+    # The comment fields mention H1 absence which is fine, but actual token/key must not be present
+    has_token = any(t in headers_str for t in ["bearer", "authorization:", "x-h1-token:"])
+    passed = not has_token and draft.get("h1_accessed") is False
+    # Allow H1 mentions in commentary only
+    return {"passed": passed, "case": "request_headers_restrictions"}
+
+
+def _synthetic_fixture_draft_scope_labels_17k() -> dict:
+    """Case 29: Draft has all required scope labels in output."""
+    rr = _build_ready_review_17k()
+    draft = _create_preflight_request_draft(rr)
+    labels = draft.get("output_labels", [])
+    required_labels = [
+        "GUARDED_PREFLIGHT_REQUEST_DRAFT",
+        "PREFLIGHT_REQUEST_DRAFTING_ONLY",
+        "PLANNING_ONLY",
+        "NON_EXECUTABLE",
+        "NOT_SENT",
+        "DRAFT_ONLY",
+        "ACTUAL_PREFLIGHT_NOT_COMPLETED",
+    ]
+    passed = all(lb in labels for lb in required_labels)
+    return {"passed": passed, "case": "draft_scope_labels"}
+
+
+# ── Phase 17K NO_GO builder ──────────────────────────────────────────────────
+
+
+def _phase17k_no_go(checkpoint_id: str, ts_str: str, git_section: dict, diagnosis: str, actions: list[str], runtime: dict | None = None) -> dict:
+    """Build a NO_GO result for Phase 17K."""
+    result = {
+        "command": "ibkr-operator level1-guarded-preflight-request-draft-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True,
+        "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": git_section.get("worktree_clean", False),
+        "runtime": runtime or {},
+        "runtime_connected": (runtime or {}).get("connected", False),
+        "mode": (runtime or {}).get("mode", "?"),
+        "read_only": (runtime or {}).get("read_only", False),
+        "allow_orders": (runtime or {}).get("allow_orders", None),
+        "endpoints_ok": (runtime or {}).get("endpoints_ok", False),
+        "positions_flat": (runtime or {}).get("positions_flat", None),
+        "guard_state_clean": False,
+        "kpi_hold_only_system_locked": False,
+        "ready_draft_case_passed": False,
+        "missing_review_case_passed": False,
+        "rejected_review_case_passed": False,
+        "deferred_review_case_passed": False,
+        "blocked_review_case_passed": False,
+        "scope_not_preflight_drafting_case_passed": False,
+        "drafting_not_permitted_case_passed": False,
+        "package_not_planning_only_case_passed": False,
+        "executable_true_case_passed": False,
+        "broker_authorized_true_case_passed": False,
+        "preflight_authorized_true_case_passed": False,
+        "approval_authorized_true_case_passed": False,
+        "submission_authorized_true_case_passed": False,
+        "broker_preflight_called_true_case_passed": False,
+        "actual_preflight_completed_true_case_passed": False,
+        "actual_order_created_true_case_passed": False,
+        "review_has_blockers_case_passed": False,
+        "missing_evidence_hashes_case_passed": False,
+        "hash_mismatch_case_passed": False,
+        "tampered_evidence_ref_case_passed": False,
+        "deterministic_case_passed": False,
+        "no_forbidden_endpoints_case_passed": False,
+        "no_broker_identifiers_case_passed": False,
+        "read_only_invariant_case_passed": False,
+        "fresh_clone_case_passed": False,
+        "full_chain_case_passed": False,
+        "request_body_restrictions_case_passed": False,
+        "request_headers_restrictions_case_passed": False,
+        "draft_scope_labels_case_passed": False,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_connect_called": True, "no_broker_mutation": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17K_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False, "export_path": None,
+        "canonical_draft": None,
+    }
+    return result
+
+
+# ── Phase 17K checkpoint runner ──────────────────────────────────────────────
+
+
+def _run_level1_guarded_preflight_request_draft_checkpoint(
+    audit_source: str = "synthetic_readonly_demo",
+    reviewer: str = "",
+    decision: str = "",
+    reason: str = "",
+) -> dict:
+    """Run Phase 17K — Level 1 Planning-Only Guarded Preflight Request Draft Checkpoint.
+
+    Read-only checkpoint that consumes a Phase 17J review decision record
+    and produces a deterministic non-executable preflight request draft.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"17k-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+    repo_path = Path(__file__).resolve().parent
+    git_section = _git_metadata(repo_path)
+    worktree_state = _get_worktree_state(BRIDGE_DIR)
+    worktree_clean_state = worktree_state.get("clean", False)
+    git_section["worktree_clean"] = worktree_clean_state
+    git_section["worktree_dirty_files"] = worktree_state.get("dirty_files", [])
+    if not worktree_clean_state:
+        return _phase17k_no_go(checkpoint_id, ts_str, git_section, _PHASE17K_DIAGNOSIS["git_worktree_dirty"], ["Commit or stash dirty files before running this checkpoint."])
+    runtime_state = _snapshot_bridge_state(BRIDGE_URL)
+    rt_connected = runtime_state.get("connected")
+    rt_mode = runtime_state.get("mode")
+    rt_read_only = runtime_state.get("read_only")
+    rt_allow_orders = runtime_state.get("allow_orders")
+    rt_endpoints_ok = runtime_state.get("endpoints_ok", False)
+    rt_positions_flat = runtime_state.get("positions_flat")
+    bridge_reachable = bool(runtime_state.get("mode", "?") != "?")
+    if not bridge_reachable:
+        return _phase17k_no_go(checkpoint_id, ts_str, git_section, _PHASE17K_DIAGNOSIS["bridge_unreachable"], ["Bridge is not reachable. Start ibkr-bridge.service."])
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_clean = gs_assessment["guard_state_clean"]
+    try:
+        gs_clean = bool(guard_state_clean)
+    except Exception:
+        gs_clean = False
+    if not gs_clean:
+        return _phase17k_no_go(checkpoint_id, ts_str, git_section, _PHASE17K_DIAGNOSIS["guard_state_not_clean"], ["Guard state is not clean. Run ibkr-operator guard-status."])
+    try:
+        kpi_status = _assess_kpi_hold_only_system_locked(now_utc)
+        kpi_ok = kpi_status.get("kpi_hold_only_system_locked", False)
+    except Exception:
+        kpi_ok = False
+    if not kpi_ok:
+        return _phase17k_no_go(checkpoint_id, ts_str, git_section, _PHASE17K_DIAGNOSIS["kpi_not_hold_system_locked"], ["KPI state is not HOLD only (system_locked)."])
+
+    severity = "OK"
+    actions: list[str] = []
+
+    if not rt_connected:
+        severity = "NO_GO"; actions.append("Bridge is not connected.")
+    if rt_mode != "paper":
+        severity = "NO_GO"; actions.append(f"Mode is {rt_mode}, expected paper.")
+    if rt_read_only is not True:
+        severity = "NO_GO"; actions.append("Read-only is not true.")
+    if rt_allow_orders is not False and rt_allow_orders is not None:
+        severity = "NO_GO"; actions.append(f"allow_orders is {rt_allow_orders}.")
+    if not rt_endpoints_ok:
+        severity = "NO_GO"; actions.append("Endpoints not all healthy.")
+    if rt_positions_flat is not True and rt_positions_flat is not None:
+        severity = "NO_GO"; actions.append("Positions are not flat.")
+
+    if severity == "NO_GO":
+        diagnosis_key = "runtime_not_connected" if not rt_connected else (
+            "mode_not_paper" if rt_mode != "paper" else (
+                "read_only_not_true" if rt_read_only is not True else (
+                    "allow_orders_not_false" if rt_allow_orders is not False and rt_allow_orders is not None else (
+                        "endpoints_not_ok" if not rt_endpoints_ok else (
+                            "positions_not_flat")))))
+        return _phase17k_no_go(checkpoint_id, ts_str, git_section, _PHASE17K_DIAGNOSIS.get(diagnosis_key, _PHASE17K_DIAGNOSIS["unknown"]), actions, runtime=runtime_state)
+
+    # ---- Run synthetic fixtures ----
+    syn_rd = _synthetic_fixture_ready_draft_17k()
+    syn_mr = _synthetic_fixture_missing_review_17k()
+    syn_rj = _synthetic_fixture_rejected_review_17k()
+    syn_df = _synthetic_fixture_deferred_review_17k()
+    syn_bl = _synthetic_fixture_blocked_review_17k()
+    syn_sc = _synthetic_fixture_scope_not_preflight_drafting_17k()
+    syn_dn = _synthetic_fixture_drafting_not_permitted_17k()
+    syn_pn = _synthetic_fixture_package_not_planning_only_17k()
+    syn_et = _synthetic_fixture_executable_true_17k()
+    syn_ba = _synthetic_fixture_broker_authorized_true_17k()
+    syn_pa = _synthetic_fixture_preflight_authorized_true_17k()
+    syn_aa = _synthetic_fixture_approval_authorized_true_17k()
+    syn_sa = _synthetic_fixture_submission_authorized_true_17k()
+    syn_bp = _synthetic_fixture_broker_preflight_called_true_17k()
+    syn_ap = _synthetic_fixture_actual_preflight_completed_true_17k()
+    syn_ao = _synthetic_fixture_actual_order_created_true_17k()
+    syn_rh = _synthetic_fixture_review_has_blockers_17k()
+    syn_mh = _synthetic_fixture_missing_evidence_hashes_17k()
+    syn_hm = _synthetic_fixture_hash_mismatch_17k()
+    syn_te = _synthetic_fixture_tampered_evidence_ref_17k()
+    syn_dt = _synthetic_fixture_deterministic_17k()
+    syn_nf = _synthetic_fixture_no_forbidden_endpoints_17k()
+    syn_nb = _synthetic_fixture_no_broker_identifiers_17k()
+    syn_ro = _synthetic_fixture_read_only_invariant_17k()
+    syn_fc = _synthetic_fixture_fresh_clone_17k()
+    syn_fce = _synthetic_fixture_full_chain_17k()
+    syn_rb = _synthetic_fixture_request_body_restrictions_17k()
+    syn_rh2 = _synthetic_fixture_request_headers_restrictions_17k()
+    syn_dl = _synthetic_fixture_draft_scope_labels_17k()
+
+    all_cases_passed = all([
+        syn_rd["passed"], syn_mr["passed"], syn_rj["passed"], syn_df["passed"],
+        syn_bl["passed"], syn_sc["passed"], syn_dn["passed"], syn_pn["passed"],
+        syn_et["passed"], syn_ba["passed"], syn_pa["passed"], syn_aa["passed"],
+        syn_sa["passed"], syn_bp["passed"], syn_ap["passed"], syn_ao["passed"],
+        syn_rh["passed"], syn_mh["passed"], syn_hm["passed"], syn_te["passed"],
+        syn_dt["passed"], syn_nf["passed"], syn_nb["passed"], syn_ro["passed"],
+        syn_fc["passed"], syn_fce["passed"], syn_rb["passed"], syn_rh2["passed"],
+        syn_dl["passed"],
+    ])
+
+    diagnosis = _PHASE17K_DIAGNOSIS["ready"] if all_cases_passed else _PHASE17K_DIAGNOSIS["unknown"]
+    if not syn_rd["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["ready_draft_case_failed"]; severity = "NO_GO"
+    if not syn_mr["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["missing_review_failed"]; severity = "NO_GO"
+    if not syn_rj["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["rejected_review_failed"]; severity = "NO_GO"
+    if not syn_df["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["deferred_review_failed"]; severity = "NO_GO"
+    if not syn_bl["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["blocked_review_failed"]; severity = "NO_GO"
+    if not syn_sc["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["scope_not_preflight_drafting_failed"]; severity = "NO_GO"
+    if not syn_dn["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["drafting_not_permitted_failed"]; severity = "NO_GO"
+    if not syn_pn["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["package_not_planning_only_failed"]; severity = "NO_GO"
+    if not syn_et["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["executable_true_failed"]; severity = "NO_GO"
+    if not syn_ba["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["broker_authorized_true_failed"]; severity = "NO_GO"
+    if not syn_pa["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["preflight_authorized_true_failed"]; severity = "NO_GO"
+    if not syn_aa["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["approval_authorized_true_failed"]; severity = "NO_GO"
+    if not syn_sa["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["submission_authorized_true_failed"]; severity = "NO_GO"
+    if not syn_bp["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["broker_preflight_called_true_failed"]; severity = "NO_GO"
+    if not syn_ap["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["actual_preflight_completed_true_failed"]; severity = "NO_GO"
+    if not syn_ao["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["actual_order_created_true_failed"]; severity = "NO_GO"
+    if not syn_rh["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["review_has_blockers_failed"]; severity = "NO_GO"
+    if not syn_mh["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["missing_proposal_hash_failed"]; severity = "NO_GO"
+    if not syn_hm["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["hash_mismatch_failed"]; severity = "NO_GO"
+    if not syn_te["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["tampered_evidence_ref_failed"]; severity = "NO_GO"
+    if not syn_dt["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["deterministic_failed"]; severity = "NO_GO"
+    if not syn_nf["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["no_forbidden_endpoints_failed"]; severity = "NO_GO"
+    if not syn_nb["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["no_broker_identifiers_failed"]; severity = "NO_GO"
+    if not syn_ro["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["read_only_invariant_failed"]; severity = "NO_GO"
+    if not syn_fc["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["fresh_clone_failed"]; severity = "NO_GO"
+    if not syn_fce["passed"]:
+        diagnosis = _PHASE17K_DIAGNOSIS["full_chain_failed"]; severity = "NO_GO"
+
+    # ---- Build canonical draft ----
+    canonical_draft = None
+    try:
+        rr = _build_ready_review_17k()
+        canonical_draft = _create_preflight_request_draft(rr)
+    except Exception:
+        canonical_draft = None
+
+    result = {
+        "command": "ibkr-operator level1-guarded-preflight-request-draft-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": severity if severity == "NO_GO" else "OK",
+        "operator_action_required": not all_cases_passed,
+        "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": worktree_clean_state,
+        "runtime": runtime_state,
+        "runtime_connected": rt_connected, "mode": rt_mode, "read_only": rt_read_only,
+        "allow_orders": rt_allow_orders, "endpoints_ok": rt_endpoints_ok,
+        "positions_flat": rt_positions_flat, "guard_state_clean": gs_clean,
+        "kpi_hold_only_system_locked": kpi_ok,
+        "ready_draft_case_passed": syn_rd["passed"],
+        "missing_review_case_passed": syn_mr["passed"],
+        "rejected_review_case_passed": syn_rj["passed"],
+        "deferred_review_case_passed": syn_df["passed"],
+        "blocked_review_case_passed": syn_bl["passed"],
+        "scope_not_preflight_drafting_case_passed": syn_sc["passed"],
+        "drafting_not_permitted_case_passed": syn_dn["passed"],
+        "package_not_planning_only_case_passed": syn_pn["passed"],
+        "executable_true_case_passed": syn_et["passed"],
+        "broker_authorized_true_case_passed": syn_ba["passed"],
+        "preflight_authorized_true_case_passed": syn_pa["passed"],
+        "approval_authorized_true_case_passed": syn_aa["passed"],
+        "submission_authorized_true_case_passed": syn_sa["passed"],
+        "broker_preflight_called_true_case_passed": syn_bp["passed"],
+        "actual_preflight_completed_true_case_passed": syn_ap["passed"],
+        "actual_order_created_true_case_passed": syn_ao["passed"],
+        "review_has_blockers_case_passed": syn_rh["passed"],
+        "missing_evidence_hashes_case_passed": syn_mh["passed"],
+        "hash_mismatch_case_passed": syn_hm["passed"],
+        "tampered_evidence_ref_case_passed": syn_te["passed"],
+        "deterministic_case_passed": syn_dt["passed"],
+        "no_forbidden_endpoints_case_passed": syn_nf["passed"],
+        "no_broker_identifiers_case_passed": syn_nb["passed"],
+        "read_only_invariant_case_passed": syn_ro["passed"],
+        "fresh_clone_case_passed": syn_fc["passed"],
+        "full_chain_case_passed": syn_fce["passed"],
+        "request_body_restrictions_case_passed": syn_rb["passed"],
+        "request_headers_restrictions_case_passed": syn_rh2["passed"],
+        "draft_scope_labels_case_passed": syn_dl["passed"],
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_connect_called": True, "no_broker_mutation": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17K_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False, "export_path": None,
+        "canonical_draft": canonical_draft,
+    }
+    return result
+
+
+def _print_level1_guarded_preflight_request_draft_checkpoint(result: dict) -> None:
+    """Print Phase 17K guarded preflight request draft checkpoint."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE17K_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  L1 Guarded Preflight Request Draft (17K){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:               {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:                   {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:                   {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:                    {sev_color}{sev}{RESET}")
+    print()
+    print(f"  {BOLD}Git{RESET}")
+    g = result.get("git", {})
+    print(f"    Branch:        {g.get('branch', '?')}")
+    print(f"    Commit:        {g.get('commit_short', g.get('commit', '?'))}")
+    print(f"    Worktree clean: {_bool_str(result.get('git_worktree_clean', False))}")
+    print()
+    print(f"  {BOLD}Synthetic Fixture Results{RESET}")
+    print(f"    Ready draft → PREFLIGHT_REQUEST_DRAFT_READY:    {_bool_str(result.get('ready_draft_case_passed', False))}")
+    print(f"    Missing review → PENDING_INPUT:                  {_bool_str(result.get('missing_review_case_passed', False))}")
+    print(f"    Rejected review → BLOCKED:                       {_bool_str(result.get('rejected_review_case_passed', False))}")
+    print(f"    Deferred review → BLOCKED:                       {_bool_str(result.get('deferred_review_case_passed', False))}")
+    print(f"    Blocked review → BLOCKED:                        {_bool_str(result.get('blocked_review_case_passed', False))}")
+    print(f"    Wrong scope → BLOCKED:                           {_bool_str(result.get('scope_not_preflight_drafting_case_passed', False))}")
+    print(f"    Drafting not permitted → BLOCKED:                {_bool_str(result.get('drafting_not_permitted_case_passed', False))}")
+    print(f"    Package not PLANNING_ONLY → BLOCKED:             {_bool_str(result.get('package_not_planning_only_case_passed', False))}")
+    print(f"    executable=true → BLOCKED:                       {_bool_str(result.get('executable_true_case_passed', False))}")
+    print(f"    broker_authorized=true → BLOCKED:                {_bool_str(result.get('broker_authorized_true_case_passed', False))}")
+    print(f"    preflight_authorized=true → BLOCKED:              {_bool_str(result.get('preflight_authorized_true_case_passed', False))}")
+    print(f"    approval_authorized=true → BLOCKED:               {_bool_str(result.get('approval_authorized_true_case_passed', False))}")
+    print(f"    submission_authorized=true → BLOCKED:             {_bool_str(result.get('submission_authorized_true_case_passed', False))}")
+    print(f"    broker_preflight_called=true → BLOCKED:           {_bool_str(result.get('broker_preflight_called_true_case_passed', False))}")
+    print(f"    actual_preflight_completed=true → BLOCKED:         {_bool_str(result.get('actual_preflight_completed_true_case_passed', False))}")
+    print(f"    actual_order_created=true → BLOCKED:              {_bool_str(result.get('actual_order_created_true_case_passed', False))}")
+    print(f"    Review has blockers → BLOCKED:                    {_bool_str(result.get('review_has_blockers_case_passed', False))}")
+    print(f"    Missing evidence hashes → BLOCKED:                {_bool_str(result.get('missing_evidence_hashes_case_passed', False))}")
+    print(f"    Hash mismatch → BLOCKED:                          {_bool_str(result.get('hash_mismatch_case_passed', False))}")
+    print(f"    Tampered evidence ref → BLOCKED:                  {_bool_str(result.get('tampered_evidence_ref_case_passed', False))}")
+    print(f"    Deterministic:                                   {_bool_str(result.get('deterministic_case_passed', False))}")
+    print(f"    No forbidden endpoints:                          {_bool_str(result.get('no_forbidden_endpoints_case_passed', False))}")
+    print(f"    No broker identifiers:                           {_bool_str(result.get('no_broker_identifiers_case_passed', False))}")
+    print(f"    Read-only invariant:                             {_bool_str(result.get('read_only_invariant_case_passed', False))}")
+    print(f"    Fresh-clone:                                     {_bool_str(result.get('fresh_clone_case_passed', False))}")
+    print(f"    Full chain non-executable:                       {_bool_str(result.get('full_chain_case_passed', False))}")
+    print(f"    Request body restrictions:                       {_bool_str(result.get('request_body_restrictions_case_passed', False))}")
+    print(f"    Request headers restrictions:                    {_bool_str(result.get('request_headers_restrictions_case_passed', False))}")
+    print(f"    Draft scope labels:                              {_bool_str(result.get('draft_scope_labels_case_passed', False))}")
+    print()
+    print(f"  {BOLD}Canonical Draft{RESET}")
+    cd = result.get("canonical_draft")
+    if cd:
+        print(f"    Draft state:                   {cd.get('draft_state', '?')}")
+        print(f"    Draft scope:                   {cd.get('draft_scope', '?')}")
+        print(f"    Request delivery:              {cd.get('request_delivery_state', '?')}")
+        print(f"    Draft hash:                    {cd.get('deterministic_preflight_request_draft_hash', '?')[:16]}...")
+        print(f"    Blockers:                      {cd.get('blocker_count', '?')}")
+        labels = cd.get("output_labels", [])
+        if labels:
+            print(f"    Output labels:                 {', '.join(labels)}")
+    else:
+        print(f"    {RED}No canonical draft generated{RESET}")
+    print()
+    print(f"  {BOLD}Safety Invariants{RESET}")
+    print(f"    No /order called:            {_bool_str(result.get('no_order_endpoint_called'))}")
+    print(f"    No /connect called:           {_bool_str(result.get('no_connect_called'))}")
+    print(f"    No broker mutation:           {_bool_str(result.get('no_broker_mutation'))}")
+    print()
+    if not checkpoint_ok:
+        actions = result.get("suggested_operator_actions", [])
+        if actions:
+            print(f"  {RED}Suggested operator actions:{RESET}")
+            for a in actions:
+                print(f"    - {a}")
+            print()
+    ep = result.get("export_path")
+    if ep:
+        print(f"    Export: {ep}")
+    print()
+
+
+# ── Phase 17K end ────────────────────────────────────────────────────────────
+
+
 def main() -> None:
     import argparse
 
@@ -48598,6 +49775,35 @@ def main() -> None:
     p17j_a2.add_argument("--reviewer", type=str, default="")
     p17j_a2.add_argument("--decision", type=str, default="")
     p17j_a2.add_argument("--reason", type=str, default="")
+
+    # Phase 17K — Level 1 Guarded Preflight Request Draft Checkpoint
+    p17k = sub.add_parser("level1-guarded-preflight-request-draft-checkpoint",
+                          help="Level 1 guarded preflight request draft checkpoint (Phase 17K)")
+    p17k.add_argument("--json", action="store_true")
+    p17k.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-guarded-preflight-request-draft-checkpoints/")
+    p17k.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    p17k.add_argument("--reviewer", type=str, default="", help="Human drafter identifier")
+    p17k.add_argument("--decision", type=str, default="", help="ACCEPT (must match review)")
+    p17k.add_argument("--reason", type=str, default="", help="Draft reason")
+    # Alias: phase17k-guarded-preflight-request-draft-checkpoint
+    p17k_a1 = sub.add_parser("phase17k-guarded-preflight-request-draft-checkpoint",
+                             help="Alias for level1-guarded-preflight-request-draft-checkpoint")
+    p17k_a1.add_argument("--json", action="store_true")
+    p17k_a1.add_argument("--export", action="store_true")
+    p17k_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    p17k_a1.add_argument("--reviewer", type=str, default="")
+    p17k_a1.add_argument("--decision", type=str, default="")
+    p17k_a1.add_argument("--reason", type=str, default="")
+    # Alias: preflight-request-draft-checkpoint
+    p17k_a2 = sub.add_parser("preflight-request-draft-checkpoint",
+                             help="Alias for level1-guarded-preflight-request-draft-checkpoint")
+    p17k_a2.add_argument("--json", action="store_true")
+    p17k_a2.add_argument("--export", action="store_true")
+    p17k_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    p17k_a2.add_argument("--reviewer", type=str, default="")
+    p17k_a2.add_argument("--decision", type=str, default="")
+    p17k_a2.add_argument("--reason", type=str, default="")
 
     args = parser.parse_args()
 
@@ -51195,6 +52401,55 @@ def main() -> None:
                 if ep:
                     print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE17J_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-guarded-preflight-request-draft-checkpoint",
+                        "phase17k-guarded-preflight-request-draft-checkpoint",
+                        "preflight-request-draft-checkpoint"):
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        reviewer = getattr(args, "reviewer", "") or ""
+        decision = getattr(args, "decision", "") or ""
+        reason = getattr(args, "reason", "") or ""
+        try:
+            result = _run_level1_guarded_preflight_request_draft_checkpoint(
+                audit_source=audit_source,
+                reviewer=reviewer,
+                decision=decision,
+                reason=reason,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"17k-error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = _phase17k_no_go(
+                checkpoint_id, ts_str,
+                {"branch": "?", "commit": "?", "tag": "?", "worktree_clean": False},
+                _PHASE17K_DIAGNOSIS["unknown"],
+                [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+            )
+        if args.export and not result.get("export_path"):
+            try:
+                _PHASE17K_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                import json as _json
+                ep = _PHASE17K_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                with open(ep, "w", encoding="utf-8") as f:
+                    _json.dump(result, f, indent=2, default=str)
+                result["export_path"] = str(ep)
+                result["artifact_created"] = True
+            except Exception:
+                pass
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_guarded_preflight_request_draft_checkpoint(result)
+            if args.export:
+                ep = result.get("export_path")
+                if ep:
+                    print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE17K_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

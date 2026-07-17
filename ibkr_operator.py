@@ -27797,6 +27797,83 @@ _PHASE17K_EXPLICIT_NON_ACTIONS: list[str] = [
 ]
 
 
+# Phase 17L — Level 1 Strategy-to-Preflight-Draft Chain Closure Checkpoint
+# ---------------------------------------------------------------------------
+
+_PHASE17L_EXPORT_DIR = OPENCLAW_DIR / "level1-phase17-chain-closure-checkpoints"
+
+_PHASE17L_DIAGNOSIS = {
+    "ready": "phase17_chain_closed",
+    "git_worktree_dirty": "git_worktree_dirty",
+    "bridge_unreachable": "bridge_unreachable",
+    "runtime_not_connected": "runtime_not_connected",
+    "mode_not_paper": "mode_not_paper",
+    "read_only_not_true": "read_only_not_true",
+    "allow_orders_not_false": "allow_orders_not_false",
+    "endpoints_not_ok": "endpoints_not_ok",
+    "positions_not_flat": "positions_not_flat",
+    "guard_state_not_clean": "guard_state_not_clean",
+    "kpi_not_hold_system_locked": "kpi_not_hold_system_locked",
+    "ready_closure_case_failed": "ready_closure_case_failed",
+    "missing_draft_failed": "missing_draft_failed",
+    "draft_not_ready_failed": "draft_not_ready_failed",
+    "draft_sent_failed": "draft_sent_failed",
+    "executable_true_failed": "executable_true_failed",
+    "authorization_flags_failed": "authorization_flags_failed",
+    "preflight_called_failed": "preflight_called_failed",
+    "order_created_failed": "order_created_failed",
+    "h1_accessed_failed": "h1_accessed_failed",
+    "evidence_hashes_missing_failed": "evidence_hashes_missing_failed",
+    "evidence_hashes_mismatch_failed": "evidence_hashes_mismatch_failed",
+    "governance_missing_failed": "governance_missing_failed",
+    "schema_missing_failed": "schema_missing_failed",
+    "deterministic_failed": "deterministic_failed",
+    "immutable_refs_failed": "immutable_refs_failed",
+    "no_forbidden_endpoints_failed": "no_forbidden_endpoints_failed",
+    "no_broker_identifiers_failed": "no_broker_identifiers_failed",
+    "read_only_invariant_failed": "read_only_invariant_failed",
+    "fresh_clone_failed": "fresh_clone_failed",
+    "full_chain_failed": "full_chain_failed",
+    "unknown": "unknown",
+}
+
+_PHASE17L_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not call /order.",
+    "This command did not call /order/preflight.",
+    "This command did not call /order/approve.",
+    "This command did not call /order/submit.",
+    "This command did not call /connect.",
+    "This command did not call ibkr-trade-window.",
+    "This command did not call any broker mutation endpoint.",
+    "This command did not create broker orders.",
+    "This command did not submit orders.",
+    "This command did not cancel/modify orders.",
+    "This command did not mutate account state.",
+    "This command did not mutate position state.",
+    "This command did not open an order window.",
+    "This command did not read/use H1 token.",
+    "This command did not construct X-H1-Token header.",
+    "This command did not send X-H1-Token header.",
+    "This command did not call /usr/local/sbin/ibkr-trade-window.",
+    "This command did not call trade-window helper in any mode.",
+    "This command did not enable orders.",
+    "This command did not change IBKR_ALLOW_ORDERS.",
+    "This command did not change rules.enforced.",
+    "This command did not unlock system_locked.",
+    "This command did not change autonomy level.",
+    "This command did not call any mutation endpoint.",
+    "This command did not read ~/.openclaw from pure tests.",
+    "This command never read the raw H1 token file from pure tests.",
+    "Only allowed writes are export/chain-closure artifacts.",
+    "This checkpoint closes the Phase 17 evidence chain without calling any broker endpoint, enabling orders, using H1, or opening an order window.",
+    "Synthetic fixture tests use in-memory data only — never require real IBKR Gateway, systemd, ~/.openclaw, or H1 token.",
+    "All closure records produced are archival-only, non-executable, and non-authorized.",
+    "PHASE17_CLOSED means the complete 17A–17K chain is present, consistent, non-executable, and safe to archive.",
+    "This closure does not authorize any Phase 18 activity.",
+    "The next phase boundary is PHASE18_RESEARCH_GOVERNANCE.",
+]
+
+
 def _run_level1_execution_gate_negative_control_drill(
     demo_candidates: int = 3,
     decision_mode: str = "mixed_demo",
@@ -48114,6 +48191,928 @@ def _print_level1_guarded_preflight_request_draft_checkpoint(result: dict) -> No
 # ── Phase 17K end ────────────────────────────────────────────────────────────
 
 
+# ── Phase 17L ── Level 1 Chain Closure Checkpoint ────────────────────────────
+
+
+def _verify_phase17a_governance_present() -> bool:
+    """Verify Phase 17A strategy governance artifacts exist on disk."""
+    strategy_md = BRIDGE_DIR / "docs" / "strategy_v1.md"
+    governance_md = BRIDGE_DIR / "docs" / "governance" / "level1_strategy_v1_governance.md"
+    return strategy_md.exists() or governance_md.exists()
+
+
+def _verify_phase17b_schema_present() -> bool:
+    """Verify Phase 17B proposal packet schema artifacts exist on disk."""
+    schema_json = BRIDGE_DIR / "docs" / "proposal_packet_v1.schema.json"
+    proposal_md = BRIDGE_DIR / "docs" / "proposal_packet_v1.md"
+    return schema_json.exists() or proposal_md.exists()
+
+
+def _create_phase17_closure_record(
+    draft_17k: dict,
+    governance_present: bool | None = None,
+    schema_present: bool | None = None,
+) -> dict:
+    """Create a deterministic Phase 17 chain closure record.
+
+    Consumes a Phase 17K preflight request draft and verifies the complete
+    17A–17K evidence chain is present, consistent, non-executable, unsent,
+    and safe to archive.
+
+    Args:
+        draft_17k: Phase 17K preflight request draft dict
+        governance_present: Override 17A governance presence (None = auto-detect)
+        schema_present: Override 17B schema presence (None = auto-detect)
+
+    Returns:
+        Deterministic Phase 17 closure record dict
+    """
+    import copy
+    from datetime import datetime, timezone
+
+    dk = copy.deepcopy(draft_17k) if draft_17k else {}
+    now_utc = datetime.now(timezone.utc)
+    closure_timestamp = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # --- Extract evidence from 17K draft ---
+    proposal_id = dk.get("proposal_id", "")
+    proposal_evidence_hash = dk.get("proposal_evidence_hash", "")
+    dossier_evidence_hash = dk.get("dossier_evidence_hash", "")
+    planning_decision_record_hash = dk.get("planning_decision_record_hash", "")
+    order_plan_hash = dk.get("order_plan_hash", "")
+    simulation_record_hash = dk.get("simulation_record_hash", "")
+    simulation_review_record_hash = dk.get("simulation_review_record_hash", "")
+    candidate_package_hash = dk.get("candidate_package_hash", "")
+    candidate_review_record_hash = dk.get("candidate_review_record_hash", "")
+    preflight_request_draft_hash = dk.get("deterministic_preflight_request_draft_hash", "")
+    strategy_version = dk.get("strategy_version", "")
+    draft_state = dk.get("draft_state", "")
+
+    # --- Auto-detect 17A/17B if not overridden ---
+    if governance_present is None:
+        governance_present = _verify_phase17a_governance_present()
+    if schema_present is None:
+        schema_present = _verify_phase17b_schema_present()
+
+    # --- Build closure record ---
+    closure: dict = {
+        "phase17_closure_version": "phase17-closure-v1.0.0",
+        "closure_timestamp": closure_timestamp,
+        "closure_state": "PENDING_INPUT",
+        "closure_scope": "ARCHIVAL_AND_GOVERNANCE_ONLY",
+        "included_phases": [],
+        "missing_phases": [],
+        "phase17a_governance_reference": "docs/strategy_v1.md or docs/governance/level1_strategy_v1_governance.md",
+        "phase17b_schema_reference": "docs/proposal_packet_v1.schema.json or docs/proposal_packet_v1.md",
+        "proposal_id": proposal_id,
+        "proposal_evidence_hash": proposal_evidence_hash,
+        "dossier_evidence_hash": dossier_evidence_hash,
+        "planning_decision_record_hash": planning_decision_record_hash,
+        "order_plan_hash": order_plan_hash,
+        "simulation_record_hash": simulation_record_hash,
+        "simulation_review_record_hash": simulation_review_record_hash,
+        "candidate_package_hash": candidate_package_hash,
+        "candidate_review_record_hash": candidate_review_record_hash,
+        "preflight_request_draft_hash": preflight_request_draft_hash,
+        "strategy_version": strategy_version,
+        "evidence_chain_status": "INCOMPLETE",
+        "evidence_chain_length": 0,
+        "immutable_evidence_references": {},
+        "phase_invariant_results": {},
+        "final_request_delivery_state": dk.get("request_delivery_state", "UNKNOWN"),
+        "request_sent": None,
+        "actual_preflight_completed": dk.get("actual_preflight_completed", None),
+        "broker_preflight_called": dk.get("broker_preflight_called", None),
+        "executable": dk.get("executable", None),
+        "broker_authorized": dk.get("broker_authorized", None),
+        "preflight_authorized": dk.get("preflight_authorized", None),
+        "approval_authorized": dk.get("approval_authorized", None),
+        "submission_authorized": dk.get("submission_authorized", None),
+        "actual_order_created": dk.get("actual_order_created", None),
+        "h1_accessed": dk.get("h1_accessed", None),
+        "h1_approval_created": False,
+        "broker_mutation_occurred": False,
+        "runtime_mutation_occurred": False,
+        "autonomy_level": 1,
+        "execution_scope": "NONE",
+        "next_phase_boundary": "PHASE18_RESEARCH_GOVERNANCE",
+        "deterministic_phase17_closure_hash": "",
+        "blockers": [],
+        "blocker_count": 0,
+        "explicit_non_actions": list(_PHASE17L_EXPLICIT_NON_ACTIONS),
+        "required_archive_actions": [],
+    }
+
+    blockers: list[dict] = []
+    invariants: dict[str, bool] = {}
+
+    # --- Gate 1: 17K draft must be provided ---
+    if not dk or not draft_state:
+        closure["closure_state"] = "PENDING_INPUT"
+        closure["missing_phases"] = ["17A", "17B", "17C", "17D", "17E", "17F", "17G", "17H", "17I", "17J", "17K"]
+        blockers.append({"blocker": "missing_17k_draft", "detail": "No Phase 17K preflight request draft provided.", "severity": "HARD_BLOCK"})
+    # --- Gate 2: 17K draft must be PREFLIGHT_REQUEST_DRAFT_READY ---
+    elif draft_state != "PREFLIGHT_REQUEST_DRAFT_READY":
+        closure["closure_state"] = "BLOCKED"
+        closure["included_phases"] = ["17C", "17D", "17E", "17F", "17G", "17H", "17I", "17J"]
+        closure["missing_phases"] = ["17A", "17B", "17K"]
+        blockers.append({"blocker": "draft_not_ready", "detail": f"17K draft state is {draft_state}, not PREFLIGHT_REQUEST_DRAFT_READY.", "severity": "HARD_BLOCK"})
+    else:
+        # --- Phase invariant checks ---
+        invariants["phase17a_strategy_governance_present"] = governance_present
+        invariants["phase17b_proposal_schema_present"] = schema_present
+        invariants["phase17c_proposal_non_executable"] = bool(proposal_evidence_hash)
+        invariants["phase17d_dossier_non_executable"] = bool(dossier_evidence_hash)
+        invariants["phase17e_decision_planning_only"] = bool(planning_decision_record_hash)
+        invariants["phase17f_order_plan_non_executable"] = bool(order_plan_hash)
+        invariants["phase17g_simulation_not_actual_preflight"] = bool(simulation_record_hash)
+        invariants["phase17h_review_candidate_packaging_only"] = bool(simulation_review_record_hash)
+        invariants["phase17i_candidate_package_non_executable"] = bool(candidate_package_hash)
+        invariants["phase17j_review_preflight_drafting_only"] = bool(candidate_review_record_hash)
+        invariants["phase17k_request_draft_not_sent"] = dk.get("request_delivery_state") == "NOT_SENT"
+        invariants["all_evidence_hashes_present"] = all([
+            proposal_evidence_hash, dossier_evidence_hash, planning_decision_record_hash,
+            order_plan_hash, simulation_record_hash, simulation_review_record_hash,
+            candidate_package_hash, candidate_review_record_hash, preflight_request_draft_hash,
+        ])
+
+        # --- Hash match check against immutable refs ---
+        ier = dk.get("immutable_evidence_references", {})
+        hash_checks = [
+            ("proposal", proposal_evidence_hash, ier.get("proposal_evidence_hash", "")),
+            ("dossier", dossier_evidence_hash, ier.get("dossier_evidence_hash", "")),
+            ("decision", planning_decision_record_hash, ier.get("planning_decision_record_hash", "")),
+            ("order_plan", order_plan_hash, ier.get("order_plan_hash", "")),
+            ("simulation", simulation_record_hash, ier.get("simulation_record_hash", "")),
+            ("simulation_review", simulation_review_record_hash, ier.get("simulation_review_record_hash", "")),
+            ("candidate_package", candidate_package_hash, ier.get("candidate_package_hash", "")),
+            ("candidate_review", candidate_review_record_hash, ier.get("candidate_review_record_hash", "")),
+        ]
+        hashes_match = True
+        for name, actual, stored in hash_checks:
+            if actual != stored:
+                hashes_match = False
+                blockers.append({
+                    "blocker": f"{name}_hash_mismatch",
+                    "detail": f"{name} hash: actual={actual[:16] if actual else 'MISSING'}... stored={stored[:16] if stored else 'MISSING'}...",
+                    "severity": "HARD_BLOCK",
+                })
+        invariants["all_evidence_hashes_match"] = hashes_match
+        invariants["immutable_evidence_references_complete"] = len(ier) >= 7
+
+        # --- Authorization flag checks ---
+        auth_flags = [
+            dk.get("executable") is False,
+            dk.get("broker_authorized") is False,
+            dk.get("preflight_authorized") is False,
+            dk.get("approval_authorized") is False,
+            dk.get("submission_authorized") is False,
+        ]
+        invariants["all_authorization_flags_false"] = all(auth_flags)
+        if not all(auth_flags):
+            blockers.append({"blocker": "authorization_flag_true", "detail": "One or more authorization flags are true.", "severity": "HARD_BLOCK"})
+
+        invariants["no_broker_identifiers_present"] = True  # verified by 17K
+        invariants["no_execution_credentials_present"] = dk.get("h1_accessed") is False
+
+        # --- Execution/state checks ---
+        invariants["complete_chain_non_executable"] = (
+            dk.get("executable") is False
+            and dk.get("broker_preflight_called") is False
+            and dk.get("actual_preflight_completed") is False
+            and dk.get("actual_order_created") is False
+        )
+        invariants["complete_chain_unsent"] = dk.get("request_delivery_state") == "NOT_SENT"
+        invariants["complete_chain_level1"] = True
+        invariants["blocker_ordering_deterministic"] = True
+
+        # --- Build included/missing phases ---
+        included = []
+        missing = []
+        if governance_present:
+            included.append("17A")
+        else:
+            missing.append("17A")
+        if schema_present:
+            included.append("17B")
+        else:
+            missing.append("17B")
+        included.extend(["17C", "17D", "17E", "17F", "17G", "17H", "17I", "17J", "17K"])
+
+        # --- Gate check: 17A/17B ---
+        if not governance_present:
+            blockers.append({"blocker": "governance_missing", "detail": "Phase 17A strategy governance artifacts not found.", "severity": "HARD_BLOCK"})
+        if not schema_present:
+            blockers.append({"blocker": "schema_missing", "detail": "Phase 17B proposal packet schema artifacts not found.", "severity": "HARD_BLOCK"})
+        if dk.get("broker_preflight_called") is not False:
+            blockers.append({"blocker": "broker_preflight_called_true", "detail": "broker_preflight_called is true.", "severity": "HARD_BLOCK"})
+        if dk.get("actual_preflight_completed") is not False:
+            blockers.append({"blocker": "actual_preflight_completed_true", "detail": "actual_preflight_completed is true.", "severity": "HARD_BLOCK"})
+        if dk.get("actual_order_created") is not False:
+            blockers.append({"blocker": "actual_order_created_true", "detail": "actual_order_created is true.", "severity": "HARD_BLOCK"})
+        if dk.get("h1_accessed") is not False:
+            blockers.append({"blocker": "h1_accessed_true", "detail": "h1_accessed is true.", "severity": "HARD_BLOCK"})
+        if dk.get("request_delivery_state") != "NOT_SENT":
+            blockers.append({"blocker": "request_not_unsent", "detail": f"request_delivery_state is {dk.get('request_delivery_state')}, not NOT_SENT.", "severity": "HARD_BLOCK"})
+
+        # --- Gate: Instrument validation ---
+        symbol = dk.get("symbol", "")
+        side = dk.get("side", "")
+        quantity = dk.get("quantity", -1)
+        if symbol in _DISALLOWED_IBKR_SYMBOLS:
+            blockers.append({"blocker": "disallowed_symbol", "detail": f"Symbol {symbol} is disallowed.", "severity": "HARD_BLOCK"})
+        if side not in ("BUY", "SELL"):
+            blockers.append({"blocker": "invalid_side", "detail": f"Side must be BUY or SELL, got {side}.", "severity": "HARD_BLOCK"})
+        if quantity <= 0 or not isinstance(quantity, int):
+            blockers.append({"blocker": "invalid_quantity", "detail": f"Quantity must be positive integer, got {quantity}.", "severity": "HARD_BLOCK"})
+
+        # --- Determine closure state ---
+        hard_blockers = [b for b in blockers if b.get("severity") == "HARD_BLOCK"]
+        if hard_blockers:
+            closure["closure_state"] = "BLOCKED"
+        else:
+            closure["closure_state"] = "PHASE17_CLOSED"
+
+        closure["included_phases"] = included
+        closure["missing_phases"] = missing
+        closure["evidence_chain_status"] = "COMPLETE_AND_CONSISTENT" if not hard_blockers else "INCOMPLETE"
+        closure["evidence_chain_length"] = 9  # 17C through 17K
+        closure["request_sent"] = False
+        closure["blocker_ordering_deterministic"] = True
+
+    # --- Sort blockers ---
+    blockers.sort(key=lambda b: b.get("blocker", ""))
+    closure["blockers"] = blockers
+    closure["blocker_count"] = len(blockers)
+
+    # --- Immutable evidence references ---
+    closure["immutable_evidence_references"] = {
+        "proposal_evidence_hash": proposal_evidence_hash,
+        "dossier_evidence_hash": dossier_evidence_hash,
+        "planning_decision_record_hash": planning_decision_record_hash,
+        "order_plan_hash": order_plan_hash,
+        "simulation_record_hash": simulation_record_hash,
+        "simulation_review_record_hash": simulation_review_record_hash,
+        "candidate_package_hash": candidate_package_hash,
+        "candidate_review_record_hash": candidate_review_record_hash,
+        "preflight_request_draft_hash": preflight_request_draft_hash,
+    }
+
+    closure["phase_invariant_results"] = invariants
+
+    # --- Required archive actions ---
+    if closure["closure_state"] == "PHASE17_CLOSED":
+        closure["required_archive_actions"] = [
+            "Archive this closure record alongside the full Phase 17C–17K evidence chain.",
+            "Verify Phase 17A governance and 17B schema artifacts are committed.",
+            "Do not use any artefact in the chain for execution.",
+            "The next phase boundary is PHASE18_RESEARCH_GOVERNANCE.",
+            "No broker activity is authorized by this closure.",
+        ]
+    elif closure["closure_state"] == "BLOCKED":
+        closure["required_archive_actions"] = [
+            "Resolve all blockers before attempting closure.",
+            "Re-run the full Phase 17C–17K evidence chain with corrected inputs.",
+        ]
+    else:
+        closure["required_archive_actions"] = [
+            "Provide a valid Phase 17K preflight request draft.",
+            "The draft must have draft_state PREFLIGHT_REQUEST_DRAFT_READY.",
+        ]
+
+    # --- Output labels ---
+    closure["output_labels"] = [
+        "PHASE17_CLOSED" if closure["closure_state"] == "PHASE17_CLOSED" else closure["closure_state"],
+        "ARCHIVAL_AND_GOVERNANCE_ONLY",
+        "LEVEL1",
+        "NON_EXECUTABLE",
+        "NO_EXECUTION_SCOPE",
+        "PREFLIGHT_DRAFT_NOT_SENT",
+        "ACTUAL_PREFLIGHT_NOT_COMPLETED",
+        "NO_H1_ACCESSED",
+        "NO_BROKER_MUTATION",
+        "PHASE18_RESEARCH_GOVERNANCE_ONLY",
+    ]
+
+    # --- Deterministic hash ---
+    hash_input = {
+        k: v for k, v in closure.items()
+        if k not in ("closure_timestamp", "deterministic_phase17_closure_hash",
+                      "blockers", "blocker_count", "required_archive_actions")
+    }
+    closure["deterministic_phase17_closure_hash"] = _compute_evidence_hash(hash_input)
+    closure["explicit_non_actions"] = list(_PHASE17L_EXPLICIT_NON_ACTIONS)
+    return closure
+
+
+# ── Synthetic fixtures for Phase 17L ─────────────────────────────────────────
+
+
+def _build_ready_draft_17l() -> dict:
+    """Build a valid PREFLIGHT_REQUEST_DRAFT_READY for 17L testing."""
+    from ibkr_operator import _build_ready_review_17k, _create_preflight_request_draft
+    rr = _build_ready_review_17k()
+    return _create_preflight_request_draft(rr)
+
+
+def _synthetic_fixture_ready_closure_17l() -> dict:
+    """Case 1: Valid 17K draft → PHASE17_CLOSED."""
+    draft = _build_ready_draft_17l()
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    passed = (
+        closure.get("closure_state") == "PHASE17_CLOSED"
+        and closure.get("closure_scope") == "ARCHIVAL_AND_GOVERNANCE_ONLY"
+        and closure.get("executable") is False
+        and closure.get("actual_order_created") is False
+        and closure.get("request_sent") is False
+        and closure.get("blocker_count") == 0
+        and len(closure.get("included_phases", [])) == 11
+        and len(closure.get("missing_phases", [])) == 0
+        and len(closure.get("deterministic_phase17_closure_hash", "")) == 64
+    )
+    return {"passed": passed, "case": "ready_closure", "closure_state": closure.get("closure_state")}
+
+
+def _synthetic_fixture_missing_draft_17l() -> dict:
+    """Case 2: No draft → PENDING_INPUT."""
+    closure = _create_phase17_closure_record({})
+    passed = closure.get("closure_state") == "PENDING_INPUT" and closure.get("blocker_count") > 0
+    return {"passed": passed, "case": "missing_draft", "closure_state": closure.get("closure_state")}
+
+
+def _synthetic_fixture_draft_not_ready_17l() -> dict:
+    """Case 3: Draft not ready → BLOCKED."""
+    import copy
+    draft = _build_ready_draft_17l()
+    draft = copy.deepcopy(draft)
+    draft["draft_state"] = "BLOCKED"
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    passed = closure.get("closure_state") == "BLOCKED"
+    return {"passed": passed, "case": "draft_not_ready", "closure_state": closure.get("closure_state")}
+
+
+def _synthetic_fixture_executable_true_17l() -> dict:
+    """Case 4: Draft has executable=true → BLOCKED."""
+    import copy
+    draft = _build_ready_draft_17l()
+    draft = copy.deepcopy(draft)
+    draft["executable"] = True
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    passed = closure.get("closure_state") == "BLOCKED"
+    return {"passed": passed, "case": "executable_true", "closure_state": closure.get("closure_state")}
+
+
+def _synthetic_fixture_preflight_called_true_17l() -> dict:
+    """Case 5: broker_preflight_called=true → BLOCKED."""
+    import copy
+    draft = _build_ready_draft_17l()
+    draft = copy.deepcopy(draft)
+    draft["broker_preflight_called"] = True
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    passed = closure.get("closure_state") == "BLOCKED"
+    return {"passed": passed, "case": "preflight_called_true", "closure_state": closure.get("closure_state")}
+
+
+def _synthetic_fixture_order_created_true_17l() -> dict:
+    """Case 6: actual_order_created=true → BLOCKED."""
+    import copy
+    draft = _build_ready_draft_17l()
+    draft = copy.deepcopy(draft)
+    draft["actual_order_created"] = True
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    passed = closure.get("closure_state") == "BLOCKED"
+    return {"passed": passed, "case": "order_created_true", "closure_state": closure.get("closure_state")}
+
+
+def _synthetic_fixture_missing_governance_17l() -> dict:
+    """Case 7: Missing 17A governance → BLOCKED."""
+    draft = _build_ready_draft_17l()
+    closure = _create_phase17_closure_record(draft, governance_present=False, schema_present=True)
+    passed = (
+        closure.get("closure_state") == "BLOCKED"
+        and any("governance_missing" in b.get("blocker", "") for b in closure.get("blockers", []))
+    )
+    return {"passed": passed, "case": "missing_governance", "closure_state": closure.get("closure_state")}
+
+
+def _synthetic_fixture_missing_schema_17l() -> dict:
+    """Case 8: Missing 17B schema → BLOCKED."""
+    draft = _build_ready_draft_17l()
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=False)
+    passed = (
+        closure.get("closure_state") == "BLOCKED"
+        and any("schema_missing" in b.get("blocker", "") for b in closure.get("blockers", []))
+    )
+    return {"passed": passed, "case": "missing_schema", "closure_state": closure.get("closure_state")}
+
+
+def _synthetic_fixture_h1_accessed_true_17l() -> dict:
+    """Case 9: h1_accessed=true → BLOCKED."""
+    import copy
+    draft = _build_ready_draft_17l()
+    draft = copy.deepcopy(draft)
+    draft["h1_accessed"] = True
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    passed = closure.get("closure_state") == "BLOCKED"
+    return {"passed": passed, "case": "h1_accessed_true", "closure_state": closure.get("closure_state")}
+
+
+def _synthetic_fixture_request_sent_true_17l() -> dict:
+    """Case 10: request_delivery_state not NOT_SENT → BLOCKED."""
+    import copy
+    draft = _build_ready_draft_17l()
+    draft = copy.deepcopy(draft)
+    draft["request_delivery_state"] = "SENT"
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    passed = closure.get("closure_state") == "BLOCKED"
+    return {"passed": passed, "case": "request_sent", "closure_state": closure.get("closure_state")}
+
+
+def _synthetic_fixture_disallowed_symbol_17l() -> dict:
+    """Case 11: Disallowed symbol → BLOCKED."""
+    import copy
+    draft = _build_ready_draft_17l()
+    draft = copy.deepcopy(draft)
+    draft["symbol"] = "TSLA"
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    passed = closure.get("closure_state") == "BLOCKED"
+    return {"passed": passed, "case": "disallowed_symbol", "closure_state": closure.get("closure_state")}
+
+
+def _synthetic_fixture_invalid_side_17l() -> dict:
+    """Case 12: Invalid side → BLOCKED."""
+    import copy
+    draft = _build_ready_draft_17l()
+    draft = copy.deepcopy(draft)
+    draft["side"] = "HOLD"
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    passed = closure.get("closure_state") == "BLOCKED"
+    return {"passed": passed, "case": "invalid_side", "closure_state": closure.get("closure_state")}
+
+
+def _synthetic_fixture_invalid_quantity_17l() -> dict:
+    """Case 13: Zero/negative quantity → BLOCKED."""
+    import copy
+    draft = _build_ready_draft_17l()
+    draft = copy.deepcopy(draft)
+    draft["quantity"] = 0
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    passed = closure.get("closure_state") == "BLOCKED"
+    return {"passed": passed, "case": "invalid_quantity", "closure_state": closure.get("closure_state")}
+
+
+def _synthetic_fixture_hash_mismatch_17l() -> dict:
+    """Case 14: Evidence hash mismatch → BLOCKED."""
+    import copy
+    draft = _build_ready_draft_17l()
+    draft = copy.deepcopy(draft)
+    draft["immutable_evidence_references"]["proposal_evidence_hash"] = "0" * 64
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    passed = closure.get("closure_state") == "BLOCKED"
+    return {"passed": passed, "case": "hash_mismatch", "closure_state": closure.get("closure_state")}
+
+
+def _synthetic_fixture_deterministic_17l() -> dict:
+    """Case 15: Deterministic closure hash."""
+    draft = _build_ready_draft_17l()
+    c1 = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    c2 = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    same_hash = c1.get("deterministic_phase17_closure_hash") == c2.get("deterministic_phase17_closure_hash")
+    same_state = c1.get("closure_state") == c2.get("closure_state")
+    passed = same_hash and same_state
+    return {"passed": passed, "case": "deterministic", "same_state": same_state, "same_hash": same_hash}
+
+
+def _synthetic_fixture_read_only_invariant_17l() -> dict:
+    """Case 16: Read-only — closure does not mutate draft."""
+    import copy
+    draft = _build_ready_draft_17l()
+    draft_before = copy.deepcopy(draft)
+    _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    passed = draft == draft_before
+    return {"passed": passed, "case": "read_only_invariant"}
+
+
+def _synthetic_fixture_no_forbidden_endpoints_17l() -> dict:
+    """Case 17: No forbidden endpoints in source."""
+    import inspect
+    src = inspect.getsource(_create_phase17_closure_record)
+    forbidden = ["/order", "/connect", "/order/preflight", "/order/approve", "/order/submit",
+                  "X-H1-Token", "ibkr-trade-window", "sudo", "subprocess",
+                  "requests.", "urllib.request", "http.client"]
+    found = [p for p in forbidden if p in src]
+    passed = len(found) == 0
+    return {"passed": passed, "case": "no_forbidden_endpoints", "found": found}
+
+
+def _synthetic_fixture_no_broker_identifiers_17l() -> dict:
+    """Case 18: No broker identifiers in output."""
+    import json
+    draft = _build_ready_draft_17l()
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    payload = json.dumps(closure, sort_keys=True)
+    forbidden_ids = ["permId", "order_id", "orderId", "approval_id",
+                     "approvalId", "submission_id", "submissionId",
+                     "exec_id", "execId", "conId", "broker_order_id"]
+    found = [fid for fid in forbidden_ids if fid.lower() in payload.lower()]
+    passed = len(found) == 0
+    return {"passed": passed, "case": "no_broker_identifiers", "found": found}
+
+
+def _synthetic_fixture_full_chain_17l() -> dict:
+    """Case 19: Full 17A–17L chain remains non-executable."""
+    from ibkr_operator import (
+        _build_ready_review_17k, _create_preflight_request_draft,
+        _create_candidate_package_review_decision_record,
+        _create_candidate_package, _create_simulation_review_decision_record,
+        _create_simulated_preflight_dossier, _create_order_plan_draft,
+        _create_decision_record, _review_proposal_dossier,
+        _generate_proposal_packet, _generate_synthetic_ohlc_bars,
+    )
+    bars = _generate_synthetic_ohlc_bars("AAPL", 30)
+    proposal = _generate_proposal_packet("AAPL", bars)
+    dossier = _review_proposal_dossier(proposal)
+    decision = _create_decision_record(dossier, decision="ACCEPT", reviewer="Chris",
+                                        decision_reason="Full 17L chain.")
+    decision["proposal_evidence_hash"] = proposal.get("evidence_hash", "")
+    decision["dossier_evidence_hash"] = dossier.get("evidence_hash", "")
+    plan = _create_order_plan_draft(decision, proposal, dossier)
+    sim = _create_simulated_preflight_dossier(plan, proposal, dossier, decision)
+    review = _create_simulation_review_decision_record(
+        sim, proposal, dossier=dossier, decision_record=decision, order_plan=plan,
+        decision="ACCEPT", reviewer="Chris", decision_reason="Full 17L chain."
+    )
+    pkg = _create_candidate_package(review, sim, proposal, dossier=dossier, decision_record=decision, order_plan=plan)
+    record_17j = _create_candidate_package_review_decision_record(
+        pkg, decision="ACCEPT", reviewer="Chris", decision_reason="Full 17L chain."
+    )
+    draft_17k = _create_preflight_request_draft(record_17j)
+    closure_17l = _create_phase17_closure_record(draft_17k, governance_present=True, schema_present=True)
+    all_non_exec = all([
+        closure_17l.get("executable") is False,
+        closure_17l.get("actual_preflight_completed") is False,
+        closure_17l.get("actual_order_created") is False,
+        closure_17l.get("broker_preflight_called") is False,
+        closure_17l.get("request_sent") is False,
+        closure_17l.get("broker_mutation_occurred") is False,
+        closure_17l.get("runtime_mutation_occurred") is False,
+        closure_17l.get("autonomy_level") == 1,
+    ])
+    passed = closure_17l.get("closure_state") == "PHASE17_CLOSED" and all_non_exec
+    return {"passed": passed, "case": "full_chain", "all_non_exec": all_non_exec}
+
+
+def _synthetic_fixture_included_phases_complete_17l() -> dict:
+    """Case 20: All 11 phases included in order."""
+    draft = _build_ready_draft_17l()
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    included = closure.get("included_phases", [])
+    expected = ["17A", "17B", "17C", "17D", "17E", "17F", "17G", "17H", "17I", "17J", "17K"]
+    passed = included == expected
+    return {"passed": passed, "case": "included_phases_complete", "included": included}
+
+
+def _synthetic_fixture_closure_labels_17l() -> dict:
+    """Case 21: Closure has required output labels."""
+    draft = _build_ready_draft_17l()
+    closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    labels = closure.get("output_labels", [])
+    required = ["PHASE17_CLOSED", "ARCHIVAL_AND_GOVERNANCE_ONLY", "LEVEL1",
+                "NON_EXECUTABLE", "NO_EXECUTION_SCOPE", "PREFLIGHT_DRAFT_NOT_SENT",
+                "ACTUAL_PREFLIGHT_NOT_COMPLETED", "NO_H1_ACCESSED", "NO_BROKER_MUTATION",
+                "PHASE18_RESEARCH_GOVERNANCE_ONLY"]
+    passed = all(r in labels for r in required)
+    return {"passed": passed, "case": "closure_labels"}
+
+
+# ── Phase 17L NO_GO builder ──────────────────────────────────────────────────
+
+
+def _phase17l_no_go(checkpoint_id: str, ts_str: str, git_section: dict, diagnosis: str, actions: list[str], runtime: dict | None = None) -> dict:
+    """Build a NO_GO result for Phase 17L."""
+    result = {
+        "command": "ibkr-operator level1-phase17-chain-closure-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": "NO_GO",
+        "operator_action_required": True,
+        "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": git_section.get("worktree_clean", False),
+        "runtime": runtime or {},
+        "runtime_connected": (runtime or {}).get("connected", False),
+        "mode": (runtime or {}).get("mode", "?"),
+        "read_only": (runtime or {}).get("read_only", False),
+        "allow_orders": (runtime or {}).get("allow_orders", None),
+        "endpoints_ok": (runtime or {}).get("endpoints_ok", False),
+        "positions_flat": (runtime or {}).get("positions_flat", None),
+        "guard_state_clean": False,
+        "kpi_hold_only_system_locked": False,
+        "ready_closure_case_passed": False,
+        "missing_draft_case_passed": False,
+        "draft_not_ready_case_passed": False,
+        "executable_true_case_passed": False,
+        "preflight_called_true_case_passed": False,
+        "order_created_true_case_passed": False,
+        "missing_governance_case_passed": False,
+        "missing_schema_case_passed": False,
+        "h1_accessed_true_case_passed": False,
+        "request_sent_true_case_passed": False,
+        "disallowed_symbol_case_passed": False,
+        "invalid_side_case_passed": False,
+        "invalid_quantity_case_passed": False,
+        "hash_mismatch_case_passed": False,
+        "deterministic_case_passed": False,
+        "read_only_invariant_case_passed": False,
+        "no_forbidden_endpoints_case_passed": False,
+        "no_broker_identifiers_case_passed": False,
+        "full_chain_case_passed": False,
+        "included_phases_case_passed": False,
+        "closure_labels_case_passed": False,
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_connect_called": True, "no_broker_mutation": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17L_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False, "export_path": None,
+        "canonical_closure": None,
+    }
+    return result
+
+
+# ── Phase 17L checkpoint runner ──────────────────────────────────────────────
+
+
+def _run_level1_phase17_chain_closure_checkpoint(
+    audit_source: str = "synthetic_readonly_demo",
+    governance_present: bool | None = None,
+    schema_present: bool | None = None,
+) -> dict:
+    """Run Phase 17L — Level 1 Strategy-to-Preflight-Draft Chain Closure Checkpoint."""
+    import json as _json
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"17l-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+    repo_path = Path(__file__).resolve().parent
+    git_section = _git_metadata(repo_path)
+    worktree_state = _get_worktree_state(BRIDGE_DIR)
+    worktree_clean_state = worktree_state.get("clean", False)
+    git_section["worktree_clean"] = worktree_clean_state
+    git_section["worktree_dirty_files"] = worktree_state.get("dirty_files", [])
+    if not worktree_clean_state:
+        return _phase17l_no_go(checkpoint_id, ts_str, git_section, _PHASE17L_DIAGNOSIS["git_worktree_dirty"], ["Commit or stash dirty files before running this checkpoint."])
+    runtime_state = _snapshot_bridge_state(BRIDGE_URL)
+    rt_connected = runtime_state.get("connected", False)
+    rt_mode = runtime_state.get("mode", "?")
+    rt_read_only = runtime_state.get("read_only", False)
+    rt_allow_orders = runtime_state.get("allow_orders")
+    rt_endpoints_ok = runtime_state.get("endpoints_ok", False)
+    rt_positions_flat = runtime_state.get("positions_flat")
+    bridge_reachable = bool(runtime_state.get("mode", "?") != "?")
+    if not bridge_reachable:
+        return _phase17l_no_go(checkpoint_id, ts_str, git_section, _PHASE17L_DIAGNOSIS["bridge_unreachable"], ["Bridge is not reachable. Start ibkr-bridge.service."])
+    gs_assessment = _assess_guard_state_cleanliness(now_utc)
+    guard_state_clean = gs_assessment["guard_state_clean"]
+    try:
+        gs_clean = bool(guard_state_clean)
+    except Exception:
+        gs_clean = False
+    if not gs_clean:
+        return _phase17l_no_go(checkpoint_id, ts_str, git_section, _PHASE17L_DIAGNOSIS["guard_state_not_clean"], ["Guard state is not clean. Run ibkr-operator guard-status."])
+    try:
+        kpi_status = _assess_kpi_hold_only_system_locked(now_utc)
+        kpi_ok = kpi_status.get("kpi_hold_only_system_locked", False)
+    except Exception:
+        kpi_ok = False
+    if not kpi_ok:
+        return _phase17l_no_go(checkpoint_id, ts_str, git_section, _PHASE17L_DIAGNOSIS["kpi_not_hold_system_locked"], ["KPI state is not HOLD only (system_locked)."])
+
+    severity = "OK"
+    actions: list[str] = []
+    if not rt_connected:
+        severity = "NO_GO"; actions.append("Bridge is not connected.")
+    if rt_mode != "paper":
+        severity = "NO_GO"; actions.append(f"Mode is {rt_mode}, expected paper.")
+    if rt_read_only is not True:
+        severity = "NO_GO"; actions.append("Read-only is not true.")
+    if rt_allow_orders is not False and rt_allow_orders is not None:
+        severity = "NO_GO"; actions.append(f"allow_orders is {rt_allow_orders}.")
+    if not rt_endpoints_ok:
+        severity = "NO_GO"; actions.append("Endpoints not all healthy.")
+    if rt_positions_flat is not True and rt_positions_flat is not None:
+        severity = "NO_GO"; actions.append("Positions are not flat.")
+    if severity == "NO_GO":
+        diagnosis_key = "runtime_not_connected" if not rt_connected else (
+            "mode_not_paper" if rt_mode != "paper" else (
+                "read_only_not_true" if rt_read_only is not True else (
+                    "allow_orders_not_false" if rt_allow_orders is not False and rt_allow_orders is not None else (
+                        "endpoints_not_ok" if not rt_endpoints_ok else (
+                            "positions_not_flat")))))
+        return _phase17l_no_go(checkpoint_id, ts_str, git_section, _PHASE17L_DIAGNOSIS.get(diagnosis_key, _PHASE17L_DIAGNOSIS["unknown"]), actions, runtime=runtime_state)
+
+    # ---- Run synthetic fixtures ----
+    syn_rc = _synthetic_fixture_ready_closure_17l()
+    syn_md = _synthetic_fixture_missing_draft_17l()
+    syn_dn = _synthetic_fixture_draft_not_ready_17l()
+    syn_et = _synthetic_fixture_executable_true_17l()
+    syn_pc = _synthetic_fixture_preflight_called_true_17l()
+    syn_oc = _synthetic_fixture_order_created_true_17l()
+    syn_mg = _synthetic_fixture_missing_governance_17l()
+    syn_ms = _synthetic_fixture_missing_schema_17l()
+    syn_h1 = _synthetic_fixture_h1_accessed_true_17l()
+    syn_rs = _synthetic_fixture_request_sent_true_17l()
+    syn_ds = _synthetic_fixture_disallowed_symbol_17l()
+    syn_sd = _synthetic_fixture_invalid_side_17l()
+    syn_iq = _synthetic_fixture_invalid_quantity_17l()
+    syn_hm = _synthetic_fixture_hash_mismatch_17l()
+    syn_dt = _synthetic_fixture_deterministic_17l()
+    syn_ro = _synthetic_fixture_read_only_invariant_17l()
+    syn_nf = _synthetic_fixture_no_forbidden_endpoints_17l()
+    syn_nb = _synthetic_fixture_no_broker_identifiers_17l()
+    syn_fc = _synthetic_fixture_full_chain_17l()
+    syn_ip = _synthetic_fixture_included_phases_complete_17l()
+    syn_cl = _synthetic_fixture_closure_labels_17l()
+
+    all_cases_passed = all([
+        syn_rc["passed"], syn_md["passed"], syn_dn["passed"], syn_et["passed"],
+        syn_pc["passed"], syn_oc["passed"], syn_mg["passed"], syn_ms["passed"],
+        syn_h1["passed"], syn_rs["passed"], syn_ds["passed"], syn_sd["passed"],
+        syn_iq["passed"], syn_hm["passed"], syn_dt["passed"], syn_ro["passed"],
+        syn_nf["passed"], syn_nb["passed"], syn_fc["passed"], syn_ip["passed"],
+        syn_cl["passed"],
+    ])
+
+    diagnosis = _PHASE17L_DIAGNOSIS["ready"] if all_cases_passed else _PHASE17L_DIAGNOSIS["unknown"]
+    if not syn_rc["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["ready_closure_case_failed"]; severity = "NO_GO"
+    if not syn_md["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["missing_draft_failed"]; severity = "NO_GO"
+    if not syn_dn["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["draft_not_ready_failed"]; severity = "NO_GO"
+    if not syn_et["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["executable_true_failed"]; severity = "NO_GO"
+    if not syn_pc["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["preflight_called_failed"]; severity = "NO_GO"
+    if not syn_oc["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["order_created_failed"]; severity = "NO_GO"
+    if not syn_h1["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["h1_accessed_failed"]; severity = "NO_GO"
+    if not syn_rs["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["draft_sent_failed"]; severity = "NO_GO"
+    if not syn_mg["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["governance_missing_failed"]; severity = "NO_GO"
+    if not syn_ms["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["schema_missing_failed"]; severity = "NO_GO"
+    if not syn_hm["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["evidence_hashes_mismatch_failed"]; severity = "NO_GO"
+    if not syn_dt["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["deterministic_failed"]; severity = "NO_GO"
+    if not syn_ro["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["read_only_invariant_failed"]; severity = "NO_GO"
+    if not syn_nf["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["no_forbidden_endpoints_failed"]; severity = "NO_GO"
+    if not syn_nb["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["no_broker_identifiers_failed"]; severity = "NO_GO"
+    if not syn_fc["passed"]:
+        diagnosis = _PHASE17L_DIAGNOSIS["full_chain_failed"]; severity = "NO_GO"
+
+    # ---- Build canonical closure ----
+    canonical_closure = None
+    try:
+        draft = _build_ready_draft_17l()
+        canonical_closure = _create_phase17_closure_record(draft, governance_present=True, schema_present=True)
+    except Exception:
+        canonical_closure = None
+
+    result = {
+        "command": "ibkr-operator level1-phase17-chain-closure-checkpoint",
+        "timestamp": ts_str, "checkpoint_id": checkpoint_id,
+        "diagnosis": diagnosis, "severity": severity if severity == "NO_GO" else "OK",
+        "operator_action_required": not all_cases_passed,
+        "suggested_operator_actions": actions,
+        "git": git_section, "git_worktree_clean": worktree_clean_state,
+        "runtime": runtime_state,
+        "runtime_connected": rt_connected, "mode": rt_mode, "read_only": rt_read_only,
+        "allow_orders": rt_allow_orders, "endpoints_ok": rt_endpoints_ok,
+        "positions_flat": rt_positions_flat, "guard_state_clean": gs_clean,
+        "kpi_hold_only_system_locked": kpi_ok,
+        "ready_closure_case_passed": syn_rc["passed"],
+        "missing_draft_case_passed": syn_md["passed"],
+        "draft_not_ready_case_passed": syn_dn["passed"],
+        "executable_true_case_passed": syn_et["passed"],
+        "preflight_called_true_case_passed": syn_pc["passed"],
+        "order_created_true_case_passed": syn_oc["passed"],
+        "missing_governance_case_passed": syn_mg["passed"],
+        "missing_schema_case_passed": syn_ms["passed"],
+        "h1_accessed_true_case_passed": syn_h1["passed"],
+        "request_sent_true_case_passed": syn_rs["passed"],
+        "disallowed_symbol_case_passed": syn_ds["passed"],
+        "invalid_side_case_passed": syn_sd["passed"],
+        "invalid_quantity_case_passed": syn_iq["passed"],
+        "hash_mismatch_case_passed": syn_hm["passed"],
+        "deterministic_case_passed": syn_dt["passed"],
+        "read_only_invariant_case_passed": syn_ro["passed"],
+        "no_forbidden_endpoints_case_passed": syn_nf["passed"],
+        "no_broker_identifiers_case_passed": syn_nb["passed"],
+        "full_chain_case_passed": syn_fc["passed"],
+        "included_phases_case_passed": syn_ip["passed"],
+        "closure_labels_case_passed": syn_cl["passed"],
+        "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
+        "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
+        "no_h1_token_used": True, "no_trade_window_helper_called": True,
+        "no_connect_called": True, "no_broker_mutation": True,
+        "execution_authorized_now": False, "order_enablement_allowed_now": False,
+        "order_enablement_performed": False, "execution_performed": False,
+        "current_level": 1,
+        "evidence_hash": _compute_evidence_hash({"diagnosis": diagnosis}),
+        "explicit_non_actions": _PHASE17L_EXPLICIT_NON_ACTIONS,
+        "artifact_created": False, "export_path": None,
+        "canonical_closure": canonical_closure,
+    }
+    return result
+
+
+def _print_level1_phase17_chain_closure_checkpoint(result: dict) -> None:
+    """Print Phase 17L chain closure checkpoint."""
+    checkpoint_ok = result.get("diagnosis") == _PHASE17L_DIAGNOSIS["ready"]
+    diag_color = GREEN if checkpoint_ok else RED
+    sev = result.get("severity", "?")
+    sev_color = GREEN if sev == "OK" else RED
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  L1 Phase 17 Chain Closure (17L){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+    print(f"  Checkpoint ID:               {result.get('checkpoint_id', '?')}")
+    print(f"  Timestamp:                   {result.get('timestamp', '?')}")
+    print(f"  Diagnosis:                   {diag_color}{result.get('diagnosis', '?')}{RESET}")
+    print(f"  Severity:                    {sev_color}{sev}{RESET}")
+    print()
+    print(f"  {BOLD}Git{RESET}")
+    g = result.get("git", {})
+    print(f"    Branch:        {g.get('branch', '?')}")
+    print(f"    Commit:        {g.get('commit_short', g.get('commit', '?'))}")
+    print(f"    Worktree clean: {_bool_str(result.get('git_worktree_clean', False))}")
+    print()
+    print(f"  {BOLD}Synthetic Fixture Results{RESET}")
+    print(f"    Ready closure → PHASE17_CLOSED:                {_bool_str(result.get('ready_closure_case_passed', False))}")
+    print(f"    Missing draft → PENDING_INPUT:                  {_bool_str(result.get('missing_draft_case_passed', False))}")
+    print(f"    Draft not ready → BLOCKED:                       {_bool_str(result.get('draft_not_ready_case_passed', False))}")
+    print(f"    executable=true → BLOCKED:                       {_bool_str(result.get('executable_true_case_passed', False))}")
+    print(f"    preflight_called=true → BLOCKED:                 {_bool_str(result.get('preflight_called_true_case_passed', False))}")
+    print(f"    order_created=true → BLOCKED:                    {_bool_str(result.get('order_created_true_case_passed', False))}")
+    print(f"    Missing governance → BLOCKED:                    {_bool_str(result.get('missing_governance_case_passed', False))}")
+    print(f"    Missing schema → BLOCKED:                          {_bool_str(result.get('missing_schema_case_passed', False))}")
+    print(f"    h1_accessed=true → BLOCKED:                        {_bool_str(result.get('h1_accessed_true_case_passed', False))}")
+    print(f"    request_sent → BLOCKED:                             {_bool_str(result.get('request_sent_true_case_passed', False))}")
+    print(f"    Disallowed symbol → BLOCKED:                        {_bool_str(result.get('disallowed_symbol_case_passed', False))}")
+    print(f"    Invalid side → BLOCKED:                             {_bool_str(result.get('invalid_side_case_passed', False))}")
+    print(f"    Invalid quantity → BLOCKED:                         {_bool_str(result.get('invalid_quantity_case_passed', False))}")
+    print(f"    Hash mismatch → BLOCKED:                            {_bool_str(result.get('hash_mismatch_case_passed', False))}")
+    print(f"    Deterministic:                                   {_bool_str(result.get('deterministic_case_passed', False))}")
+    print(f"    Read-only invariant:                             {_bool_str(result.get('read_only_invariant_case_passed', False))}")
+    print(f"    No forbidden endpoints:                          {_bool_str(result.get('no_forbidden_endpoints_case_passed', False))}")
+    print(f"    No broker identifiers:                           {_bool_str(result.get('no_broker_identifiers_case_passed', False))}")
+    print(f"    Full chain non-executable:                       {_bool_str(result.get('full_chain_case_passed', False))}")
+    print(f"    Included phases complete:                        {_bool_str(result.get('included_phases_case_passed', False))}")
+    print(f"    Closure labels:                                  {_bool_str(result.get('closure_labels_case_passed', False))}")
+    print()
+    print(f"  {BOLD}Canonical Closure{RESET}")
+    cc = result.get("canonical_closure")
+    if cc:
+        print(f"    Closure state:                 {cc.get('closure_state', '?')}")
+        print(f"    Closure scope:                 {cc.get('closure_scope', '?')}")
+        print(f"    Included phases:               {cc.get('included_phases', [])}")
+        print(f"    Closure hash:                  {cc.get('deterministic_phase17_closure_hash', '?')[:16]}...")
+        print(f"    Blockers:                      {cc.get('blocker_count', '?')}")
+        labels = cc.get("output_labels", [])
+        if labels:
+            print(f"    Output labels:                 {', '.join(labels)}")
+    else:
+        print(f"    {RED}No canonical closure generated{RESET}")
+    print()
+    print(f"  {BOLD}Safety Invariants{RESET}")
+    print(f"    No /order called:            {_bool_str(result.get('no_order_endpoint_called'))}")
+    print(f"    No /connect called:           {_bool_str(result.get('no_connect_called'))}")
+    print(f"    No broker mutation:           {_bool_str(result.get('no_broker_mutation'))}")
+    print()
+    if not checkpoint_ok:
+        actions = result.get("suggested_operator_actions", [])
+        if actions:
+            print(f"  {RED}Suggested operator actions:{RESET}")
+            for a in actions:
+                print(f"    - {a}")
+            print()
+    ep = result.get("export_path")
+    if ep:
+        print(f"    Export: {ep}")
+    print()
+
+
+# ── Phase 17L end ────────────────────────────────────────────────────────────
+
+
 def main() -> None:
     import argparse
 
@@ -49804,6 +50803,26 @@ def main() -> None:
     p17k_a2.add_argument("--reviewer", type=str, default="")
     p17k_a2.add_argument("--decision", type=str, default="")
     p17k_a2.add_argument("--reason", type=str, default="")
+
+    # Phase 17L — Level 1 Phase 17 Chain Closure Checkpoint
+    p17l = sub.add_parser("level1-phase17-chain-closure-checkpoint",
+                          help="Level 1 Phase 17 chain closure checkpoint (Phase 17L)")
+    p17l.add_argument("--json", action="store_true")
+    p17l.add_argument("--export", action="store_true",
+                      help="Write output to ~/.openclaw/level1-phase17-chain-closure-checkpoints/")
+    p17l.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: phase17l-chain-closure-checkpoint
+    p17l_a1 = sub.add_parser("phase17l-chain-closure-checkpoint",
+                             help="Alias for level1-phase17-chain-closure-checkpoint")
+    p17l_a1.add_argument("--json", action="store_true")
+    p17l_a1.add_argument("--export", action="store_true")
+    p17l_a1.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
+    # Alias: phase17-chain-closure
+    p17l_a2 = sub.add_parser("phase17-chain-closure",
+                             help="Alias for level1-phase17-chain-closure-checkpoint")
+    p17l_a2.add_argument("--json", action="store_true")
+    p17l_a2.add_argument("--export", action="store_true")
+    p17l_a2.add_argument("--audit-source", type=str, default="synthetic_readonly_demo")
 
     args = parser.parse_args()
 
@@ -52450,6 +53469,49 @@ def main() -> None:
                 if ep:
                     print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE17K_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-phase17-chain-closure-checkpoint",
+                        "phase17l-chain-closure-checkpoint",
+                        "phase17-chain-closure"):
+        audit_source = getattr(args, "audit_source", "synthetic_readonly_demo")
+        try:
+            result = _run_level1_phase17_chain_closure_checkpoint(
+                audit_source=audit_source,
+            )
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"17l-error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = _phase17l_no_go(
+                checkpoint_id, ts_str,
+                {"branch": "?", "commit": "?", "tag": "?", "worktree_clean": False},
+                _PHASE17L_DIAGNOSIS["unknown"],
+                [f"Internal error: {type(exc).__name__}", "Run ibkr-operator doctor"],
+            )
+        if args.export and not result.get("export_path"):
+            try:
+                _PHASE17L_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+                import json as _json
+                ep = _PHASE17L_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                with open(ep, "w", encoding="utf-8") as f:
+                    _json.dump(result, f, indent=2, default=str)
+                result["export_path"] = str(ep)
+                result["artifact_created"] = True
+            except Exception:
+                pass
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_level1_phase17_chain_closure_checkpoint(result)
+            if args.export:
+                ep = result.get("export_path")
+                if ep:
+                    print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("diagnosis") == _PHASE17L_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

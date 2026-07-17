@@ -1,0 +1,323 @@
+{
+  "manifest_version": "1.0.0",
+  "manifest_id": "mstr_btc_research_v0_1.manifest",
+  "created_utc": "2026-07-17T00:00:00Z",
+  "phase": "18A",
+  "phase_name": "Level 1 MSTR/BTC Research Proposal Governance Checkpoint",
+  "proposal_identity": {
+    "proposal_id": "mstr_btc_research_v0_1",
+    "proposal_version": "0.1",
+    "proposal_status": "PROPOSED",
+    "strategy_readiness": "S0",
+    "autonomy_level": 1,
+    "research_only": true,
+    "execution_scope": "NONE",
+    "permitted_activity": "DOCUMENTATION_AND_SCHEMA_PLANNING_ONLY",
+    "options_scope": "SIMULATION_ONLY",
+    "btc_execution_scope": "NONE",
+    "equity_execution_scope": "NONE",
+    "allowlist_change": false,
+    "rules_change": false,
+    "broker_change": false,
+    "guard_change": false,
+    "replaces_strategy_v1": false,
+    "canonical_strategy_unchanged": true,
+    "human_approval_required_for_promotion": true,
+    "next_phase_boundary": "PHASE18B_DATA_SCHEMA_AND_PROVIDER_GOVERNANCE",
+    "canonical_strategy_reference": "docs/strategy_v1.md"
+  },
+  "governance_states": {
+    "PROPOSED": {
+      "description": "The research direction is documented and may proceed later to data-schema and provider governance.",
+      "requires": [
+        "all_required_documents_present",
+        "all_manifest_fields_valid",
+        "no_execution_scope_indicated",
+        "canonical_strategy_v1_unchanged"
+      ]
+    },
+    "BLOCKED": {
+      "description": "The proposal cannot proceed. A hard governance violation exists.",
+      "triggers": [
+        "missing_required_manifest_field",
+        "replaces_strategy_v1_true",
+        "canonical_strategy_unchanged_false",
+        "execution_scope_not_none",
+        "btc_execution_scope_not_none",
+        "equity_execution_scope_not_none",
+        "allowlist_change_true",
+        "rules_change_true",
+        "broker_change_true",
+        "guard_change_true",
+        "research_only_not_true",
+        "autonomy_level_not_1",
+        "options_scope_not_simulation_only",
+        "permitted_activity_invalid",
+        "document_missing",
+        "document_hash_mismatch",
+        "deterministic_manifest_hash_mismatch",
+        "proposal_doc_sha256_mismatch",
+        "data_requirements_doc_sha256_mismatch"
+      ]
+    },
+    "PENDING_INPUT": {
+      "description": "Structurally valid but requires additional input.",
+      "triggers": [
+        "manifest_exists_but_documents_missing",
+        "content_hash_mismatch",
+        "proposal_status_invalid"
+      ]
+    }
+  },
+  "approval_state": {
+    "NOT_APPROVED_FOR_EXECUTION": true,
+    "NOT_APPROVED_FOR_ALLOWLIST_CHANGE": true,
+    "NOT_APPROVED_FOR_DATA_COLLECTION_RUNTIME": true,
+    "NOT_APPROVED_FOR_BACKTEST_PROMOTION": true,
+    "NOT_APPROVED_FOR_OPTIONS_EXECUTION": true
+  },
+  "explicit_non_actions": [
+    "This proposal does not replace or activate the canonical Strategy v1 (docs/STRATEGY.md)",
+    "This proposal does not collect live or historical data",
+    "This proposal does not run a backtest",
+    "This proposal does not generate a trade proposal",
+    "This proposal does not add instruments to an executable allowlist",
+    "This proposal does not enable MSTR, SPY, QQQ, BTC, or options execution",
+    "This proposal does not change broker, guard, risk, approval, H1, or runtime behavior",
+    "This proposal does not call any IBKR broker endpoint",
+    "This proposal does not call any /order* endpoint",
+    "This proposal does not use or construct an H1 token or X-H1-Token header",
+    "This proposal does not access /etc/ibkr-bridge/h1_token or any root-owned file",
+    "This proposal does not modify .env, paper-trading-rules.yaml, or guard-state.json",
+    "This proposal does not open an order window or trade window",
+    "This proposal does not enable IBKR_ALLOW_ORDERS or rules.enforced",
+    "This proposal does not subvert the advisory-only boundary of Hermes or Werner",
+    "This proposal does not create data collectors, provider API clients, scheduled jobs, databases, raw market-data directories",
+    "This proposal does not create model, feature, label, backtest, forecasting, candidate-generation, option-selection, or order-plan code",
+    "No options contract is executable; no option order endpoint may be added",
+    "No option may enter the equity proposal path",
+    "No 0DTE, naked, short-premium, multi-leg, exercise, or assignment workflow"
+  ],
+  "options_boundaries": {
+    "no_options_contract_executable": true,
+    "no_option_order_endpoint": true,
+    "no_option_in_equity_proposal_path": true,
+    "no_0dte": true,
+    "no_naked_or_short_premium": true,
+    "no_multi_leg_execution": true,
+    "no_exercise_or_assignment_workflow": true,
+    "future_simulation_may_consider_long_calls_puts_only": true,
+    "future_options_phase_requires_own_schema_guard_risk_broker_ci_approval": true
+  },
+  "data_governance_principles": {
+    "all_timestamps_utc": true,
+    "source_and_ingestion_timestamps_distinct": true,
+    "raw_data_immutable": true,
+    "derived_features_and_labels_versioned_separately": true,
+    "every_dataset_identifies_provider_and_instrument": true,
+    "no_feature_uses_information_unavailable_at_as_of_timestamp": true,
+    "missing_or_stale_required_data_produces_NO_TRADE": true,
+    "provider_disagreement_lowers_confidence_or_produces_NO_TRADE": true,
+    "track_a_and_track_b_retain_separate_datasets_and_outcomes": true,
+    "historical_option_research_requires_point_in_time_option_chain_snapshots": true,
+    "current_option_chains_must_not_substitute_for_historical_chains": true,
+    "theoretical_option_values_must_not_be_treated_as_executable_fills": true,
+    "chronological_train_validation_test_splits_required": true,
+    "random_time_series_shuffling_prohibited": true,
+    "walk_forward_evaluation_required_before_promotion": true,
+    "frozen_data_feature_strategy_versions_required": true,
+    "realistic_spread_slippage_commissions_obtainable_quote_assumptions_required": true
+  },
+  "phase_18a_non_creations": [
+    "data collectors",
+    "provider API clients",
+    "scheduled jobs",
+    "databases",
+    "raw market-data directories containing collected data",
+    "model code",
+    "feature code",
+    "label code",
+    "backtest code",
+    "forecasting code",
+    "candidate-generation code",
+    "option-selection code",
+    "order-plan code"
+  ],
+  "canonical_strategy_preservation": {
+    "active_strategy_v1_path": "docs/STRATEGY.md",
+    "this_proposal_does_not_replace_strategy_v1": true,
+    "strategy_v1_not_modified": true,
+    "proposal_not_marked_chris_approved": true,
+    "proposal_uses_proposed_status_pending_separate_promotion": true,
+    "executable_symbol_list_not_copied_from_stale_source": true,
+    "yaml_allowlist_remains_authoritative": true
+  },
+  "research_tracks": {
+    "track_a": {
+      "track_id": "mstr_btc_research_track_a",
+      "name": "MSTR Equity Research",
+      "primary_target": "MSTR",
+      "explanatory_inputs": [
+        "BTC spot data"
+      ],
+      "control_instruments": [
+        "SPY",
+        "QQQ"
+      ],
+      "context_inputs": [
+        "MSTR company events",
+        "MSTR capital-structure events"
+      ],
+      "required_distinctions": [
+        "BTC-led movement",
+        "Already-priced movement",
+        "Company-specific movement",
+        "Unstable relationships"
+      ],
+      "output": "structured forecast or NO_TRADE",
+      "output_is_order": false,
+      "own_strategy_id": true,
+      "own_data_requirements": true,
+      "own_thresholds": true,
+      "own_models": true,
+      "own_reports": true
+    },
+    "track_b": {
+      "track_id": "spy_qqq_control_track_b",
+      "name": "SPY/QQQ Control Track",
+      "primary_targets": [
+        "SPY",
+        "QQQ"
+      ],
+      "independent": true,
+      "own_strategy_id": true,
+      "own_data_requirements": true,
+      "own_thresholds": true,
+      "own_models": true,
+      "own_reports": true,
+      "no_silent_mixing_with_track_a": true,
+      "no_fallback_selection": true,
+      "max_active_tracks": 1,
+      "no_trade_valid": true
+    }
+  },
+  "instrument_boundaries": {
+    "MSTR": {
+      "status": "research_only",
+      "executable": false,
+      "allowlist_added": false
+    },
+    "BTC": {
+      "status": "data_only",
+      "executable": false,
+      "broker_executable": false,
+      "allowlist_added": false
+    },
+    "SPY": {
+      "status": "research_control_only",
+      "executable": false,
+      "allowlist_added": false
+    },
+    "QQQ": {
+      "status": "research_control_only",
+      "executable": false,
+      "allowlist_added": false
+    },
+    "options": {
+      "status": "simulation_only",
+      "executable": false
+    },
+    "futures": {
+      "status": "outside_scope"
+    },
+    "forex": {
+      "status": "not_traded"
+    },
+    "short_equity": {
+      "status": "outside_scope"
+    },
+    "leveraged_etfs": {
+      "status": "hard_blocked"
+    },
+    "inverse_etfs": {
+      "status": "hard_blocked"
+    },
+    "yaml_allowlist_unchanged": true,
+    "yaml_allowlist_sole_authority": true
+  },
+  "promotion_requirements": [
+    "Human approval (Chris) required at every promotion gate",
+    "Phase 18B data-schema and provider governance must pass",
+    "Phase 18C+ phases must pass sequentially",
+    "No bypass of the Phase 18 chain",
+    "canonical_strategy_unchanged must remain true at every gate",
+    "execution_scope must remain NONE until explicitly changed by separate governance action",
+    "All content hashes must be verified at every gate"
+  ],
+  "documents": {
+    "research_proposal": {
+      "path": "docs/strategy-proposals/MSTR_BTC_RESEARCH_PROPOSAL_v0_1.md",
+      "document_id": "MSTR_BTC_RESEARCH_PROPOSAL_v0_1",
+      "version": "0.1",
+      "description": "Primary research proposal documenting MSTR/BTC research tracks and SPY/QQQ control track"
+    },
+    "data_requirements": {
+      "path": "docs/strategy-proposals/MSTR_BTC_DATA_REQUIREMENTS_v0_1.md",
+      "document_id": "MSTR_BTC_DATA_REQUIREMENTS_v0_1",
+      "version": "0.1",
+      "description": "Data requirements specification for Track A and Track B — planning only"
+    },
+    "manifest": {
+      "path": "docs/strategy-proposals/mstr_btc_research_v0_1.manifest.json",
+      "document_id": "mstr_btc_research_v0_1.manifest",
+      "version": "0.1",
+      "description": "Machine-readable proposal metadata manifest"
+    }
+  },
+  "proposal_document": "docs/strategy-proposals/MSTR_BTC_RESEARCH_PROPOSAL_v0_1.md",
+  "data_requirements_document": "docs/strategy-proposals/MSTR_BTC_DATA_REQUIREMENTS_v0_1.md",
+  "proposal_document_sha256": "f46145a443cdf8e5547d6cacb1316673f04a315afb87b0e435bb164b41c93184",
+  "data_requirements_document_sha256": "4bfdab0bc7e1936f2d34768f9f64518d6295017c13f316c03db114c233c84795",
+  "required_output_labels": [
+    "PHASE18A_RESEARCH_PROPOSAL_GOVERNANCE",
+    "PROPOSED",
+    "RESEARCH_ONLY",
+    "NON_EXECUTABLE",
+    "NO_EXECUTION_SCOPE",
+    "NO_ALLOWLIST_CHANGE",
+    "NO_BROKER_MUTATION",
+    "NO_H1_ACCESSED",
+    "STRATEGY_V1_UNCHANGED",
+    "S0_READINESS",
+    "LEVEL1",
+    "DOCUMENTATION_AND_SCHEMA_PLANNING_ONLY"
+  ],
+  "phase18a_diagnosis": {
+    "ready": "phase18a_research_proposal_governance_ok",
+    "proposal_doc_missing": "proposal_doc_missing",
+    "data_requirements_doc_missing": "data_requirements_doc_missing",
+    "manifest_missing": "manifest_missing",
+    "manifest_invalid_json": "manifest_invalid_json",
+    "manifest_field_missing": "manifest_field_missing",
+    "manifest_field_invalid": "manifest_field_invalid",
+    "proposal_doc_sha256_mismatch": "proposal_doc_sha256_mismatch",
+    "data_requirements_doc_sha256_mismatch": "data_requirements_doc_sha256_mismatch",
+    "deterministic_manifest_hash_mismatch": "deterministic_manifest_hash_mismatch",
+    "execution_scope_not_none": "execution_scope_not_none",
+    "allowlist_change_true": "allowlist_change_true",
+    "replaces_strategy_v1_true": "replaces_strategy_v1_true",
+    "canonical_strategy_unchanged_false": "canonical_strategy_unchanged_false",
+    "research_only_not_true": "research_only_not_true",
+    "autonomy_level_not_1": "autonomy_level_not_1",
+    "approval_state_invalid": "approval_state_invalid",
+    "governance_state_invalid": "governance_state_invalid",
+    "output_labels_missing": "output_labels_missing",
+    "content_hash_mismatch": "content_hash_mismatch",
+    "unknown": "unknown"
+  },
+  "content_hashes": {
+    "algorithm": "sha256",
+    "note": "Content hashes are computed from the current file contents. deterministic_manifest_hash is computed below."
+  },
+  "deterministic_manifest_hash": "1f870121db9275c402d83998e15be01e093155148a8094c8e2e6278eb4109b9c"
+}

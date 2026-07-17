@@ -21,6 +21,7 @@ TESTS=(
   tests/test_phase17j_level1_human_candidate_package_review_decision_record_checkpoint.py
   tests/test_phase17k_level1_planning_only_guarded_preflight_request_draft_checkpoint.py
   tests/test_phase17l_level1_strategy_chain_closure_checkpoint.py
+  tests/test_phase18a_level1_mstr_btc_research_proposal_governance.py
 )
 
 echo "==> Portable CI"

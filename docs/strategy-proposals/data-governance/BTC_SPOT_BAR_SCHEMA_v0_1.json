@@ -1,0 +1,334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mstr-btc-research:btc-spot-bar-schema:v0.1",
+  "title": "BTC Spot Bar Record Schema",
+  "description": "Canonical OHLCV bar record for BTC/USD spot from external data providers. BTC is explanatory data only — no execution, no broker connectivity, no trading authorization. BTC data is 24/7 market data and must not inherit equity-session assumptions. Records from different venues or indices must not be silently merged. This schema defines the record shape for BTC spot data used as an explanatory input to Track A (MSTR equity research).",
+  "version": "0.1",
+  "governance_identity": {
+    "governance_id": "mstr_btc_data_governance_v0_1",
+    "governance_version": "0.1",
+    "governance_state": "SCHEMA_CONTRACT_READY",
+    "strategy_readiness": "S0",
+    "data_readiness": "D0",
+    "autonomy_level": 1,
+    "research_only": true,
+    "execution_scope": "NONE",
+    "collection_scope": "NONE",
+    "provider_integration_scope": "NONE",
+    "storage_runtime_scope": "NONE",
+    "permitted_activity": "SCHEMA_AND_PROVIDER_CONTRACT_VALIDATION_ONLY",
+    "provider_binding_state": "UNBOUND",
+    "network_access_authorized": false,
+    "credentials_authorized": false,
+    "collection_authorized": false,
+    "ingestion_authorized": false,
+    "storage_runtime_authorized": false,
+    "scheduler_authorized": false,
+    "backtest_authorized": false,
+    "modeling_authorized": false,
+    "forecasting_authorized": false,
+    "candidate_generation_authorized": false,
+    "execution_authorized": false,
+    "allowlist_change": false,
+    "rules_change": false,
+    "broker_change": false,
+    "guard_change": false,
+    "canonical_strategy_unchanged": true,
+    "phase18a_artifacts_unchanged": true,
+    "next_phase_boundary": "PHASE18C_SYNTHETIC_SCHEMA_CONFORMANCE"
+  },
+  "btc_boundaries": {
+    "btc_execution_scope": "NONE",
+    "execution_eligible": false,
+    "btc_must_never_enter_equity_order_or_proposal_path": true,
+    "btc_is_24_7_market_data": true,
+    "btc_does_not_inherit_equity_session_assumptions": true,
+    "venue_or_index_identity_must_remain_explicit": true,
+    "quote_currency_must_remain_explicit": true,
+    "records_from_different_venues_or_indices_must_not_be_silently_merged": true,
+    "no_crypto_trading_fields": true,
+    "no_wallet_fields": true,
+    "no_exchange_account_fields": true,
+    "no_execution_fields": true
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_id",
+    "raw_record_hash",
+    "provider_role_id",
+    "provider_record_id",
+    "instrument_id",
+    "asset_class",
+    "research_track",
+    "execution_eligible",
+    "event_timestamp_utc",
+    "source_timestamp_utc",
+    "ingestion_timestamp_utc",
+    "available_at_utc",
+    "revision_number",
+    "is_final",
+    "data_quality_state",
+    "base_asset",
+    "quote_asset",
+    "venue_or_index",
+    "bar_interval",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume_base",
+    "market_state",
+    "aggregation_method"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "0.1",
+      "description": "Schema version string. Always '0.1'."
+    },
+    "record_id": {
+      "type": "string",
+      "description": "Globally unique record identifier. Format: {instrument_id}-{event_timestamp_utc}-{provider_role_id}-{provider_record_id}.",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "raw_record_hash": {
+      "type": "string",
+      "description": "SHA-256 hash of the canonical serialization of governed data fields.",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "provider_role_id": {
+      "type": "string",
+      "description": "Provider role identifier. e.g. primary_btc_spot, fallback_btc_spot.",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "provider_record_id": {
+      "type": "string",
+      "description": "Provider-assigned record identifier preserved verbatim.",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "instrument_id": {
+      "type": "string",
+      "description": "Canonical instrument identifier. Format: {base_asset}/{quote_asset}@{venue_or_index}.crypto_spot, e.g. BTC/USD@COINGECKO.crypto_spot.",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "asset_class": {
+      "type": "string",
+      "const": "crypto_spot",
+      "description": "Asset class. Always 'crypto_spot'. Distinct from 'equity' to enforce track-level isolation."
+    },
+    "research_track": {
+      "type": "string",
+      "const": "TRACK_A_MSTR_BTC",
+      "description": "BTC spot data is exclusively assigned to TRACK_A_MSTR_BTC. It must not be used by TRACK_B_SPY_QQQ."
+    },
+    "execution_eligible": {
+      "type": "boolean",
+      "const": false,
+      "description": "Must be false. BTC is data-only. No execution. BTC must never enter the equity order or proposal path."
+    },
+    "event_timestamp_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Bar close timestamp in RFC 3339 UTC, ending in 'Z'. For daily bars in 24/7 crypto markets, this is typically 00:00 UTC of the following calendar day."
+    },
+    "source_timestamp_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Provider-asserted timestamp in RFC 3339 UTC, ending in 'Z'. Must be distinct from ingestion_timestamp_utc."
+    },
+    "ingestion_timestamp_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp in RFC 3339 UTC, ending in 'Z', when this record was received and written. Must be >= source_timestamp_utc."
+    },
+    "available_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp in RFC 3339 UTC, ending in 'Z', at which this record became available for model consumption. Models may use a record only when available_at_utc is not later than the evaluation as-of timestamp."
+    },
+    "revision_number": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonically increasing revision counter. Initial ingestion is revision 1. Later revisions must not rewrite an immutable earlier raw record."
+    },
+    "is_final": {
+      "type": "boolean",
+      "description": "True when this revision is the final, corrected version."
+    },
+    "data_quality_state": {
+      "type": "string",
+      "enum": ["PASSED", "FLAGGED", "DEGRADED", "REJECTED"],
+      "description": "Quality state after quality engine evaluation."
+    },
+    "base_asset": {
+      "type": "string",
+      "const": "BTC",
+      "description": "Base asset. Always 'BTC' for this schema. No other crypto assets are authorized."
+    },
+    "quote_asset": {
+      "type": "string",
+      "const": "USD",
+      "description": "Quote asset. Always 'USD'. BTC/USD pair only."
+    },
+    "venue_or_index": {
+      "type": "string",
+      "description": "Venue or index identity. Must remain explicit. e.g. COINGECKO, COINDESK_BPI, MESSARI. Records from different venues or indices must not be silently merged.",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "bar_interval": {
+      "type": "string",
+      "enum": ["1hour", "1day", "1week"],
+      "description": "Bar interval. Daily bars ('1day') are the primary resolution."
+    },
+    "open": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Opening price for the bar period."
+    },
+    "high": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Highest price during the bar period."
+    },
+    "low": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Lowest price during the bar period."
+    },
+    "close": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Closing price for the bar period."
+    },
+    "volume_base": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Traded volume in base asset (BTC). Must never be negative."
+    },
+    "volume_quote": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Notional volume in quote asset (USD). Required when the provider supplies it."
+    },
+    "trade_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of trades during the bar period. Required when the provider supplies it."
+    },
+    "market_state": {
+      "type": "string",
+      "enum": ["ACTIVE", "WEEKEND", "HOLIDAY", "UNKNOWN"],
+      "description": "Market state during this bar period. BTC is 24/7 — 'WEEKEND' and 'HOLIDAY' denote reduced-liquidity periods, not market closure. Must not inherit equity-session assumptions."
+    },
+    "aggregation_method": {
+      "type": "string",
+      "enum": ["VWAP", "TWAP", "LAST", "MIDPOINT", "INDEX_WEIGHTED", "PROVIDER_DEFAULT"],
+      "description": "Method used to aggregate trades into this bar. Records from different venues or indices may use different aggregation methods — this must remain observable."
+    }
+  },
+  "validation_rules": {
+    "high_ge_low": {
+      "rule": "high >= low",
+      "severity": "HARD_FAIL"
+    },
+    "open_in_range": {
+      "rule": "open >= low AND open <= high",
+      "severity": "HARD_FAIL"
+    },
+    "close_in_range": {
+      "rule": "close >= low AND close <= high",
+      "severity": "HARD_FAIL"
+    },
+    "prices_positive": {
+      "rule": "open > 0 AND high > 0 AND low > 0 AND close > 0",
+      "severity": "HARD_FAIL"
+    },
+    "volumes_non_negative": {
+      "rule": "volume_base >= 0 AND (volume_quote IS NULL OR volume_quote >= 0)",
+      "severity": "HARD_FAIL"
+    },
+    "source_le_ingestion": {
+      "rule": "source_timestamp_utc <= ingestion_timestamp_utc",
+      "severity": "HARD_FAIL"
+    },
+    "available_not_later_than_ingestion": {
+      "rule": "available_at_utc <= ingestion_timestamp_utc",
+      "severity": "HARD_FAIL"
+    },
+    "timestamps_rfc3339_utc_z": {
+      "rule": "All timestamp fields must end with 'Z'. No offset notation permitted.",
+      "severity": "HARD_FAIL"
+    },
+    "no_timestamp_substitution": {
+      "rule": "source_timestamp_utc, event_timestamp_utc, ingestion_timestamp_utc, and available_at_utc must remain distinct fields with documented meanings. No silent substitution.",
+      "severity": "HARD_FAIL"
+    },
+    "base_asset_is_btc": {
+      "rule": "base_asset == 'BTC'",
+      "severity": "HARD_FAIL",
+      "description": "Only BTC is authorized. No other crypto assets."
+    },
+    "quote_asset_is_usd": {
+      "rule": "quote_asset == 'USD'",
+      "severity": "HARD_FAIL",
+      "description": "Only BTC/USD pair is authorized."
+    },
+    "execution_eligible_false": {
+      "rule": "execution_eligible == false",
+      "severity": "HARD_FAIL",
+      "description": "BTC data is explanatory only."
+    },
+    "venue_explicit": {
+      "rule": "venue_or_index IS NOT NULL AND venue_or_index IS NOT EMPTY",
+      "severity": "HARD_FAIL",
+      "description": "Venue or index identity must remain explicit."
+    },
+    "no_silent_venue_merge": {
+      "rule": "Records from different venue_or_index values must not be silently merged into a single dataset. Cross-venue comparison requires explicit documentation.",
+      "severity": "HARD_FAIL"
+    },
+    "fallback_data_marked": {
+      "rule": "IF provider_role_id indicates a fallback provider THEN the record must be tagged as fallback. Fallback use must never be invisible.",
+      "severity": "HARD_FAIL"
+    },
+    "provider_disagreement_observable": {
+      "rule": "Provider or venue disagreement in close price > 1% must remain observable. Records from different providers/venues must carry distinct provider_role_id and venue_or_index.",
+      "severity": "HARD_FAIL"
+    },
+    "missing_btc_no_trade_track_a": {
+      "rule": "IF required BTC data is missing, stale, or REJECTED for the evaluation window THEN produce NO_TRADE for TRACK_A_MSTR_BTC",
+      "severity": "HARD_FAIL"
+    },
+    "no_crypto_trading_fields": {
+      "rule": "No wallet addresses, exchange accounts, trading pairs beyond BTC/USD, order types, position sizes, leverage, margin, or execution instructions.",
+      "severity": "HARD_FAIL"
+    },
+    "no_equity_session_inheritance": {
+      "rule": "BTC bar records must not inherit equity-session assumptions. market_state must use the crypto-specific enum values (ACTIVE, WEEKEND, HOLIDAY, UNKNOWN), not equity session types.",
+      "severity": "HARD_FAIL"
+    }
+  },
+  "track_applicability": {
+    "track_a_mstr": {
+      "applicable": true,
+      "role": "explanatory_input",
+      "primary_interval": "1day",
+      "min_history_days": 60,
+      "not_broker_executable": true,
+      "not_tradeable": true,
+      "data_only": true,
+      "research_track_value": "TRACK_A_MSTR_BTC"
+    },
+    "track_b_spy_qqq": {
+      "applicable": false,
+      "reason": "Track B is equity-only (SPY/QQQ). BTC data is exclusive to TRACK_A_MSTR_BTC."
+    }
+  }
+}

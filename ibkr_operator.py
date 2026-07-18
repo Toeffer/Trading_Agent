@@ -49667,6 +49667,98 @@ def _run_level1_mstr_btc_research_proposal_governance_checkpoint(
 
 
 
+
+# ===================================================================
+# Phase 18B — Level 1 Data Schema and Provider Governance Checkpoint
+# ===================================================================
+
+_PHASE18B_DIAGNOSIS = {
+    "ready": "phase18b_data_schema_provider_governance_ok",
+    "checkpoint_script_missing": "checkpoint_script_missing",
+    "checkpoint_failed": "checkpoint_failed",
+    "internal_error": "internal_error",
+    "unknown": "unknown",
+}
+
+_PHASE18B_CHECKPOINT_SCRIPT = Path(__file__).resolve().parent / "level1-data-schema-provider-governance-checkpoint"
+
+
+def _phase18b_no_go(checkpoint_id: str, ts_str: str, error_msg: str) -> dict:
+    return {
+        "checkpoint_version": "phase18b-v1.0.0",
+        "checkpoint_id": checkpoint_id,
+        "timestamp": ts_str,
+        "command": "level1-data-schema-provider-governance-checkpoint",
+        "diagnosis": _PHASE18B_DIAGNOSIS["internal_error"],
+        "governance_state": "ERROR",
+        "governance_id": "mstr_btc_data_governance_v0_1",
+        "governance_version": "0.1",
+        "strategy_readiness": "S0",
+        "data_readiness": "D0",
+        "autonomy_level": 1,
+        "research_only": True,
+        "execution_scope": "NONE",
+        "collection_scope": "NONE",
+        "provider_integration_scope": "NONE",
+        "permitted_activity": "SCHEMA_AND_PROVIDER_CONTRACT_VALIDATION_ONLY",
+        "provider_binding_state": "UNBOUND",
+        "schema_count": 5,
+        "provider_role_count": 10,
+        "error": error_msg,
+        "document_integrity": {"overall": False},
+        "schema_integrity": {"overall": False},
+        "provider_governance_integrity": {"overall": False},
+        "quality_policy_integrity": {"overall": False},
+        "upstream_phase18a_integrity": {"overall": False},
+        "canonical_strategy_integrity": {"overall": False},
+        "point_in_time_governance": {},
+        "all_authorization_flags_false": False,
+        "deterministic_evidence_hash": "",
+        "blockers": [f"Internal error: {error_msg}"],
+        "explicit_non_actions": [],
+        "non_action_count": 0,
+        "next_phase_boundary": "PHASE18C_SYNTHETIC_SCHEMA_CONFORMANCE",
+        "output_labels": [],
+        "warnings": [],
+    }
+
+
+def _run_level1_data_schema_provider_governance_checkpoint() -> dict:
+    import json as _json
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"18b-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+
+    import subprocess as _sp
+    import sys as _sys
+
+    if not _PHASE18B_CHECKPOINT_SCRIPT.exists():
+        return _phase18b_no_go(checkpoint_id, ts_str, "checkpoint script missing")
+
+    try:
+        proc = _sp.run(
+            [_sys.executable, str(_PHASE18B_CHECKPOINT_SCRIPT)],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(_PHASE18B_CHECKPOINT_SCRIPT.parent),
+        )
+        result = _json.loads(proc.stdout)
+    except Exception as exc:
+        return _phase18b_no_go(checkpoint_id, ts_str, f"Failed to run checkpoint script: {exc}")
+
+    result["checkpoint_version"] = "phase18b-v1.0.0"
+    result["checkpoint_id"] = checkpoint_id
+    result["timestamp"] = ts_str
+    result["diagnosis"] = (
+        _PHASE18B_DIAGNOSIS["ready"]
+        if result.get("governance_state") == "SCHEMA_CONTRACT_READY" and not result.get("blockers")
+        else _PHASE18B_DIAGNOSIS["checkpoint_failed"]
+    )
+    return result
+
+
+# ── Phase 18B end ────────────────────────────────────────────────────────────
+
 def main() -> None:
     import argparse
 
@@ -51374,6 +51466,19 @@ def main() -> None:
                              help="Alias for level1-mstr-btc-research-proposal-governance-checkpoint")
     p18a_a2.add_argument("--json", action="store_true")
     p18a_a2.add_argument("--export", action="store_true")
+
+    # Phase 18B — Level 1 Data Schema and Provider Governance Checkpoint
+    p18b = sub.add_parser("level1-data-schema-provider-governance-checkpoint",
+                          help="Level 1 data schema and provider governance checkpoint (Phase 18B)")
+    p18b.add_argument("--json", action="store_true")
+    # Alias: phase18b
+    p18b_a1 = sub.add_parser("phase18b",
+                             help="Alias for level1-data-schema-provider-governance-checkpoint")
+    p18b_a1.add_argument("--json", action="store_true")
+    # Alias: data-schema-provider-governance
+    p18b_a2 = sub.add_parser("data-schema-provider-governance",
+                             help="Alias for level1-data-schema-provider-governance-checkpoint")
+    p18b_a2.add_argument("--json", action="store_true")
 
     # Phase 17L — Level 1 Phase 17 Chain Closure Checkpoint
     p17l = sub.add_parser("level1-phase17-chain-closure-checkpoint",
@@ -54151,6 +54256,49 @@ def main() -> None:
                 if ep:
                     print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("diagnosis") == _PHASE18A_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command in ("level1-data-schema-provider-governance-checkpoint",
+                        "phase18b",
+                        "data-schema-provider-governance"):
+        try:
+            result = _run_level1_data_schema_provider_governance_checkpoint()
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"18b-error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = _phase18b_no_go(checkpoint_id, ts_str, str(exc))
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print("=" * 60)
+            print(f"Phase 18B: Data Schema & Provider Governance")
+            print(f"Version:       {result.get('checkpoint_version', '?')}")
+            print(f"Checkpoint:    {result.get('checkpoint_id', '?')}")
+            print(f"Timestamp:     {result.get('timestamp', '?')}")
+            print(f"Diagnosis:     {result.get('diagnosis', '?')}")
+            print(f"Governance:    {result.get('governance_state', '?')}")
+            print(f"Readiness:     {result.get('strategy_readiness', '?')}")
+            print(f"Autonomy:      Level {result.get('autonomy_level', '?')}")
+            print(f"Exec Scope:    {result.get('execution_scope', '?')}")
+            print(f"Collection:    {result.get('collection_scope', '?')}")
+            print(f"Provider:      {result.get('provider_binding_state', '?')}")
+            print(f"Schema Count:  {result.get('schema_count', '?')}")
+            print(f"Role Count:    {result.get('provider_role_count', '?')}")
+            print(f"Evidence Hash: {result.get('deterministic_evidence_hash', '?')}")
+            print("=" * 60)
+            blockers = result.get('blockers', [])
+            if blockers:
+                print(f"Blockers ({len(blockers)}):")
+                for b in blockers:
+                    print(f"  - {b}")
+            else:
+                print("Blockers:  0")
+            print("=" * 60)
+        exit_code = 0 if result.get("diagnosis") == _PHASE18B_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",

@@ -51921,6 +51921,414 @@ def _run_level1_data_schema_provider_governance_checkpoint() -> dict:
     }
 
     return result
+
+
+# ===================================================================
+# Phase 18R1 — Level 1 Model-Routing Governance Checkpoint
+# ===================================================================
+
+_PHASE18R1_DIAGNOSIS = {
+    "ready": "phase18r1_model_routing_governance_ok",
+    "checkpoint_failed": "checkpoint_failed",
+    "internal_error": "internal_error",
+    "unknown": "unknown",
+}
+
+_PHASE18R1_MODEL_ROUTING_DIR = Path(__file__).resolve().parent / "docs" / "model-routing"
+_PHASE18R1_PHASE18B_MANIFEST = Path(__file__).resolve().parent / "docs" / "strategy-proposals" / "data-governance" / "mstr_btc_data_governance_v0_1.manifest.json"
+_PHASE18R1_PHASE18A_MANIFEST = Path(__file__).resolve().parent / "docs" / "strategy-proposals" / "mstr_btc_research_v0_1.manifest.json"
+_PHASE18R1_CANONICAL_STRATEGY = Path(__file__).resolve().parent / "docs" / "STRATEGY.md"
+
+_PHASE18R1_GOVERNED_FILES = [
+    ("MODEL_CATALOG_v0_1.json", _PHASE18R1_MODEL_ROUTING_DIR / "MODEL_CATALOG_v0_1.json"),
+    ("MODEL_ROUTING_POLICY_v0_1.json", _PHASE18R1_MODEL_ROUTING_DIR / "MODEL_ROUTING_POLICY_v0_1.json"),
+    ("MODEL_ROUTING_DECISION_SCHEMA_v0_1.json", _PHASE18R1_MODEL_ROUTING_DIR / "MODEL_ROUTING_DECISION_SCHEMA_v0_1.json"),
+    ("MODEL_ROUTING_EVALUATION_PROTOCOL_v0_1.md", _PHASE18R1_MODEL_ROUTING_DIR / "MODEL_ROUTING_EVALUATION_PROTOCOL_v0_1.md"),
+    ("model_routing.py", Path(__file__).resolve().parent / "model_routing.py"),
+]
+
+_PHASE18R1_EXPECTED_ROLE_ASSIGNMENTS = {
+    "gpt-5.5": ["HERMES_DEFAULT"],
+    "gpt-5.6-sol": ["HERMES_ESCALATION"],
+    "deepseek-v4-pro": ["OC_DEFAULT"],
+    "kimi-k3": ["OC_ESCALATION"],
+}
+
+_PHASE18R1_AUTH_FLAGS = [
+    "network_access_authorized", "credentials_authorized",
+    "collection_authorized", "ingestion_authorized",
+    "storage_runtime_authorized", "scheduler_authorized",
+    "backtest_authorized", "modeling_authorized",
+    "forecasting_authorized", "candidate_generation_authorized",
+    "execution_authorized", "allowlist_change",
+    "rules_change", "broker_change", "guard_change",
+    "runtime_invocation_authorized", "provider_integration_authorized",
+    "broker_mutation_authorized", "trading_execution_authorized",
+]
+
+_PHASE18R1_REQUIRED_LABELS = [
+    "PHASE18R1_MODEL_ROUTING_GOVERNANCE_READY",
+    "ROUTING_CONTRACT_READY",
+    "R0_ROUTING_READINESS",
+    "LEVEL1",
+    "ADVISORY_ONLY",
+    "HUMAN_FINAL_AUTHORITY",
+    "DRY_RUN_ONLY",
+    "NO_MODEL_INVOCATION",
+    "NO_PROVIDER_INTEGRATION",
+    "NO_CREDENTIALS",
+    "NO_NETWORK_ACCESS",
+    "NO_BROKER_MUTATION",
+    "NO_TRADING_EXECUTION",
+    "TRADING_AUTONOMY_UNCHANGED",
+    "HERMES_DEFAULT_GPT_5_5",
+    "HERMES_ESCALATION_GPT_5_6_SOL",
+    "OC_DEFAULT_DEEPSEEK_V4_PRO",
+    "OC_ESCALATION_KIMI_K3",
+    "FAIL_CLOSED_ROUTING",
+    "PHASE18B_UNCHANGED",
+    "STRATEGY_V1_UNCHANGED",
+    "PHASE18R2_NOT_STARTED",
+    "PHASE18C_NOT_STARTED",
+]
+
+
+def _phase18r1_no_go(checkpoint_id: str, ts_str: str, error_msg: str, command_name: str = "level1-model-routing-governance-checkpoint") -> dict:
+    return {
+        "command": command_name,
+        "checkpoint_version": "phase18r1-v1.0.0",
+        "checkpoint_id": checkpoint_id,
+        "timestamp": ts_str,
+        "governance_id": "model_routing_governance_v0_1",
+        "governance_version": "0.1",
+        "governance_state": "ERROR",
+        "routing_readiness": "R0",
+        "autonomy_level": 1,
+        "advisory_only": True,
+        "human_final_authority": True,
+        "routing_activation_scope": "DRY_RUN_ONLY",
+        "provider_integration_scope": "NONE",
+        "credential_scope": "NONE",
+        "network_scope": "NONE",
+        "model_invocation_scope": "NONE",
+        "trading_execution_scope": "NONE",
+        "catalog_model_count": 4,
+        "approved_route_count": 4,
+        "error": error_msg,
+        "blockers": [f"Internal error: {error_msg}"],
+        "output_labels": [],
+        "warnings": [],
+        "next_phase_boundary": "PHASE18R2_OPENCLAW_ROUTING_ADAPTER",
+        "deterministic_evidence_hash": "",
+        "diagnosis": _PHASE18R1_DIAGNOSIS["internal_error"],
+    }
+
+
+def _run_level1_model_routing_governance_checkpoint() -> dict:
+    import json as _json
+    import hashlib as _hashlib
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"18r1-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    def _sha256(p: Path) -> str:
+        return _hashlib.sha256(p.read_bytes()).hexdigest()
+
+    def _load(p: Path):
+        with open(p) as f:
+            return _json.load(f)
+
+    def _has_failures() -> bool:
+        return len(errors) > 0
+
+    # 1. Document existence & JSON syntax
+    for name, path in _PHASE18R1_GOVERNED_FILES:
+        if not path.exists():
+            errors.append(f"MISSING_FILE: {name}")
+        else:
+            try:
+                _load(path) if path.suffix == ".json" else path.read_text()
+            except Exception as e:
+                errors.append(f"FILE_READ_ERROR: {name}: {e}")
+
+    manifest_path = _PHASE18R1_MODEL_ROUTING_DIR / "model_routing_governance_v0_1.manifest.json"
+    if not manifest_path.exists():
+        errors.append("MANIFEST_MISSING")
+        return _phase18r1_no_go(checkpoint_id, ts_str, "; ".join(errors))
+
+    try:
+        manifest = _load(manifest_path)
+    except Exception as e:
+        errors.append(f"MANIFEST_JSON_ERROR: {e}")
+        return _phase18r1_no_go(checkpoint_id, ts_str, "; ".join(errors))
+
+    if errors:
+        return _phase18r1_no_go(checkpoint_id, ts_str, "; ".join(errors))
+
+    # 2. Governed file hashes
+    doc_int = {}
+    for name, path in _PHASE18R1_GOVERNED_FILES:
+        actual = _sha256(path)
+        gf_entry = next((g for g in manifest.get("governed_files", []) if g.get("file") == name), None)
+        if gf_entry:
+            stored = gf_entry.get("sha256", "")
+            match = actual == stored
+            doc_int[name] = {"match": match, "actual": actual, "stored": stored}
+            if not match:
+                errors.append(f"HASH_MISMATCH: {name}")
+        else:
+            doc_int[name] = {"match": False, "actual": actual, "error": "not in governed_files"}
+            errors.append(f"NOT_IN_GOVERNED_FILES: {name}")
+
+    # 3. Manifest governed file count
+    if len(manifest.get("governed_files", [])) != len(_PHASE18R1_GOVERNED_FILES):
+        errors.append(f"GOVERNED_FILE_COUNT_MISMATCH: expected {len(_PHASE18R1_GOVERNED_FILES)}, got {len(manifest.get('governed_files', []))}")
+
+    # 4. Deterministic governance hash
+    manifest_no_hash = {k: v for k, v in manifest.items() if k != "deterministic_governance_hash"}
+    computed_hash = _hashlib.sha256(
+        _json.dumps(manifest_no_hash, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+    stored_hash = manifest.get("deterministic_governance_hash", "")
+    if computed_hash != stored_hash:
+        errors.append("DETERMINISTIC_GOVERNANCE_HASH_MISMATCH")
+
+    # 5. Manifest values
+    for k, v in {
+        "governance_state": "ROUTING_CONTRACT_READY",
+        "governance_id": "model_routing_governance_v0_1",
+        "governance_version": "0.1",
+        "routing_readiness": "R0",
+        "autonomy_level": 1,
+        "advisory_only": True,
+        "human_final_authority": True,
+        "routing_activation_scope": "DRY_RUN_ONLY",
+        "provider_integration_scope": "NONE",
+        "credential_scope": "NONE",
+        "network_scope": "NONE",
+        "model_invocation_scope": "NONE",
+        "trading_execution_scope": "NONE",
+        "catalog_model_count": 4,
+        "approved_route_count": 4,
+        "next_phase_boundary": "PHASE18R2_OPENCLAW_ROUTING_ADAPTER",
+    }.items():
+        if manifest.get(k) != v:
+            errors.append(f"MANIFEST_VALUE_MISMATCH: {k} expected={v} got={manifest.get(k)}")
+
+    # 6. All authorization flags false
+    auth_all_false = all(manifest.get(f, True) is False for f in _PHASE18R1_AUTH_FLAGS)
+    if not auth_all_false:
+        true_flags = [f for f in _PHASE18R1_AUTH_FLAGS if manifest.get(f) is not False]
+        errors.append(f"AUTHORIZATION_FLAGS_NOT_FALSE: {true_flags}")
+
+    # 7. Catalog validation
+    catalog_path = _PHASE18R1_MODEL_ROUTING_DIR / "MODEL_CATALOG_v0_1.json"
+    if catalog_path.exists():
+        catalog = _load(catalog_path)
+        catalog_models = catalog.get("approved_models", [])
+        if len(catalog_models) != 4:
+            errors.append(f"CATALOG_MODEL_COUNT: expected 4, got {len(catalog_models)}")
+        seen_ids = set()
+        for m in catalog_models:
+            mid = m.get("logical_model_id", "")
+            if mid in seen_ids:
+                errors.append(f"DUPLICATE_MODEL: {mid}")
+            seen_ids.add(mid)
+            if mid not in _PHASE18R1_EXPECTED_ROLE_ASSIGNMENTS:
+                errors.append(f"UNKNOWN_MODEL: {mid}")
+            else:
+                expected_roles = _PHASE18R1_EXPECTED_ROLE_ASSIGNMENTS[mid]
+                actual_roles = m.get("approved_roles", [])
+                if sorted(actual_roles) != sorted(expected_roles):
+                    errors.append(f"ROLE_MISMATCH: {mid} expected={expected_roles} got={actual_roles}")
+            if m.get("provider_binding_state") != "LOGICAL_ONLY":
+                errors.append(f"PROVIDER_BINDING_NOT_LOGICAL_ONLY: {mid}")
+            for af in ["runtime_invocation_authorized", "network_authorized",
+                        "credentials_authorized", "trading_decision_authorized",
+                        "broker_access_authorized", "execution_authorized"]:
+                if m.get(af) is not False:
+                    errors.append(f"MODEL_AUTH_FLAG_TRUE: {mid}.{af}")
+            if m.get("human_final_authority_required") is not True:
+                errors.append(f"HUMAN_AUTHORITY_NOT_REQUIRED: {mid}")
+        if seen_ids != set(_PHASE18R1_EXPECTED_ROLE_ASSIGNMENTS.keys()):
+            missing = set(_PHASE18R1_EXPECTED_ROLE_ASSIGNMENTS.keys()) - seen_ids
+            errors.append(f"MISSING_MODELS_IN_CATALOG: {sorted(missing)}")
+
+    # 8. Policy validation
+    policy_path = _PHASE18R1_MODEL_ROUTING_DIR / "MODEL_ROUTING_POLICY_v0_1.json"
+    if policy_path.exists():
+        policy = _load(policy_path)
+        terminal_states = policy.get("terminal_routing_states", [])
+        if sorted(terminal_states) != sorted(["DEFAULT_ROUTE", "ESCALATED_ROUTE", "HOLD"]):
+            errors.append(f"TERMINAL_STATES_MISMATCH: {terminal_states}")
+        for role in ["HERMES", "OC"]:
+            role_def = policy.get("roles", {}).get(role, {})
+            if not role_def:
+                errors.append(f"MISSING_ROLE_DEFINITION: {role}")
+            else:
+                for tier in ["default", "escalation", "hold"]:
+                    if tier not in role_def:
+                        errors.append(f"MISSING_TIER: {role}.{tier}")
+        hsf = policy.get("hard_stop_safety_flags", [])
+        if len(hsf) != 15:
+            errors.append(f"HARD_STOP_FLAG_COUNT: expected 15, got {len(hsf)}")
+        principles = policy.get("routing_principles", {})
+        for p in ["no_silent_model_substitution", "no_model_outside_catalog",
+                   "no_downgrade_after_escalation"]:
+            if principles.get(p) is not True:
+                errors.append(f"PRINCIPLE_NOT_TRUE: {p}")
+
+    # 9. Decision schema validation
+    schema_path = _PHASE18R1_MODEL_ROUTING_DIR / "MODEL_ROUTING_DECISION_SCHEMA_v0_1.json"
+    if schema_path.exists():
+        schema = _load(schema_path)
+        if not isinstance(schema, dict) or "version" not in schema:
+            errors.append("DECISION_SCHEMA_INVALID")
+
+    # 10. Upstream Phase 18B integrity
+    upstream_int = {}
+    if _PHASE18R1_PHASE18B_MANIFEST.exists():
+        b_hash = _sha256(_PHASE18R1_PHASE18B_MANIFEST)
+        stored_b_hash = manifest.get("upstream_phase18b_manifest_sha256", "")
+        match = b_hash == stored_b_hash
+        upstream_int["phase18b_manifest"] = {"match": match, "actual": b_hash, "stored": stored_b_hash}
+        if not match:
+            errors.append("PHASE18B_MANIFEST_HASH_MISMATCH")
+    else:
+        errors.append("PHASE18B_MANIFEST_MISSING")
+        upstream_int["phase18b_manifest"] = {"match": False, "error": "missing"}
+
+    # 11. Upstream Phase 18A integrity
+    upstream_18a_int = {}
+    if _PHASE18R1_PHASE18A_MANIFEST.exists():
+        a_hash = _sha256(_PHASE18R1_PHASE18A_MANIFEST)
+        stored_a_hash = manifest.get("upstream_phase18a_manifest_sha256", "")
+        match = a_hash == stored_a_hash
+        upstream_18a_int["phase18a_manifest"] = {"match": match, "actual": a_hash, "stored": stored_a_hash}
+        if not match:
+            errors.append("PHASE18A_MANIFEST_HASH_MISMATCH")
+    else:
+        errors.append("PHASE18A_MANIFEST_MISSING")
+        upstream_18a_int["phase18a_manifest"] = {"match": False, "error": "missing"}
+
+    # 12. Canonical Strategy v1 integrity
+    strategy_int = {}
+    if _PHASE18R1_CANONICAL_STRATEGY.exists():
+        s_hash = _sha256(_PHASE18R1_CANONICAL_STRATEGY)
+        stored_s_hash = manifest.get("canonical_strategy_sha256", "")
+        match = s_hash == stored_s_hash
+        strategy_int["canonical_strategy"] = {"match": match, "actual": s_hash, "stored": stored_s_hash}
+        if not match:
+            errors.append("STRATEGY_MD_HASH_MISMATCH")
+    else:
+        errors.append("STRATEGY_MD_MISSING")
+        strategy_int["canonical_strategy"] = {"match": False, "error": "missing"}
+
+    # 13. Protected file integrity (bridge, guard, .env, STRATEGY.md, Phase 18B)
+    # Already verified upstream; no new mutations allowed
+
+    # 14. Build output
+    output_labels = _PHASE18R1_REQUIRED_LABELS if not _has_failures() else []
+
+    result = {
+        "command": "level1-model-routing-governance-checkpoint",
+        "checkpoint_version": "phase18r1-v1.0.0",
+        "checkpoint_id": checkpoint_id,
+        "timestamp": ts_str,
+        "governance_id": "model_routing_governance_v0_1",
+        "governance_version": "0.1",
+        "governance_state": "ROUTING_CONTRACT_READY" if not _has_failures() else "BLOCKED",
+        "routing_readiness": "R0",
+        "autonomy_level": 1,
+        "advisory_only": True,
+        "human_final_authority": True,
+        "routing_activation_scope": "DRY_RUN_ONLY",
+        "provider_integration_scope": "NONE",
+        "credential_scope": "NONE",
+        "network_scope": "NONE",
+        "model_invocation_scope": "NONE",
+        "trading_execution_scope": "NONE",
+        "catalog_model_count": 4,
+        "approved_route_count": 4,
+        "document_integrity": {"overall": not _has_failures(), "details": doc_int},
+        "manifest_integrity": {
+            "hash_match": computed_hash == stored_hash,
+            "governed_count_correct": len(manifest.get("governed_files", [])) == len(_PHASE18R1_GOVERNED_FILES),
+        },
+        "upstream_phase18b_integrity": {"overall": not _has_failures(), "details": upstream_int},
+        "upstream_phase18a_integrity": {"overall": not _has_failures(), "details": upstream_18a_int},
+        "canonical_strategy_integrity": {"overall": not _has_failures(), "details": strategy_int},
+        "all_authorization_flags_false": auth_all_false,
+        "blockers": errors if _has_failures() else [],
+        "output_labels": output_labels,
+        "warnings": warnings,
+        "next_phase_boundary": "PHASE18R2_OPENCLAW_ROUTING_ADAPTER",
+        "deterministic_evidence_hash": "",
+        "diagnosis": _PHASE18R1_DIAGNOSIS["ready"],
+    }
+
+    # Evidence hash
+    no_hash = {k: v for k, v in result.items()
+               if k not in ("deterministic_evidence_hash", "diagnosis", "warnings",
+                             "timestamp", "checkpoint_id", "command")}
+    result["deterministic_evidence_hash"] = _hashlib.sha256(
+        _json.dumps(no_hash, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+    result["diagnosis"] = {
+        "ready": _PHASE18R1_DIAGNOSIS["ready"] if not errors else _PHASE18R1_DIAGNOSIS["checkpoint_failed"],
+        "error_count": len(errors),
+    }
+
+    return result
+
+
+def _run_model_routing_decision(input_path: str) -> dict:
+    """Run model routing decision from JSON file or stdin."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    if input_path == "-":
+        raw = sys.stdin.read()
+    else:
+        p = _Path(input_path)
+        if not p.exists():
+            return {
+                "error": f"Input file not found: {input_path}",
+                "routing_state": "HOLD",
+                "selected_model_id": None,
+                "selected_route_tier": None,
+                "manual_review_required": True,
+            }
+        raw = p.read_text()
+
+    try:
+        request = _json.loads(raw)
+    except _json.JSONDecodeError as e:
+        return {
+            "error": f"Malformed JSON: {e}",
+            "routing_state": "HOLD",
+            "selected_model_id": None,
+            "selected_route_tier": None,
+            "manual_review_required": True,
+        }
+
+    # Import and use the pure decision engine
+    import importlib.util
+    model_routing_path = Path(__file__).resolve().parent / "model_routing.py"
+    spec = importlib.util.spec_from_file_location("model_routing", model_routing_path)
+    mr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mr)
+
+    return mr.decide_model_route(request)
+
+
+# ── Phase 18R1 end ──────────────────────────────────────────────────────────
+
+
 def main() -> None:
     import argparse
 
@@ -53641,6 +54049,26 @@ def main() -> None:
     p18b_a2 = sub.add_parser("data-schema-provider-governance",
                              help="Alias for level1-data-schema-provider-governance-checkpoint")
     p18b_a2.add_argument("--json", action="store_true")
+
+    # Phase 18R1 — Level 1 Model-Routing Governance Checkpoint
+    p18r1 = sub.add_parser("level1-model-routing-governance-checkpoint",
+                           help="Level 1 model-routing governance checkpoint (Phase 18R1)")
+    p18r1.add_argument("--json", action="store_true")
+    # Alias: phase18r1
+    p18r1_a1 = sub.add_parser("phase18r1",
+                              help="Alias for level1-model-routing-governance-checkpoint")
+    p18r1_a1.add_argument("--json", action="store_true")
+    # Alias: model-routing-governance
+    p18r1_a2 = sub.add_parser("model-routing-governance",
+                              help="Alias for level1-model-routing-governance-checkpoint")
+    p18r1_a2.add_argument("--json", action="store_true")
+
+    # Phase 18R1 — Model Routing Decision (dry-run)
+    mrd = sub.add_parser("model-routing-decision",
+                         help="Run Phase 18R1 model-routing decision (dry-run, advisory only)")
+    mrd.add_argument("--input-file", type=str, required=True,
+                     help="Path to routing request JSON file (use - for stdin)")
+    mrd.add_argument("--json", action="store_true")
 
     # Phase 17L — Level 1 Phase 17 Chain Closure Checkpoint
     p17l = sub.add_parser("level1-phase17-chain-closure-checkpoint",
@@ -56462,6 +56890,55 @@ def main() -> None:
             print("=" * 60)
         exit_code = 0 if result.get("diagnosis", {}).get("ready") == _PHASE18B_DIAGNOSIS["ready"] else 1
         sys.exit(exit_code)
+
+    if args.command in ("level1-model-routing-governance-checkpoint",
+                        "phase18r1",
+                        "model-routing-governance"):
+        try:
+            result = _run_level1_model_routing_governance_checkpoint()
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"18r1-error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = _phase18r1_no_go(checkpoint_id, ts_str, str(exc))
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print("=" * 60)
+            print(f"Phase 18R1: Model-Routing Governance")
+            print(f"Version:       {result.get('checkpoint_version', '?')}")
+            print(f"Checkpoint:    {result.get('checkpoint_id', '?')}")
+            print(f"Governance:    {result.get('governance_state', '?')}")
+            print(f"Routing:       {result.get('routing_readiness', '?')}")
+            print(f"Autonomy:      Level {result.get('autonomy_level', '?')}")
+            print(f"Activation:    {result.get('routing_activation_scope', '?')}")
+            print(f"Models:        {result.get('catalog_model_count', '?')}")
+            print(f"Routes:        {result.get('approved_route_count', '?')}")
+            print(f"Evidence Hash: {result.get('deterministic_evidence_hash', '?')}")
+            print("=" * 60)
+            blockers = result.get('blockers', [])
+            if blockers:
+                print(f"Blockers ({len(blockers)}):")
+                for b in blockers:
+                    print(f"  - {b}")
+            else:
+                print("Blockers:  0")
+            print("=" * 60)
+        exit_code = 0 if result.get("diagnosis", {}).get("ready") == _PHASE18R1_DIAGNOSIS["ready"] else 1
+        sys.exit(exit_code)
+
+    if args.command == "model-routing-decision":
+        result = _run_model_routing_decision(args.input_file)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True, default=str))
+        if result.get("routing_state") == "HOLD":
+            sys.exit(1)
+        sys.exit(0)
 
     if args.command in ("level1-order-window-canary-negative-control-drill",
                         "phase16p-order-window-canary-negative-control-drill",

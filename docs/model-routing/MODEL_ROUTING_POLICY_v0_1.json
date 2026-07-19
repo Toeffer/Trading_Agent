@@ -1,0 +1,138 @@
+{
+  "routing_policy_schema_version": "0.1",
+  "governance_identity": {
+    "governance_id": "model_routing_governance_v0_1",
+    "governance_version": "0.1",
+    "governance_state": "ROUTING_CONTRACT_READY",
+    "governance_phase": "PHASE18R1",
+    "routing_activation_scope": "DRY_RUN_ONLY",
+    "autonomy_level": 1,
+    "advisory_only": true,
+    "human_final_authority": true,
+    "execution_scope": "NONE",
+    "provider_integration_scope": "NONE",
+    "credential_scope": "NONE",
+    "network_scope": "NONE",
+    "model_invocation_scope": "NONE",
+    "trading_execution_scope": "NONE"
+  },
+  "terminal_routing_states": ["DEFAULT_ROUTE", "ESCALATED_ROUTE", "HOLD"],
+  "roles": {
+    "HERMES": {
+      "default": {
+        "selected_model": "gpt-5.5",
+        "route_tier": "DEFAULT",
+        "permitted_task_classes": [
+          "ROUTINE_RESEARCH",
+          "PROPOSAL_DRAFTING",
+          "DOCUMENTATION",
+          "SUMMARIZATION",
+          "ROUTINE_REVIEW"
+        ],
+        "retry_budget": 1
+      },
+      "escalation": {
+        "selected_model": "gpt-5.6-sol",
+        "route_tier": "ESCALATION",
+        "escalation_triggers": [
+          "PHASE_ARCHITECTURE",
+          "SAFETY_GOVERNANCE",
+          "SPEC_TEST_CONFLICT",
+          "FAIL_CLOSED_DIAGNOSIS",
+          "FINAL_CLOSURE_REVIEW"
+        ],
+        "auto_escalation_triggers": {
+          "default_failure_count_ge": 1,
+          "manual_escalation_requested": true
+        },
+        "retry_budget": 1
+      },
+      "hold": {
+        "conditions": [
+          "escalation_failure_count >= 1",
+          "escalation model unavailable for escalation-required request",
+          "any hard-stop safety flag true",
+          "invalid or incomplete routing request"
+        ]
+      }
+    },
+    "OC": {
+      "default": {
+        "selected_model": "deepseek-v4-pro",
+        "route_tier": "DEFAULT",
+        "permitted_task_classes": [
+          "ROUTINE_IMPLEMENTATION",
+          "ROUTINE_TEST_ADDITION",
+          "ROUTINE_DOCUMENTATION",
+          "ROUTINE_REPAIR",
+          "FIRST_PASS_CI_DIAGNOSIS"
+        ],
+        "retry_budget": 2
+      },
+      "escalation": {
+        "selected_model": "kimi-k3",
+        "route_tier": "ESCALATION",
+        "escalation_triggers": [
+          "CROSS_FILE_ARCHITECTURAL_REFACTOR",
+          "REPEATED_CI_RECOVERY",
+          "SAFETY_CRITICAL_IMPLEMENTATION",
+          "SPECIFICATION_AMBIGUITY",
+          "TOOL_DISCIPLINE_RECOVERY"
+        ],
+        "auto_escalation_triggers": {
+          "default_failure_count_ge": 2,
+          "manual_escalation_requested": true,
+          "default_unavailable_with_escalation_available": true
+        },
+        "retry_budget": 1
+      },
+      "hold": {
+        "conditions": [
+          "escalation_failure_count >= 1",
+          "escalation model unavailable for escalation-required request",
+          "both approved route models unavailable",
+          "any hard-stop safety flag true",
+          "invalid or incomplete routing request"
+        ]
+      }
+    }
+  },
+  "hard_stop_safety_flags": [
+    "safety_boundary_violation_detected",
+    "protected_file_change_detected",
+    "test_weakening_detected",
+    "unauthorized_runtime_mutation_detected",
+    "credential_exposure_detected",
+    "unapproved_network_access_detected",
+    "unapproved_model_requested",
+    "broker_mutation_requested",
+    "h1_access_requested",
+    "trading_execution_requested",
+    "order_path_requested",
+    "approval_path_requested",
+    "preflight_path_requested",
+    "submission_path_requested",
+    "strategy_or_allowlist_change_requested"
+  ],
+  "routing_principles": {
+    "no_silent_model_substitution": true,
+    "no_model_outside_catalog": true,
+    "no_downgrade_after_escalation": true,
+    "hold_requires_human_review": true,
+    "hold_selects_no_model": true,
+    "routing_is_advisory_only": true,
+    "fail_closed_default": true,
+    "deterministic_and_reproducible": true
+  },
+  "authorization_flags": {
+    "runtime_invocation_authorized": false,
+    "provider_integration_authorized": false,
+    "credentials_authorized": false,
+    "network_authorized": false,
+    "broker_mutation_authorized": false,
+    "trading_execution_authorized": false,
+    "trading_autonomy_unchanged": true,
+    "human_final_authority": true,
+    "advisory_only": true
+  }
+}

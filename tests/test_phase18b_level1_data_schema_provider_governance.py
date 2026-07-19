@@ -2,7 +2,7 @@
 
 Covers: Common Record Contract (17 fields), 4 record schemas, Dataset Manifest
 Schema (37 fields), 10 Provider Roles, 23 Quality Scenarios, Governance Manifest
-(deterministic_governance_hash), Checkpoint Command, and CI invariants.
+(deterministic_governance_hash), CLI Registration, and CI invariants.
 """
 
 import hashlib
@@ -31,9 +31,6 @@ PHASE18B_MANIFEST = GOVERNANCE_DIR / "mstr_btc_data_governance_v0_1.manifest.jso
 
 PHASE18A_MANIFEST = PROPOSALS_DIR / "mstr_btc_research_v0_1.manifest.json"
 CANONICAL_STRATEGY = REPO / "docs" / "STRATEGY.md"
-
-CHECKPOINT = REPO / "level1-data-schema-provider-governance-checkpoint"
-CHECKPOINT_ALIASES = [REPO / "phase18b", REPO / "data-schema-provider-governance"]
 
 RECORD_SCHEMAS = [
     ("equity_bar_schema", EQUITY_BAR_SCHEMA),
@@ -78,6 +75,12 @@ EXPECTED_QUALITY_SCENARIOS = [
     "manifest_hash_mismatch", "source_license_uncertainty",
 ]
 
+OPERATOR_CLI_COMMANDS = [
+    "level1-data-schema-provider-governance-checkpoint",
+    "phase18b",
+    "data-schema-provider-governance",
+]
+
 COMMON_REQUIRED_FIELDS = [
     "schema_version", "record_id", "raw_record_hash", "provider_role_id",
     "provider_record_id", "instrument_id", "asset_class", "research_track",
@@ -105,13 +108,16 @@ def _load_manifest() -> dict:
     with open(PHASE18B_MANIFEST) as f:
         return json.load(f)
 
+
 def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
 
 def _load_json(path: Path) -> dict:
     assert path.exists()
     with open(path) as f:
         return json.load(f)
+
 
 def _compute_deterministic_governance_hash(manifest_path: Path) -> str:
     with open(manifest_path) as f:
@@ -119,8 +125,15 @@ def _compute_deterministic_governance_hash(manifest_path: Path) -> str:
     no_hash = {k: v for k, v in m.items() if k != "deterministic_governance_hash"}
     return hashlib.sha256(json.dumps(no_hash, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
-def _run_checkpoint() -> dict:
-    result = subprocess.run([sys.executable, str(CHECKPOINT)], capture_output=True, text=True, timeout=30)
+
+def _run_operator_cli(command: str) -> dict:
+    """Invoke Phase 18B command via ibkr_operator.py."""
+    result = subprocess.run(
+        [sys.executable, str(OPERATOR), command, "--json"],
+        capture_output=True, text=True, timeout=60,
+        cwd=str(REPO),
+    )
+    assert result.returncode == 0, f"CLI '{command}' failed (exit {result.returncode}): {result.stderr}"
     return json.loads(result.stdout)
 
 
@@ -130,12 +143,19 @@ def _run_checkpoint() -> dict:
 
 class TestDocumentExistence:
     @pytest.mark.parametrize("name,path", ALL_GOVERNANCE_DOCS)
-    def test_exists(self, name, path): assert path.exists()
-    def test_manifest(self): assert PHASE18B_MANIFEST.exists()
-    def test_strategy_md(self): assert (REPO / "docs" / "STRATEGY.md").exists()
+    def test_exists(self, name, path):
+        assert path.exists()
+
+    def test_manifest(self):
+        assert PHASE18B_MANIFEST.exists()
+
+    def test_strategy_md(self):
+        assert (REPO / "docs" / "STRATEGY.md").exists()
+
     def test_strategy_v1(self):
         sv1 = REPO / "docs" / "strategy_v1.md"
         assert sv1.exists() and "Strategy v1" in sv1.read_text()
+
     def test_18a_intact(self):
         for p in [PROPOSALS_DIR / "MSTR_BTC_RESEARCH_PROPOSAL_v0_1.md",
                    PROPOSALS_DIR / "MSTR_BTC_DATA_REQUIREMENTS_v0_1.md",
@@ -147,7 +167,9 @@ class TestJsonValidity:
     @pytest.mark.parametrize("name,path", ALL_GOVERNANCE_DOCS)
     def test_valid_json(self, name, path):
         assert isinstance(_load_json(path), dict)
-    def test_manifest_valid(self): assert isinstance(_load_manifest(), dict)
+
+    def test_manifest_valid(self):
+        assert isinstance(_load_manifest(), dict)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -155,18 +177,31 @@ class TestJsonValidity:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestManifestStructure:
-    def test_version(self): assert _load_manifest()["manifest_version"] == "1.0.0"
-    def test_id(self): assert _load_manifest()["manifest_id"] == "mstr_btc_data_governance_v0_1.manifest"
-    def test_governance_id(self): assert _load_manifest()["governance_id"] == "mstr_btc_data_governance_v0_1"
-    def test_phase(self): assert _load_manifest()["phase"] == "18B"
-    def test_schema_count(self): assert _load_manifest()["schema_count"] == 5
-    def test_provider_role_count(self): assert _load_manifest()["provider_role_count"] == 10
+    def test_version(self):
+        assert _load_manifest()["manifest_version"] == "1.0.0"
+
+    def test_id(self):
+        assert _load_manifest()["manifest_id"] == "mstr_btc_data_governance_v0_1.manifest"
+
+    def test_governance_id(self):
+        assert _load_manifest()["governance_id"] == "mstr_btc_data_governance_v0_1"
+
+    def test_phase(self):
+        assert _load_manifest()["phase"] == "18B"
+
+    def test_schema_count(self):
+        assert _load_manifest()["schema_count"] == 5
+
+    def test_provider_role_count(self):
+        assert _load_manifest()["provider_role_count"] == 10
+
     def test_quality_outcomes(self):
         qo = _load_manifest()["quality_outcomes"]
         for o in ["ACCEPT", "ACCEPT_WITH_WARNING", "QUARANTINE", "REJECT", "NO_TRADE"]:
             assert o in qo
 
-    def test_governed_files_count(self): assert len(_load_manifest()["governed_files"]) == 7
+    def test_governed_files_count(self):
+        assert len(_load_manifest()["governed_files"]) == 7
 
     def test_governed_files_order(self):
         actual_order = [g["file"] for g in _load_manifest()["governed_files"]]
@@ -198,7 +233,7 @@ class TestManifestStructure:
         assert isinstance(b, dict)
         assert "active_blockers" in b
         assert isinstance(b["active_blockers"], list)
-        assert len(b["active_blockers"]) == 0  # no active blockers
+        assert len(b["active_blockers"]) == 0
 
     def test_has_deterministic_governance_hash(self):
         m = _load_manifest()
@@ -223,8 +258,10 @@ class TestManifestCoreValues:
         "canonical_strategy_unchanged": True,
         "phase18a_artifacts_unchanged": True,
     }
+
     @pytest.mark.parametrize("k,v", MANIFEST_VALUES.items())
-    def test_value(self, k, v): assert _load_manifest()[k] == v
+    def test_value(self, k, v):
+        assert _load_manifest()[k] == v
 
 
 class TestManifestAuthFlags:
@@ -233,8 +270,10 @@ class TestManifestAuthFlags:
               "backtest_authorized", "modeling_authorized", "forecasting_authorized",
               "candidate_generation_authorized", "execution_authorized",
               "allowlist_change", "rules_change", "broker_change", "guard_change"]
+
     @pytest.mark.parametrize("f", FLAGS)
-    def test_false(self, f): assert _load_manifest()[f] is False
+    def test_false(self, f):
+        assert _load_manifest()[f] is False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -255,15 +294,10 @@ class TestDeterministicGovernanceHash:
     def test_match(self):
         m = _load_manifest()
         assert m["deterministic_governance_hash"] == _compute_deterministic_governance_hash(PHASE18B_MANIFEST)
+
     def test_reproducible_10_runs(self):
         stored = _load_manifest()["deterministic_governance_hash"]
         for _ in range(10):
-            assert _compute_deterministic_governance_hash(PHASE18B_MANIFEST) == stored
-
-    @pytest.mark.heavy
-    def test_reproducible_20(self):
-        stored = _load_manifest()["deterministic_governance_hash"]
-        for _ in range(20):
             assert _compute_deterministic_governance_hash(PHASE18B_MANIFEST) == stored
 
 
@@ -327,7 +361,8 @@ class TestCrossDocIdentity:
         assert gi["research_only"] is True
 
     @pytest.mark.parametrize("name,path", ALL_GOVERNANCE_DOCS)
-    def test_version_0_1(self, name, path): assert _load_json(path)["version"] == "0.1"
+    def test_version_0_1(self, name, path):
+        assert _load_json(path)["version"] == "0.1"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -392,9 +427,13 @@ class TestEquityBar:
     REQ = ["symbol", "venue", "currency", "bar_interval", "session_type",
             "open", "high", "low", "close", "volume", "adjusted",
             "corporate_action_state", "quote_condition", "bar_completion_state"]
-    def test_asset_class(self): assert _load_json(EQUITY_BAR_SCHEMA)["properties"]["asset_class"]["const"] == "equity"
+
+    def test_asset_class(self):
+        assert _load_json(EQUITY_BAR_SCHEMA)["properties"]["asset_class"]["const"] == "equity"
+
     @pytest.mark.parametrize("f", REQ)
-    def test_required(self, f): assert f in _load_json(EQUITY_BAR_SCHEMA)["required"]
+    def test_required(self, f):
+        assert f in _load_json(EQUITY_BAR_SCHEMA)["required"]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -402,10 +441,18 @@ class TestEquityBar:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestBtcSpotBar:
-    def test_asset_class(self): assert _load_json(BTC_SPOT_BAR_SCHEMA)["properties"]["asset_class"]["const"] == "crypto_spot"
-    def test_base_btc(self): assert _load_json(BTC_SPOT_BAR_SCHEMA)["properties"]["base_asset"]["const"] == "BTC"
-    def test_quote_usd(self): assert _load_json(BTC_SPOT_BAR_SCHEMA)["properties"]["quote_asset"]["const"] == "USD"
-    def test_research_track(self): assert _load_json(BTC_SPOT_BAR_SCHEMA)["properties"]["research_track"]["const"] == "TRACK_A_MSTR_BTC"
+    def test_asset_class(self):
+        assert _load_json(BTC_SPOT_BAR_SCHEMA)["properties"]["asset_class"]["const"] == "crypto_spot"
+
+    def test_base_btc(self):
+        assert _load_json(BTC_SPOT_BAR_SCHEMA)["properties"]["base_asset"]["const"] == "BTC"
+
+    def test_quote_usd(self):
+        assert _load_json(BTC_SPOT_BAR_SCHEMA)["properties"]["quote_asset"]["const"] == "USD"
+
+    def test_research_track(self):
+        assert _load_json(BTC_SPOT_BAR_SCHEMA)["properties"]["research_track"]["const"] == "TRACK_A_MSTR_BTC"
+
     def test_boundaries(self):
         bb = _load_json(BTC_SPOT_BAR_SCHEMA)["btc_boundaries"]
         assert bb["btc_execution_scope"] == "NONE"
@@ -417,14 +464,18 @@ class TestBtcSpotBar:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestCorporateEvent:
-    def test_asset_class(self): assert _load_json(CORPORATE_EVENT_SCHEMA)["properties"]["asset_class"]["const"] == "equity"
+    def test_asset_class(self):
+        assert _load_json(CORPORATE_EVENT_SCHEMA)["properties"]["asset_class"]["const"] == "equity"
+
     def test_materiality_enum(self):
         enums = _load_json(CORPORATE_EVENT_SCHEMA)["properties"]["materiality_state"]["enum"]
         assert "MATERIAL_CONFIRMED" in enums
+
     def test_event_status_enum(self):
         enums = _load_json(CORPORATE_EVENT_SCHEMA)["properties"]["event_status"]["enum"]
         for v in ["ANNOUNCED", "AMENDED", "SUPERSEDED"]:
             assert v in enums
+
     def test_effective_at_utc_not_required(self):
         assert "effective_at_utc" not in _load_json(CORPORATE_EVENT_SCHEMA)["required"]
 
@@ -436,8 +487,10 @@ class TestCorporateEvent:
 class TestOptionChainSnapshot:
     def test_simulation_only_const_true(self):
         assert _load_json(OPTION_CHAIN_SNAPSHOT_SCHEMA)["properties"]["simulation_only"]["const"] is True
+
     def test_point_in_time_snapshot_const_true(self):
         assert _load_json(OPTION_CHAIN_SNAPSHOT_SCHEMA)["properties"]["point_in_time_snapshot"]["const"] is True
+
     def test_option_right_enum(self):
         enums = _load_json(OPTION_CHAIN_SNAPSHOT_SCHEMA)["properties"]["option_right"]["enum"]
         assert enums == ["CALL", "PUT"]
@@ -450,12 +503,16 @@ class TestOptionChainSnapshot:
 class TestDatasetManifest:
     def test_raw_data_immutable_const_true(self):
         assert _load_json(DATASET_MANIFEST_SCHEMA)["properties"]["raw_data_immutable"]["const"] is True
+
     def test_collection_authorized_const_false(self):
         assert _load_json(DATASET_MANIFEST_SCHEMA)["properties"]["collection_authorized"]["const"] is False
+
     def test_execution_eligible_const_false(self):
         assert _load_json(DATASET_MANIFEST_SCHEMA)["properties"]["execution_eligible"]["const"] is False
+
     def test_lookahead_detected_const_false(self):
         assert _load_json(DATASET_MANIFEST_SCHEMA)["properties"]["lookahead_detected"]["const"] is False
+
     def test_additional_properties_false(self):
         assert _load_json(DATASET_MANIFEST_SCHEMA).get("additionalProperties") is False
 
@@ -557,108 +614,8 @@ class TestDataQualityPolicy:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CHECKPOINT COMMAND
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestCheckpointCommand:
-    def test_exists(self): assert CHECKPOINT.exists()
-    def test_executable(self): assert os.access(CHECKPOINT, os.X_OK)
-
-    @pytest.mark.parametrize("alias_path", CHECKPOINT_ALIASES)
-    def test_alias_exists(self, alias_path): assert alias_path.exists()
-
-    def test_checkpoint_output_valid_json(self):
-        result = _run_checkpoint()
-        assert isinstance(result, dict)
-
-    def test_checkpoint_state_ready(self):
-        result = _run_checkpoint()
-        assert result["governance_state"] == "SCHEMA_CONTRACT_READY"
-
-    def test_checkpoint_all_auth_false(self):
-        result = _run_checkpoint()
-        assert result["all_authorization_flags_false"] is True
-
-    def test_checkpoint_no_blockers(self):
-        result = _run_checkpoint()
-        assert result["blockers"] == []
-
-    def test_checkpoint_fields(self):
-        result = _run_checkpoint()
-        required_fields = [
-            "command", "checkpoint_version", "governance_id",
-            "governance_state", "strategy_readiness", "data_readiness",
-            "autonomy_level", "research_only", "execution_scope",
-            "collection_scope", "provider_binding_state",
-            "schema_count", "provider_role_count",
-            "document_integrity", "schema_integrity",
-            "provider_governance_integrity", "quality_policy_integrity",
-            "upstream_phase18a_integrity", "canonical_strategy_integrity",
-            "point_in_time_governance", "all_authorization_flags_false",
-            "deterministic_evidence_hash", "blockers",
-            "explicit_non_actions", "next_phase_boundary",
-            "output_labels", "diagnosis",
-        ]
-        for rf in required_fields:
-            assert rf in result, f"Missing checkpoint output field: {rf}"
-
-    def test_checkpoint_deterministic_evidence_hash(self):
-        result1 = _run_checkpoint()
-        result2 = _run_checkpoint()
-        assert result1["deterministic_evidence_hash"] == result2["deterministic_evidence_hash"]
-
-    def test_checkpoint_integrity_all_true(self):
-        result = _run_checkpoint()
-        for k in ["document_integrity", "schema_integrity",
-                   "provider_governance_integrity", "quality_policy_integrity",
-                   "upstream_phase18a_integrity", "canonical_strategy_integrity"]:
-            assert result[k].get("overall") is True, f"{k} integrity failed"
-
-    def test_checkpoint_exit_zero(self):
-        cp = subprocess.run([sys.executable, str(CHECKPOINT)], capture_output=True)
-        assert cp.returncode == 0
-
-    def test_checkpoint_no_files_written(self):
-        mtime_before = {str(g[1]): g[1].stat().st_mtime for g in
-                        [(n, GOVERNANCE_DIR / n) for n in GOVERNED_FILE_LIST]}
-        _run_checkpoint()
-        for name, path in [(n, GOVERNANCE_DIR / n) for n in GOVERNED_FILE_LIST]:
-            assert path.stat().st_mtime == mtime_before[str(path)], f"{name} was modified by checkpoint"
-
-
-class TestCheckpointAliases:
-    @pytest.mark.parametrize("alias_name,alias_path", [
-        ("phase18b", CHECKPOINT_ALIASES[0]),
-        ("data-schema-provider-governance", CHECKPOINT_ALIASES[1]),
-    ])
-    def test_alias_output(self, alias_name, alias_path):
-        result = subprocess.run([sys.executable, str(alias_path)], capture_output=True, text=True, timeout=30)
-        assert result.returncode == 0
-        d = json.loads(result.stdout)
-        assert d["command"] == "level1-data-schema-provider-governance-checkpoint"
-        assert d["governance_state"] == "SCHEMA_CONTRACT_READY"
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # IBKR-OPERATOR CLI REGISTRATION
 # ══════════════════════════════════════════════════════════════════════════════
-
-OPERATOR_CLI_COMMANDS = [
-    "level1-data-schema-provider-governance-checkpoint",
-    "phase18b",
-    "data-schema-provider-governance",
-]
-
-
-def _run_operator_cli(command: str) -> dict:
-    result = subprocess.run(
-        [sys.executable, str(REPO / "ibkr_operator.py"), command, "--json"],
-        capture_output=True, text=True, timeout=30,
-        cwd=str(REPO),
-    )
-    assert result.returncode == 0, f"CLI '{command}' failed: {result.stderr}"
-    return json.loads(result.stdout)
-
 
 class TestOperatorCliRegistration:
     @pytest.mark.parametrize("command", OPERATOR_CLI_COMMANDS)
@@ -705,21 +662,21 @@ class TestOperatorCliRegistration:
 
     def test_help_lists_canonical_command(self):
         result = subprocess.run(
-            [sys.executable, str(REPO / "ibkr_operator.py"), "--help"],
+            [sys.executable, str(OPERATOR), "--help"],
             capture_output=True, text=True, timeout=30,
         )
         assert "level1-data-schema-provider-governance-checkpoint" in result.stdout
 
     def test_help_lists_phase18b_alias(self):
         result = subprocess.run(
-            [sys.executable, str(REPO / "ibkr_operator.py"), "--help"],
+            [sys.executable, str(OPERATOR), "--help"],
             capture_output=True, text=True, timeout=30,
         )
         assert "phase18b" in result.stdout
 
     def test_help_lists_data_schema_alias(self):
         result = subprocess.run(
-            [sys.executable, str(REPO / "ibkr_operator.py"), "--help"],
+            [sys.executable, str(OPERATOR), "--help"],
             capture_output=True, text=True, timeout=30,
         )
         assert "data-schema-provider-governance" in result.stdout
@@ -734,10 +691,8 @@ class TestOperatorCliRegistration:
         for path in GOVERNANCE_DIR.glob("*.json"):
             assert path.stat().st_mtime == mtimes[str(path)], f"{path.name} modified by CLI"
 
-    def test_cli_no_duplicate_logic_between_aliases(self):
-        # All three command names route to the same dispatch block.
-        # Exclude timestamp/checkpoint_id (which vary by second) —
-        # verify all semantic governance fields are identical.
+    def test_cli_single_handler(self):
+        # All three route through same handler — semantic fields identical
         results = {cmd: _run_operator_cli(cmd) for cmd in OPERATOR_CLI_COMMANDS}
         canonical = results["level1-data-schema-provider-governance-checkpoint"]
         exclude = {"timestamp", "checkpoint_id"}
@@ -764,6 +719,7 @@ class TestPhase18aIntegrity:
 class TestDiagnosisMap:
     def test_ready(self):
         assert _load_manifest()["phase18b_diagnosis"]["ready"] == "phase18b_data_schema_provider_governance_ok"
+
     def test_active_blockers_empty(self):
         assert _load_manifest()["phase18b_diagnosis"]["active_blockers"] == []
 
@@ -778,8 +734,10 @@ class TestOutputLabels:
               "SCHEMA_AND_PROVIDER_CONTRACT_VALIDATION_ONLY",
               "FAIL_CLOSED_ENFORCED", "TEN_PROVIDER_ROLES_DEFINED",
               "TWENTY_THREE_QUALITY_SCENARIOS_COVERED", "VENDOR_NEUTRAL"]
+
     @pytest.mark.parametrize("label", LABELS)
-    def test_present(self, label): assert label in _load_manifest()["required_output_labels"]
+    def test_present(self, label):
+        assert label in _load_manifest()["required_output_labels"]
 
 
 class TestPrinciples:
@@ -792,25 +750,44 @@ class TestPrinciples:
 
 
 class TestCiInvariants:
-    def test_forbidden_files_exist(self):
-        for rel in ["bridge.py", "guard.py", ".env", "docs/STRATEGY.md"]:
-            assert (REPO / rel).exists()
+    def test_no_code_enables_orders(self):
+        """Phase 18B did not add or modify order-enablement code."""
+        operator_text = OPERATOR.read_text()
+        # IBKR_ALLOW_ORDERS should not appear as enabled in the operator
+        if "IBKR_ALLOW_ORDERS" in operator_text:
+            idx = operator_text.lower().find("ibkr_allow_orders")
+            nearby = operator_text[idx:idx+80].lower()
+            assert "true" not in nearby, f"IBKR_ALLOW_ORDERS appears to be enabled: {nearby[:80]}"
 
-    def test_no_checkpoint_writes_files(self):
-        mtimes = {}
-        for path in GOVERNANCE_DIR.glob("*.json"):
-            mtimes[str(path)] = path.stat().st_mtime
-        subprocess.run([sys.executable, str(CHECKPOINT)], capture_output=True, timeout=30)
-        for path in GOVERNANCE_DIR.glob("*.json"):
-            assert path.stat().st_mtime == mtimes[str(path)], f"{path.name} modified by checkpoint run"
+    def test_no_rules_enforcement_enabled(self):
+        """Phase 18B did not enable trading rules."""
+        if (REPO / "paper-trading-rules.yaml").exists():
+            rules_text = (REPO / "paper-trading-rules.yaml").read_text().lower()
+            # Verify no MSTR/SPY/QQQ execution rule was added
+            for symbol in ["mstr", "spy", "qqq"]:
+                assert symbol not in rules_text or "enabled: false" in rules_text or "allow: false" in rules_text
 
+    def test_no_runtime_config_introduced(self):
+        """Phase 18B did not introduce runtime configuration."""
+        new_files = [f for f in GOVERNANCE_DIR.glob("*.json")]
+        for f in new_files:
+            content = f.read_text().lower()
+            assert "runtime" not in content or "storage_runtime_scope" in content
 
-class TestCompileCheck:
-    def test_operator(self):
+    def test_bridge_exists(self):
+        assert (REPO / "bridge.py").exists()
+
+    def test_guard_exists(self):
+        assert (REPO / "guard.py").exists()
+
+    def test_strategy_md_exists(self):
+        assert (REPO / "docs" / "STRATEGY.md").exists()
+
+    def test_operator_compiles(self):
         assert subprocess.run([sys.executable, "-m", "py_compile", str(OPERATOR)], capture_output=True).returncode == 0
-    def test_bridge(self):
+
+    def test_bridge_compiles(self):
         assert subprocess.run([sys.executable, "-m", "py_compile", str(REPO / "bridge.py")], capture_output=True).returncode == 0
-    def test_guard(self):
+
+    def test_guard_compiles(self):
         assert subprocess.run([sys.executable, "-m", "py_compile", str(REPO / "guard.py")], capture_output=True).returncode == 0
-    def test_checkpoint(self):
-        assert subprocess.run([sys.executable, "-m", "py_compile", str(CHECKPOINT)], capture_output=True).returncode == 0

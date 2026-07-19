@@ -1,0 +1,335 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mstr-btc-research:corporate-event-schema:v0.1",
+  "title": "Corporate Event Schema",
+  "description": "Canonical record schema for corporate events relevant to MSTR equity research (TRACK_A_MSTR_BTC). Primarily for MSTR context and veto research. Covers earnings, SEC filings, capital raises, convertible debt, ATM offerings, equity/debt offerings, share repurchases, stock splits, Bitcoin purchases/dispositions, management changes, and guidance. All records are advisory-only — no trade decision is triggered by a corporate event alone. Point-in-time: the record becomes usable only at available_at_utc. Later amendments create a new revision; amended filings must not rewrite earlier raw evidence. Unknown effective dates remain null rather than inferred.",
+  "version": "0.1",
+  "governance_identity": {
+    "governance_id": "mstr_btc_data_governance_v0_1",
+    "governance_version": "0.1",
+    "governance_state": "SCHEMA_CONTRACT_READY",
+    "strategy_readiness": "S0",
+    "data_readiness": "D0",
+    "autonomy_level": 1,
+    "research_only": true,
+    "execution_scope": "NONE",
+    "collection_scope": "NONE",
+    "provider_integration_scope": "NONE",
+    "storage_runtime_scope": "NONE",
+    "permitted_activity": "SCHEMA_AND_PROVIDER_CONTRACT_VALIDATION_ONLY",
+    "provider_binding_state": "UNBOUND",
+    "network_access_authorized": false,
+    "credentials_authorized": false,
+    "collection_authorized": false,
+    "ingestion_authorized": false,
+    "storage_runtime_authorized": false,
+    "backtest_authorized": false,
+    "execution_authorized": false,
+    "allowlist_change": false,
+    "rules_change": false,
+    "broker_change": false,
+    "guard_change": false,
+    "canonical_strategy_unchanged": true,
+    "phase18a_artifacts_unchanged": true,
+    "next_phase_boundary": "PHASE18C_SYNTHETIC_SCHEMA_CONFORMANCE"
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_id",
+    "raw_record_hash",
+    "provider_role_id",
+    "provider_record_id",
+    "instrument_id",
+    "asset_class",
+    "research_track",
+    "execution_eligible",
+    "event_timestamp_utc",
+    "source_timestamp_utc",
+    "ingestion_timestamp_utc",
+    "available_at_utc",
+    "revision_number",
+    "is_final",
+    "data_quality_state",
+    "symbol",
+    "event_type",
+    "event_class",
+    "announced_at_utc",
+    "source_reference",
+    "materiality_state",
+    "event_status",
+    "summary",
+    "structured_attributes"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "0.1"
+    },
+    "record_id": {
+      "type": "string",
+      "description": "Globally unique record identifier. Format: {instrument_id}-{announced_at_utc}-{provider_role_id}-{provider_record_id}.",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "raw_record_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "provider_role_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "provider_record_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "instrument_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "asset_class": {
+      "type": "string",
+      "const": "equity"
+    },
+    "research_track": {
+      "type": "string",
+      "const": "TRACK_A_MSTR_BTC"
+    },
+    "execution_eligible": {
+      "type": "boolean",
+      "const": false
+    },
+    "event_timestamp_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Primary event timestamp in RFC 3339 UTC, ending in 'Z'. The date the event takes effect or was announced, whichever is the primary temporal anchor for this record type."
+    },
+    "source_timestamp_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Provider-asserted timestamp in RFC 3339 UTC, ending in 'Z'."
+    },
+    "ingestion_timestamp_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp in RFC 3339 UTC, ending in 'Z', when this record was received and written."
+    },
+    "available_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp in RFC 3339 UTC, ending in 'Z', at which this record became available for model consumption. The record becomes usable only at available_at_utc. Must be <= announced_at_utc for events usable before the effective date."
+    },
+    "revision_number": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonically increasing revision counter. Later amendments create a new revision. Amended filings must not rewrite earlier raw evidence."
+    },
+    "is_final": {
+      "type": "boolean"
+    },
+    "data_quality_state": {
+      "type": "string",
+      "enum": ["PASSED", "FLAGGED", "DEGRADED", "REJECTED"]
+    },
+    "symbol": {
+      "type": "string",
+      "description": "Ticker symbol this event applies to. Upper-case. Primarily MSTR for corporate event research.",
+      "pattern": "^[A-Z0-9.]+$",
+      "minLength": 1,
+      "maxLength": 20
+    },
+    "event_class": {
+      "type": "string",
+      "enum": [
+        "EARNINGS",
+        "SEC_FILING",
+        "CAPITAL_RAISE",
+        "CONVERTIBLE_DEBT",
+        "ATM_OFFERING",
+        "EQUITY_OFFERING",
+        "DEBT_OFFERING",
+        "SHARE_REPURCHASE",
+        "STOCK_SPLIT",
+        "BITCOIN_PURCHASE",
+        "BITCOIN_DISPOSITION",
+        "MANAGEMENT_CHANGE",
+        "GUIDANCE",
+        "OTHER"
+      ],
+      "description": "High-level event classification."
+    },
+    "event_type": {
+      "type": "string",
+      "description": "Provider-specific event type string. Preserved verbatim for detailed classification within each event_class.",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "announced_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Date/time the event was first announced or filed in RFC 3339 UTC, ending in 'Z'. For SEC filings, this is the filing acceptance timestamp. Must be <= effective_at_utc when effective_at_utc is known."
+    },
+    "effective_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Date/time the event takes effect in RFC 3339 UTC, ending in 'Z'. Nullable — unknown effective dates remain null rather than inferred. Required when known (e.g. ex-dividend date, split effective date)."
+    },
+    "source_reference": {
+      "type": "string",
+      "description": "Reference to the source document, filing, or press release. Must not contain credentials or authenticated URLs. Format: a stable public URL, EDGAR accession number, or provider-native reference string.",
+      "maxLength": 2048
+    },
+    "source_document_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 hash of the source filing/document when available. Required when the source document is obtained and verifiable. Null when the source is not yet available."
+    },
+    "materiality_state": {
+      "type": "string",
+      "enum": ["MATERIAL_LIKELY", "MATERIAL_CONFIRMED", "IMMATERIAL", "UNKNOWN", "PENDING_ANALYSIS"],
+      "description": "Materiality classification. MATERIAL_LIKELY = preliminary assessment suggests material impact. MATERIAL_CONFIRMED = confirmed material (e.g. large BTC purchase, convertible offering). IMMATERIAL = routine or de minimis. UNKNOWN = not assessable from available data. Missing or ambiguous material events may result in NO_TRADE."
+    },
+    "event_status": {
+      "type": "string",
+      "enum": ["ANNOUNCED", "EFFECTIVE", "COMPLETED", "WITHDRAWN", "AMENDED", "SUPERSEDED"],
+      "description": "Current status of the event. ANNOUNCED = filed/announced but not yet effective. EFFECTIVE = effective date has passed and event is in force. COMPLETED = event fully executed (e.g. offering closed). WITHDRAWN = event cancelled. AMENDED = filing was amended — see supersedes_record_id. SUPERSEDED = replaced by a later revision."
+    },
+    "supersedes_record_id": {
+      "type": "string",
+      "description": "When this record revises or amends a prior record, the record_id of the prior version. Required when event_status is AMENDED or SUPERSEDED. Amended filings must not rewrite earlier raw evidence — they create a new record pointing back.",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "summary": {
+      "type": "string",
+      "description": "Concise human-readable summary of the event. Must be sufficient for quick understanding without opening the source document.",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "structured_attributes": {
+      "type": "object",
+      "description": "Structured event-type-specific attributes. Content varies by event_class. Must not contain credentials, tokens, or authenticated URLs.",
+      "additionalProperties": true,
+      "properties": {
+        "btc_holdings_btc": {
+          "type": "number",
+          "minimum": 0,
+          "description": "For BITCOIN_PURCHASE/BITCOIN_DISPOSITION: updated BTC holdings."
+        },
+        "btc_transaction_amount_btc": {
+          "type": "number",
+          "minimum": 0,
+          "description": "For BITCOIN_PURCHASE/BITCOIN_DISPOSITION: BTC amount transacted."
+        },
+        "btc_transaction_price_usd": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Average price per BTC in USD."
+        },
+        "shares_outstanding": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "shares_transacted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "offering_price_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "proceeds_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "split_ratio": {
+          "type": "string",
+          "pattern": "^\\d+:\\d+$"
+        },
+        "earnings_eps_actual": {
+          "type": "number"
+        },
+        "earnings_eps_estimate": {
+          "type": "number"
+        },
+        "earnings_revenue_actual": {
+          "type": "number",
+          "minimum": 0
+        },
+        "guidance_type": {
+          "type": "string",
+          "enum": ["REVENUE", "EPS", "BTC_STRATEGY", "CAPITAL_ALLOCATION", "OTHER"]
+        }
+      }
+    }
+  },
+  "validation_rules": {
+    "announcement_before_effective": {
+      "rule": "IF effective_at_utc IS NOT NULL THEN announced_at_utc <= effective_at_utc",
+      "severity": "HARD_FAIL"
+    },
+    "source_le_ingestion": {
+      "rule": "source_timestamp_utc <= ingestion_timestamp_utc",
+      "severity": "HARD_FAIL"
+    },
+    "available_le_announced": {
+      "rule": "available_at_utc <= announced_at_utc",
+      "severity": "HARD_FAIL",
+      "description": "Record must be available no later than its announcement date."
+    },
+    "timestamps_rfc3339_utc_z": {
+      "rule": "All timestamp fields must end with 'Z'. No offset notation.",
+      "severity": "HARD_FAIL"
+    },
+    "no_timestamp_substitution": {
+      "rule": "All timestamp fields must remain distinct with documented meanings.",
+      "severity": "HARD_FAIL"
+    },
+    "execution_eligible_false": {
+      "rule": "execution_eligible == false",
+      "severity": "HARD_FAIL"
+    },
+    "effective_at_utc_nullable_not_inferred": {
+      "rule": "Unknown effective dates remain null. Do not infer or fabricate effective_at_utc.",
+      "severity": "HARD_FAIL"
+    },
+    "amended_does_not_rewrite_raw": {
+      "rule": "IF event_status IN ('AMENDED', 'SUPERSEDED') THEN supersedes_record_id IS NOT NULL. Amended filings must not rewrite earlier raw evidence.",
+      "severity": "HARD_FAIL"
+    },
+    "source_reference_no_credentials": {
+      "rule": "source_reference must not contain credentials, API keys, authentication tokens, or authenticated (non-public) URLs.",
+      "severity": "HARD_FAIL"
+    },
+    "missing_or_ambiguous_material_no_trade": {
+      "rule": "Missing or ambiguous material events (materiality_state == 'UNKNOWN' with event_class IN critical classes) may result in NO_TRADE for the affected symbol.",
+      "severity": "SOFT_WARN"
+    },
+    "no_broker_fields": {
+      "rule": "No broker IDs, order IDs, account IDs, execution IDs, approval IDs, H1 fields, credentials, tokens, or endpoint URLs.",
+      "severity": "HARD_FAIL"
+    },
+    "no_scrape_fetch_download": {
+      "rule": "Do not scrape, fetch, or download filings. This schema defines the contract only — no collection is authorized.",
+      "severity": "HARD_FAIL"
+    }
+  },
+  "track_applicability": {
+    "track_a_mstr": {
+      "applicable": true,
+      "research_track_value": "TRACK_A_MSTR_BTC",
+      "primary_symbol": "MSTR",
+      "blackout_trigger_classes": ["EARNINGS"],
+      "veto_classes": ["BITCOIN_DISPOSITION"]
+    },
+    "track_b_spy_qqq": {
+      "applicable": false,
+      "reason": "SPY and QQQ are ETFs; corporate events are not applicable."
+    }
+  }
+}

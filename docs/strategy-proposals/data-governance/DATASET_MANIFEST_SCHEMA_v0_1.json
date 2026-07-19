@@ -1,0 +1,343 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mstr-btc-research:dataset-manifest-schema:v0.1",
+  "title": "Dataset Manifest Schema",
+  "description": "Meta-schema for dataset manifests that govern future immutable datasets. Every dataset used in the MSTR/BTC research tracks must have a manifest conforming to this schema. The manifest records provenance, schema binding, quality results, immutability evidence, and point-in-time safety. No dataset may be used in any signal, model, or backtest without a validated manifest. In Phase 18B: collection_authorized is false, execution_eligible is false.",
+  "version": "0.1",
+  "governance_identity": {
+    "governance_id": "mstr_btc_data_governance_v0_1",
+    "governance_version": "0.1",
+    "governance_state": "SCHEMA_CONTRACT_READY",
+    "strategy_readiness": "S0",
+    "data_readiness": "D0",
+    "autonomy_level": 1,
+    "research_only": true,
+    "execution_scope": "NONE",
+    "collection_scope": "NONE",
+    "provider_integration_scope": "NONE",
+    "storage_runtime_scope": "NONE",
+    "permitted_activity": "SCHEMA_AND_PROVIDER_CONTRACT_VALIDATION_ONLY",
+    "provider_binding_state": "UNBOUND",
+    "network_access_authorized": false,
+    "credentials_authorized": false,
+    "collection_authorized": false,
+    "ingestion_authorized": false,
+    "storage_runtime_authorized": false,
+    "backtest_authorized": false,
+    "execution_authorized": false,
+    "allowlist_change": false,
+    "rules_change": false,
+    "broker_change": false,
+    "guard_change": false,
+    "canonical_strategy_unchanged": true,
+    "phase18a_artifacts_unchanged": true,
+    "next_phase_boundary": "PHASE18C_SYNTHETIC_SCHEMA_CONFORMANCE"
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_version",
+    "dataset_id",
+    "dataset_version",
+    "dataset_state",
+    "research_track",
+    "data_domain",
+    "schema_file",
+    "schema_version",
+    "schema_sha256",
+    "provider_governance_version",
+    "provider_governance_sha256",
+    "quality_policy_version",
+    "quality_policy_sha256",
+    "provider_role_ids",
+    "instrument_ids",
+    "interval_or_event_scope",
+    "earliest_event_timestamp_utc",
+    "latest_event_timestamp_utc",
+    "earliest_available_at_utc",
+    "latest_available_at_utc",
+    "record_count",
+    "rejected_record_count",
+    "quarantined_record_count",
+    "duplicate_record_count",
+    "source_revision_count",
+    "raw_data_immutable",
+    "derived_data",
+    "content_sha256",
+    "deterministic_manifest_hash",
+    "point_in_time_safe",
+    "lookahead_detected",
+    "quality_gate_state",
+    "collection_authorized",
+    "execution_eligible"
+  ],
+  "properties": {
+    "manifest_version": {
+      "type": "string",
+      "const": "0.1",
+      "description": "Manifest schema version."
+    },
+    "dataset_id": {
+      "type": "string",
+      "description": "Unique dataset identifier. e.g. mstr-daily-bars-ibkr-v1, btc-spot-daily-coingecko-v1.",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "dataset_version": {
+      "type": "string",
+      "description": "Dataset version. Must change when data is updated. Immutable versions are never overwritten.",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "dataset_state": {
+      "type": "string",
+      "enum": ["PROPOSED", "COLLECTING", "COMPLETE", "FROZEN", "DEPRECATED", "QUARANTINED"],
+      "description": "Dataset lifecycle state. PROPOSED = planned but not collected. COMPLETE = collection complete, data frozen. FROZEN = immutable and ready for backtest. QUARANTINED = quality issues detected."
+    },
+    "research_track": {
+      "type": "string",
+      "enum": ["TRACK_A_MSTR_BTC", "TRACK_B_SPY_QQQ"],
+      "description": "Research track assignment. A dataset belongs to exactly one track."
+    },
+    "data_domain": {
+      "type": "string",
+      "enum": ["equity_bars", "btc_spot_bars", "corporate_events", "option_chain_snapshots"],
+      "description": "Data domain for this dataset."
+    },
+    "schema_file": {
+      "type": "string",
+      "description": "Path to the governing schema file. e.g. docs/strategy-proposals/data-governance/EQUITY_BAR_SCHEMA_v0_1.json.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "0.1",
+      "description": "Schema version the data conforms to."
+    },
+    "schema_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 of the governing schema file at the time of dataset creation. Establishes an immutable schema→data binding."
+    },
+    "provider_governance_version": {
+      "type": "string",
+      "const": "0.1",
+      "description": "Version of the provider governance document in effect."
+    },
+    "provider_governance_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 of MSTR_BTC_PROVIDER_GOVERNANCE_v0_1.json at the time of dataset creation."
+    },
+    "quality_policy_version": {
+      "type": "string",
+      "const": "0.1",
+      "description": "Version of the data quality policy in effect."
+    },
+    "quality_policy_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 of MSTR_BTC_DATA_QUALITY_POLICY_v0_1.json at the time of dataset creation."
+    },
+    "provider_role_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "Provider role identifiers used to collect this dataset. e.g. ['primary_equity_bar'] or ['primary_btc_spot', 'fallback_btc_spot']."
+    },
+    "instrument_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "Canonical instrument identifiers included in this dataset."
+    },
+    "interval_or_event_scope": {
+      "type": "string",
+      "description": "Bar interval (e.g. '1day') or event scope descriptor (e.g. 'all_mstr_corporate_events')."
+    },
+    "earliest_event_timestamp_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Earliest event_timestamp_utc in the dataset in RFC 3339 UTC, ending in 'Z'."
+    },
+    "latest_event_timestamp_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Latest event_timestamp_utc in the dataset."
+    },
+    "earliest_available_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Earliest available_at_utc in the dataset."
+    },
+    "latest_available_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Latest available_at_utc in the dataset."
+    },
+    "record_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total number of records in the dataset."
+    },
+    "rejected_record_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of records with data_quality_state == 'REJECTED'."
+    },
+    "quarantined_record_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of records quarantined (present but excluded from signal/model use)."
+    },
+    "duplicate_record_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of duplicate records detected and excluded."
+    },
+    "source_revision_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of records where revision_number > 1 (i.e. corrections or amendments exist)."
+    },
+    "raw_data_immutable": {
+      "type": "boolean",
+      "const": true,
+      "description": "Must be true for a raw dataset. Raw records are never modified after initial ingestion."
+    },
+    "derived_data": {
+      "type": "boolean",
+      "description": "True if this dataset contains derived/computed data (features, signals, labels) rather than raw source records. Derived datasets must reference parent datasets."
+    },
+    "parent_dataset_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "When derived_data is true, the dataset_ids of the source datasets. Required for derived datasets."
+    },
+    "parent_dataset_hashes": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+      "description": "When derived_data is true, the content_sha256 values of the parent datasets. Required for derived datasets."
+    },
+    "content_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 hash of the complete dataset content (deterministic serialization of all records). Used for immutable content addressing."
+    },
+    "deterministic_manifest_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 hash of this manifest (excluding this field). Computed the same way as Phase 18A/18B governance manifests."
+    },
+    "point_in_time_safe": {
+      "type": "boolean",
+      "description": "True if the dataset passes point-in-time validation: no record has available_at_utc later than its event_timestamp_utc, and no lookahead bias exists. Must be true for backtest use."
+    },
+    "lookahead_detected": {
+      "type": "boolean",
+      "const": false,
+      "description": "Must be false for an acceptable dataset. True indicates that future information may have leaked into the dataset (e.g. a split-adjusted price used before the split was announced)."
+    },
+    "quality_gate_state": {
+      "type": "string",
+      "enum": ["NOT_CHECKED", "PASSED", "FAILED", "WAIVED", "PENDING"],
+      "description": "Quality gate state. NOT_CHECKED = quality engine has not yet evaluated this dataset. PASSED = all quality checks passed. FAILED = one or more HARD_FAIL rules triggered. WAIVED = failure waived by human review."
+    },
+    "collection_authorized": {
+      "type": "boolean",
+      "const": false,
+      "description": "Must be false in Phase 18B. Collection authorization requires explicit human approval and governance state transition beyond SCHEMA_CONTRACT_READY."
+    },
+    "execution_eligible": {
+      "type": "boolean",
+      "const": false,
+      "description": "Must be false. No dataset in Phase 18B is executable."
+    },
+    "created_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp when this manifest was created."
+    },
+    "created_by": {
+      "type": "string",
+      "description": "Agent or process that created this manifest."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Human-readable notes about this dataset version.",
+      "maxLength": 4096
+    }
+  },
+  "validation_rules": {
+    "raw_data_immutable_true": {
+      "rule": "raw_data_immutable == true",
+      "severity": "HARD_FAIL",
+      "description": "Raw datasets must be immutable. Derived datasets (derived_data == true) may reference mutable computation but the raw source must remain immutable."
+    },
+    "collection_authorized_false_phase18b": {
+      "rule": "collection_authorized == false",
+      "severity": "HARD_FAIL",
+      "description": "Collection is not authorized in Phase 18B."
+    },
+    "execution_eligible_false": {
+      "rule": "execution_eligible == false",
+      "severity": "HARD_FAIL"
+    },
+    "lookahead_detected_false": {
+      "rule": "lookahead_detected == false",
+      "severity": "HARD_FAIL",
+      "description": "Lookahead bias is unacceptable. Dataset must not contain future information."
+    },
+    "earliest_before_latest": {
+      "rule": "earliest_event_timestamp_utc <= latest_event_timestamp_utc AND earliest_available_at_utc <= latest_available_at_utc",
+      "severity": "HARD_FAIL"
+    },
+    "rejected_plus_quarantined_lte_record_count": {
+      "rule": "rejected_record_count + quarantined_record_count + duplicate_record_count <= record_count",
+      "severity": "HARD_FAIL"
+    },
+    "schema_sha256_matches_file": {
+      "rule": "schema_sha256 must match the SHA-256 of the schema_file at manifest creation time.",
+      "severity": "HARD_FAIL"
+    },
+    "provider_governance_sha256_matches": {
+      "rule": "provider_governance_sha256 must match the SHA-256 of the provider governance document at manifest creation time.",
+      "severity": "HARD_FAIL"
+    },
+    "quality_policy_sha256_matches": {
+      "rule": "quality_policy_sha256 must match the SHA-256 of the quality policy document at manifest creation time.",
+      "severity": "HARD_FAIL"
+    },
+    "derived_has_parents": {
+      "rule": "IF derived_data == true THEN parent_dataset_ids IS NOT NULL AND length(parent_dataset_ids) >= 1",
+      "severity": "HARD_FAIL"
+    },
+    "deterministic_manifest_hash_self_consistent": {
+      "rule": "deterministic_manifest_hash must match the hash of the manifest with that field excluded.",
+      "severity": "HARD_FAIL"
+    },
+    "content_sha256_matches_content": {
+      "rule": "content_sha256 must match the deterministic hash of the actual dataset content.",
+      "severity": "HARD_FAIL"
+    },
+    "timestamps_rfc3339_utc_z": {
+      "rule": "All timestamp fields must end with 'Z'.",
+      "severity": "HARD_FAIL"
+    },
+    "no_broker_fields": {
+      "rule": "No broker IDs, order IDs, account IDs, execution IDs, approval IDs, H1 fields, credentials, tokens, or endpoint URLs.",
+      "severity": "HARD_FAIL"
+    }
+  },
+  "track_applicability": {
+    "track_a_mstr": {
+      "applicable": true,
+      "data_domains": ["equity_bars", "btc_spot_bars", "corporate_events", "option_chain_snapshots"]
+    },
+    "track_b_spy_qqq": {
+      "applicable": true,
+      "data_domains": ["equity_bars", "option_chain_snapshots"]
+    }
+  }
+}

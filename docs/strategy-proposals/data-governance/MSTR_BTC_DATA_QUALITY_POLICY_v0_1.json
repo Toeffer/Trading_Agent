@@ -1,0 +1,493 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mstr-btc-research:data-quality-policy:v0.1",
+  "title": "MSTR/BTC Data Quality Policy",
+  "description": "Deterministic data-quality rules covering 23 failure scenarios across 6 quality dimensions. Defines quality outcomes ACCEPT, ACCEPT_WITH_WARNING, QUARANTINE, REJECT, NO_TRADE. Enforces fail-closed principles: when in doubt, fail closed. Quality policy must precede any data collection. Real-data thresholds, provider bindings, and real-data use are not yet authorized.",
+  "version": "0.1",
+  "governance_identity": {
+    "governance_id": "mstr_btc_data_governance_v0_1",
+    "governance_version": "0.1",
+    "governance_state": "SCHEMA_CONTRACT_READY",
+    "strategy_readiness": "S0",
+    "data_readiness": "D0",
+    "autonomy_level": 1,
+    "research_only": true,
+    "execution_scope": "NONE",
+    "collection_scope": "NONE",
+    "provider_integration_scope": "NONE",
+    "storage_runtime_scope": "NONE",
+    "permitted_activity": "SCHEMA_AND_PROVIDER_CONTRACT_VALIDATION_ONLY",
+    "provider_binding_state": "UNBOUND",
+    "network_access_authorized": false,
+    "credentials_authorized": false,
+    "collection_authorized": false,
+    "ingestion_authorized": false,
+    "storage_runtime_authorized": false,
+    "scheduler_authorized": false,
+    "backtest_authorized": false,
+    "modeling_authorized": false,
+    "forecasting_authorized": false,
+    "candidate_generation_authorized": false,
+    "execution_authorized": false,
+    "allowlist_change": false,
+    "rules_change": false,
+    "broker_change": false,
+    "guard_change": false,
+    "canonical_strategy_unchanged": true,
+    "phase18a_artifacts_unchanged": true,
+    "next_phase_boundary": "PHASE18C_SYNTHETIC_SCHEMA_CONFORMANCE"
+  },
+  "real_data_state": {
+    "real_data_thresholds_frozen": false,
+    "provider_bindings_frozen": false,
+    "real_data_use_authorized": false,
+    "description": "Real-data freshness tolerances, disagreement thresholds, provider bindings, and licensing decisions are not frozen in Phase 18B. They require a future versioned threshold and binding profile before any real-data use."
+  },
+  "quality_outcomes": {
+    "ACCEPT": {
+      "description": "Record passes all quality checks. Usable at full confidence.",
+      "confidence_impact": "NONE"
+    },
+    "ACCEPT_WITH_WARNING": {
+      "description": "Record passes but exhibits a non-fatal quality concern. Usable with reduced confidence. Warning must be logged.",
+      "confidence_impact": "REDUCED"
+    },
+    "QUARANTINE": {
+      "description": "Record is flagged for a quality concern that prevents immediate use but may be recoverable after review. Quarantined records are excluded from signal/model pipelines but retained for audit and potential remediation.",
+      "confidence_impact": "EXCLUDED"
+    },
+    "REJECT": {
+      "description": "Record fails a quality rule. Must not enter any dataset used for signal, model, or backtest computation. Rejected records remain auditable and must not be silently dropped.",
+      "confidence_impact": "EXCLUDED"
+    },
+    "NO_TRADE": {
+      "description": "The affected track or symbol must produce no trade signal. NO_TRADE is the fail-closed default for any unresolved quality violation on required data.",
+      "confidence_impact": "FULL_BLOCK"
+    }
+  },
+  "fail_closed_principle": {
+    "description": "When in doubt, fail closed. The default outcome of any unresolved quality concern is NO_TRADE. These rules apply regardless of aggregate quality score.",
+    "rules": [
+      {
+        "rule_id": "FC-001",
+        "rule": "Missing required data results in NO_TRADE.",
+        "severity": "SYSTEM_DEFAULT"
+      },
+      {
+        "rule_id": "FC-002",
+        "rule": "Stale required data results in NO_TRADE.",
+        "severity": "SYSTEM_DEFAULT"
+      },
+      {
+        "rule_id": "FC-003",
+        "rule": "Future information (future-dated timestamps) results in REJECT and NO_TRADE for the affected track.",
+        "severity": "SYSTEM_DEFAULT"
+      },
+      {
+        "rule_id": "FC-004",
+        "rule": "Look-ahead contamination results in REJECT and NO_TRADE for the affected track.",
+        "severity": "SYSTEM_DEFAULT"
+      },
+      {
+        "rule_id": "FC-005",
+        "rule": "Unresolved material provider disagreement results in NO_TRADE.",
+        "severity": "SYSTEM_DEFAULT"
+      },
+      {
+        "rule_id": "FC-006",
+        "rule": "Schema-version mismatch or manifest-hash mismatch results in REJECT.",
+        "severity": "SYSTEM_DEFAULT"
+      },
+      {
+        "rule_id": "FC-007",
+        "rule": "Historical options without point-in-time snapshots result in NO_TRADE.",
+        "severity": "SYSTEM_DEFAULT"
+      },
+      {
+        "rule_id": "FC-008",
+        "rule": "Current option chains cannot repair missing historical snapshots. No substitute.",
+        "severity": "SYSTEM_DEFAULT"
+      },
+      {
+        "rule_id": "FC-009",
+        "rule": "Theoretical values cannot be treated as executable prices.",
+        "severity": "SYSTEM_DEFAULT"
+      },
+      {
+        "rule_id": "FC-010",
+        "rule": "Data from Track A (TRACK_A_MSTR_BTC) and Track B (TRACK_B_SPY_QQQ) cannot be silently mixed.",
+        "severity": "SYSTEM_DEFAULT"
+      },
+      {
+        "rule_id": "FC-011",
+        "rule": "Source revisions create new immutable evidence. Original records must not be overwritten.",
+        "severity": "SYSTEM_DEFAULT"
+      },
+      {
+        "rule_id": "FC-012",
+        "rule": "Rejected records remain auditable and must not be silently dropped.",
+        "severity": "SYSTEM_DEFAULT"
+      },
+      {
+        "rule_id": "FC-013",
+        "rule": "Any unhandled quality exception defaults to NO_TRADE.",
+        "severity": "SYSTEM_DEFAULT"
+      },
+      {
+        "rule_id": "FC-014",
+        "rule": "Quality checks must not be silently skipped or bypassed by configuration.",
+        "severity": "HARD_FAIL"
+      }
+    ]
+  },
+  "quality_dimensions": {
+    "completeness": {
+      "dimension_id": "completeness",
+      "description": "Does the dataset contain all expected records for its time range, symbols, and data domain?",
+      "rules": [
+        {
+          "rule_id": "CMP-001",
+          "name": "Missing records",
+          "scenario": "missing_records",
+          "description": "Expected records are absent from the dataset (gaps in the time series).",
+          "thresholds": { "max_consecutive_gaps": 5 },
+          "outcome": "NO_TRADE if > 5 consecutive missing intervals; ACCEPT_WITH_WARNING for single gaps",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "CMP-002",
+          "name": "Minimum record count",
+          "scenario": "missing_records",
+          "description": "Dataset must contain at least the minimum number of valid records for its track and symbol.",
+          "thresholds": { "min_records": 60 },
+          "outcome": "NO_TRADE if below minimum",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "CMP-003",
+          "name": "Missing corporate events",
+          "scenario": "missing_corporate_events",
+          "description": "Known corporate events (confirmed by SEC filings or press releases) are missing from the corporate event dataset.",
+          "outcome": "QUARANTINE affected records; ACCEPT_WITH_WARNING if track does not require event data",
+          "severity": "SOFT_WARN"
+        },
+        {
+          "rule_id": "CMP-004",
+          "name": "Missing point-in-time option snapshots",
+          "scenario": "missing_point_in_time_option_snapshots",
+          "description": "A historical option snapshot is missing. Current option chains must not substitute for historical snapshots.",
+          "outcome": "NO_TRADE for option-dependent signals at that timestamp",
+          "severity": "HARD_FAIL"
+        }
+      ]
+    },
+    "freshness": {
+      "dimension_id": "freshness",
+      "description": "How current is the data relative to its expected availability window?",
+      "rules": [
+        {
+          "rule_id": "FRH-001",
+          "name": "Stale records",
+          "scenario": "stale_records",
+          "description": "Data that exceeds its defined staleness threshold relative to the current evaluation time or the expected ingestion window.",
+          "thresholds": { "equity_max_staleness": "1 trading day", "btc_max_staleness": "24 hours", "corp_event_max_staleness": "48 hours" },
+          "outcome": "NO_TRADE for stale required data; ACCEPT_WITH_WARNING for stale optional data",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "FRH-002",
+          "name": "Ingestion delay detection",
+          "scenario": "stale_records",
+          "description": "ingestion_timestamp_utc is significantly later than event_timestamp_utc beyond the expected processing latency.",
+          "thresholds": { "max_ingestion_delay": "6 hours for bars, 48 hours for corporate events" },
+          "outcome": "ACCEPT_WITH_WARNING; flag in quality report",
+          "severity": "SOFT_WARN"
+        }
+      ]
+    },
+    "accuracy": {
+      "dimension_id": "accuracy",
+      "description": "Are the values within expected bounds and internally consistent?",
+      "rules": [
+        {
+          "rule_id": "ACC-001",
+          "name": "Invalid prices",
+          "scenario": "invalid_prices",
+          "description": "OHLC values that are zero, negative, or violate OHLC ordering (high < max(open, close), low > min(open, close)).",
+          "outcome": "REJECT individual bar; NO_TRADE if > 3 consecutive",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "ACC-002",
+          "name": "Invalid volumes",
+          "scenario": "invalid_volumes",
+          "description": "Volume is negative or clearly anomalous relative to the symbol's historical distribution.",
+          "outcome": "REJECT bar if volume < 0; ACCEPT_WITH_WARNING if volume is anomalous but non-negative",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "ACC-003",
+          "name": "Incomplete bars",
+          "scenario": "incomplete_bars",
+          "description": "Bar with bar_completion_state not COMPLETE. Partial or preliminary bars must be flagged.",
+          "outcome": "ACCEPT_WITH_WARNING for PARTIAL on latest bar; QUARANTINE for PRELIMINARY; REJECT for CORRECTED that shows significant price change",
+          "severity": "SOFT_WARN"
+        },
+        {
+          "rule_id": "ACC-004",
+          "name": "Invalid option markets",
+          "scenario": "invalid_option_markets",
+          "description": "Crossed markets (bid > ask), stale quotes, missing bid or ask, or theoretical values misrepresented as executable fills.",
+          "outcome": "QUARANTINE for crossed markets; NO_TRADE if bid or ask missing and required; REJECT for stale quotes",
+          "severity": "HARD_FAIL"
+        }
+      ]
+    },
+    "consistency": {
+      "dimension_id": "consistency",
+      "description": "Are values consistent across time, providers, and venues?",
+      "rules": [
+        {
+          "rule_id": "CNS-001",
+          "name": "Duplicate records",
+          "scenario": "duplicate_records",
+          "description": "Two records with the same provider_role_id, instrument_id, and event_timestamp_utc. Exact duplicates are deduplicated; conflicting duplicates are flagged.",
+          "outcome": "ACCEPT (deduplicate) if identical; QUARANTINE if conflicting and flag for review",
+          "severity": "SOFT_WARN"
+        },
+        {
+          "rule_id": "CNS-002",
+          "name": "Conflicting records",
+          "scenario": "conflicting_records",
+          "description": "Two records for the same instrument and timestamp from different providers disagree beyond tolerance.",
+          "thresholds": { "equity_close_max_divergence_pct": 0.005, "btc_close_max_divergence_pct": 0.01 },
+          "outcome": "ACCEPT_WITH_WARNING at 0.5-2%; NO_TRADE above 2% for equity, above 3% for BTC",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "CNS-003",
+          "name": "Provider disagreement",
+          "scenario": "provider_disagreement",
+          "description": "Primary and secondary/fallback providers disagree on values for the same instrument and timestamp.",
+          "outcome": "Retain both records with distinct provider_role_ids. Lower confidence. Unresolved material disagreement produces NO_TRADE.",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "CNS-004",
+          "name": "Venue disagreement",
+          "scenario": "venue_disagreement",
+          "description": "Data for the same instrument and timestamp disagrees across venues or exchanges.",
+          "outcome": "ACCEPT_WITH_WARNING; flag venue in record. Do not silently merge. If venue disagreement affects close price by > 0.5%, lower confidence.",
+          "severity": "SOFT_WARN"
+        },
+        {
+          "rule_id": "CNS-005",
+          "name": "Adjustment mismatches",
+          "scenario": "adjustment_mismatches",
+          "description": "Adjusted prices without a valid adjustment_version, or adjustment factors that contradict known corporate actions.",
+          "outcome": "QUARANTINE affected bars; REJECT adjustment chain if version missing",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "CNS-006",
+          "name": "Cross-track contamination",
+          "scenario": "cross_track_contamination",
+          "description": "Data from TRACK_A_MSTR_BTC and TRACK_B_SPY_QQQ is silently mixed or merged.",
+          "outcome": "REJECT the dataset — data from Track A and Track B must retain separate datasets and outcomes",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "CNS-007",
+          "name": "Source-license uncertainty",
+          "scenario": "source_license_uncertainty",
+          "description": "Provider data licensing terms are unclear, un-reviewed, or may prohibit the intended research use.",
+          "outcome": "QUARANTINE until licensing review is complete. Do not use in signals.",
+          "severity": "HARD_FAIL"
+        }
+      ]
+    },
+    "temporal_integrity": {
+      "dimension_id": "temporal_integrity",
+      "description": "Are timestamps valid, causally ordered, and free of look-ahead contamination?",
+      "rules": [
+        {
+          "rule_id": "TMP-001",
+          "name": "Malformed timestamps",
+          "scenario": "malformed_timestamps",
+          "description": "Timestamp does not parse as RFC 3339 UTC or does not end in 'Z'.",
+          "outcome": "REJECT record",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "TMP-002",
+          "name": "Future-dated records",
+          "scenario": "future_dated_records",
+          "description": "event_timestamp_utc is later than the current wall-clock time, or ingestion_timestamp_utc is unreasonably in the future.",
+          "outcome": "REJECT record. If > 1% of records are future-dated, NO_TRADE for the track.",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "TMP-003",
+          "name": "Out-of-order records",
+          "scenario": "out_of_order_records",
+          "description": "Records in a dataset are not monotonically ordered by event_timestamp_utc. Out-of-order records must be sorted and flagged.",
+          "outcome": "ACCEPT_WITH_WARNING after re-sort; NO_TRADE if > 10% out of order",
+          "severity": "SOFT_WARN"
+        },
+        {
+          "rule_id": "TMP-004",
+          "name": "Causal ordering violation",
+          "scenario": "malformed_timestamps",
+          "description": "source_timestamp_utc > ingestion_timestamp_utc. Ingestion must occur after the source timestamp.",
+          "outcome": "REJECT record",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "TMP-005",
+          "name": "Look-ahead contamination",
+          "scenario": "look_ahead_contamination",
+          "description": "A record's available_at_utc is earlier than its event_timestamp_utc, or data that would not yet be known at a given point-in-time is used in that context.",
+          "outcome": "REJECT the dataset. NO_TRADE for the affected track. Look-ahead contamination is a HARD_FAIL with no waiver.",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "TMP-006",
+          "name": "Ambiguous event availability",
+          "scenario": "ambiguous_event_availability",
+          "description": "A corporate event's available_at_utc is unclear or the event was retroactively added without a clear point-in-time cutoff.",
+          "outcome": "QUARANTINE until availability window is verified. Do not use in backtests without confirmed available_at_utc.",
+          "severity": "HARD_FAIL"
+        }
+      ]
+    },
+    "lineage_and_versioning": {
+      "dimension_id": "lineage_and_versioning",
+      "description": "Is every record traceable to its source? Are versions immutable and consistent?",
+      "rules": [
+        {
+          "rule_id": "LIN-001",
+          "name": "Revised records",
+          "scenario": "revised_records",
+          "description": "A record has been revised (revision_number > 1). The original record must remain immutable; the revision is a new record with a higher revision_number.",
+          "outcome": "ACCEPT the new revision. The prior revision remains auditable. If original raw evidence is overwritten, REJECT and flag as immutability violation.",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "LIN-002",
+          "name": "Schema-version mismatch",
+          "scenario": "schema_version_mismatch",
+          "description": "A record's schema_version does not match the governing schema version for its data domain.",
+          "outcome": "REJECT the record. Schema-version mismatch is always a HARD_FAIL.",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "LIN-003",
+          "name": "Manifest-hash mismatch",
+          "scenario": "manifest_hash_mismatch",
+          "description": "A dataset's content_sha256 does not match the deterministic hash of its actual content, or the manifest's schema_sha256 does not match the governing schema file.",
+          "outcome": "REJECT the dataset. Manifest-hash mismatch is always a HARD_FAIL.",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "LIN-004",
+          "name": "Immutable lineage",
+          "scenario": "revised_records",
+          "description": "No raw record may be modified after initial ingestion. Updates must create new records.",
+          "outcome": "REJECT if mutation detected",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "LIN-005",
+          "name": "Provider attribution",
+          "scenario": "provider_disagreement",
+          "description": "Every record must carry a valid provider_role_id registered in the provider governance document.",
+          "outcome": "REJECT if provider_role_id is unknown or unregistered",
+          "severity": "HARD_FAIL"
+        },
+        {
+          "rule_id": "LIN-006",
+          "name": "Track identity",
+          "scenario": "cross_track_contamination",
+          "description": "Every record must carry a valid research_track value. Track A and Track B records must not share the same dataset identity.",
+          "outcome": "REJECT if research_track is missing or ambiguous",
+          "severity": "HARD_FAIL"
+        }
+      ]
+    }
+  },
+  "quality_score_calculation": {
+    "description": "Aggregate quality score 0.0–1.0 computed from weighted dimension scores. HARD_FAIL overrides render the aggregate score irrelevant — the dataset is rejected regardless.",
+    "dimension_weights": {
+      "completeness": 0.25,
+      "freshness": 0.20,
+      "accuracy": 0.25,
+      "consistency": 0.10,
+      "temporal_integrity": 0.10,
+      "lineage_and_versioning": 0.10
+    },
+    "score_thresholds": {
+      "minimum_acceptable": 0.70,
+      "degraded_confidence_range": [0.70, 0.85],
+      "full_confidence_minimum": 0.85
+    },
+    "coverage_matrix": {
+      "missing_records": "CMP-001, CMP-002",
+      "stale_records": "FRH-001, FRH-002",
+      "duplicate_records": "CNS-001",
+      "conflicting_records": "CNS-002",
+      "out_of_order_records": "TMP-003",
+      "future_dated_records": "TMP-002",
+      "revised_records": "LIN-001, LIN-004",
+      "malformed_timestamps": "TMP-001, TMP-004",
+      "invalid_prices": "ACC-001",
+      "invalid_volumes": "ACC-002",
+      "incomplete_bars": "ACC-003",
+      "adjustment_mismatches": "CNS-005",
+      "provider_disagreement": "CNS-003, LIN-005",
+      "venue_disagreement": "CNS-004",
+      "missing_corporate_events": "CMP-003",
+      "ambiguous_event_availability": "TMP-006",
+      "invalid_option_markets": "ACC-004",
+      "missing_point_in_time_option_snapshots": "CMP-004",
+      "look_ahead_contamination": "TMP-005",
+      "cross_track_contamination": "CNS-006, LIN-006",
+      "schema_version_mismatch": "LIN-002",
+      "manifest_hash_mismatch": "LIN-003",
+      "source_license_uncertainty": "CNS-007"
+    },
+    "hard_fail_override": {
+      "description": "Any HARD_FAIL on a required rule renders the aggregate quality score irrelevant.",
+      "rules": [
+        "CMP-001", "CMP-002", "CMP-004",
+        "FRH-001",
+        "ACC-001", "ACC-002", "ACC-004",
+        "CNS-002", "CNS-003", "CNS-005", "CNS-006", "CNS-007",
+        "TMP-001", "TMP-002", "TMP-004", "TMP-005", "TMP-006",
+        "LIN-001", "LIN-002", "LIN-003", "LIN-004", "LIN-005", "LIN-006"
+      ]
+    }
+  },
+  "track_specific_thresholds": {
+    "track_a_mstr": {
+      "MSTR_bars": { "min_records": 60, "max_staleness": "1 trading day", "required": true },
+      "BTC_spot": { "min_records": 60, "max_staleness": "24 hours", "required": true },
+      "MSTR_corporate_events": { "max_staleness": "48 hours", "required": false },
+      "MSTR_options": { "point_in_time_required": true, "required": false, "simulation_only": true }
+    },
+    "track_b_spy_qqq": {
+      "SPY_bars": { "min_records": 60, "max_staleness": "1 trading day", "required": true },
+      "QQQ_bars": { "min_records": 60, "max_staleness": "1 trading day", "required": true },
+      "SPY_QQQ_options": { "point_in_time_required": true, "required": false, "simulation_only": true }
+    }
+  },
+  "non_actions": [
+    "No data has been collected for quality validation",
+    "No quality checks have been executed",
+    "No dataset manifests have been created",
+    "No quality scores have been computed",
+    "No record has been rejected (no data exists)",
+    "Real-data thresholds are not frozen",
+    "Provider bindings are not frozen",
+    "Real-data use is not authorized"
+  ]
+}

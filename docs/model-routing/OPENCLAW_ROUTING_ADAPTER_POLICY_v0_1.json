@@ -1,0 +1,124 @@
+{
+  "adapter_policy_schema_version": "0.1",
+  "governance_identity": {
+    "governance_id": "openclaw_routing_adapter_v0_1",
+    "governance_version": "0.1",
+    "governance_state": "PENDING_INPUT",
+    "governance_phase": "PHASE18R2",
+    "adapter_mode": "SHADOW_ONLY",
+    "adapter_readiness": "A0",
+    "autonomy_level": 1,
+    "advisory_only": true,
+    "human_final_authority": true,
+    "live_routing_changed": false,
+    "next_phase_boundary": "PHASE18R2_MANUAL_ACTIVATION_PROOF"
+  },
+  "adapter_operation": {
+    "entry_function": "resolve_shadow_route(routing_request, routing_decision)",
+    "description": "Accepts the original Phase 18R1 routing request AND the Phase 18R1 routing decision. Validates their mutual integrity, then resolves CODEX/OPENCODE transport bindings in SHADOW_ONLY mode.",
+    "shadow_mode": {
+      "live_routing_changed": false,
+      "shadow_resolution_authorized": true,
+      "live_activation_authorized": false,
+      "model_invocation_authorized": false,
+      "transport_activation_authorized": false,
+      "shadow_resolution_only": true
+    },
+    "input_validation": {
+      "governance_id_must_be_model_routing_governance_v0_1": true,
+      "deterministic_request_hash_must_match": true,
+      "deterministic_decision_hash_must_be_valid": true,
+      "role_must_match": true,
+      "task_class_must_match": true,
+      "failure_counts_must_match": true,
+      "routing_state_must_be_valid": true,
+      "selected_logical_model_must_be_approved": true,
+      "selected_model_must_match_role_and_route_tier": true,
+      "all_phase18r1_authorization_flags_must_be_false": true,
+      "advisory_only_must_be_true": true,
+      "human_final_authority_must_be_true": true,
+      "trading_autonomy_unchanged_must_be_true": true,
+      "cross_transport_blocked": true,
+      "unknown_properties_must_fail_closed": true,
+      "malformed_input_must_fail_closed": true
+    },
+    "output_states": {
+      "SHADOW_ROUTE_RESOLVED": {
+        "adapter_state": "SHADOW_ROUTE_RESOLVED",
+        "adapter_mode": "SHADOW_ONLY",
+        "shadow_resolution_only": true,
+        "live_routing_changed": false,
+        "human_activation_required": true,
+        "adapter_invocation_authorized": false,
+        "direct_provider_integration_authorized": false,
+        "direct_credentials_authorized": false,
+        "direct_network_authorized": false,
+        "broker_mutation_authorized": false,
+        "trading_execution_authorized": false
+      },
+      "HOLD": {
+        "adapter_state": "HOLD",
+        "selected_transport": null,
+        "selected_runtime_alias": null,
+        "human_activation_required": true,
+        "live_routing_changed": false
+      }
+    },
+    "rejected_inputs": [
+      "prompt text",
+      "source code",
+      "provider request payloads",
+      "credentials",
+      "order data",
+      "broker data",
+      "H1 data",
+      "arbitrary runtime alias overrides",
+      "arbitrary transport overrides",
+      "arbitrary model overrides"
+    ]
+  },
+  "routing_rules": {
+    "HERMES": {
+      "default": {"logical_model": "gpt-5.5", "transport": "CODEX", "binding_state": "BOUND_EXISTING_ALIAS"},
+      "escalation": {"logical_model": "gpt-5.6-sol", "transport": "CODEX", "binding_state": "UNBOUND"}
+    },
+    "OC": {
+      "default": {"logical_model": "deepseek-v4-pro", "transport": "OPENCODE", "binding_state": "UNBOUND"},
+      "escalation": {"logical_model": "kimi-k3", "transport": "OPENCODE", "binding_state": "UNBOUND"}
+    }
+  },
+  "safety_constraints": {
+    "no_direct_provider_integration": true,
+    "no_direct_credential_handling": true,
+    "no_direct_network_access": true,
+    "no_direct_model_invocation": true,
+    "no_live_routing_change": true,
+    "no_transport_configuration_mutation": true,
+    "no_silent_model_substitution": true,
+    "no_silent_transport_substitution": true,
+    "no_downgrade_after_escalation": true,
+    "no_broker_mutation": true,
+    "no_trading_execution": true,
+    "no_cross_transport_fallback": true,
+    "human_final_authority": true,
+    "advisory_only": true,
+    "fail_closed_default": true,
+    "verify_request_decision_pair_integrity": true,
+    "gpt_models_must_not_resolve_to_OPENCODE": true,
+    "deepseek_kimi_models_must_not_resolve_to_CODEX": true
+  },
+  "authorization_flags": {
+    "runtime_invocation_authorized": false,
+    "provider_integration_authorized": false,
+    "credentials_authorized": false,
+    "network_authorized": false,
+    "broker_mutation_authorized": false,
+    "trading_execution_authorized": false,
+    "transport_activation_authorized": false,
+    "live_routing_change_authorized": false,
+    "shadow_resolution_authorized": true,
+    "trading_autonomy_unchanged": true,
+    "human_final_authority": true,
+    "advisory_only": true
+  }
+}

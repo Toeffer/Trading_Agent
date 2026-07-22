@@ -1,0 +1,163 @@
+{
+  "manifest_version": "1.0.0",
+  "manifest_id": "openclaw_routing_adapter_v0_1.manifest",
+  "governance_id": "openclaw_routing_adapter_v0_1",
+  "governance_version": "0.1",
+  "phase": "18R2",
+  "governance_state": "PENDING_INPUT",
+  "adapter_readiness": "A0",
+  "autonomy_level": 1,
+  "advisory_only": true,
+  "human_final_authority": true,
+  "adapter_mode": "SHADOW_ONLY",
+  "live_routing_changed": false,
+  "direct_provider_integration_scope": "NONE",
+  "direct_credential_scope": "NONE",
+  "direct_network_scope": "NONE",
+  "direct_model_invocation_scope": "NONE",
+  "transport_delegation_scope": "EXISTING_CODEX_AND_OPENCODE_ONLY",
+  "trading_execution_scope": "NONE",
+  "next_phase_boundary": "PHASE18R2_MANUAL_BINDING_INPUT",
+  "upstream_phase18r1_manifest_path": "docs/model-routing/model_routing_governance_v0_1.manifest.json",
+  "upstream_phase18r1_manifest_sha256": "4d3acb865e683eb339f860d4bed9741e98189f9e5bb0d740acc14ffcd071c577",
+  "upstream_phase18b_manifest_path": "docs/strategy-proposals/data-governance/mstr_btc_data_governance_v0_1.manifest.json",
+  "upstream_phase18b_manifest_sha256": "d596f606a522d24a9a4b1cfb93d2b36b96a935534eb579496312de35ea0e6094",
+  "canonical_strategy_path": "docs/STRATEGY.md",
+  "canonical_strategy_sha256": "49f928551cc2e7ffb059155b70eabeff9d99e7d1a4f168305012fea548ee0688",
+  "governed_files": [
+    {
+      "file": "OPENCLAW_ROUTING_BINDINGS_v0_1.json",
+      "path": "docs/model-routing/OPENCLAW_ROUTING_BINDINGS_v0_1.json",
+      "sha256": "e69021fd3ca6fbe0de7bb6d6ff71a096a442de9bca38bdd0521cc972e3c9d4b0",
+      "version": "0.1"
+    },
+    {
+      "file": "OPENCLAW_ROUTING_ADAPTER_POLICY_v0_1.json",
+      "path": "docs/model-routing/OPENCLAW_ROUTING_ADAPTER_POLICY_v0_1.json",
+      "sha256": "399cf107e2d3995f235893f7d26ef9d85f6bb68099fa4c45ce40501a0014cb60",
+      "version": "0.1"
+    },
+    {
+      "file": "OPENCLAW_ROUTING_ADAPTER_DECISION_SCHEMA_v0_1.json",
+      "path": "docs/model-routing/OPENCLAW_ROUTING_ADAPTER_DECISION_SCHEMA_v0_1.json",
+      "sha256": "2d3801d7900adc31da9911466433656707a5afe5935d9c62fdb4e32c4754b38e",
+      "version": "0.1"
+    },
+    {
+      "file": "OPENCLAW_ROUTING_ACTIVATION_PROTOCOL_v0_1.md",
+      "path": "docs/model-routing/OPENCLAW_ROUTING_ACTIVATION_PROTOCOL_v0_1.md",
+      "sha256": "79f09739d25646a17398c3be1db35cdf1150ef0de129763968cfbd72f655e366",
+      "version": "0.1"
+    },
+    {
+      "file": "openclaw_routing_adapter.py",
+      "path": "openclaw_routing_adapter.py",
+      "sha256": "1c9dee09e2708ddb42c44f89e0cfca6ca294828bbf0e447ec109a0b2132a1742",
+      "version": "0.1"
+    }
+  ],
+  "network_access_authorized": false,
+  "credentials_authorized": false,
+  "runtime_invocation_authorized": false,
+  "provider_integration_authorized": false,
+  "transport_activation_authorized": false,
+  "live_routing_change_authorized": false,
+  "broker_mutation_authorized": false,
+  "trading_execution_authorized": false,
+  "trading_autonomy_unchanged": true,
+  "phase18r1_artifacts_unchanged": true,
+  "phase18b_artifacts_unchanged": true,
+  "canonical_strategy_unchanged": true,
+  "binding_summary": {
+    "total_bindings": 4,
+    "bound": 1,
+    "unbound": 3,
+    "ambiguous": 0
+  },
+  "blockers": {
+    "active_blockers": [
+      {
+        "blocker_id": "R2_BLK_001",
+        "severity": "HARD_BLOCKER",
+        "title": "gpt-5.6-sol not in Codex registry",
+        "logical_model": "gpt-5.6-sol",
+        "transport": "CODEX",
+        "detail": "Codex provider in models.json lists: gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex, gpt-5.2. gpt-5.6-sol was NOT found."
+      },
+      {
+        "blocker_id": "R2_BLK_002",
+        "severity": "HARD_BLOCKER",
+        "title": "deepseek-v4-pro not in OpenRouter registry",
+        "logical_model": "deepseek-v4-pro",
+        "transport": "OPENCODE",
+        "detail": "OpenRouter provider in models.json lists: openrouter/auto, kimi-k2.6, kimi-k2.5. No deepseek models found in any provider."
+      },
+      {
+        "blocker_id": "R2_BLK_003",
+        "severity": "HARD_BLOCKER",
+        "title": "kimi-k3 not in OpenRouter registry",
+        "logical_model": "kimi-k3",
+        "transport": "OPENCODE",
+        "detail": "OpenRouter has kimi-k2.5 and kimi-k2.6 but no kimi-k3. No provider has kimi-k3."
+      }
+    ],
+    "total": 3,
+    "remediation": "Operator must establish gpt-5.6-sol in Codex, deepseek-v4-pro and kimi-k3 in OpenRouter/OpenCode transport before Phase 18C."
+  },
+  "required_output_labels": [
+    "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_READY",
+    "ADAPTER_READY_FOR_MANUAL_ACTIVATION",
+    "A0_ADAPTER_READINESS",
+    "LEVEL1",
+    "ADVISORY_ONLY",
+    "HUMAN_FINAL_AUTHORITY",
+    "SHADOW_ONLY",
+    "LIVE_ROUTING_UNCHANGED",
+    "EXISTING_CODEX_TRANSPORT_ONLY",
+    "EXISTING_OPENCODE_TRANSPORT_ONLY",
+    "NO_DIRECT_PROVIDER_INTEGRATION",
+    "NO_DIRECT_CREDENTIAL_ACCESS",
+    "NO_DIRECT_NETWORK_ACCESS",
+    "NO_DIRECT_MODEL_INVOCATION",
+    "NO_BROKER_MUTATION",
+    "NO_TRADING_EXECUTION",
+    "TRADING_AUTONOMY_UNCHANGED",
+    "HERMES_DEFAULT_CODEX_GPT_5_5",
+    "HERMES_ESCALATION_CODEX_GPT_5_6_SOL",
+    "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO",
+    "OC_ESCALATION_OPENCODE_KIMI_K3",
+    "NO_CROSS_TRANSPORT_FALLBACK",
+    "NO_SILENT_MODEL_SUBSTITUTION",
+    "FAIL_CLOSED_ADAPTER",
+    "PHASE18R1_UNCHANGED",
+    "PHASE18B_UNCHANGED",
+    "STRATEGY_V1_UNCHANGED",
+    "MANUAL_ACTIVATION_REQUIRED",
+    "PHASE18C_NOT_STARTED"
+  ],
+  "explicit_non_actions": [
+    "no model invoked",
+    "no provider called",
+    "no network access",
+    "no credentials created or modified",
+    "no live routing changed",
+    "no OpenClaw runtime config modified",
+    "no OpenCode runtime config modified",
+    "no Codex runtime config modified",
+    "no bridge.py modified",
+    "no guard.py modified",
+    "no .env modified",
+    "no model_routing.py modified",
+    "no Phase 18R1 artifacts modified",
+    "no Phase 18B artifacts modified",
+    "no allowlist or rules changed",
+    "no model aliases invented",
+    "no provider IDs fabricated",
+    "no transport config mutated"
+  ],
+  "adapter_diagnosis": {
+    "ready": "phase18r2_openclaw_routing_adapter_ready",
+    "active_blockers": []
+  },
+  "deterministic_governance_hash": "323292f175dd469814098c6278d6ea7f4ed546f95481d9f19535f372707df81c"
+}

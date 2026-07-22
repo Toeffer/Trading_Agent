@@ -94,6 +94,7 @@ TARGET_TESTS=(
     "tests/test_phase18a_level1_mstr_btc_research_proposal_governance.py"
     "tests/test_phase18b_level1_data_schema_provider_governance.py"
     "tests/test_phase18r1_model_routing_governance.py"
+    "tests/test_phase18r2_openclaw_routing_adapter.py"
     # Host/liveness stress intentionally excluded from portable CI:
     # "tests/test_step15c_liveness_stress.py"
 )

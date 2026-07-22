@@ -52329,6 +52329,483 @@ def _run_model_routing_decision(input_path: str) -> dict:
 # ── Phase 18R1 end ──────────────────────────────────────────────────────────
 
 
+# ===================================================================
+# Phase 18R2 — Level 1 OpenClaw Model-Routing Adapter Checkpoint
+# ===================================================================
+
+_PHASE18R2_DIAGNOSIS = {
+    "ready": "phase18r2_openclaw_routing_adapter_ready",
+    "pending": "phase18r2_pending_input_bindings_incomplete",
+    "blocked": "phase18r2_blocked",
+    "checkpoint_failed": "checkpoint_failed",
+    "internal_error": "internal_error",
+}
+
+_PHASE18R2_ADAPTER_DIR = Path(__file__).resolve().parent / "docs" / "model-routing"
+_PHASE18R2_R1_MANIFEST = Path(__file__).resolve().parent / "docs" / "model-routing" / "model_routing_governance_v0_1.manifest.json"
+_PHASE18R2_B_MANIFEST = Path(__file__).resolve().parent / "docs" / "strategy-proposals" / "data-governance" / "mstr_btc_data_governance_v0_1.manifest.json"
+_PHASE18R2_STRATEGY = Path(__file__).resolve().parent / "docs" / "STRATEGY.md"
+
+_PHASE18R2_GOVERNED_FILES = [
+    ("OPENCLAW_ROUTING_BINDINGS_v0_1.json", _PHASE18R2_ADAPTER_DIR / "OPENCLAW_ROUTING_BINDINGS_v0_1.json"),
+    ("OPENCLAW_ROUTING_ADAPTER_POLICY_v0_1.json", _PHASE18R2_ADAPTER_DIR / "OPENCLAW_ROUTING_ADAPTER_POLICY_v0_1.json"),
+    ("OPENCLAW_ROUTING_ADAPTER_DECISION_SCHEMA_v0_1.json", _PHASE18R2_ADAPTER_DIR / "OPENCLAW_ROUTING_ADAPTER_DECISION_SCHEMA_v0_1.json"),
+    ("OPENCLAW_ROUTING_ACTIVATION_PROTOCOL_v0_1.md", _PHASE18R2_ADAPTER_DIR / "OPENCLAW_ROUTING_ACTIVATION_PROTOCOL_v0_1.md"),
+    ("openclaw_routing_adapter.py", Path(__file__).resolve().parent / "openclaw_routing_adapter.py"),
+]
+
+_PHASE18R2_REQUIRED_LABELS = [
+    "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_READY",
+    "ADAPTER_READY_FOR_MANUAL_ACTIVATION",
+    "A0_ADAPTER_READINESS",
+    "LEVEL1",
+    "ADVISORY_ONLY",
+    "HUMAN_FINAL_AUTHORITY",
+    "SHADOW_ONLY",
+    "LIVE_ROUTING_UNCHANGED",
+    "EXISTING_CODEX_TRANSPORT_ONLY",
+    "EXISTING_OPENCODE_TRANSPORT_ONLY",
+    "NO_DIRECT_PROVIDER_INTEGRATION",
+    "NO_DIRECT_CREDENTIAL_ACCESS",
+    "NO_DIRECT_NETWORK_ACCESS",
+    "NO_DIRECT_MODEL_INVOCATION",
+    "NO_BROKER_MUTATION",
+    "NO_TRADING_EXECUTION",
+    "TRADING_AUTONOMY_UNCHANGED",
+    "HERMES_DEFAULT_CODEX_GPT_5_5",
+    "HERMES_ESCALATION_CODEX_GPT_5_6_SOL",
+    "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO",
+    "OC_ESCALATION_OPENCODE_KIMI_K3",
+    "NO_CROSS_TRANSPORT_FALLBACK",
+    "NO_SILENT_MODEL_SUBSTITUTION",
+    "FAIL_CLOSED_ADAPTER",
+    "PHASE18R1_UNCHANGED",
+    "PHASE18B_UNCHANGED",
+    "STRATEGY_V1_UNCHANGED",
+    "MANUAL_ACTIVATION_REQUIRED",
+    "PHASE18C_NOT_STARTED",
+]
+
+
+def _phase18r2_no_go(checkpoint_id: str, ts_str: str, error_msg: str,
+                     command_name: str = "level1-openclaw-routing-adapter-checkpoint") -> dict:
+    return {
+        "command": command_name,
+        "checkpoint_version": "phase18r2-v1.0.0",
+        "checkpoint_id": checkpoint_id,
+        "timestamp": ts_str,
+        "governance_id": "openclaw_routing_adapter_v0_1",
+        "governance_version": "0.1",
+        "governance_state": "ERROR",
+        "adapter_readiness": "A0",
+        "autonomy_level": 1,
+        "advisory_only": True,
+        "human_final_authority": True,
+        "adapter_mode": "SHADOW_ONLY",
+        "live_routing_changed": False,
+        "direct_provider_integration_scope": "NONE",
+        "direct_credential_scope": "NONE",
+        "direct_network_scope": "NONE",
+        "direct_model_invocation_scope": "NONE",
+        "transport_delegation_scope": "EXISTING_CODEX_AND_OPENCODE_ONLY",
+        "trading_execution_scope": "NONE",
+        "error": error_msg,
+        "blockers": [f"Internal error: {error_msg}"],
+        "output_labels": [],
+        "warnings": [],
+        "next_phase_boundary": "PHASE18R2_MANUAL_BINDING_INPUT",
+        "deterministic_evidence_hash": "",
+        "diagnosis": _PHASE18R2_DIAGNOSIS["internal_error"],
+    }
+
+
+def _run_level1_openclaw_routing_adapter_checkpoint() -> dict:
+    import json as _json
+    import hashlib as _hashlib
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    checkpoint_id = f"18r2-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+
+    errors: list[str] = []
+
+    def _sha256(p: Path) -> str:
+        return _hashlib.sha256(p.read_bytes()).hexdigest()
+
+    def _load(p: Path):
+        with open(p) as f:
+            return _json.load(f)
+
+    def _has_failures() -> bool:
+        return len(errors) > 0
+
+    # 1. File existence
+    for name, path in _PHASE18R2_GOVERNED_FILES:
+        if not path.exists():
+            errors.append(f"MISSING_FILE: {name}")
+        else:
+            try:
+                _load(path) if path.suffix == ".json" else path.read_text()
+            except Exception as e:
+                errors.append(f"FILE_READ_ERROR: {name}: {e}")
+
+    manifest_path = _PHASE18R2_ADAPTER_DIR / "openclaw_routing_adapter_v0_1.manifest.json"
+    if not manifest_path.exists():
+        errors.append("MANIFEST_MISSING")
+        return _phase18r2_no_go(checkpoint_id, ts_str, "; ".join(errors))
+
+    try:
+        manifest = _load(manifest_path)
+    except Exception as e:
+        errors.append(f"MANIFEST_JSON_ERROR: {e}")
+        return _phase18r2_no_go(checkpoint_id, ts_str, "; ".join(errors))
+
+    if errors:
+        return _phase18r2_no_go(checkpoint_id, ts_str, "; ".join(errors))
+
+    # 2. Governed file hashes
+    for name, path in _PHASE18R2_GOVERNED_FILES:
+        actual = _sha256(path)
+        gf_entry = next((g for g in manifest.get("governed_files", []) if g.get("file") == name), None)
+        if gf_entry:
+            stored = gf_entry.get("sha256", "")
+            if actual != stored:
+                errors.append(f"HASH_MISMATCH: {name}")
+        else:
+            errors.append(f"NOT_IN_GOVERNED_FILES: {name}")
+
+    # 3. Deterministic governance hash
+    manifest_no_hash = {k: v for k, v in manifest.items() if k != "deterministic_governance_hash"}
+    computed_hash = _hashlib.sha256(
+        _json.dumps(manifest_no_hash, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+    if computed_hash != manifest.get("deterministic_governance_hash", ""):
+        errors.append("DETERMINISTIC_GOVERNANCE_HASH_MISMATCH")
+
+    # 4. Core values
+    for k, v in {
+        "governance_state": "PENDING_INPUT",
+        "governance_id": "openclaw_routing_adapter_v0_1",
+        "adapter_readiness": "A0",
+        "autonomy_level": 1,
+        "advisory_only": True,
+        "human_final_authority": True,
+        "adapter_mode": "SHADOW_ONLY",
+        "live_routing_changed": False,
+        "direct_provider_integration_scope": "NONE",
+        "direct_credential_scope": "NONE",
+        "direct_network_scope": "NONE",
+        "direct_model_invocation_scope": "NONE",
+        "transport_delegation_scope": "EXISTING_CODEX_AND_OPENCODE_ONLY",
+        "trading_execution_scope": "NONE",
+        "next_phase_boundary": "PHASE18R2_MANUAL_BINDING_INPUT",
+    }.items():
+        if manifest.get(k) != v:
+            errors.append(f"MANIFEST_VALUE_MISMATCH: {k} expected={v} got={manifest.get(k)}")
+
+    # 5. Authorization flags
+    auth_flags = ["network_access_authorized", "credentials_authorized",
+                   "runtime_invocation_authorized", "provider_integration_authorized",
+                   "transport_activation_authorized", "live_routing_change_authorized",
+                   "broker_mutation_authorized", "trading_execution_authorized"]
+    auth_all_false = all(manifest.get(f, True) is False for f in auth_flags)
+    if not auth_all_false:
+        errors.append("AUTHORIZATION_FLAGS_NOT_ALL_FALSE")
+
+    # 6. Upstream Phase 18R1 integrity
+    if _PHASE18R2_R1_MANIFEST.exists():
+        r1_hash = _sha256(_PHASE18R2_R1_MANIFEST)
+        stored = manifest.get("upstream_phase18r1_manifest_sha256", "")
+        if r1_hash != stored:
+            errors.append("PHASE18R1_MANIFEST_HASH_MISMATCH")
+    else:
+        errors.append("PHASE18R1_MANIFEST_MISSING")
+
+    # 7. Upstream Phase 18B integrity
+    if _PHASE18R2_B_MANIFEST.exists():
+        b_hash = _sha256(_PHASE18R2_B_MANIFEST)
+        stored = manifest.get("upstream_phase18b_manifest_sha256", "")
+        if b_hash != stored:
+            errors.append("PHASE18B_MANIFEST_HASH_MISMATCH")
+    else:
+        errors.append("PHASE18B_MANIFEST_MISSING")
+
+    # 8. Strategy v1 integrity
+    if _PHASE18R2_STRATEGY.exists():
+        s_hash = _sha256(_PHASE18R2_STRATEGY)
+        stored = manifest.get("canonical_strategy_sha256", "")
+        if s_hash != stored:
+            errors.append("STRATEGY_MD_HASH_MISMATCH")
+    else:
+        errors.append("STRATEGY_MD_MISSING")
+
+    # Build output
+    output_labels = _PHASE18R2_REQUIRED_LABELS if not _has_failures() else []
+
+    # Compute all_authorization_flags_false from manifest + bindings
+    all_auth_false = True
+    auth_keys = [
+        "network_access_authorized", "credentials_authorized",
+        "runtime_invocation_authorized", "provider_integration_authorized",
+        "transport_activation_authorized", "live_routing_change_authorized",
+        "broker_mutation_authorized", "trading_execution_authorized",
+    ]
+    for k in auth_keys:
+        v = manifest.get(k)
+        if v is None or not isinstance(v, bool) or v is not False:
+            all_auth_false = False
+            errors.append(f"MANIFEST_AUTH_FLAG_NOT_FALSE: {k} = {v}")
+            break
+
+    # Check binding-level flags
+    if all_auth_false:
+        bindings_path = _PHASE18R2_ADAPTER_DIR / "OPENCLAW_ROUTING_BINDINGS_v0_1.json"
+        bindings_data = _load(bindings_path) if bindings_path.exists() else {}
+        binding_auth_keys = [
+            "adapter_reads_credentials", "adapter_stores_credentials",
+            "direct_provider_access", "direct_network_access",
+            "adapter_invocation_authorized", "live_activation_authorized",
+        ]
+        for b in bindings_data.get("bindings", []):
+            for k in binding_auth_keys:
+                v = b.get(k)
+                if v is None or not isinstance(v, bool) or v is not False:
+                    all_auth_false = False
+                    errors.append(f"BINDING_AUTH_FLAG_NOT_FALSE: {b.get('logical_model_id', '?')}.{k} = {v}")
+                    break
+            if not all_auth_false:
+                break
+
+    # Check bindings top-level authorization_flags (must include runtime_invocation_authorized)
+    if all_auth_false:
+        af = bindings_data.get("authorization_flags", {})
+        runtime_val = af.get("runtime_invocation_authorized")
+        if runtime_val is None or not isinstance(runtime_val, bool) or runtime_val is not False:
+            all_auth_false = False
+            errors.append(f"BINDINGS_AUTHORIZATION_FLAGS_RUNTIME_INVOCATION_NOT_FALSE: got={runtime_val}")
+
+    result = {
+        "command": "level1-openclaw-routing-adapter-checkpoint",
+        "checkpoint_version": "phase18r2-v1.0.0",
+        "checkpoint_id": checkpoint_id,
+        "timestamp": ts_str,
+        "governance_id": "openclaw_routing_adapter_v0_1",
+        "governance_version": "0.1",
+        "governance_state": ("PENDING_INPUT" if manifest.get("governance_state") == "PENDING_INPUT"
+                               else ("ADAPTER_READY_FOR_MANUAL_ACTIVATION" if not _has_failures() else "BLOCKED")),
+        "binding_count": manifest.get("binding_summary", {}).get("total_bindings", 4),
+        "bound_binding_count": manifest.get("binding_summary", {}).get("bound", 0),
+        "adapter_readiness": "A0",
+        "autonomy_level": 1,
+        "advisory_only": True,
+        "human_final_authority": True,
+        "adapter_mode": "SHADOW_ONLY",
+        "live_routing_changed": False,
+        "direct_provider_integration_scope": "NONE",
+        "direct_credential_scope": "NONE",
+        "direct_network_scope": "NONE",
+        "direct_model_invocation_scope": "NONE",
+        "transport_delegation_scope": "EXISTING_CODEX_AND_OPENCODE_ONLY",
+        "trading_execution_scope": "NONE",
+        "governed_file_count": len(_PHASE18R2_GOVERNED_FILES),
+        "all_authorization_flags_false": all_auth_false,
+        "blockers": errors if _has_failures() else manifest.get("blockers", {}).get("active_blockers", []),
+        "output_labels": output_labels,
+        "warnings": [],
+        "next_phase_boundary": "PHASE18R2_MANUAL_BINDING_INPUT",
+        "deterministic_evidence_hash": "",
+        "diagnosis": (_PHASE18R2_DIAGNOSIS["pending"] if manifest.get("governance_state") == "PENDING_INPUT"
+                        else _PHASE18R2_DIAGNOSIS["ready"]),
+    }
+
+    no_hash = {k: v for k, v in result.items()
+               if k not in ("deterministic_evidence_hash", "diagnosis", "warnings",
+                             "timestamp", "checkpoint_id", "command")}
+    result["deterministic_evidence_hash"] = _hashlib.sha256(
+        _json.dumps(no_hash, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+    result["diagnosis"] = {
+        "ready": (_PHASE18R2_DIAGNOSIS["pending"] if manifest.get("governance_state") == "PENDING_INPUT"
+                   else _PHASE18R2_DIAGNOSIS["ready"]) if not errors
+                   else _PHASE18R2_DIAGNOSIS["checkpoint_failed"],
+        "error_count": len(errors),
+    }
+
+    return result
+
+
+def _run_openclaw_route_decide(input_path: str) -> dict:
+    """Run full pipeline: Phase 18R1 decision + Phase 18R2 adapter mapping."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    # Read input
+    if input_path == "-":
+        raw = sys.stdin.read()
+    else:
+        p = _Path(input_path)
+        if not p.exists():
+            return {"error": f"Input file not found: {input_path}", "adapter_state": "HOLD"}
+        raw = p.read_text()
+
+    try:
+        request = _json.loads(raw)
+    except _json.JSONDecodeError as e:
+        return {"error": f"Malformed JSON: {e}", "adapter_state": "HOLD"}
+
+    # Phase 18R1: logical decision
+    import importlib.util as _iu
+    mr_path = Path(__file__).resolve().parent / "model_routing.py"
+    mr_spec = _iu.spec_from_file_location("model_routing", mr_path)
+    mr = _iu.module_from_spec(mr_spec)
+    mr_spec.loader.exec_module(mr)
+    logical = mr.decide_model_route(request)
+
+    # Phase 18R2: transport adapter
+    ad_path = Path(__file__).resolve().parent / "openclaw_routing_adapter.py"
+    ad_spec = _iu.spec_from_file_location("openclaw_routing_adapter", ad_path)
+    ad = _iu.module_from_spec(ad_spec)
+    ad_spec.loader.exec_module(ad)
+    adapter = ad.resolve_shadow_route(request, logical)
+
+    return adapter
+
+
+def _run_model_routing_adapter_decision(request_path: str, decision_path: str) -> dict:
+    """Run Phase 18R2 adapter directly from existing request+decision pair."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    def _read_file(filepath: str) -> str:
+        if filepath == "-":
+            return sys.stdin.read()
+        p = _Path(filepath)
+        if not p.exists():
+            raise FileNotFoundError(f"File not found: {filepath}")
+        return p.read_text()
+
+    try:
+        request_raw = _read_file(request_path)
+    except FileNotFoundError as e:
+        return {"adapter_state": "HOLD", "error": str(e)}
+    try:
+        decision_raw = _read_file(decision_path)
+    except FileNotFoundError as e:
+        return {"adapter_state": "HOLD", "error": str(e)}
+
+    try:
+        request = _json.loads(request_raw)
+    except _json.JSONDecodeError as e:
+        return {"adapter_state": "HOLD", "error": f"Malformed request JSON: {e}"}
+    try:
+        decision = _json.loads(decision_raw)
+    except _json.JSONDecodeError as e:
+        return {"adapter_state": "HOLD", "error": f"Malformed decision JSON: {e}"}
+
+    # Import adapter
+    import importlib.util as _iu
+    ad_path = Path(__file__).resolve().parent / "openclaw_routing_adapter.py"
+    ad_spec = _iu.spec_from_file_location("openclaw_routing_adapter", ad_path)
+    ad = _iu.module_from_spec(ad_spec)
+    ad_spec.loader.exec_module(ad)
+
+    return ad.resolve_shadow_route(request, decision)
+
+
+def _run_model_routing_activation_plan() -> dict:
+    """Generate a deterministic activation plan from repository governance only."""
+    import json as _json
+    import hashlib as _hashlib
+
+    manifest_path = _PHASE18R2_ADAPTER_DIR / "openclaw_routing_adapter_v0_1.manifest.json"
+    bindings_path = _PHASE18R2_ADAPTER_DIR / "OPENCLAW_ROUTING_BINDINGS_v0_1.json"
+
+    def _load(p):
+        with open(p) as f:
+            return _json.load(f)
+
+    def _canonical_hash(obj):
+        return _hashlib.sha256(
+            _json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    if not manifest_path.exists():
+        return {"plan_state": "ERROR", "error": "Manifest missing"}
+    if not bindings_path.exists():
+        return {"plan_state": "ERROR", "error": "Bindings missing"}
+
+    manifest = _load(manifest_path)
+    bindings = _load(bindings_path)
+
+    # Derive binding table from bindings contract
+    binding_table = []
+    all_bound = True
+    for b in bindings.get("bindings", []):
+        entry = {
+            "logical_model_id": b["logical_model_id"],
+            "logical_role": b["logical_role"],
+            "transport": b["transport"],
+            "runtime_alias": b["runtime_alias"],
+            "binding_state": b["binding_state"],
+        }
+        binding_table.append(entry)
+        if b["binding_state"] != "BOUND_EXISTING_ALIAS":
+            all_bound = False
+
+    # Sanitized integration point (no credentials)
+    integration_point = {
+        "codex": {
+            "source": "~/.openclaw/agents/main/agent/models.json — codex provider",
+            "directly_observed_aliases": ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"],
+            "status": "gpt-5.5 bound; gpt-5.6-sol NOT in codex registry",
+        },
+        "opencode": {
+            "source": "auth-profiles.json — opencode-go:default profile authenticated",
+            "openrouter_directly_observed_aliases": ["openrouter/auto", "kimi-k2.6", "kimi-k2.5"],
+            "status": "deepseek-v4-pro NOT in openrouter registry; kimi-k3 NOT found (kimi-k2.6 exists)",
+        },
+    }
+
+    # Build plan
+    plan = {
+        "plan_schema_version": "0.1",
+        "plan_state": "BLOCKED" if not all_bound else "READY",
+        "governance_id": manifest.get("governance_id"),
+        "governance_version": manifest.get("governance_version"),
+        "phase": "18R2",
+        "adapter_mode": "SHADOW_ONLY",
+        "adapter_readiness": manifest.get("adapter_readiness"),
+        "autonomy_level": manifest.get("autonomy_level"),
+        "advisory_only": True,
+        "human_final_authority": True,
+        "live_routing_changed": False,
+        "live_routing_unchanged": True,
+        "activation_performed": False,
+        "human_activation_required": True,
+        "activation_not_authorized_by_phase18r2_shadow": True,
+        "bindings_complete": all_bound,
+        "bindings": binding_table,
+        "sanitized_integration_point": integration_point,
+        "no_credentials_exposed": True,
+        "no_live_routing_change": True,
+        "no_provider_client_introduced": True,
+        "opencode_manages_own_credentials": True,
+        "codex_manages_own_credentials": True,
+        "rollback_possible": True,
+        "rollback_no_credentials_impact": True,
+        "phase18c_blocked_until_activation_proof": True,
+        "next_phase": manifest.get("next_phase_boundary"),
+        "blockers": manifest.get("blockers", {}).get("active_blockers", []) if not all_bound else [],
+    }
+
+    no_hash = {k: v for k, v in plan.items() if k != "deterministic_plan_hash"}
+    plan["deterministic_plan_hash"] = _canonical_hash(no_hash)
+    return plan
+
+
+# ── Phase 18R2 end ──────────────────────────────────────────────────────────
+
+
 def main() -> None:
     import argparse
 
@@ -54069,6 +54546,40 @@ def main() -> None:
     mrd.add_argument("--input-file", type=str, required=True,
                      help="Path to routing request JSON file (use - for stdin)")
     mrd.add_argument("--json", action="store_true")
+
+    # Phase 18R2 — Level 1 OpenClaw Routing Adapter Checkpoint
+    p18r2 = sub.add_parser("level1-openclaw-routing-adapter-checkpoint",
+                           help="Level 1 OpenClaw routing adapter checkpoint (Phase 18R2)")
+    p18r2.add_argument("--json", action="store_true")
+    # Alias: phase18r2
+    p18r2_a1 = sub.add_parser("phase18r2",
+                              help="Alias for level1-openclaw-routing-adapter-checkpoint")
+    p18r2_a1.add_argument("--json", action="store_true")
+    # Alias: openclaw-routing-adapter
+    p18r2_a2 = sub.add_parser("openclaw-routing-adapter",
+                              help="Alias for level1-openclaw-routing-adapter-checkpoint")
+    p18r2_a2.add_argument("--json", action="store_true")
+
+    # Phase 18R2 — OpenClaw Route Decide (full pipeline: 18R1 + 18R2)
+    ord_p = sub.add_parser("openclaw-route-decide",
+                           help="Run full Phase 18R1+18R2 routing pipeline (SHADOW_ONLY)")
+    ord_p.add_argument("--input-file", type=str, required=True,
+                       help="Path to routing request JSON file (use - for stdin)")
+    ord_p.add_argument("--json", action="store_true")
+
+    # Phase 18R2 — Model Routing Adapter Decision (two-file input)
+    mrad = sub.add_parser("model-routing-adapter-decision",
+                           help="Resolve transport from existing Phase 18R1 request+decision pair (SHADOW_ONLY)")
+    mrad.add_argument("--routing-request-file", type=str, required=True,
+                       help="Path to Phase 18R1 routing request JSON (use - for stdin)")
+    mrad.add_argument("--routing-decision-file", type=str, required=True,
+                       help="Path to Phase 18R1 routing decision JSON (use - for stdin)")
+    mrad.add_argument("--json", action="store_true")
+
+    # Phase 18R2 — Model Routing Activation Plan
+    mrap = sub.add_parser("model-routing-activation-plan",
+                           help="Print deterministic activation plan from repository governance (read-only)")
+    mrap.add_argument("--json", action="store_true")
 
     # Phase 17L — Level 1 Phase 17 Chain Closure Checkpoint
     p17l = sub.add_parser("level1-phase17-chain-closure-checkpoint",
@@ -56937,6 +57448,73 @@ def main() -> None:
         else:
             print(json.dumps(result, indent=2, sort_keys=True, default=str))
         if result.get("routing_state") == "HOLD":
+            sys.exit(1)
+        sys.exit(0)
+
+    if args.command in ("level1-openclaw-routing-adapter-checkpoint",
+                        "phase18r2",
+                        "openclaw-routing-adapter"):
+        try:
+            result = _run_level1_openclaw_routing_adapter_checkpoint()
+        except Exception as exc:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            from datetime import datetime, timezone
+            now_utc = datetime.now(timezone.utc)
+            ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            checkpoint_id = f"18r2-error-{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
+            result = _phase18r2_no_go(checkpoint_id, ts_str, str(exc))
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print("=" * 60)
+            print(f"Phase 18R2: OpenClaw Routing Adapter")
+            print(f"Governance:    {result.get('governance_state', '?')}")
+            print(f"Adapter:       {result.get('adapter_readiness', '?')}")
+            print(f"Mode:          {result.get('adapter_mode', '?')}")
+            print(f"Live Changed:  {result.get('live_routing_changed', '?')}")
+            print(f"Evidence Hash: {result.get('deterministic_evidence_hash', '?')}")
+            print("=" * 60)
+            blockers = result.get('blockers', [])
+            if blockers:
+                print(f"Blockers ({len(blockers)}):")
+                for b in blockers:
+                    print(f"  - {b}")
+            else:
+                print("Blockers:  0")
+            print("=" * 60)
+        exit_code = 0 if result.get("diagnosis", {}).get("ready") in (_PHASE18R2_DIAGNOSIS["ready"], _PHASE18R2_DIAGNOSIS["pending"]) else 1
+        sys.exit(exit_code)
+
+    if args.command == "openclaw-route-decide":
+        result = _run_openclaw_route_decide(args.input_file)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True, default=str))
+        if result.get("adapter_state") == "HOLD":
+            sys.exit(1)
+        sys.exit(0)
+
+    if args.command == "model-routing-adapter-decision":
+        result = _run_model_routing_adapter_decision(
+            args.routing_request_file, args.routing_decision_file
+        )
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True, default=str))
+        if result.get("adapter_state") == "HOLD":
+            sys.exit(1)
+        sys.exit(0)
+
+    if args.command == "model-routing-activation-plan":
+        result = _run_model_routing_activation_plan()
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True, default=str))
+        if result.get("plan_state") == "BLOCKED":
             sys.exit(1)
         sys.exit(0)
 

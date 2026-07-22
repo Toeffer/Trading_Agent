@@ -52354,7 +52354,39 @@ _PHASE18R2_GOVERNED_FILES = [
     ("openclaw_routing_adapter.py", Path(__file__).resolve().parent / "openclaw_routing_adapter.py"),
 ]
 
-_PHASE18R2_REQUIRED_LABELS = [
+_PHASE18R2_PENDING_INPUT_LABELS = [
+    "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_PENDING_INPUT",
+    "PENDING_INPUT",
+    "A0_ADAPTER_READINESS",
+    "LEVEL1",
+    "ADVISORY_ONLY",
+    "HUMAN_FINAL_AUTHORITY",
+    "SHADOW_ONLY",
+    "LIVE_ROUTING_UNCHANGED",
+    "BINDINGS_INCOMPLETE",
+    "BOUND_BINDING_COUNT_1",
+    "HERMES_DEFAULT_CODEX_GPT_5_5_BOUND",
+    "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_UNBOUND",
+    "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_UNBOUND",
+    "OC_ESCALATION_OPENCODE_KIMI_K3_UNBOUND",
+    "NO_CROSS_TRANSPORT_FALLBACK",
+    "NO_SILENT_MODEL_SUBSTITUTION",
+    "NO_DIRECT_PROVIDER_INTEGRATION",
+    "NO_DIRECT_CREDENTIAL_ACCESS",
+    "NO_DIRECT_NETWORK_ACCESS",
+    "NO_DIRECT_MODEL_INVOCATION",
+    "NO_BROKER_MUTATION",
+    "NO_TRADING_EXECUTION",
+    "TRADING_AUTONOMY_UNCHANGED",
+    "FAIL_CLOSED_ADAPTER",
+    "MANUAL_BINDING_INPUT_REQUIRED",
+    "PHASE18R1_UNCHANGED",
+    "PHASE18B_UNCHANGED",
+    "STRATEGY_V1_UNCHANGED",
+    "PHASE18C_NOT_STARTED",
+]
+
+_PHASE18R2_READY_LABELS = [
     "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_READY",
     "ADAPTER_READY_FOR_MANUAL_ACTIVATION",
     "A0_ADAPTER_READINESS",
@@ -52363,8 +52395,14 @@ _PHASE18R2_REQUIRED_LABELS = [
     "HUMAN_FINAL_AUTHORITY",
     "SHADOW_ONLY",
     "LIVE_ROUTING_UNCHANGED",
-    "EXISTING_CODEX_TRANSPORT_ONLY",
-    "EXISTING_OPENCODE_TRANSPORT_ONLY",
+    "BINDINGS_COMPLETE",
+    "BOUND_BINDING_COUNT_4",
+    "HERMES_DEFAULT_CODEX_GPT_5_5_BOUND",
+    "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_BOUND",
+    "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_BOUND",
+    "OC_ESCALATION_OPENCODE_KIMI_K3_BOUND",
+    "NO_CROSS_TRANSPORT_FALLBACK",
+    "NO_SILENT_MODEL_SUBSTITUTION",
     "NO_DIRECT_PROVIDER_INTEGRATION",
     "NO_DIRECT_CREDENTIAL_ACCESS",
     "NO_DIRECT_NETWORK_ACCESS",
@@ -52372,17 +52410,10 @@ _PHASE18R2_REQUIRED_LABELS = [
     "NO_BROKER_MUTATION",
     "NO_TRADING_EXECUTION",
     "TRADING_AUTONOMY_UNCHANGED",
-    "HERMES_DEFAULT_CODEX_GPT_5_5",
-    "HERMES_ESCALATION_CODEX_GPT_5_6_SOL",
-    "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO",
-    "OC_ESCALATION_OPENCODE_KIMI_K3",
-    "NO_CROSS_TRANSPORT_FALLBACK",
-    "NO_SILENT_MODEL_SUBSTITUTION",
     "FAIL_CLOSED_ADAPTER",
     "PHASE18R1_UNCHANGED",
     "PHASE18B_UNCHANGED",
     "STRATEGY_V1_UNCHANGED",
-    "MANUAL_ACTIVATION_REQUIRED",
     "PHASE18C_NOT_STARTED",
 ]
 
@@ -52412,10 +52443,16 @@ def _phase18r2_no_go(checkpoint_id: str, ts_str: str, error_msg: str,
         "error": error_msg,
         "blockers": [f"Internal error: {error_msg}"],
         "output_labels": [],
+        "blocker_count": 1,
         "warnings": [],
         "next_phase_boundary": "PHASE18R2_MANUAL_BINDING_INPUT",
         "deterministic_evidence_hash": "",
-        "diagnosis": _PHASE18R2_DIAGNOSIS["internal_error"],
+        "diagnosis": {
+            "ready": False,
+            "status": _PHASE18R2_DIAGNOSIS["internal_error"],
+            "blocker_count": 1,
+            "error_count": 1,
+        },
     }
 
 
@@ -52539,8 +52576,20 @@ def _run_level1_openclaw_routing_adapter_checkpoint() -> dict:
     else:
         errors.append("STRATEGY_MD_MISSING")
 
-    # Build output
-    output_labels = _PHASE18R2_REQUIRED_LABELS if not _has_failures() else []
+    # Build output — state-dependent labels
+    manifest_gs = manifest.get("governance_state", "PENDING_INPUT")
+    bound_count = manifest.get("binding_summary", {}).get("bound", 0)
+    active_blockers = manifest.get("blockers", {}).get("active_blockers", [])
+    blocker_count = len(active_blockers)
+
+    if _has_failures():
+        output_labels = []
+    elif manifest_gs == "PENDING_INPUT" or bound_count < 4 or blocker_count > 0:
+        # Fail-closed: only emit pending labels when not fully ready
+        output_labels = list(_PHASE18R2_PENDING_INPUT_LABELS)
+    else:
+        # ADAPTER_READY_FOR_MANUAL_ACTIVATION: all 4 bound, zero blockers
+        output_labels = list(_PHASE18R2_READY_LABELS)
 
     # Compute all_authorization_flags_false from manifest + bindings
     all_auth_false = True
@@ -52592,7 +52641,7 @@ def _run_level1_openclaw_routing_adapter_checkpoint() -> dict:
         "governance_id": "openclaw_routing_adapter_v0_1",
         "governance_version": "0.1",
         "governance_state": ("PENDING_INPUT" if manifest.get("governance_state") == "PENDING_INPUT"
-                               else ("ADAPTER_READY_FOR_MANUAL_ACTIVATION" if not _has_failures() else "BLOCKED")),
+                               else ("ADAPTER_READY_FOR_MANUAL_ACTIVATION" if (not _has_failures() and bound_count == 4 and blocker_count == 0) else "BLOCKED")),
         "binding_count": manifest.get("binding_summary", {}).get("total_bindings", 4),
         "bound_binding_count": manifest.get("binding_summary", {}).get("bound", 0),
         "adapter_readiness": "A0",
@@ -52609,14 +52658,38 @@ def _run_level1_openclaw_routing_adapter_checkpoint() -> dict:
         "trading_execution_scope": "NONE",
         "governed_file_count": len(_PHASE18R2_GOVERNED_FILES),
         "all_authorization_flags_false": all_auth_false,
-        "blockers": errors if _has_failures() else manifest.get("blockers", {}).get("active_blockers", []),
+        "blockers": errors if _has_failures() else active_blockers,
+        "blocker_count": len(errors) if _has_failures() else blocker_count,
         "output_labels": output_labels,
         "warnings": [],
         "next_phase_boundary": "PHASE18R2_MANUAL_BINDING_INPUT",
         "deterministic_evidence_hash": "",
-        "diagnosis": (_PHASE18R2_DIAGNOSIS["pending"] if manifest.get("governance_state") == "PENDING_INPUT"
-                        else _PHASE18R2_DIAGNOSIS["ready"]),
+        "diagnosis": {},
     }
+
+    # Fail-closed diagnosis: ready is boolean, status is code, blocker_count/error_count reflect actual blockers
+    manifest_gs = manifest.get("governance_state", "PENDING_INPUT")
+    if _has_failures():
+        _diag = {
+            "ready": False,
+            "status": _PHASE18R2_DIAGNOSIS["checkpoint_failed"],
+            "blocker_count": len(errors),
+            "error_count": len(errors),
+        }
+    elif manifest_gs == "PENDING_INPUT" or bound_count < 4 or blocker_count > 0:
+        _diag = {
+            "ready": False,
+            "status": _PHASE18R2_DIAGNOSIS["pending"],
+            "blocker_count": blocker_count,
+            "error_count": max(len(errors), blocker_count),
+        }
+    else:
+        _diag = {
+            "ready": True,
+            "status": _PHASE18R2_DIAGNOSIS["ready"],
+            "blocker_count": 0,
+            "error_count": 0,
+        }
 
     no_hash = {k: v for k, v in result.items()
                if k not in ("deterministic_evidence_hash", "diagnosis", "warnings",
@@ -52624,12 +52697,7 @@ def _run_level1_openclaw_routing_adapter_checkpoint() -> dict:
     result["deterministic_evidence_hash"] = _hashlib.sha256(
         _json.dumps(no_hash, sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
-    result["diagnosis"] = {
-        "ready": (_PHASE18R2_DIAGNOSIS["pending"] if manifest.get("governance_state") == "PENDING_INPUT"
-                   else _PHASE18R2_DIAGNOSIS["ready"]) if not errors
-                   else _PHASE18R2_DIAGNOSIS["checkpoint_failed"],
-        "error_count": len(errors),
-    }
+    result["diagnosis"] = _diag
 
     return result
 
@@ -57483,7 +57551,15 @@ def main() -> None:
             else:
                 print("Blockers:  0")
             print("=" * 60)
-        exit_code = 0 if result.get("diagnosis", {}).get("ready") in (_PHASE18R2_DIAGNOSIS["ready"], _PHASE18R2_DIAGNOSIS["pending"]) else 1
+        diag = result.get("diagnosis", {})
+        _ready_val = diag.get("ready")
+        _status_val = diag.get("status", "")
+        # exit 0: ready=True (all clear) or status is pending (PENDING_INPUT is still valid checkpoint)
+        # exit 1: checkpoint_failed, internal_error, blocked, or unknown
+        if _ready_val is True or _status_val == _PHASE18R2_DIAGNOSIS["pending"]:
+            exit_code = 0
+        else:
+            exit_code = 1
         sys.exit(exit_code)
 
     if args.command == "openclaw-route-decide":

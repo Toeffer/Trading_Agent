@@ -105,16 +105,22 @@
     "remediation": "Operator must establish gpt-5.6-sol in Codex, deepseek-v4-pro and kimi-k3 in OpenRouter/OpenCode transport before Phase 18C."
   },
   "required_output_labels": [
-    "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_READY",
-    "ADAPTER_READY_FOR_MANUAL_ACTIVATION",
+    "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_PENDING_INPUT",
+    "PENDING_INPUT",
     "A0_ADAPTER_READINESS",
     "LEVEL1",
     "ADVISORY_ONLY",
     "HUMAN_FINAL_AUTHORITY",
     "SHADOW_ONLY",
     "LIVE_ROUTING_UNCHANGED",
-    "EXISTING_CODEX_TRANSPORT_ONLY",
-    "EXISTING_OPENCODE_TRANSPORT_ONLY",
+    "BINDINGS_INCOMPLETE",
+    "BOUND_BINDING_COUNT_1",
+    "HERMES_DEFAULT_CODEX_GPT_5_5_BOUND",
+    "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_UNBOUND",
+    "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_UNBOUND",
+    "OC_ESCALATION_OPENCODE_KIMI_K3_UNBOUND",
+    "NO_CROSS_TRANSPORT_FALLBACK",
+    "NO_SILENT_MODEL_SUBSTITUTION",
     "NO_DIRECT_PROVIDER_INTEGRATION",
     "NO_DIRECT_CREDENTIAL_ACCESS",
     "NO_DIRECT_NETWORK_ACCESS",
@@ -122,17 +128,11 @@
     "NO_BROKER_MUTATION",
     "NO_TRADING_EXECUTION",
     "TRADING_AUTONOMY_UNCHANGED",
-    "HERMES_DEFAULT_CODEX_GPT_5_5",
-    "HERMES_ESCALATION_CODEX_GPT_5_6_SOL",
-    "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO",
-    "OC_ESCALATION_OPENCODE_KIMI_K3",
-    "NO_CROSS_TRANSPORT_FALLBACK",
-    "NO_SILENT_MODEL_SUBSTITUTION",
     "FAIL_CLOSED_ADAPTER",
+    "MANUAL_BINDING_INPUT_REQUIRED",
     "PHASE18R1_UNCHANGED",
     "PHASE18B_UNCHANGED",
     "STRATEGY_V1_UNCHANGED",
-    "MANUAL_ACTIVATION_REQUIRED",
     "PHASE18C_NOT_STARTED"
   ],
   "explicit_non_actions": [
@@ -156,8 +156,14 @@
     "no transport config mutated"
   ],
   "adapter_diagnosis": {
-    "ready": "phase18r2_openclaw_routing_adapter_ready",
-    "active_blockers": []
+    "ready": false,
+    "status": "phase18r2_pending_input_bindings_incomplete",
+    "blocker_count": 3,
+    "active_blockers": [
+      "R2_BLK_001",
+      "R2_BLK_002",
+      "R2_BLK_003"
+    ]
   },
-  "deterministic_governance_hash": "323292f175dd469814098c6278d6ea7f4ed546f95481d9f19535f372707df81c"
+  "deterministic_governance_hash": "af5b93ff45569e09d4636cf34f48ca9b85b472dc2dbfadbf8a593685127df67c"
 }

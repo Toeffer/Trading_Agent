@@ -1112,6 +1112,230 @@ class TestCliActivationPlan:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PENDING-INPUT CHECKPOINT SEMANTICS (fail-closed label/diagnosis fix)
+# ══════════════════════════════════════════════════════════════════════════════
+
+FORBIDDEN_READY_LABELS = {
+    "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_READY",
+    "ADAPTER_READY_FOR_MANUAL_ACTIVATION",
+}
+
+REQUIRED_PENDING_LABELS = {
+    "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_PENDING_INPUT",
+    "PENDING_INPUT",
+    "A0_ADAPTER_READINESS",
+    "LEVEL1",
+    "ADVISORY_ONLY",
+    "HUMAN_FINAL_AUTHORITY",
+    "SHADOW_ONLY",
+    "LIVE_ROUTING_UNCHANGED",
+    "BINDINGS_INCOMPLETE",
+    "BOUND_BINDING_COUNT_1",
+    "HERMES_DEFAULT_CODEX_GPT_5_5_BOUND",
+    "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_UNBOUND",
+    "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_UNBOUND",
+    "OC_ESCALATION_OPENCODE_KIMI_K3_UNBOUND",
+    "NO_CROSS_TRANSPORT_FALLBACK",
+    "NO_SILENT_MODEL_SUBSTITUTION",
+    "NO_DIRECT_PROVIDER_INTEGRATION",
+    "NO_DIRECT_CREDENTIAL_ACCESS",
+    "NO_DIRECT_NETWORK_ACCESS",
+    "NO_DIRECT_MODEL_INVOCATION",
+    "NO_BROKER_MUTATION",
+    "NO_TRADING_EXECUTION",
+    "TRADING_AUTONOMY_UNCHANGED",
+    "FAIL_CLOSED_ADAPTER",
+    "MANUAL_BINDING_INPUT_REQUIRED",
+    "PHASE18R1_UNCHANGED",
+    "PHASE18B_UNCHANGED",
+    "STRATEGY_V1_UNCHANGED",
+    "PHASE18C_NOT_STARTED",
+}
+
+UNBOUND_MODEL_LABELS = {
+    "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_UNBOUND",
+    "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_UNBOUND",
+    "OC_ESCALATION_OPENCODE_KIMI_K3_UNBOUND",
+}
+
+BOUND_MODEL_LABELS = {
+    "HERMES_DEFAULT_CODEX_GPT_5_5_BOUND",
+}
+
+
+class TestPendingInputCheckpointSemantics:
+    """Fail-closed checkpoint semantics for PENDING_INPUT governance state."""
+
+    # ── Requirement 1: PENDING_INPUT never emits ready labels ──────────────
+
+    @pytest.mark.parametrize("command", CLI_COMMANDS)
+    def test_no_ready_labels_in_pending_input(self, command):
+        """Requirement 1: PENDING_INPUT must not emit ready labels."""
+        r = _run_cli(command)
+        labels = set(r["output_labels"])
+        for forbidden in FORBIDDEN_READY_LABELS:
+            assert forbidden not in labels, \
+                f"Forbidden ready label '{forbidden}' found in PENDING_INPUT labels"
+
+    @pytest.mark.parametrize("command", CLI_COMMANDS)
+    def test_all_pending_labels_present(self, command):
+        """All required PENDING_INPUT labels are present (29 labels)."""
+        r = _run_cli(command)
+        labels = set(r["output_labels"])
+        assert labels == REQUIRED_PENDING_LABELS, \
+            f"Missing: {REQUIRED_PENDING_LABELS - labels}, Extra: {labels - REQUIRED_PENDING_LABELS}"
+
+    # ── Requirement 2: Ready labels require 4 bound and 0 blockers ─────────
+
+    def test_ready_labels_blocked_by_unbound_bindings(self):
+        """Requirement 2: Ready labels require 4 bound + 0 blockers.
+        With only 1 bound and 3 blockers, ready labels must not appear."""
+        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
+        assert r["bound_binding_count"] == 1
+        assert len(r["blockers"]) == 3
+        labels = set(r["output_labels"])
+        # Sanity: no ready labels leak through
+        for forbidden in FORBIDDEN_READY_LABELS:
+            assert forbidden not in labels
+
+    def test_governance_state_is_pending_input(self):
+        """Governance state must be PENDING_INPUT, not ADAPTER_READY."""
+        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
+        assert r["governance_state"] == "PENDING_INPUT"
+        assert r["governance_state"] != "ADAPTER_READY_FOR_MANUAL_ACTIVATION"
+
+    # ── Requirement 3: Each unbound model gets explicit UNBOUND label ───────
+
+    def test_each_unbound_model_has_unbound_label(self):
+        """Requirement 3: Each unbound model gets an explicit UNBOUND label."""
+        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
+        labels = set(r["output_labels"])
+        for ul in UNBOUND_MODEL_LABELS:
+            assert ul in labels, f"Missing UNBOUND label: {ul}"
+
+    def test_bound_model_has_bound_label(self):
+        """The single bound model (gpt-5.5) gets a BOUND label."""
+        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
+        labels = set(r["output_labels"])
+        for bl in BOUND_MODEL_LABELS:
+            assert bl in labels, f"Missing BOUND label: {bl}"
+
+    # ── Requirement 4: diagnosis never reports ready while blockers exist ──
+
+    @pytest.mark.parametrize("command", CLI_COMMANDS)
+    def test_diagnosis_ready_false_while_blockers(self, command):
+        """Requirement 4: diagnosis.ready must be False while blockers exist."""
+        r = _run_cli(command)
+        diag = r["diagnosis"]
+        assert isinstance(diag, dict), f"diagnosis must be dict, got {type(diag)}"
+        assert diag["ready"] is False, \
+            f"diagnosis.ready must be False while blockers exist, got {diag['ready']}"
+
+    @pytest.mark.parametrize("command", CLI_COMMANDS)
+    def test_diagnosis_status_is_pending(self, command):
+        """diagnosis.status must be phase18r2_pending_input_bindings_incomplete."""
+        r = _run_cli(command)
+        diag = r["diagnosis"]
+        assert diag.get("status") == "phase18r2_pending_input_bindings_incomplete", \
+            f"Expected pending status, got {diag.get('status')}"
+
+    # ── Requirement 5: blocker_count/error_count consistent with 3 blockers ─
+
+    @pytest.mark.parametrize("command", CLI_COMMANDS)
+    def test_blocker_count_is_three(self, command):
+        """Requirement 5: blocker_count/error_count are 3."""
+        r = _run_cli(command)
+        assert r.get("blocker_count") == 3, \
+            f"blocker_count should be 3, got {r.get('blocker_count')}"
+
+    @pytest.mark.parametrize("command", CLI_COMMANDS)
+    def test_diagnosis_blocker_count_is_three(self, command):
+        """diagnosis.blocker_count must be 3."""
+        r = _run_cli(command)
+        diag = r["diagnosis"]
+        assert diag.get("blocker_count") == 3, \
+            f"diagnosis.blocker_count should be 3, got {diag.get('blocker_count')}"
+
+    @pytest.mark.parametrize("command", CLI_COMMANDS)
+    def test_diagnosis_error_count_is_three(self, command):
+        """diagnosis.error_count must be 3 (not 0)."""
+        r = _run_cli(command)
+        diag = r["diagnosis"]
+        assert diag.get("error_count") == 3, \
+            f"diagnosis.error_count should be 3, got {diag.get('error_count')}"
+
+    # ── Requirement 6: all three checkpoint aliases produce identical labels and evidence hashes ─
+
+    def test_all_aliases_produce_identical_labels(self):
+        """Requirement 6: All three CLI aliases produce identical output_labels."""
+        label_sets = [set(_run_cli(cmd)["output_labels"]) for cmd in CLI_COMMANDS]
+        assert len(set(frozenset(ls) for ls in label_sets)) == 1, \
+            f"All aliases must produce identical label sets: {label_sets}"
+
+    def test_all_aliases_produce_identical_evidence_hash(self):
+        """All three aliases produce identical deterministic_evidence_hash."""
+        hashes = [_run_cli(cmd)["deterministic_evidence_hash"] for cmd in CLI_COMMANDS]
+        assert len(set(hashes)) == 1, \
+            f"All aliases must produce identical evidence hashes: {hashes}"
+
+    # ── Requirement 7: live_routing_changed remains false ──────────────────
+
+    @pytest.mark.parametrize("command", CLI_COMMANDS)
+    def test_live_routing_always_false(self, command):
+        """Requirement 7: live_routing_changed must remain false."""
+        r = _run_cli(command)
+        assert r["live_routing_changed"] is False
+
+    # ── Requirement 8: all authorization flags remain false ────────────────
+
+    @pytest.mark.parametrize("command", CLI_COMMANDS)
+    def test_all_authorization_flags_false(self, command):
+        """Requirement 8: all_authorization_flags_false must be True."""
+        r = _run_cli(command)
+        assert r["all_authorization_flags_false"] is True
+
+    def test_adapter_output_authorization_flags(self):
+        """Adapter decisions must have all auth flags False."""
+        req = _make_request("HERMES", "ROUTINE_RESEARCH")
+        decision = _decide_logical(req)
+        adapter = _resolve_shadow(req, decision)
+        auth_keys = [
+            "adapter_invocation_authorized",
+            "runtime_invocation_authorized",
+            "direct_provider_integration_authorized",
+            "direct_credentials_authorized",
+            "direct_network_authorized",
+            "broker_mutation_authorized",
+            "trading_execution_authorized",
+        ]
+        for key in auth_keys:
+            assert key in adapter, f"Missing key: {key}"
+            assert adapter[key] is False, f"{key} must be False, got {adapter[key]}"
+
+    def test_bindings_file_all_auth_false(self):
+        """bindings dangerous authorization_flags are all explicitly false.
+        (shadow_resolution_authorized and safety flags may be True legitimately.)"""
+        b = _load_json(BINDINGS)
+        af = b["authorization_flags"]
+        # These must always be False — dangerous operations
+        dangerous_flags = [
+            "adapter_reads_credentials",
+            "adapter_stores_credentials",
+            "adapter_invocation_authorized",
+            "runtime_invocation_authorized",
+            "direct_provider_access",
+            "direct_network_access",
+            "live_activation_authorized",
+            "broker_mutation_authorized",
+            "trading_execution_authorized",
+        ]
+        for key in dangerous_flags:
+            assert key in af, f"Missing dangerous flag: {key}"
+            assert isinstance(af[key], bool), f"{key} not bool: {type(af[key])}"
+            assert af[key] is False, f"{key} is {af[key]}, must be False"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # REPOSITORY SAFETY
 # ══════════════════════════════════════════════════════════════════════════════
 

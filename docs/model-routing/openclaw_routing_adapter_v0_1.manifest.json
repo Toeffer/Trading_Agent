@@ -28,7 +28,7 @@
     {
       "file": "OPENCLAW_ROUTING_BINDINGS_v0_1.json",
       "path": "docs/model-routing/OPENCLAW_ROUTING_BINDINGS_v0_1.json",
-      "sha256": "e69021fd3ca6fbe0de7bb6d6ff71a096a442de9bca38bdd0521cc972e3c9d4b0",
+      "sha256": "7e4e9fa33f3c229220e536cc62a8eaccde86b971815714ed50883e18a808d43f",
       "version": "0.1"
     },
     {
@@ -52,7 +52,7 @@
     {
       "file": "openclaw_routing_adapter.py",
       "path": "openclaw_routing_adapter.py",
-      "sha256": "1c9dee09e2708ddb42c44f89e0cfca6ca294828bbf0e447ec109a0b2132a1742",
+      "sha256": "d98193e4609d933ff2c2de3348161c76a0d401dfbf24231261f5e61960950cd5",
       "version": "0.1"
     }
   ],
@@ -70,8 +70,8 @@
   "canonical_strategy_unchanged": true,
   "binding_summary": {
     "total_bindings": 4,
-    "bound": 1,
-    "unbound": 3,
+    "bound": 2,
+    "unbound": 2,
     "ambiguous": 0
   },
   "blockers": {
@@ -85,14 +85,6 @@
         "detail": "Codex provider in models.json lists: gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex, gpt-5.2. gpt-5.6-sol was NOT found."
       },
       {
-        "blocker_id": "R2_BLK_002",
-        "severity": "HARD_BLOCKER",
-        "title": "deepseek-v4-pro not in OpenRouter registry",
-        "logical_model": "deepseek-v4-pro",
-        "transport": "OPENCODE",
-        "detail": "OpenRouter provider in models.json lists: openrouter/auto, kimi-k2.6, kimi-k2.5. No deepseek models found in any provider."
-      },
-      {
         "blocker_id": "R2_BLK_003",
         "severity": "HARD_BLOCKER",
         "title": "kimi-k3 not in OpenRouter registry",
@@ -101,8 +93,8 @@
         "detail": "OpenRouter has kimi-k2.5 and kimi-k2.6 but no kimi-k3. No provider has kimi-k3."
       }
     ],
-    "total": 3,
-    "remediation": "Operator must establish gpt-5.6-sol in Codex, deepseek-v4-pro and kimi-k3 in OpenRouter/OpenCode transport before Phase 18C."
+    "total": 2,
+    "remediation": "Operator must establish gpt-5.6-sol in Codex and kimi-k3 in OpenRouter/OpenCode transport before Phase 18C. deepseek-v4-pro binding established via opencode-go/deepseek-v4-pro."
   },
   "required_output_labels": [
     "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_PENDING_INPUT",
@@ -114,10 +106,10 @@
     "SHADOW_ONLY",
     "LIVE_ROUTING_UNCHANGED",
     "BINDINGS_INCOMPLETE",
-    "BOUND_BINDING_COUNT_1",
+    "BOUND_BINDING_COUNT_2",
     "HERMES_DEFAULT_CODEX_GPT_5_5_BOUND",
     "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_UNBOUND",
-    "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_UNBOUND",
+    "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_BOUND",
     "OC_ESCALATION_OPENCODE_KIMI_K3_UNBOUND",
     "NO_CROSS_TRANSPORT_FALLBACK",
     "NO_SILENT_MODEL_SUBSTITUTION",
@@ -158,12 +150,12 @@
   "adapter_diagnosis": {
     "ready": false,
     "status": "phase18r2_pending_input_bindings_incomplete",
-    "blocker_count": 3,
+    "blocker_count": 2,
+    "error_count": 2,
     "active_blockers": [
       "R2_BLK_001",
-      "R2_BLK_002",
       "R2_BLK_003"
     ]
   },
-  "deterministic_governance_hash": "af5b93ff45569e09d4636cf34f48ca9b85b472dc2dbfadbf8a593685127df67c"
+  "deterministic_governance_hash": "3cc0d5813e7720a6fdd28f9dad6073c60aa014eedfb5be1de7debfb5fc08d8f5"
 }

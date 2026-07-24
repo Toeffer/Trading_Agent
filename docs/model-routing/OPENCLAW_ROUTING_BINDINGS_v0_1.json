@@ -62,9 +62,9 @@
       "logical_model_id": "deepseek-v4-pro",
       "logical_role": "OC_DEFAULT",
       "transport": "OPENCODE",
-      "runtime_alias": null,
-      "binding_state": "UNBOUND",
-      "binding_source": "~/.openclaw/agents/main/agent/models.json",
+      "runtime_alias": "opencode-go/deepseek-v4-pro",
+      "binding_state": "BOUND_EXISTING_ALIAS",
+      "binding_source": "sanitized existing OpenClaw/OpenCode configuration evidence",
       "transport_handles_credentials": true,
       "adapter_reads_credentials": false,
       "adapter_stores_credentials": false,
@@ -74,7 +74,7 @@
       "shadow_resolution_authorized": true,
       "live_activation_authorized": false,
       "human_activation_required": true,
-      "evidence_observation": "NOT_OBSERVED",
+      "evidence_observation": "DIRECTLY_OBSERVED",
       "repository_tracked_source": false
     },
     {
@@ -99,11 +99,11 @@
   ],
   "binding_summary": {
     "total_bindings": 4,
-    "bound": 1,
-    "unbound": 3,
+    "bound": 2,
+    "unbound": 2,
     "ambiguous": 0,
     "governance_state": "PENDING_INPUT",
-    "note": "Only gpt-5.5 directly observed in codex provider registry. Other 3 models require operator to establish aliases in their respective transports."
+    "note": "gpt-5.5 directly observed in codex provider registry. deepseek-v4-pro directly observed via opencode-go/deepseek-v4-pro (active primary model). gpt-5.6-sol and kimi-k3 remain unbound."
   },
   "transport_constraints": {
     "gpt-5.5_must_not_resolve_to_OPENCODE": true,

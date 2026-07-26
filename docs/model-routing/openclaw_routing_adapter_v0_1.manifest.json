@@ -28,7 +28,7 @@
     {
       "file": "OPENCLAW_ROUTING_BINDINGS_v0_1.json",
       "path": "docs/model-routing/OPENCLAW_ROUTING_BINDINGS_v0_1.json",
-      "sha256": "7e4e9fa33f3c229220e536cc62a8eaccde86b971815714ed50883e18a808d43f",
+      "sha256": "60aed7d958f19b5e779390efb3bd54283b351f165f744433eebd76505099e9e4",
       "version": "0.1"
     },
     {
@@ -52,7 +52,7 @@
     {
       "file": "openclaw_routing_adapter.py",
       "path": "openclaw_routing_adapter.py",
-      "sha256": "d98193e4609d933ff2c2de3348161c76a0d401dfbf24231261f5e61960950cd5",
+      "sha256": "c8a19f2bb5d9df288ff01251923bffdc51883eadb784dd9a15dc53b043c1037d",
       "version": "0.1"
     }
   ],
@@ -70,20 +70,12 @@
   "canonical_strategy_unchanged": true,
   "binding_summary": {
     "total_bindings": 4,
-    "bound": 2,
-    "unbound": 2,
+    "bound": 3,
+    "unbound": 1,
     "ambiguous": 0
   },
   "blockers": {
     "active_blockers": [
-      {
-        "blocker_id": "R2_BLK_001",
-        "severity": "HARD_BLOCKER",
-        "title": "gpt-5.6-sol not in Codex registry",
-        "logical_model": "gpt-5.6-sol",
-        "transport": "CODEX",
-        "detail": "Codex provider in models.json lists: gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5.3-codex, gpt-5.2. gpt-5.6-sol was NOT found."
-      },
       {
         "blocker_id": "R2_BLK_003",
         "severity": "HARD_BLOCKER",
@@ -93,8 +85,8 @@
         "detail": "OpenRouter has kimi-k2.5 and kimi-k2.6 but no kimi-k3. No provider has kimi-k3."
       }
     ],
-    "total": 2,
-    "remediation": "Operator must establish gpt-5.6-sol in Codex and kimi-k3 in OpenRouter/OpenCode transport before Phase 18C. deepseek-v4-pro binding established via opencode-go/deepseek-v4-pro."
+    "total": 1,
+    "remediation": "Operator must establish kimi-k3 in OpenRouter/OpenCode transport before Phase 18C. gpt-5.6-sol binding established via authenticated Codex app-server model/list. deepseek-v4-pro binding established via opencode-go/deepseek-v4-pro."
   },
   "required_output_labels": [
     "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_PENDING_INPUT",
@@ -106,9 +98,9 @@
     "SHADOW_ONLY",
     "LIVE_ROUTING_UNCHANGED",
     "BINDINGS_INCOMPLETE",
-    "BOUND_BINDING_COUNT_2",
+    "BOUND_BINDING_COUNT_3",
     "HERMES_DEFAULT_CODEX_GPT_5_5_BOUND",
-    "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_UNBOUND",
+    "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_BOUND",
     "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_BOUND",
     "OC_ESCALATION_OPENCODE_KIMI_K3_UNBOUND",
     "NO_CROSS_TRANSPORT_FALLBACK",
@@ -150,12 +142,11 @@
   "adapter_diagnosis": {
     "ready": false,
     "status": "phase18r2_pending_input_bindings_incomplete",
-    "blocker_count": 2,
-    "error_count": 2,
+    "blocker_count": 1,
+    "error_count": 1,
     "active_blockers": [
-      "R2_BLK_001",
       "R2_BLK_003"
     ]
   },
-  "deterministic_governance_hash": "3cc0d5813e7720a6fdd28f9dad6073c60aa014eedfb5be1de7debfb5fc08d8f5"
+  "deterministic_governance_hash": "3e68004d200b4fd64ea9c046ec44026a619bd379455da3c9d967b19ba700ab0f"
 }

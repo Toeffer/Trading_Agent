@@ -27,7 +27,7 @@ _HERE = Path(__file__).resolve().parent
 # Logical model → (transport, runtime_alias, binding_state)
 _LOGICAL_TO_BINDING: dict[str, Tuple[str, str, str]] = {
     "gpt-5.5":         ("CODEX",    "gpt-5.5",         "BOUND_EXISTING_ALIAS"),
-    "gpt-5.6-sol":     ("CODEX",    "gpt-5.6-sol",     "UNBOUND"),
+    "gpt-5.6-sol":     ("CODEX",    "gpt-5.6-sol",     "BOUND_EXISTING_ALIAS"),
     "deepseek-v4-pro": ("OPENCODE", "opencode-go/deepseek-v4-pro", "BOUND_EXISTING_ALIAS"),
     "kimi-k3":         ("OPENCODE", "kimi-k3",          "UNBOUND"),
 }

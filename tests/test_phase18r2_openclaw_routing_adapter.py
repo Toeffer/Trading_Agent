@@ -295,7 +295,7 @@ class TestManifestStructure:
             assert m[flag] is False, f"{flag} must be false"
 
     def test_next_phase(self):
-        assert _load_manifest()["next_phase_boundary"] == "PHASE18R2_MANUAL_BINDING_INPUT"
+        assert _load_manifest()["next_phase_boundary"] == "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN"
 
 
 class TestManifestHashes:
@@ -809,11 +809,11 @@ class TestCliCheckpoint:
 
     @pytest.mark.parametrize("command", CLI_COMMANDS)
     def test_next_phase(self, command):
-        assert _run_cli(command)["next_phase_boundary"] == "PHASE18R2_MANUAL_BINDING_INPUT"
+        assert _run_cli(command)["next_phase_boundary"] == "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN"
 
     @pytest.mark.parametrize("command", CLI_COMMANDS)
-    def test_29_labels(self, command):
-        assert len(_run_cli(command)["output_labels"]) == 29
+    def test_30_labels(self, command):
+        assert len(_run_cli(command)["output_labels"]) == 30
 
     def test_identical_hashes(self):
         hashes = [_run_cli(cmd)["deterministic_evidence_hash"] for cmd in CLI_COMMANDS]
@@ -1174,7 +1174,8 @@ REQUIRED_PENDING_LABELS = {
     "NO_TRADING_EXECUTION",
     "TRADING_AUTONOMY_UNCHANGED",
     "FAIL_CLOSED_ADAPTER",
-    "MANUAL_BINDING_INPUT_REQUIRED",
+    "MANUAL_MODEL_ENTRY_PLAN_REQUIRED",
+    "KIMI_K3_EXTERNALLY_VERIFIED_LOCALLY_UNBOUND",
     "PHASE18R1_UNCHANGED",
     "PHASE18B_UNCHANGED",
     "STRATEGY_V1_UNCHANGED",
@@ -1207,7 +1208,7 @@ class TestPendingInputCheckpointSemantics:
 
     @pytest.mark.parametrize("command", CLI_COMMANDS)
     def test_all_pending_labels_present(self, command):
-        """All required PENDING_INPUT labels are present (29 labels)."""
+        """All required PENDING_INPUT labels are present (30 labels)."""
         r = _run_cli(command)
         labels = set(r["output_labels"])
         assert labels == REQUIRED_PENDING_LABELS, \
@@ -1501,6 +1502,117 @@ class TestGpt56SolBinding:
         labels = set(r["output_labels"])
         assert "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_BOUND" in labels
         assert "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_UNBOUND" not in labels
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# KIMI K3 CORRECTED BLOCKER SEMANTICS (Phase 18R2 Correction)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestKimiK3CorrectedBlockerSemantics:
+    """Verify kimi-k3 blocker semantics are corrected: externally verified,
+    locally unbound, shadow_resolution_authorized=false, ready for manual entry."""
+
+    def test_binding_state_is_unbound(self):
+        b = _load_json(BINDINGS)
+        kimi = next(x for x in b["bindings"] if x["logical_model_id"] == "kimi-k3")
+        assert kimi["binding_state"] == "UNBOUND"
+        assert kimi["runtime_alias"] is None
+
+    def test_provider_model_id_is_moonshotai_kimi_k3(self):
+        b = _load_json(BINDINGS)
+        kimi = next(x for x in b["bindings"] if x["logical_model_id"] == "kimi-k3")
+        assert kimi.get("provider_model_id") == "moonshotai/kimi-k3"
+
+    def test_external_availability_verified_true(self):
+        b = _load_json(BINDINGS)
+        kimi = next(x for x in b["bindings"] if x["logical_model_id"] == "kimi-k3")
+        assert kimi.get("external_availability_verified") is True
+
+    def test_shadow_resolution_authorized_false(self):
+        b = _load_json(BINDINGS)
+        kimi = next(x for x in b["bindings"] if x["logical_model_id"] == "kimi-k3")
+        assert kimi["shadow_resolution_authorized"] is False
+
+    def test_adapter_invocation_authorized_false(self):
+        b = _load_json(BINDINGS)
+        kimi = next(x for x in b["bindings"] if x["logical_model_id"] == "kimi-k3")
+        assert kimi["adapter_invocation_authorized"] is False
+        assert kimi["runtime_invocation_authorized"] is False
+        assert kimi["live_activation_authorized"] is False
+
+    def test_human_activation_required_true(self):
+        b = _load_json(BINDINGS)
+        kimi = next(x for x in b["bindings"] if x["logical_model_id"] == "kimi-k3")
+        assert kimi["human_activation_required"] is True
+
+    def test_r2_blk_003_has_corrected_title(self):
+        m = _load_manifest()
+        blk = m["blockers"]["active_blockers"][0]
+        assert blk["blocker_id"] == "R2_BLK_003"
+        assert "exact local runtime binding not established" in blk["title"]
+        assert blk["classification"] == "READY_FOR_MANUAL_MODEL_ENTRY"
+
+    def test_r2_blk_003_detail_externally_verified(self):
+        m = _load_manifest()
+        blk = m["blockers"]["active_blockers"][0]
+        assert "moonshotai/kimi-k3 is externally verified" in blk["detail"]
+        assert "manual model-entry plan" in blk["detail"]
+
+    def test_no_obsolete_no_provider_claim(self):
+        """Obsolete claim that no provider has Kimi K3 must be absent."""
+        raw = BINDINGS.read_text() + MANIFEST.read_text()
+        assert "No provider has kimi-k3" not in raw
+        assert "kimi-k3 not in OpenRouter registry" not in raw
+
+    def test_next_phase_boundary_is_manual_model_entry_plan(self):
+        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
+        assert r["next_phase_boundary"] == "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN"
+
+    def test_state_remains_pending_input_a0_shadow_only(self):
+        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
+        assert r["governance_state"] == "PENDING_INPUT"
+        assert r["adapter_readiness"] == "A0"
+        assert r["adapter_mode"] == "SHADOW_ONLY"
+
+    def test_bound_binding_count_3(self):
+        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
+        assert r["bound_binding_count"] == 3
+        assert r["binding_count"] == 4
+
+    def test_blocker_count_1_only_r2_blk_003(self):
+        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
+        assert r["blocker_count"] == 1
+        blocker_ids = {b.get("blocker_id", "") for b in r.get("blockers", []) if isinstance(b, dict)}
+        assert blocker_ids == {"R2_BLK_003"}
+
+    def test_labels_include_kimi_externally_verified_locally_unbound(self):
+        r = _run_cli("phase18r2")
+        labels = set(r["output_labels"])
+        assert "KIMI_K3_EXTERNALLY_VERIFIED_LOCALLY_UNBOUND" in labels
+        assert "MANUAL_MODEL_ENTRY_PLAN_REQUIRED" in labels
+        assert "OC_ESCALATION_OPENCODE_KIMI_K3_UNBOUND" in labels
+
+    def test_labels_exclude_obsolete_manual_binding_input(self):
+        r = _run_cli("phase18r2")
+        labels = set(r["output_labels"])
+        assert "MANUAL_BINDING_INPUT_REQUIRED" not in labels
+
+    def test_kimi_k3_still_holds_in_adapter(self):
+        """kimi-k3 must still HOLD in adapter (UNBOUND)."""
+        req = _make_request("OC", "REPEATED_CI_RECOVERY")
+        decision = _decide_logical(req)
+        adapter = _resolve_shadow(req, decision)
+        assert adapter["adapter_state"] == "HOLD"
+        assert adapter["binding_state"] == "UNBOUND"
+        assert adapter["selected_runtime_alias"] is None
+
+    def test_all_authorization_flags_false(self):
+        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
+        assert r["all_authorization_flags_false"] is True
+
+    def test_live_routing_unchanged(self):
+        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
+        assert r["live_routing_changed"] is False
 
 
 # ══════════════════════════════════════════════════════════════════════════════

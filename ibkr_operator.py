@@ -52379,7 +52379,8 @@ _PHASE18R2_PENDING_INPUT_LABELS = [
     "NO_TRADING_EXECUTION",
     "TRADING_AUTONOMY_UNCHANGED",
     "FAIL_CLOSED_ADAPTER",
-    "MANUAL_BINDING_INPUT_REQUIRED",
+    "MANUAL_MODEL_ENTRY_PLAN_REQUIRED",
+    "KIMI_K3_EXTERNALLY_VERIFIED_LOCALLY_UNBOUND",
     "PHASE18R1_UNCHANGED",
     "PHASE18B_UNCHANGED",
     "STRATEGY_V1_UNCHANGED",
@@ -52445,7 +52446,7 @@ def _phase18r2_no_go(checkpoint_id: str, ts_str: str, error_msg: str,
         "output_labels": [],
         "blocker_count": 1,
         "warnings": [],
-        "next_phase_boundary": "PHASE18R2_MANUAL_BINDING_INPUT",
+        "next_phase_boundary": "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN",
         "deterministic_evidence_hash": "",
         "diagnosis": {
             "ready": False,
@@ -52535,7 +52536,7 @@ def _run_level1_openclaw_routing_adapter_checkpoint() -> dict:
         "direct_model_invocation_scope": "NONE",
         "transport_delegation_scope": "EXISTING_CODEX_AND_OPENCODE_ONLY",
         "trading_execution_scope": "NONE",
-        "next_phase_boundary": "PHASE18R2_MANUAL_BINDING_INPUT",
+        "next_phase_boundary": "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN",
     }.items():
         if manifest.get(k) != v:
             errors.append(f"MANIFEST_VALUE_MISMATCH: {k} expected={v} got={manifest.get(k)}")
@@ -52662,7 +52663,7 @@ def _run_level1_openclaw_routing_adapter_checkpoint() -> dict:
         "blocker_count": len(errors) if _has_failures() else blocker_count,
         "output_labels": output_labels,
         "warnings": [],
-        "next_phase_boundary": "PHASE18R2_MANUAL_BINDING_INPUT",
+        "next_phase_boundary": "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN",
         "deterministic_evidence_hash": "",
         "diagnosis": {},
     }

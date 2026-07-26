@@ -17,7 +17,7 @@
   "direct_model_invocation_scope": "NONE",
   "transport_delegation_scope": "EXISTING_CODEX_AND_OPENCODE_ONLY",
   "trading_execution_scope": "NONE",
-  "next_phase_boundary": "PHASE18R2_MANUAL_BINDING_INPUT",
+  "next_phase_boundary": "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN",
   "upstream_phase18r1_manifest_path": "docs/model-routing/model_routing_governance_v0_1.manifest.json",
   "upstream_phase18r1_manifest_sha256": "4d3acb865e683eb339f860d4bed9741e98189f9e5bb0d740acc14ffcd071c577",
   "upstream_phase18b_manifest_path": "docs/strategy-proposals/data-governance/mstr_btc_data_governance_v0_1.manifest.json",
@@ -28,7 +28,7 @@
     {
       "file": "OPENCLAW_ROUTING_BINDINGS_v0_1.json",
       "path": "docs/model-routing/OPENCLAW_ROUTING_BINDINGS_v0_1.json",
-      "sha256": "60aed7d958f19b5e779390efb3bd54283b351f165f744433eebd76505099e9e4",
+      "sha256": "cf992b29c594e7080dee00aee407439bcfa0f0d2a6f56b11e7b51d9204ee76a5",
       "version": "0.1"
     },
     {
@@ -79,14 +79,15 @@
       {
         "blocker_id": "R2_BLK_003",
         "severity": "HARD_BLOCKER",
-        "title": "kimi-k3 not in OpenRouter registry",
+        "title": "kimi-k3 exact local runtime binding not established",
         "logical_model": "kimi-k3",
         "transport": "OPENCODE",
-        "detail": "OpenRouter has kimi-k2.5 and kimi-k2.6 but no kimi-k3. No provider has kimi-k3."
+        "detail": "OpenRouter provider model moonshotai/kimi-k3 is externally verified, but no exact local OpenClaw/OpenCode runtime alias or binding has been directly observed. A separately reviewed manual model-entry plan is required.",
+        "classification": "READY_FOR_MANUAL_MODEL_ENTRY"
       }
     ],
     "total": 1,
-    "remediation": "Operator must establish kimi-k3 in OpenRouter/OpenCode transport before Phase 18C. gpt-5.6-sol binding established via authenticated Codex app-server model/list. deepseek-v4-pro binding established via opencode-go/deepseek-v4-pro."
+    "remediation": "Operator must establish kimi-k3 local OpenClaw/OpenCode runtime binding via a separately reviewed manual model-entry plan before Phase 18C. gpt-5.6-sol binding established via authenticated Codex app-server model/list. deepseek-v4-pro binding established via opencode-go/deepseek-v4-pro."
   },
   "required_output_labels": [
     "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_PENDING_INPUT",
@@ -113,7 +114,8 @@
     "NO_TRADING_EXECUTION",
     "TRADING_AUTONOMY_UNCHANGED",
     "FAIL_CLOSED_ADAPTER",
-    "MANUAL_BINDING_INPUT_REQUIRED",
+    "MANUAL_MODEL_ENTRY_PLAN_REQUIRED",
+    "KIMI_K3_EXTERNALLY_VERIFIED_LOCALLY_UNBOUND",
     "PHASE18R1_UNCHANGED",
     "PHASE18B_UNCHANGED",
     "STRATEGY_V1_UNCHANGED",
@@ -148,5 +150,5 @@
       "R2_BLK_003"
     ]
   },
-  "deterministic_governance_hash": "3e68004d200b4fd64ea9c046ec44026a619bd379455da3c9d967b19ba700ab0f"
+  "deterministic_governance_hash": "3a6b665bdd27a68f15a6bdc451e59313111a57fd0cef5f4293486cd2c407e5cb"
 }

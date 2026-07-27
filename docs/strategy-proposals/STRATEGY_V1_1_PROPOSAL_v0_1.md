@@ -929,6 +929,7 @@ independently, and the advisory layer is structurally incapable of loosening any
 |---|---|
 | Document ID | `STRATEGY_V1_1_PROPOSAL_v0_1` |
 | Proposal ID | `strategy_v1_1_proposal_v0_1` |
+| Companion manifest | `docs/strategy-proposals/strategy_v1_1_proposal_v0_1.manifest.json` |
 | Governance Level | Level 1 (advisory-only, design documentation) |
 | Phase | 19A |
 | Phase Boundary | `PHASE19B_ALLOWLIST_AND_ADVISORY_CONFIG` |

@@ -1,7 +1,8 @@
 # Strategy v1.1 Proposal — Breadth, Regime Gating, and Volatility Targeting
 
 > **Proposal ID:** `strategy_v1_1_proposal_v0_1`
-> **Proposal Version:** `0.1`
+> **Proposal Version:** `0.2`
+> **Design Review:** `COMPLETE` (2026-07-27) — 6 defects found and corrected; see Version History
 > **Proposal Status:** `PROPOSED`
 > **Strategy Readiness:** `S0`
 > **Autonomy Level:** `1`
@@ -316,14 +317,19 @@ consistent with the Gate E / P2b close-only exemption (`strategy_v1.md` §11).
 
 Parameter count added: **two** (200-day, 12-month). Both are the field-standard values.
 
-### 4.6 Volatility targeting — gross exposure scalar
+### 4.6 Inverse-volatility gross exposure scalar
+
+> **Design-review correction (v0.2).** An earlier draft of this section called the `16%`
+> constant a "portfolio volatility target" and set it to `12%`. Both were wrong. See
+> §4.6.1 for why, and why the corrected value is `16%`. The mechanism is an
+> inverse-volatility **scalar**, not a portfolio volatility target.
 
 Realized volatility of the SPY reference over 20 trading days, annualized:
 
 ```
 σ̂_ref        = stdev(daily log returns, 20d) × √252
-σ_target     = 12%  (annualized)
-gross_scalar = clamp( σ_target / σ̂_ref , 0.25 , 1.00 )
+vol_reference = 16%   (annualized; SPY long-run median realized vol, reference estimate)
+gross_scalar = clamp( vol_reference / σ̂_ref , 0.25 , 1.00 )
 ```
 
 The scalar is then applied to the **advisory** exposure budget:
@@ -339,18 +345,54 @@ advisory layer fails, is bypassed, or produces a bad number, the guard ceiling s
 
 Worked illustration at `max_total_exposure = 30%`:
 
-| σ̂_ref | Regime | `gross_scalar` | Effective budget | vs YAML ceiling |
+| σ̂_ref | Regime | `gross_scalar` | Effective budget | Interpretation |
 |---|---|---|---|---|
-| 10% | RISK_ON | 1.00 (clamped) | 30.0% | at ceiling |
-| 12% | RISK_ON | 1.00 | 30.0% | at ceiling |
-| 18% | RISK_ON | 0.67 | 20.0% | below |
-| 24% | RISK_ON | 0.50 | 15.0% | below |
-| 24% | CAUTION | 0.50 × 0.5 | 7.5% | below |
-| 40% | RISK_ON | 0.30 | 9.0% | below |
-| 60% | RISK_ON | 0.25 (clamped) | 7.5% | below |
-| any | RISK_OFF | — | 0% new BUY | below |
+| 10% | RISK_ON | 1.00 (clamped) | 30.0% | calm — full budget |
+| 12% | RISK_ON | 1.00 (clamped) | 30.0% | calm — full budget |
+| 16% | RISK_ON | 1.00 | 30.0% | typical — full budget |
+| 18% | RISK_ON | 0.89 | 26.7% | mildly elevated |
+| 24% | RISK_ON | 0.67 | 20.0% | elevated |
+| 24% | CAUTION | 0.67 × 0.5 | 10.0% | elevated + weak trend |
+| 40% | RISK_ON | 0.40 | 12.0% | stress |
+| 64% | RISK_ON | 0.25 (clamped) | 7.5% | crisis — floor |
+| any | RISK_OFF | — | 0% new BUY | trend down |
 
-Parameter count added: **three** (`σ_target`, 20-day lookback, 0.25 floor).
+Parameter count added: **three** (`vol_reference_pct`, 20-day lookback, 0.25 floor).
+
+#### 4.6.1 Why the constant is 16% and why it is not a "vol target"
+
+Two errors in the earlier draft, both found in design review:
+
+**Error 1 — it was mislabeled.** `σ̂_ref` measures **SPY's** volatility, but the portfolio
+is at most 30% gross in single names. Those are different quantities, so the ratio cannot
+be a portfolio volatility target. The portfolio's actual volatility at full gross, for
+`n = 6` positions with single-name `σ ≈ 30%` and average pairwise correlation `ρ ≈ 0.45`
+*(reference)*:
+
+```
+sleeve_vol     = σ × √( (1 + (n−1)ρ) / n )
+               = 0.30 × √( (1 + 5×0.45) / 6 )
+               = 0.30 × √0.5417  ≈  22.1%
+
+portfolio_vol  = gross × sleeve_vol  =  0.30 × 22.1%  ≈  6.6%
+```
+
+A portfolio that tops out near **6.6%** volatility cannot target 12%. The figure was never
+a target — it is a normalization constant, and it is now named `vol_reference_pct` to say so.
+
+**Error 2 — the value made the scalar permanently binding.** SPY's typical realized
+volatility is ~15–16% *(reference)*. With a 12% numerator, `gross_scalar = 12/16 ≈ 0.75`
+in **calm** markets, so the mechanism applied a permanent ~25% haircut and had little
+headroom left to respond when volatility actually rose. That inverts the intent.
+
+Setting `vol_reference_pct = 16%` — near SPY's long-run median — makes the scalar ≈1.00
+under typical conditions and tightens only when volatility is genuinely elevated. That is
+volatility scaling behaving as designed: **dormant in calm, responsive in stress.**
+
+**Calibration requirement:** 16% is a long-run *reference* estimate. Before promotion,
+recompute SPY's median 20-day realized volatility from bridge `market/bars` over at least
+5 years and set the constant to that measured median. Do **not** optimize it against
+strategy P&L — pick it from the volatility distribution alone, per design principle 4.
 
 ### 4.7 Sector concentration cap — proposed Gate I
 
@@ -404,6 +446,49 @@ and the §12.3 hard invalidation triggers. The −5% hard floor is unchanged.
 
 ---
 
+### 4.10 Data-quality requirements for v1.1 signals
+
+v1.1 materially increases data requirements over v1.0.0, whose §6 specifies only 20 days
+for an SMA and 14 for ATR. The regime gate needs a **year** of reference history, and the
+cross-sectional rank needs history for **every** allowlisted symbol. These requirements are
+additive to `strategy_v1.md` §6, which continues to apply unchanged.
+
+| Requirement | Threshold | Consumer |
+|---|---|---|
+| SPY reference bars | **≥252** valid daily closes | 200-day SMA + 12-month momentum (§4.5) |
+| SPY realized-vol window | ≥20 valid daily closes | `gross_scalar` (§4.6) |
+| Per-symbol bars, RS rank | **≥60** valid daily closes | Cross-sectional RS (§4.3) |
+| Per-symbol bars, SMA | ≥20 valid daily closes | v1 §5 trend signal |
+| Per-symbol bars, ATR | ≥14 valid daily closes | `calc_stop`, sizing |
+| Staleness, all series | ≤1 trading day | v1 §6 (unchanged) |
+
+**Explicit bar-duration requirement.** `fetch_bars` (`guard.py:820`) defaults to
+`duration="30 D"`, which is insufficient for both the 200-day SMA and 12-month momentum.
+The advisory layer must request an explicit duration of at least **"1 Y"** for the SPY
+reference series. Relying on the default would silently produce a wrong regime state.
+
+**Fail-safe rules.** Per 18A data-governance principle 7 (*missing or stale required data
+produces `NO_TRADE`*), v1.1 fails toward *less* risk, never toward more:
+
+| Condition | Result |
+|---|---|
+| SPY reference data missing, short, or stale | **Regime state = `RISK_OFF`** → no new BUY |
+| `σ̂_ref` uncomputable | **`gross_scalar` = 0.25** (floor, not 1.00) |
+| Candidate symbol has <60 valid bars | Candidate **excluded** from the RS universe |
+| Valid-data symbols < 50% of allowlist | **`NO_TRADE` for the cycle** — rank not meaningful |
+| ATR(14) unavailable for a candidate | Candidate rejected (v1 §5 — ATR always required) |
+
+Note the direction of both defaults: an unavailable regime signal blocks buying rather than
+permitting it, and an unavailable volatility estimate applies the tightest scalar rather
+than the loosest. A data outage must never widen the risk envelope.
+
+**Cross-sectional rank on partial data.** The RS rank is computed over the subset of
+symbols with ≥60 valid bars, and "top 50%" is evaluated against **that subset**, not the
+nominal 22. The subset size must be recorded in the proposal record so a rank is never
+interpretable without knowing its universe.
+
+---
+
 ## 5. What Does Not Change
 
 | Item | Status under v1.1 |
@@ -436,22 +521,79 @@ and the §12.3 hard invalidation triggers. The −5% hard floor is unchanged.
 | Max risk per trade | 2% NL | **2% NL** (unchanged) | Gate C (`guard.py:1333`) |
 | Max total exposure (hard ceiling) | 30% NL | **30% NL** (unchanged) | Gate F (`guard.py:1466`) |
 | Effective exposure budget (advisory) | n/a | **30% × gross_scalar × regime_mult** | Advisory layer |
-| Max concurrent positions | "2" (contradictory) | **6** — corrected, = 30% ÷ 5% | Derived; Gate F |
+| Max concurrent positions | "2" (wrong) | **Unconstrained** — see §6.1 | **Not gated** |
 | Max positions per sector | none | **2** | Gate I (**new**) |
 | Max trades per day | 2 | **2** (unchanged) | Gate D (`guard.py:1348`) |
 | Daily loss halt | −1% NL | **−1% NL** (unchanged) | Gate E (`guard.py:1357`) |
 | Weekly loss halt | −3% NL | **−3% NL** (unchanged) | Gate E |
 | Min cash reserve | 70% NL | **≥70% NL** (unchanged) | Implied by Gate F |
 | Leverage | none | **none — formally rejected (§3)** | Invariant 8 |
-| Portfolio vol target | none | **12% annualized** (advisory) | Advisory layer |
+| Volatility reference constant | none | **16% annualized** (advisory) | Advisory layer |
 
 ### 6.1 Resolution of the position-count contradiction
 
-The v1.1 value is **6**, derived as `max_total_exposure ÷ max_position_notional = 30 ÷ 5`.
-This is a documentation correction, not a loosening: `gate_exposure` already permits any
-combination summing to ≤30%. If Chris prefers a hard numeric cap independent of the
-arithmetic, it requires a new YAML parameter (`max_concurrent_positions`) and a new gate —
-listed as open decision §11.2.
+> **Design-review correction (v0.2).** An earlier draft of this section asserted the answer
+> was **6**. That was wrong in the same way v1.0.0's **2** was wrong, and is corrected here.
+
+`strategy_v1.md` §8 claims a maximum of 2 concurrent positions and attributes it to the
+exposure and per-position caps. That attribution is invalid. But `30 ÷ 5 = 6` is **also**
+not a position-count limit, for a reason the earlier draft missed:
+
+Final size is `min(notional_cap_shares, risk_cap_shares)` (`compute_final_max_shares`,
+`guard.py:1268`). When the **risk** cap binds — which it does for higher-volatility names,
+since a wider ATR stop shrinks `risk_cap_shares` — the resulting position is **smaller than
+5%** of NetLiquidation. More such positions therefore fit inside the same 30% ceiling.
+
+| Scenario | Binding cap | Position size | Positions before 30% binds |
+|---|---|---|---|
+| Low-vol name, tight stop | notional | 5.0% | 6 |
+| Moderate-vol name | risk | ~3.5% | ~8 |
+| High-vol name, wide stop | risk | ~2.0% | ~15 |
+
+**Therefore: `6` is the maximum number of _full-size_ positions, not the maximum number of
+positions.** The true count is unbounded above 6 and depends entirely on per-position
+sizing.
+
+**Resolution (Chris-approved, design review):** position count stays **unconstrained**, and
+this document records that as a deliberate choice rather than a derived number. Gate B
+bounds each position at 5% and Gate F bounds the aggregate at 30% — together these bound
+total risk regardless of how many positions exist. Adding `max_concurrent_positions` would
+introduce a parameter that constrains nothing Gates B and F do not already constrain, which
+fails `strategy_v1.md` §15 anti-overfit check 6 (prefer fewer parameters).
+
+**Consequence for `strategy_v1.md` §8:** the row "Maximum positions open simultaneously | 2"
+must be corrected to "Not directly constrained — bounded indirectly by Gates B and F" when
+v1.1 is promoted. Until then, v1.0.0 retains the incorrect row, and this document is the
+record of the defect.
+
+Note that Gate I (§4.7) *does* impose a real structural limit — at most 2 positions per
+sector across 10 sectors — but that is a concentration constraint, not a count cap, and it
+binds on sector composition rather than on portfolio size.
+
+### 6.2 Transition of existing positions
+
+v1.1 activation must not force liquidation. Existing positions at the moment of promotion
+are **grandfathered**:
+
+| Aspect | Treatment |
+|---|---|
+| Force-close on activation | **No** — never triggered by a strategy version change |
+| Re-validation against new entry filters (RS rank, regime, 2-of-4) | **No** — entry filters gate *entries*, not holdings |
+| Counted toward Gate F total exposure | **Yes** |
+| Counted toward Gate I sector cap | **Yes** — an existing position occupies a sector slot |
+| Counted toward the advisory effective budget (§4.6) | **Yes** |
+| Exit management | v1 §12 unchanged — existing stops, 2R partial, §12.3 invalidation triggers |
+| Symbol no longer in the allowlist | Position may still be **closed** (SELL is close-only and Gate A applies to entries) |
+
+**Worked example.** The position recorded in the CLAUDE.md §10 snapshot — META, 72 shares —
+is Communication Services. On activation it occupies **1 of the 2** Gate I slots for that
+sector, so at most one further Communication Services entry (GOOGL) could be added. META
+itself is not re-tested against the RS rank or regime gate, and its existing protective stop
+stands unchanged.
+
+**Verify against live state, not this document.** Per CLAUDE.md §0, position data here is a
+stale snapshot. Confirm actual holdings via `ibkr_positions` or `GET /positions` at
+activation time and recompute sector occupancy from that.
 
 ---
 
@@ -641,7 +783,9 @@ max_positions_per_sector:
 # Resolves the CLAUDE.md §5 "H3 follow-up" note by giving advisory
 # parameters a home in the same source file.
 advisory:
-  portfolio_vol_target_pct: 12
+  # Inverse-vol scalar (§4.6). NOT a portfolio vol target — see §4.6.1.
+  # Recalibrate to SPY's measured median 20d realized vol before promotion.
+  vol_reference_pct: 16
   vol_lookback_days: 20
   gross_scalar_floor: 0.25
   regime_sma_days: 200
@@ -649,9 +793,18 @@ advisory:
   regime_caution_multiplier: 0.5
   cross_sectional_rs_lookback_days: 60
   cross_sectional_rs_top_fraction: 0.5
-  reference_symbol: SPY        # bars-only; never order-eligible
+  reference_symbol: SPY          # bars-only; never order-eligible
+  reference_bar_duration: "1 Y"  # required — the "30 D" default is insufficient (§4.10)
+  min_reference_bars: 252
+  min_symbol_bars_for_rs: 60
+  min_valid_symbol_fraction: 0.5 # below this -> NO_TRADE for the cycle (§4.10)
   hermes_risk_per_trade_pct: 0.25
 ```
+
+**Backward compatibility verified.** The rules loader (`guard.py:4015`) validates that
+*required* keys are present — `missing = [k for k in required_keys if k not in rules]` — and
+does **not** reject unknown keys. Adding `symbol_sectors`, `max_positions_per_sector`, and
+`advisory` is therefore safe in 19B while `guard.py` is still unmodified.
 
 **Note:** the `advisory` block also discharges the H3 follow-up recorded in CLAUDE.md §5
 (move the Hermes 0.25% advisory target into the YAML so the two-tier risk model has one
@@ -700,7 +853,7 @@ Placement: alongside the existing gate functions, after `gate_exposure`
 
 | Requirement | Detail |
 |---|---|
-| Gate letter | **I** (A–G exist; H is proposal discipline per `strategy_v1.md` §14) |
+| Gate letter | **I** — verified free: `guard.py` defines A–H, with H = `gate_proposal_discipline` (`guard.py:1771`). `gate_open_orders` (`guard.py:1959`) carries no letter. |
 | Applies to | BUY only — SELL exempt, consistent with Gate G close-only logic |
 | Fail mode | **Closed** — unmapped symbol is rejected, matching `gate_allowlist` behavior |
 | Required-keys update | Add `symbol_sectors`, `max_positions_per_sector` at `guard.py:4015` |
@@ -723,13 +876,59 @@ Following the existing convention (`tests/test_phase18b_level1_data_schema_provi
 states, assert `effective_budget ≤ max_total_exposure`. This is the single most important
 test in the set — it proves the advisory layer cannot loosen the guard.
 
-### 9.6 Dependency order
+### 9.6 Operator CLI checkpoint command
+
+Every prior governance phase registers a read-only `ibkr-operator` subcommand — `phase17a`,
+`phase18a`, `phase18b`, `phase18r1` — and the corresponding test modules assert that
+`<command> --help` succeeds. Phase 19A follows the same convention:
+
+| Item | Value |
+|---|---|
+| Canonical command | `level1-strategy-v1-1-proposal-governance-checkpoint` |
+| Aliases | `phase19a`, `strategy-v1-1-proposal` |
+| Flags | `--json`, `--export` |
+| Behavior | **Read-only.** Verifies documents exist, manifest parses, hashes match, governance fields valid; emits a diagnosis code from `phase19a_diagnosis` |
+| Must not | Call any IBKR or `/order*` endpoint, read the H1 token, or mutate any file except an explicit `--export` evidence file |
+
+**Blocked pending a structural fix.** `ibkr_operator.py` currently defines `main()` **twice**
+(lines 49762 and 52332). The second definition shadows the first, so approximately 2,570
+lines — including a complete duplicate set of subparser registrations — are unreachable dead
+code. Adding a `phase19a` command before this is resolved risks registering it in the dead
+copy, where it would silently never run.
+
+**Required sequence:** de-duplicate `main()` as a separate, independently reviewed change,
+then add the 19A command. This is tracked as its own work item and is **not** a Phase 19A
+deliverable. It does not block 19B, because the CLI checkpoint is a convenience wrapper over
+checks the 19A test module already performs.
+
+### 9.7 Rollback procedure
+
+Rollback must run in **reverse dependency order**. The ordering is load-bearing, not
+cosmetic: once 19D adds `symbol_sectors` and `max_positions_per_sector` to the required-keys
+list, removing them from the YAML makes `guard.py` raise at load.
+
+| Rolling back | Procedure | Constraint |
+|---|---|---|
+| 19E | Revert test commit | None |
+| 19D | `git revert` the tagged Gate I commit | **Must precede any 19B rollback** |
+| 19C | `git revert` the advisory commit | Independent |
+| 19B | Restore `symbol_allowlist.allow` to AAPL, META, NVDA, AMD; remove `symbol_sectors`, `max_positions_per_sector`, `advisory` | **Only after 19D is reverted** |
+
+**Partial rollback of 19B alone** (narrow the allowlist, keep the machinery) is always safe:
+removing symbols from `symbol_allowlist.allow` cannot break Gate A, which fails closed by
+design. Existing positions in removed symbols remain closeable per §6.2.
+
+**No rollback is required for 19A.** It is documentation only; reverting the commit is
+sufficient and has no runtime effect.
+
+### 9.8 Dependency order
 
 ```
 19A (docs)  →  19B (YAML, Chris)  →  19C (advisory)  →  19D (Gate I, Tier 1)  →  19E (tests)  →  paper run (§10)
 ```
 
 19D must not land before 19B, or `guard.py` will raise on missing required keys at load.
+Rollback runs in the reverse of this order (§9.7).
 
 ---
 
@@ -798,6 +997,18 @@ Record results in `docs/KPI_DASHBOARD.md` conventions and gate promotion on
 
 None of these can be resolved by Werner. Each materially shapes the design.
 
+**Status after design review (v0.2):** 11.2 and 11.4 are **RESOLVED**. 11.1, 11.3, 11.5,
+and 11.6 remain **OPEN** and block promotion.
+
+| # | Decision | Status |
+|---|---|---|
+| 11.1 | H4.1 ETF BUY block | **OPEN** |
+| 11.2 | Maximum concurrent positions | **RESOLVED** — unconstrained |
+| 11.3 | Final allowlist composition | **OPEN** |
+| 11.4 | Volatility reference value | **RESOLVED** — 16%, renamed |
+| 11.5 | MSTR/BTC disposition | **OPEN** |
+| 11.6 | Meaning of "learning" | **OPEN** |
+
 ### 11.1 H4.1 — the ETF BUY block
 
 **Decision required:** keep or lift the US-domiciled ETF BUY block.
@@ -810,10 +1021,18 @@ None of these can be resolved by Werner. Each materially shapes the design.
 v1.1 is written to work under **Keep**. It needs no revision either way, but under
 **Lift** a materially stronger v1.2 becomes possible.
 
-### 11.2 Maximum concurrent positions
+### 11.2 Maximum concurrent positions — RESOLVED
 
-Accept the derived **6** (§6.1), or add a hard `max_concurrent_positions` YAML parameter
-plus a new gate? The derived value needs no code; a hard cap needs Tier-1 work.
+**Decision: leave position count unconstrained and document it as a deliberate choice.**
+Approved at design review.
+
+The design review established that neither v1.0.0's **2** nor the earlier draft's **6** is a
+valid position-count limit (§6.1). Gate B bounds each position at 5% of NetLiquidation and
+Gate F bounds the aggregate at 30%; together they bound total risk irrespective of position
+count. A `max_concurrent_positions` parameter would constrain nothing those two gates do not
+already constrain, and would fail `strategy_v1.md` §15 anti-overfit check 6.
+
+Follow-up obligation: correct the erroneous row in `strategy_v1.md` §8 when v1.1 is promoted.
 
 ### 11.3 Final allowlist
 
@@ -821,11 +1040,20 @@ The 22 names in §4.2 are a proposal. Chris owns the list. Considerations: is 22
 to follow attentively; should any sector be dropped; should the semiconductor split be
 retained.
 
-### 11.4 Volatility target value
+### 11.4 Volatility reference value — RESOLVED
 
-12% annualized is proposed as a conventional moderate target. Lower (10%) trades less and
-draws down less; higher (15%) tracks the market more closely. This value should **not** be
-optimized against a backtest — pick it on risk preference, per design principle 4.
+**Decision: `vol_reference_pct = 16%`, and the parameter is renamed from
+`portfolio_vol_target_pct`.** Approved at design review.
+
+Design review found the earlier `12%` value defective on two counts (§4.6.1): it was
+mislabeled as a portfolio volatility target when the portfolio can only reach ~6.6%
+volatility at full gross, and at 12% the scalar applied a permanent ~25% haircut in calm
+markets instead of responding to stress. Setting the constant near SPY's long-run median
+(~16%) makes the mechanism dormant in calm conditions and responsive when volatility rises.
+
+Outstanding obligation: this remains a *reference* estimate. Recompute SPY's median 20-day
+realized volatility over ≥5 years from bridge `market/bars` and set the constant to that
+measured value before promotion. Do not optimize it against strategy P&L.
 
 ### 11.5 MSTR / BTC
 
@@ -851,7 +1079,7 @@ parameter adaptation is proposed, and none should be added.
 | 3 | Generalizes across ≥2 allowed symbols? | **Pass** — breadth and regime logic are symbol-agnostic |
 | 4 | Survives walk-forward? | **Pending** — Phase 19E and the data-governance rules (18B §8 principles 13–16) require it |
 | 5 | Explainable in one sentence? | **Pass** — "Hold more decorrelated names, and hold less of everything when volatility is high or trend is down." |
-| 6 | Parameter count direction? | **Increase of 6** (RS lookback, 200d, 12m, vol target, vol lookback, scalar floor). All conventional, none fitted. Sector cap adds a 7th. Justified by §1.1 breadth arithmetic. |
+| 6 | Parameter count direction? | **Increase of 7** (RS lookback, 200d SMA, 12m momentum, `vol_reference_pct`, vol lookback, scalar floor, sector cap). All conventional, none fitted. A `max_concurrent_positions` parameter was **rejected** at design review under this same check (§11.2). Justified by §1.1 breadth arithmetic. |
 | 7 | Sharpe / max-drawdown improved OOS? | **Pending** — unproven; §8 governs interpretation |
 | 8 | "Would this have prevented a past loss?" | **Partial** — the single recorded position (META, 2026-06-09, `docs/trade-journal/`) is too small a sample to answer |
 | 9 | Documented with date and rationale? | **Pass** — this document |
@@ -939,9 +1167,11 @@ independently, and the advisory layer is structurally incapable of loosening any
 | Superseded By | None |
 | Review Cadence | On demand; required before any promotion |
 | Model Tier Used | Tier 2 (documentation only — no safety-critical code touched) |
+| Proposal series identifier | `v0_1` — **stable**. The `v0_1` in the filename and `proposal_id` identifies the proposal *series* and does not change with revisions; `proposal_version` (currently `0.2`) tracks revisions within it. This mirrors the 18A pattern, where `proposal_id` embeds the series tag. |
 
 ### Version History
 
 | Version | Date | Changes |
 |---|---|---|
 | 0.1 | 2026-07-25 | Initial proposal — breadth expansion, regime gate, volatility targeting, Gate I sector cap, leverage rejection, MSTR/BTC disposition, paper-run validation protocol |
+| 0.2 | 2026-07-27 | **Design review applied.** Six defects corrected. §6.1: withdrew the incorrect "6 concurrent positions" claim — position count is unconstrained (§11.2 resolved). §4.6/§4.6.1: renamed `portfolio_vol_target_pct` → `vol_reference_pct` and corrected 12% → 16%; the earlier value was mislabeled and permanently binding (§11.4 resolved). §4.10 added: data-quality thresholds and fail-safe rules for the new signals. §6.2 added: grandfathering of existing positions. §9.6 added: operator CLI command, blocked pending `main()` de-duplication. §9.7 added: reverse-order rollback procedure. Gate letter I verified free against `guard.py`. YAML backward compatibility verified against the rules loader. |

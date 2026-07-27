@@ -2,11 +2,12 @@
   "manifest_version": "1.0.0",
   "manifest_id": "strategy_v1_1_proposal_v0_1.manifest",
   "created_utc": "2026-07-27T00:00:00Z",
+  "last_updated_utc": "2026-07-27T00:00:00Z",
   "phase": "19A",
   "phase_name": "Level 1 Strategy v1.1 Design Proposal Governance Checkpoint",
   "proposal_identity": {
     "proposal_id": "strategy_v1_1_proposal_v0_1",
-    "proposal_version": "0.1",
+    "proposal_version": "0.2",
     "proposal_status": "PROPOSED",
     "strategy_readiness": "S0",
     "autonomy_level": 1,
@@ -29,9 +30,56 @@
   },
   "design_review_state": {
     "design_review_required": true,
-    "design_review_status": "PENDING",
-    "design_review_completed": false,
-    "note": "Phase 19A is not complete until design review concludes. If review changes the proposal document, re-run the manifest generator so proposal_document_sha256 and deterministic_manifest_hash match the new bytes, and bump proposal_version per proposal document section 13."
+    "design_review_status": "COMPLETE",
+    "design_review_completed": true,
+    "design_review_date": "2026-07-27",
+    "defects_found": 6,
+    "defects_corrected": 6,
+    "defects": [
+      {
+        "id": "D1",
+        "severity": "blocker",
+        "area": "section 6.1",
+        "defect": "Draft asserted a 6-position maximum; invalid because risk-capped positions are smaller than 5% notional so more fit inside the 30% ceiling",
+        "resolution": "Position count declared unconstrained; Gates B and F bound total risk"
+      },
+      {
+        "id": "D2",
+        "severity": "blocker",
+        "area": "section 4.6",
+        "defect": "portfolio_vol_target_pct 12 was mislabeled (portfolio tops out near 6.6% vol) and permanently binding (12/16 ~ 0.75 in calm markets)",
+        "resolution": "Renamed vol_reference_pct and set to 16 percent; dormant in calm, responsive in stress"
+      },
+      {
+        "id": "D3",
+        "severity": "gap",
+        "area": "section 4.10",
+        "defect": "No data-quality thresholds for the new signals; regime gate needs 252 bars but fetch_bars defaults to 30 D",
+        "resolution": "Added data-quality section with fail-safe rules; missing regime data yields RISK_OFF not RISK_ON"
+      },
+      {
+        "id": "D4",
+        "severity": "gap",
+        "area": "section 6.2",
+        "defect": "No transition rule for positions held at activation",
+        "resolution": "Added grandfathering clause; existing positions count toward Gate F and Gate I"
+      },
+      {
+        "id": "D5",
+        "severity": "gap",
+        "area": "section 9.6",
+        "defect": "Implementation plan omitted the operator CLI checkpoint command required by phase convention",
+        "resolution": "Added, blocked pending main() de-duplication in ibkr_operator.py"
+      },
+      {
+        "id": "D6",
+        "severity": "gap",
+        "area": "docs/strategy_v1_changelog.md",
+        "defect": "File referenced by strategy_v1.md section 16 and by promotion requirement 9 but did not exist",
+        "resolution": "Created"
+      }
+    ],
+    "note": "Design review is complete and its findings are applied in proposal_version 0.2. If the proposal document changes again, re-run the manifest generator so proposal_document_sha256 and deterministic_manifest_hash match the new bytes."
   },
   "governance_states": {
     "PROPOSED": {
@@ -130,8 +178,11 @@
       },
       "sell_never_blocked": true
     },
-    "volatility_targeting_proposed": {
-      "portfolio_vol_target_pct": 12,
+    "inverse_vol_scalar_proposed": {
+      "vol_reference_pct": 16,
+      "is_portfolio_vol_target": false,
+      "note": "Normalization constant near SPY long-run median vol, not a portfolio vol target. See proposal section 4.6.1.",
+      "estimated_portfolio_vol_at_full_gross_pct": 6.6,
       "lookback_days": 20,
       "gross_scalar_floor": 0.25,
       "gross_scalar_ceiling": 1.0,
@@ -180,13 +231,33 @@
       "gate_allowlist fails closed; QQQ absent from YAML allowlist"
     ]
   },
-  "open_decisions_requiring_chris": [
-    "11.1 H4.1 US-domiciled ETF BUY block: keep or lift",
-    "11.2 Maximum concurrent positions: accept derived 6 or add hard YAML cap",
-    "11.3 Final allowlist composition",
-    "11.4 Portfolio volatility target value",
-    "11.5 MSTR/BTC disposition confirmation",
-    "11.6 Definition of 'learning' during the paper run"
+  "decisions": {
+    "resolved": [
+      {
+        "id": "11.2",
+        "topic": "Maximum concurrent positions",
+        "resolution": "UNCONSTRAINED — Gates B and F bound total risk; a count cap would fail anti-overfit check 6",
+        "resolved_at": "design_review_2026-07-27"
+      },
+      {
+        "id": "11.4",
+        "topic": "Volatility reference value",
+        "resolution": "vol_reference_pct = 16, renamed from portfolio_vol_target_pct",
+        "resolved_at": "design_review_2026-07-27"
+      }
+    ],
+    "open_requiring_chris": [
+      "11.1 H4.1 US-domiciled ETF BUY block: keep or lift",
+      "11.3 Final allowlist composition",
+      "11.5 MSTR/BTC disposition confirmation",
+      "11.6 Definition of 'learning' during the paper run"
+    ]
+  },
+  "follow_up_obligations": [
+    "Recalibrate vol_reference_pct from SPY median 20d realized vol over >=5 years via bridge market/bars",
+    "Correct the erroneous max-concurrent-positions row in strategy_v1.md section 8 at promotion",
+    "De-duplicate main() in ibkr_operator.py (two top-level definitions; the first ~2570 lines are dead code), then add the phase19a CLI command",
+    "Add 'claude/*' to the CI push trigger, or run Phase 19E validation via pull request"
   ],
   "anti_overfit_compliance": {
     "reference": "docs/strategy_v1.md section 15",
@@ -238,7 +309,7 @@
     "19A": {
       "name": "Documentation only",
       "code_changes": false,
-      "status": "IN_PROGRESS"
+      "status": "DESIGN_REVIEW_COMPLETE_PENDING_APPROVAL"
     },
     "19B": {
       "name": "YAML allowlist and advisory config",
@@ -293,6 +364,12 @@
       "version": "0.1",
       "description": "Machine-readable proposal metadata manifest"
     },
+    "strategy_changelog": {
+      "path": "docs/strategy_v1_changelog.md",
+      "document_id": "strategy_v1_changelog",
+      "version": "1.0.0",
+      "description": "Strategy version ledger — created in Phase 19A to close a dangling reference from strategy_v1.md section 16"
+    },
     "canonical_strategy": {
       "path": "docs/strategy_v1.md",
       "document_id": "strategy-v1-2026-07-09",
@@ -345,10 +422,29 @@
     "strategy_v1_modified": "strategy_v1_modified",
     "unknown": "unknown"
   },
+  "verified_against_code": {
+    "gate_letter_i_free": {
+      "verified": true,
+      "detail": "guard.py defines Gates A-H; H is gate_proposal_discipline at guard.py:1771. gate_open_orders at guard.py:1959 carries no letter."
+    },
+    "yaml_unknown_keys_accepted": {
+      "verified": true,
+      "detail": "guard.py:4015 validates only that required keys are present; unknown keys are not rejected, so Phase 19B is backward compatible."
+    },
+    "sizing_formula_unchanged": {
+      "verified": true,
+      "detail": "compute_final_max_shares at guard.py:1268 returns min(shares_by_notional, shares_by_risk); v1.1 does not modify it."
+    },
+    "operator_main_duplicated": {
+      "verified": true,
+      "is_defect": true,
+      "detail": "ibkr_operator.py defines main() at both line 49762 and line 52332; the second shadows the first, leaving ~2570 lines unreachable. Blocks the phase19a CLI command."
+    }
+  },
   "content_hashes": {
     "algorithm": "sha256",
     "note": "proposal_document_sha256 is the SHA-256 of the proposal document bytes. deterministic_manifest_hash is the SHA-256 of this manifest serialized with sort_keys=True and ensure_ascii=False, excluding the deterministic_manifest_hash field itself."
   },
-  "proposal_document_sha256": "72b068e129d6bf10c30505a6e2d7a65df42984a6969204436b405914b65f4865",
-  "deterministic_manifest_hash": "64ae22b3c7e7c7eb0bdc26bda451796e423911da5af17caaac686d462dcfb4a9"
+  "proposal_document_sha256": "4f8732f916048b10a4f2f2eda66532caf64be6fc09ce76de00e4e2c10c843d57",
+  "deterministic_manifest_hash": "c06485773f9f35c042ce258bfe018a196cbd372708421e9ee779cd8253523574"
 }

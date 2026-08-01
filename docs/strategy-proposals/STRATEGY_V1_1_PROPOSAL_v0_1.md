@@ -890,16 +890,34 @@ Every prior governance phase registers a read-only `ibkr-operator` subcommand �
 | Behavior | **Read-only.** Verifies documents exist, manifest parses, hashes match, governance fields valid; emits a diagnosis code from `phase19a_diagnosis` |
 | Must not | Call any IBKR or `/order*` endpoint, read the H1 token, or mutate any file except an explicit `--export` evidence file |
 
-**Blocked pending a structural fix.** `ibkr_operator.py` currently defines `main()` **twice**
-(lines 49762 and 52332). The second definition shadows the first, so approximately 2,570
-lines — including a complete duplicate set of subparser registrations — are unreachable dead
-code. Adding a `phase19a` command before this is resolved risks registering it in the dead
-copy, where it would silently never run.
+**Blocker resolved — 2026-08-01.** `ibkr_operator.py` previously defined `main()` **twice**
+(lines 49762 and 52332), the second shadowing the first. Adding a `phase19a` command before
+that was resolved risked registering it in the dead copy, where it would silently never run.
 
-**Required sequence:** de-duplicate `main()` as a separate, independently reviewed change,
-then add the 19A command. This is tracked as its own work item and is **not** a Phase 19A
-deliverable. It does not block 19B, because the CLI checkpoint is a convenience wrapper over
-checks the 19A test module already performs.
+The de-duplication is complete. The removed region — a repeated section header,
+`_PHASE18B_DIAGNOSIS`, `_PHASE18B_CHECKPOINT_SCRIPT`, `_phase18b_no_go`, a 32-line stub of
+`_run_level1_data_schema_provider_governance_checkpoint`, and the shadowed `main()` — totalled
+**1,800 lines**. The dead `main()` registered 195 subcommands, a **strict subset** of the live
+`main()`'s 205, so no command was lost.
+
+| Verification | Result |
+|---|---|
+| Duplicated top-level names | 3 → **0** |
+| `main()` definitions | 2 → **1** |
+| Subcommands via `--help` | 205 → **205** (list identical) |
+| `--help` output | **byte-identical** |
+| `py_compile` on `bridge.py`, `guard.py`, `ibkr_operator.py` | pass |
+| `phase18a` / `phase18b` / `phase18r1` execution | all exit 0 |
+
+The `phase19a` command is therefore **unblocked and pending implementation**. It remains a
+non-blocker for 19B, because the CLI checkpoint is a convenience wrapper over checks that
+`test_phase19a_strategy_v1_1_proposal_governance.py` already performs directly.
+
+**Note on the live implementation.** The dead copy's
+`_run_level1_data_schema_provider_governance_checkpoint` was a 32-line stub that shelled out
+to an external `level1-data-schema-provider-governance-checkpoint` script via
+`_PHASE18B_CHECKPOINT_SCRIPT`. The live copy (341 lines) implements the checkpoint inline and
+does not reference that path. Removing the stub removed the only consumer of that constant.
 
 ### 9.7 Rollback procedure
 

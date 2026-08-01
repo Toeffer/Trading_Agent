@@ -107,7 +107,7 @@ what is pending against which version.
 | 2 | `portfolio_vol_target_pct: 12` was mislabeled (portfolio tops out near 6.6% vol) and permanently binding (12/16 ≈ 0.75 in calm markets) | Renamed `vol_reference_pct`, set to **16%** — dormant in calm, responsive in stress |
 | 3 | No data-quality thresholds for the new signals; regime gate needs 252 bars but `fetch_bars` defaults to `"30 D"` | Added §4.10 with thresholds and fail-safe rules (missing regime data → `RISK_OFF`, not `RISK_ON`) |
 | 4 | No transition rule for positions held at activation | Added §6.2 — grandfathered, but count toward Gate F and Gate I |
-| 5 | Implementation plan omitted the operator CLI checkpoint command required by convention | Added §9.6, blocked pending `main()` de-duplication in `ibkr_operator.py` |
+| 5 | Implementation plan omitted the operator CLI checkpoint command required by convention | Added §9.6. Was blocked pending `main()` de-duplication; **that blocker is now resolved** (see §5) |
 | 6 | This changelog file did not exist despite being referenced | Created (this file) |
 
 **Promotion blockers remaining:**
@@ -133,7 +133,57 @@ active governance document and changing it requires a version bump and review.
 
 ---
 
-## 5. Related Documents
+## 5. Infrastructure Fixes Supporting Phase 19
+
+Not strategy changes. Recorded here because Phase 19 work depends on them.
+
+### 2026-08-01 — `ibkr_operator.py` `main()` de-duplication
+
+`ibkr_operator.py` defined `main()` twice, at lines 49762 and 52332. Python binds
+the later definition, so the first was unreachable — along with a repeated
+section header and three other shadowed definitions.
+
+| Item | Detail |
+|---|---|
+| Removed | Section header, `_PHASE18B_DIAGNOSIS`, `_PHASE18B_CHECKPOINT_SCRIPT`, `_phase18b_no_go`, a 32-line stub of `_run_level1_data_schema_provider_governance_checkpoint`, and the shadowed `main()` |
+| Lines removed | **1,800** (57,095 → 55,295) |
+| Commands in dead `main()` | 195 — a **strict subset** of the live `main()`'s 205 |
+| Commands lost | **None** |
+
+**Why it was safe:** the removed code was unreachable, so deleting it cannot change
+runtime behavior. This was confirmed rather than assumed — `--help` output is
+byte-identical before and after, the 205-command list is unchanged, duplicated
+top-level names went 3 → 0, and `phase18a`, `phase18b`, and `phase18r1` all still
+execute successfully.
+
+**Root cause:** a merge appended a newer `main()` instead of replacing the older
+one. The live `_run_level1_data_schema_provider_governance_checkpoint` (341 lines)
+implements the checkpoint inline; the dead stub (32 lines) shelled out to an
+external script via `_PHASE18B_CHECKPOINT_SCRIPT`, which had no other consumer.
+
+**Unblocks:** the `phase19a` operator CLI checkpoint command (proposal §9.6).
+
+**Regression guards added** in `tests/test_phase19a_strategy_v1_1_proposal_governance.py`:
+one test asserts no duplicated top-level definitions exist in `ibkr_operator.py`,
+and another asserts the manifest's record of this defect matches the file's actual
+state in both directions.
+
+### 2026-08-01 — safety-invariant fix in `scripts/`
+
+`scripts/gen_strategy_v1_1_manifest.py`, added earlier the same day, embedded the
+literal string `/etc/ibkr-bridge/h1_token` inside a prose "explicit non-actions"
+entry. This violated invariant T7
+(`test_ci_invariant_assertions.py::test_no_h1_token_file_read_in_scripts`), which
+forbids any script except `ibkr-trade-window` from referencing that path.
+
+Fixed by rewording the entry to "the root-owned H1 token file", preserving meaning
+without embedding the path. The invariant test was **not** weakened and the script
+was **not** added to its allowlist — the test is a genuine safety control and the
+generator had no legitimate need for the literal path.
+
+---
+
+## 6. Related Documents
 
 | Path | Role |
 |---|---|

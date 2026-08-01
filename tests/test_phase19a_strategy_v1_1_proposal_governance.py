@@ -328,8 +328,12 @@ class TestClaimsVerifiedAgainstCode:
                     "sizing_formula_unchanged"]:
             assert vac[key]["verified"] is True
 
-    def test_operator_main_duplication_still_recorded(self):
-        """If main() gets de-duplicated, this record must be updated."""
+    def test_operator_main_duplication_record_matches_reality(self):
+        """The manifest's claim about main() must track the actual file.
+
+        Fires in both directions: if the defect is recorded as open, main()
+        must still be duplicated; if recorded as resolved, it must not be.
+        """
         vac = _load_manifest()["verified_against_code"]["operator_main_duplicated"]
         operator = REPO / "ibkr_operator.py"
         count = len(re.findall(r"^def main\(", operator.read_text(), re.M))
@@ -337,7 +341,31 @@ class TestClaimsVerifiedAgainstCode:
             assert count > 1, \
                 "main() is no longer duplicated — update the manifest and unblock the phase19a CLI command"
         else:
-            assert count == 1
+            assert count == 1, \
+                f"manifest records the duplication as resolved but found {count} main() definitions"
+            assert vac.get("resolved") is True
+
+    def test_operator_has_no_duplicated_top_level_names(self):
+        """Regression guard for the de-duplication."""
+        import ast
+        import collections
+        tree = ast.parse((REPO / "ibkr_operator.py").read_text())
+        names = collections.defaultdict(list)
+        for node in tree.body:
+            name = getattr(node, "name", None)
+            if name is None and isinstance(node, ast.Assign):
+                name = getattr(node.targets[0], "id", None)
+            if name:
+                names[name].append(node.lineno)
+        dupes = {k: v for k, v in names.items() if len(v) > 1}
+        assert not dupes, f"duplicated top-level definitions reintroduced: {dupes}"
+
+    def test_no_script_references_the_raw_token_path(self):
+        """Mirrors the T7 invariant — the manifest generator must stay clean."""
+        gen = REPO / "scripts" / "gen_strategy_v1_1_manifest.py"
+        if gen.exists():
+            assert "/etc/ibkr-bridge/h1_token" not in gen.read_text(), \
+                "manifest generator must not embed the raw H1 token path"
 
 
 # ── Canonical strategy preservation ─────────────────────────────────────────

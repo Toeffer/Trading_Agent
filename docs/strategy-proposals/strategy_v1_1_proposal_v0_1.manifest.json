@@ -69,7 +69,7 @@
         "severity": "gap",
         "area": "section 9.6",
         "defect": "Implementation plan omitted the operator CLI checkpoint command required by phase convention",
-        "resolution": "Added, blocked pending main() de-duplication in ibkr_operator.py"
+        "resolution": "Added to the plan. Was blocked pending main() de-duplication in ibkr_operator.py; that de-duplication is complete, so the command is now unblocked and pending implementation"
       },
       {
         "id": "D6",
@@ -144,7 +144,7 @@
     "This proposal does not add any symbol to an executable allowlist",
     "This proposal does not enable IBKR_ALLOW_ORDERS or rules.enforced",
     "This proposal does not generate, read, possess, or transmit an H1 token",
-    "This proposal does not access /etc/ibkr-bridge/h1_token or any root-owned file",
+    "This proposal does not access the root-owned H1 token file or any root-owned file",
     "This proposal does not call any IBKR endpoint or any /order* endpoint",
     "This proposal does not run a backtest or collect market data",
     "This proposal does not generate a trade proposal or open an order window",
@@ -256,7 +256,7 @@
   "follow_up_obligations": [
     "Recalibrate vol_reference_pct from SPY median 20d realized vol over >=5 years via bridge market/bars",
     "Correct the erroneous max-concurrent-positions row in strategy_v1.md section 8 at promotion",
-    "De-duplicate main() in ibkr_operator.py (two top-level definitions; the first ~2570 lines are dead code), then add the phase19a CLI command",
+    "Add the phase19a CLI checkpoint command — now unblocked, main() de-duplication completed 2026-08-01",
     "Add 'claude/*' to the CI push trigger, or run Phase 19E validation via pull request"
   ],
   "anti_overfit_compliance": {
@@ -437,14 +437,17 @@
     },
     "operator_main_duplicated": {
       "verified": true,
-      "is_defect": true,
-      "detail": "ibkr_operator.py defines main() at both line 49762 and line 52332; the second shadows the first, leaving ~2570 lines unreachable. Blocks the phase19a CLI command."
+      "is_defect": false,
+      "resolved": true,
+      "resolved_at": "2026-08-01",
+      "detail": "RESOLVED. ibkr_operator.py previously defined main() at both line 49762 and line 52332; the second shadowed the first. The dead region (comment header, _PHASE18B_DIAGNOSIS, _PHASE18B_CHECKPOINT_SCRIPT, _phase18b_no_go, a 32-line stub of _run_level1_data_schema_provider_governance_checkpoint, and the shadowed main) was removed: 1800 lines. The dead main registered 195 subcommands, a strict subset of the live main's 205, so no command was lost. Verified: --help output byte-identical, 205 commands before and after, zero duplicated top-level names.",
+      "unblocks": "phase19a CLI checkpoint command"
     }
   },
   "content_hashes": {
     "algorithm": "sha256",
     "note": "proposal_document_sha256 is the SHA-256 of the proposal document bytes. deterministic_manifest_hash is the SHA-256 of this manifest serialized with sort_keys=True and ensure_ascii=False, excluding the deterministic_manifest_hash field itself."
   },
-  "proposal_document_sha256": "4f8732f916048b10a4f2f2eda66532caf64be6fc09ce76de00e4e2c10c843d57",
-  "deterministic_manifest_hash": "c06485773f9f35c042ce258bfe018a196cbd372708421e9ee779cd8253523574"
+  "proposal_document_sha256": "0b09dd709f923f4d6f6c6ed8ef29c42142fee2a17d59e3f4318eee9fe833e372",
+  "deterministic_manifest_hash": "c9e39065e7513bfde87519a02267f9ee735af29a7919feef0bf7987a318eb34d"
 }

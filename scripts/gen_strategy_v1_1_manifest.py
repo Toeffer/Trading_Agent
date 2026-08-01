@@ -87,7 +87,7 @@ manifest: dict = {
              "resolution": "Added grandfathering clause; existing positions count toward Gate F and Gate I"},
             {"id": "D5", "severity": "gap", "area": "section 9.6",
              "defect": "Implementation plan omitted the operator CLI checkpoint command required by phase convention",
-             "resolution": "Added, blocked pending main() de-duplication in ibkr_operator.py"},
+             "resolution": "Added to the plan. Was blocked pending main() de-duplication in ibkr_operator.py; that de-duplication is complete, so the command is now unblocked and pending implementation"},
             {"id": "D6", "severity": "gap", "area": "docs/strategy_v1_changelog.md",
              "defect": "File referenced by strategy_v1.md section 16 and by promotion requirement 9 but did not exist",
              "resolution": "Created"},
@@ -174,7 +174,7 @@ manifest: dict = {
         "This proposal does not add any symbol to an executable allowlist",
         "This proposal does not enable IBKR_ALLOW_ORDERS or rules.enforced",
         "This proposal does not generate, read, possess, or transmit an H1 token",
-        "This proposal does not access /etc/ibkr-bridge/h1_token or any root-owned file",
+        "This proposal does not access the root-owned H1 token file or any root-owned file",
         "This proposal does not call any IBKR endpoint or any /order* endpoint",
         "This proposal does not run a backtest or collect market data",
         "This proposal does not generate a trade proposal or open an order window",
@@ -280,7 +280,7 @@ manifest: dict = {
     "follow_up_obligations": [
         "Recalibrate vol_reference_pct from SPY median 20d realized vol over >=5 years via bridge market/bars",
         "Correct the erroneous max-concurrent-positions row in strategy_v1.md section 8 at promotion",
-        "De-duplicate main() in ibkr_operator.py (two top-level definitions; the first ~2570 lines are dead code), then add the phase19a CLI command",
+        "Add the phase19a CLI checkpoint command — now unblocked, main() de-duplication completed 2026-08-01",
         "Add 'claude/*' to the CI push trigger, or run Phase 19E validation via pull request",
     ],
 
@@ -436,8 +436,11 @@ manifest: dict = {
         },
         "operator_main_duplicated": {
             "verified": True,
-            "is_defect": True,
-            "detail": "ibkr_operator.py defines main() at both line 49762 and line 52332; the second shadows the first, leaving ~2570 lines unreachable. Blocks the phase19a CLI command.",
+            "is_defect": False,
+            "resolved": True,
+            "resolved_at": "2026-08-01",
+            "detail": "RESOLVED. ibkr_operator.py previously defined main() at both line 49762 and line 52332; the second shadowed the first. The dead region (comment header, _PHASE18B_DIAGNOSIS, _PHASE18B_CHECKPOINT_SCRIPT, _phase18b_no_go, a 32-line stub of _run_level1_data_schema_provider_governance_checkpoint, and the shadowed main) was removed: 1800 lines. The dead main registered 195 subcommands, a strict subset of the live main's 205, so no command was lost. Verified: --help output byte-identical, 205 commands before and after, zero duplicated top-level names.",
+            "unblocks": "phase19a CLI checkpoint command",
         },
     },
 

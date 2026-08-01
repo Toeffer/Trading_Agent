@@ -79,7 +79,7 @@ what is pending against which version.
 |---|---|
 | Proposal | `docs/strategy-proposals/STRATEGY_V1_1_PROPOSAL_v0_1.md` |
 | Proposal ID | `strategy_v1_1_proposal_v0_1` |
-| Proposal version | `0.5` |
+| Proposal version | `0.6` |
 | Manifest | `docs/strategy-proposals/strategy_v1_1_proposal_v0_1.manifest.json` |
 | Phase | 19A |
 | Readiness | S0 |
@@ -132,9 +132,18 @@ inverse-vol scalar. The expansion remains worth making, for a different reason t
 originally stated. All correlations are reference estimates pending recalculation from
 bridge `market/bars`.
 
+**Decision 11.5 — MSTR/BTC (2026-08-01):** hold at `PROPOSED`, do not promote. The issuer
+self-describes as a "bitcoin treasury company" offering "economic exposure to Bitcoin",
+so the embedded-leverage characterisation is its stated business model rather than an
+inference. Its realised 52-week range of $81.81–$414.36 (≈−77% from high, beta 3.54)
+demonstrates the compounding risk directly. And under Gate I at 1 position per sector,
+admitting it would let a Bitcoin proxy **displace** a diversifying name in the Information
+Technology slot — an argument that did not exist when Gate I was set to 2. The status of
+`mstr_btc_research_v0_1` is unchanged: `PROPOSED`, S0, `execution_scope: NONE`.
+
 **Promotion blockers remaining:**
 
-1. Open decisions 11.5 (MSTR/BTC), 11.6 (definition of "learning"), and 11.7 (non-US equities: listing venue or issuer domicile — raised 2026-08-01). **11.1 and 11.3 resolved 2026-08-01**; 11.2 and 11.4 resolved at design review.
+1. Open decisions 11.6 (definition of "learning") and 11.7 (non-US equities: listing venue or issuer domicile — raised 2026-08-01). **11.1, 11.3, and 11.5 resolved 2026-08-01**; 11.2 and 11.4 resolved at design review.
 2. Anti-overfit checks 2, 4, and 7 unmet — no out-of-sample or walk-forward evidence exists
 3. Phases 19B–19E not started
 4. Paper-run validation §10.1 not performed

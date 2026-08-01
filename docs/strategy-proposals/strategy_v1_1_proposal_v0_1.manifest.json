@@ -7,7 +7,7 @@
   "phase_name": "Level 1 Strategy v1.1 Design Proposal Governance Checkpoint",
   "proposal_identity": {
     "proposal_id": "strategy_v1_1_proposal_v0_1",
-    "proposal_version": "0.5",
+    "proposal_version": "0.6",
     "proposal_status": "PROPOSED",
     "strategy_readiness": "S0",
     "autonomy_level": 1,
@@ -381,6 +381,23 @@
   },
   "mstr_btc_disposition": {
     "recommendation": "HOLD_AT_PROPOSED",
+    "decision_confirmed": "2026-08-01",
+    "issuer_self_description": "operates as a bitcoin treasury company; offers investors varying degrees of economic exposure to Bitcoin through equity and fixed income instruments",
+    "embedded_leverage_is_stated_business_model": true,
+    "observed_2026_07_31": {
+      "price": 93.28,
+      "week52_low": 81.81,
+      "week52_high": 414.36,
+      "drawdown_from_high_pct": -77.5,
+      "beta": 3.544,
+      "market_cap_usd": 30857770240,
+      "renamed": "MicroStrategy -> Strategy Inc, August 2025",
+      "domicile": "US",
+      "isin": "US5949724083"
+    },
+    "gate_i_conflict": "Classified Technology / Software - Application, so it would occupy the single Information Technology slot under Gate I at 1 per sector, displacing AAPL, MSFT or AVGO",
+    "sizing_bind_unchanged": "5% notional cap with a -5% stop floor gives 0.25% NL risk per trade; immaterial sized legally, and it cannot be sized large",
+    "affected_by_decision_11_7": false,
     "referenced_proposal_id": "mstr_btc_research_v0_1",
     "referenced_proposal_status_unchanged": true,
     "promotion_requested": false,
@@ -406,6 +423,12 @@
         "resolved_at": "design_review_2026-07-27"
       },
       {
+        "id": "11.5",
+        "topic": "MSTR/BTC disposition",
+        "resolution": "HOLD at PROPOSED. Do not promote. Confirmed on three grounds: the issuer self-describes as a bitcoin treasury company; the realised 52-week range of 81.81 to 414.36 (about -77 percent from high, beta 3.54) demonstrates the compounding risk; and Gate I at 1 per sector means admission would let a Bitcoin proxy displace a diversifying name in the Information Technology slot.",
+        "resolved_at": "2026-08-01"
+      },
+      {
         "id": "11.3",
         "topic": "Final allowlist composition",
         "resolution": "Keep all 22 names; tighten Gate I to 1 position per sector. No substitutions: the four near-duplicate pairs are handled structurally by the cap rather than by removing names, preserving ranker optionality.",
@@ -419,7 +442,6 @@
       }
     ],
     "open_requiring_chris": [
-      "11.5 MSTR/BTC disposition confirmation",
       "11.6 Definition of 'learning' during the paper run",
       "11.7 'Non-US equities' in strategy_v1.md section 3: listing venue or issuer domicile?"
     ]
@@ -624,6 +646,6 @@
     "algorithm": "sha256",
     "note": "proposal_document_sha256 is the SHA-256 of the proposal document bytes. deterministic_manifest_hash is the SHA-256 of this manifest serialized with sort_keys=True and ensure_ascii=False, excluding the deterministic_manifest_hash field itself."
   },
-  "proposal_document_sha256": "5177bf08957148a9533a53509f2a7b2e3edafe27cc72cf4862d58205e3809ddb",
-  "deterministic_manifest_hash": "9f4d230b555ecbd8316b698807dc0471e3b3c9a0a28f44d5b891dea7dd29bdec"
+  "proposal_document_sha256": "30667969e24e3f6a177422552e6c86a09dd5ad058652b0a8846bcb66068e84f5",
+  "deterministic_manifest_hash": "48498be1670296cba9aad5c17772afb128e003486d33b5def6b16d88e87b9f05"
 }

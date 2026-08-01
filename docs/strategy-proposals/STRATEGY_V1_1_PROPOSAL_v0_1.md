@@ -1,9 +1,9 @@
 # Strategy v1.1 Proposal — Breadth, Regime Gating, and Volatility Targeting
 
 > **Proposal ID:** `strategy_v1_1_proposal_v0_1`
-> **Proposal Version:** `0.5`
+> **Proposal Version:** `0.6`
 > **Design Review:** `COMPLETE` (2026-07-27) — 6 defects found and corrected; see Version History
-> **Open Decisions:** 4 of 7 resolved (11.1, 11.2, 11.3, 11.4); 11.5, 11.6, 11.7 remain open
+> **Open Decisions:** 5 of 7 resolved (11.1–11.5); 11.6 and 11.7 remain open
 > **Proposal Status:** `PROPOSED`
 > **Strategy Readiness:** `S0`
 > **Autonomy Level:** `1`
@@ -1156,7 +1156,7 @@ Record results in `docs/KPI_DASHBOARD.md` conventions and gate promotion on
 
 None of these can be resolved by Werner. Each materially shapes the design.
 
-**Status (v0.5):** 11.1, 11.2, 11.3, and 11.4 are **RESOLVED**. 11.5, 11.6, and 11.7
+**Status (v0.6):** 11.1, 11.2, 11.3, 11.4, and 11.5 are **RESOLVED**. 11.6 and 11.7
 remain **OPEN** and block promotion.
 
 | # | Decision | Status |
@@ -1165,7 +1165,7 @@ remain **OPEN** and block promotion.
 | 11.2 | Maximum concurrent positions | **RESOLVED** — unconstrained |
 | 11.3 | Final allowlist composition | **RESOLVED** — 22 names, Gate I at 1/sector |
 | 11.4 | Volatility reference value | **RESOLVED** — 16%, renamed |
-| 11.5 | MSTR/BTC disposition | **OPEN** |
+| 11.5 | MSTR/BTC disposition | **RESOLVED** — hold at `PROPOSED` |
 | 11.6 | Meaning of "learning" | **OPEN** |
 | 11.7 | "Non-US equities" — venue or domicile? | **OPEN** — raised 2026-08-01 |
 
@@ -1327,9 +1327,57 @@ consideration is currently moot but would apply to other candidates.
 **Werner cannot resolve this** — it is a scope decision about the mandate, not a technical
 question.
 
-### 11.5 MSTR / BTC
+### 11.5 MSTR / BTC — RESOLVED
 
-Confirm the §7 recommendation to hold at `PROPOSED`, or direct otherwise.
+**Decision: HOLD at `PROPOSED`. Do not promote.** Confirmed 2026-08-01.
+
+This confirms the §7 recommendation. Evidence gathered since §7 was written strengthens it
+on three independent grounds.
+
+**1. The company self-describes as a Bitcoin treasury vehicle.** Its own filing description
+opens: *"Strategy Inc … operates as a **bitcoin treasury company** … It offers investors
+varying degrees of economic exposure to Bitcoin by offering a range of securities, including
+equity and fixed income instruments."* The enterprise-analytics software is secondary. §7.2's
+characterisation of MSTR as instrument-embedded leverage is therefore not an inference — it is
+the issuer's own stated business model. (Note the contrast with IREN in §11.3, where an
+equivalent claim rested on vendor prose and was withdrawn as unverified.)
+
+**2. The realised drawdown demonstrates the risk directly.** As of 2026-07-31:
+
+| Metric | Value |
+|---|---|
+| Price | $93.28 |
+| 52-week range | **$81.81 – $414.36** |
+| Drawdown from 52-week high | **≈ −77%** |
+| Beta | **3.54** |
+| Market cap | $30.9B (down from a materially higher level) |
+| Renamed | MicroStrategy → Strategy Inc, August 2025 |
+
+A 5.1× annual range on a single name is precisely the mNAV-premium-plus-BTC-drawdown
+compounding §7.2 described. This is observed, not modelled.
+
+**3. Gate I at 1 per sector makes admission actively costly.** MSTR is classified
+Technology / Software — Application, so it would occupy the **Information Technology** slot,
+competing with AAPL, MSFT, and AVGO. Under the §11.3 decision that sector holds exactly one
+position. Admitting MSTR would let a Bitcoin proxy **displace a genuinely diversifying name**,
+making the portfolio worse on the very axis v1.1 exists to improve. This argument did not
+exist when §7 was written, because Gate I was then set to 2.
+
+**The §7.3 sizing bind is unchanged and still decisive:** at a 5% notional cap with a −5%
+stop floor, MSTR risks 0.25% of NetLiq per trade. Sized legally it cannot move the portfolio;
+it is only interesting sized large, and it cannot be sized large.
+
+**The §9.8 stop-floor mechanics apply with full force.** At beta 3.54 and that range, 2×ATR
+vastly exceeds 5%, so `calc_stop` truncates the stop to −5% — a small fraction of one day's
+typical move. Repeated noise stop-outs, each consuming one of two daily trade slots.
+
+**Not affected by §11.7.** MSTR is US-domiciled (`US5949724083`, Tysons Corner, Virginia), so
+the non-US-equities ambiguity does not arise.
+
+**Status of `mstr_btc_research_v0_1` is unchanged:** `PROPOSED`, `S0`,
+`execution_scope: NONE`, `btc_execution_scope: NONE`. No promotion, no data-collection
+runtime, no allowlist change. The research track may remain documented; nothing about this
+decision forecloses revisiting it on evidence.
 
 ### 11.6 Meaning of "learning" during the paper run
 
@@ -1446,6 +1494,7 @@ independently, and the advisory layer is structurally incapable of loosening any
 | Version | Date | Changes |
 |---|---|---|
 | 0.1 | 2026-07-25 | Initial proposal — breadth expansion, regime gate, volatility targeting, Gate I sector cap, leverage rejection, MSTR/BTC disposition, paper-run validation protocol |
+| 0.6 | 2026-08-01 | **Decision 11.5 resolved — hold MSTR/BTC at `PROPOSED`.** Confirmed §7 on three strengthened grounds: the issuer self-describes as a "bitcoin treasury company", so the embedded-leverage characterisation is its stated business model rather than an inference; the realised 52-week range of $81.81–$414.36 (≈−77% from high, beta 3.54) demonstrates the compounding risk §7.2 modelled; and Gate I at 1 per sector now means admission would let a Bitcoin proxy **displace** a diversifying name in the Information Technology slot — an argument that did not exist when Gate I was 2. |
 | 0.5 | 2026-08-01 | Added **MU as a v1.2 candidate** (§11.3), noting it adds optionality within the semiconductor slot rather than breadth, since Gate I gives that sector one slot and MU correlates ~0.75–0.85 with NVDA. Raised **new open decision 11.7**: `strategy_v1.md` §3 blocks "Non-US equities" without defining whether that means listing venue or issuer domicile — NASDAQ-listed foreign-domiciled issuers such as IREN (AU) and NBIS (NL) are eligible under one reading and blocked under the other, and PRIIPs does **not** apply to direct equities, so no regulatory barrier exists. Logged a **high-volatility satellite sleeve** as a v1.3 candidate (§9.9), contingent on paper-run evidence. |
 | 0.4 | 2026-08-01 | **Decision 11.3 resolved.** Kept all 22 names and tightened Gate I from 2 to **1 position per sector** (§4.7.1): momentum clusters by sector, so a cap of 2 would let the relative-strength filter fill two slots with one bet (NVDA+AMD, JPM+BAC). **Corrected the §1.1 breadth claim**, which overstated the IR gain as 2.24× — the defensible figures from `N_eff = n/(1+(n−1)ρ̄)` are **1.24× directional** and **1.52× on the selection sleeve**, so the expansion buys selection breadth, not diversification of market risk. Updated §6.1 (Gate I imposes an indirect 11-position ceiling), §6.2 (a grandfathered position now consumes its sector's only slot), and the 19D test expectations. |
 | 0.3 | 2026-08-01 | **Decision 11.1 resolved — KEEP H4.1.** Established that H4.1 is KID/PRIIPs regulation enforced in `guard.py` and independently by IBKR, not the discretionary "prudence" block the v0.1 draft assumed, so "lift" was never a viable option. Documented that index exposure is foreclosed by two interacting rules — PRIIPs (law) and the non-US-equities rule (policy) — and identified EU-domiciled UCITS ETFs as the legal route, deferred to v1.2+ because non-US venues break the 9:30–16:00 ET session model. Recorded three corrections owed to `strategy_v1.md` at promotion. Separately fixed an H2 violation: the hardcoded `_US_ETF_BLOCKLIST` is now `regulatory baseline | YAML extensions`, where the YAML can only add symbols and never shrink the floor. |

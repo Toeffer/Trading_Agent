@@ -43,7 +43,7 @@ manifest: dict = {
 
     "proposal_identity": {
         "proposal_id": "strategy_v1_1_proposal_v0_1",
-        "proposal_version": "0.5",
+        "proposal_version": "0.6",
         "proposal_status": "PROPOSED",
         "strategy_readiness": "S0",
         "autonomy_level": 1,
@@ -350,6 +350,18 @@ manifest: dict = {
 
     "mstr_btc_disposition": {
         "recommendation": "HOLD_AT_PROPOSED",
+        "decision_confirmed": "2026-08-01",
+        "issuer_self_description": "operates as a bitcoin treasury company; offers investors varying degrees of economic exposure to Bitcoin through equity and fixed income instruments",
+        "embedded_leverage_is_stated_business_model": True,
+        "observed_2026_07_31": {
+            "price": 93.28, "week52_low": 81.81, "week52_high": 414.36,
+            "drawdown_from_high_pct": -77.5, "beta": 3.544,
+            "market_cap_usd": 30857770240, "renamed": "MicroStrategy -> Strategy Inc, August 2025",
+            "domicile": "US", "isin": "US5949724083",
+        },
+        "gate_i_conflict": "Classified Technology / Software - Application, so it would occupy the single Information Technology slot under Gate I at 1 per sector, displacing AAPL, MSFT or AVGO",
+        "sizing_bind_unchanged": "5% notional cap with a -5% stop floor gives 0.25% NL risk per trade; immaterial sized legally, and it cannot be sized large",
+        "affected_by_decision_11_7": False,
         "referenced_proposal_id": "mstr_btc_research_v0_1",
         "referenced_proposal_status_unchanged": True,
         "promotion_requested": False,
@@ -369,6 +381,9 @@ manifest: dict = {
             {"id": "11.4", "topic": "Volatility reference value",
              "resolution": "vol_reference_pct = 16, renamed from portfolio_vol_target_pct",
              "resolved_at": "design_review_2026-07-27"},
+            {"id": "11.5", "topic": "MSTR/BTC disposition",
+             "resolution": "HOLD at PROPOSED. Do not promote. Confirmed on three grounds: the issuer self-describes as a bitcoin treasury company; the realised 52-week range of 81.81 to 414.36 (about -77 percent from high, beta 3.54) demonstrates the compounding risk; and Gate I at 1 per sector means admission would let a Bitcoin proxy displace a diversifying name in the Information Technology slot.",
+             "resolved_at": "2026-08-01"},
             {"id": "11.3", "topic": "Final allowlist composition",
              "resolution": "Keep all 22 names; tighten Gate I to 1 position per sector. No substitutions: the four near-duplicate pairs are handled structurally by the cap rather than by removing names, preserving ranker optionality.",
              "resolved_at": "2026-08-01"},
@@ -377,7 +392,6 @@ manifest: dict = {
              "resolved_at": "2026-08-01"},
         ],
         "open_requiring_chris": [
-            "11.5 MSTR/BTC disposition confirmation",
             "11.6 Definition of 'learning' during the paper run",
             "11.7 'Non-US equities' in strategy_v1.md section 3: listing venue or issuer domicile?",
         ],

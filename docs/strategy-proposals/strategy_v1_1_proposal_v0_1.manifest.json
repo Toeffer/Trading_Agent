@@ -7,7 +7,7 @@
   "phase_name": "Level 1 Strategy v1.1 Design Proposal Governance Checkpoint",
   "proposal_identity": {
     "proposal_id": "strategy_v1_1_proposal_v0_1",
-    "proposal_version": "0.3",
+    "proposal_version": "0.4",
     "proposal_status": "PROPOSED",
     "strategy_readiness": "S0",
     "autonomy_level": 1,
@@ -160,6 +160,56 @@
       "from_sector_count": 3,
       "to_sector_count": 10,
       "rationale": "IR ~ IC * sqrt(BR); breadth counts independent bets, not tickers",
+      "effective_breadth": {
+        "formula": "N_eff = n / (1 + (n-1) * rho_bar)",
+        "directional_component": {
+          "note": "Raw return correlations; long-only equity beta dominates",
+          "v1_0_0": {
+            "n": 4,
+            "rho_bar": 0.65,
+            "n_eff": 1.36
+          },
+          "v1_1": {
+            "n": 22,
+            "rho_bar": 0.45,
+            "n_eff": 2.11
+          },
+          "relative_ir": 1.24
+        },
+        "selection_component": {
+          "note": "Beta-residual correlations; cross-sectional relative strength",
+          "v1_0_0": {
+            "n": 4,
+            "residual_rho_bar": 0.4,
+            "n_eff": 1.82
+          },
+          "v1_1": {
+            "n": 22,
+            "residual_rho_bar": 0.2,
+            "n_eff": 4.23
+          },
+          "relative_ir": 1.52
+        },
+        "conclusion": "The allowlist expansion buys selection breadth, not diversification of market risk. Market risk is controlled by the regime gate and inverse-vol scalar.",
+        "superseded_claim": {
+          "n_eff": 6.5,
+          "relative_ir": 2.24,
+          "note": "Asserted in proposal versions 0.1 to 0.3; overstated the gain by roughly 80 percent; corrected in 0.4"
+        },
+        "correlations_are_reference_estimates": true
+      },
+      "market_cap_verified_symbols": 14,
+      "market_cap_unverified_symbols": [
+        "AVGO",
+        "LLY",
+        "PG",
+        "HD",
+        "CAT",
+        "UNP",
+        "NEE",
+        "DUK"
+      ],
+      "market_cap_verification_note": "14 of 22 verified against live data 2026-07-31; smallest verified UNH ~376B and KO ~377B, far above the 10B threshold. Remaining 8 gated by the market-data plan; complete before 19B applies the list.",
       "applied": false,
       "applied_by": "Chris in Phase 19B only"
     },
@@ -191,8 +241,11 @@
     },
     "gate_i_sector_cap_proposed": {
       "gate_letter": "I",
-      "max_positions_per_sector": 2,
+      "max_positions_per_sector": 1,
       "applies_to": "BUY",
+      "value_rationale": "1 not 2: momentum clusters by sector, so a cap of 2 would let the relative-strength filter fill two slots with one bet. Near-duplicate pairs in the universe: NVDA/AMD, META/GOOGL, JPM/BAC, XOM/CVX.",
+      "sector_group_count": 11,
+      "indirect_position_ceiling": 11,
       "sell_exempt": true,
       "fail_mode": "closed",
       "implemented": false,
@@ -294,6 +347,12 @@
         "resolved_at": "design_review_2026-07-27"
       },
       {
+        "id": "11.3",
+        "topic": "Final allowlist composition",
+        "resolution": "Keep all 22 names; tighten Gate I to 1 position per sector. No substitutions: the four near-duplicate pairs are handled structurally by the cap rather than by removing names, preserving ranker optionality.",
+        "resolved_at": "2026-08-01"
+      },
+      {
         "id": "11.1",
         "topic": "H4.1 US-domiciled ETF BUY block",
         "resolution": "KEEP. H4.1 is KID/PRIIPs regulation enforced in guard.py and independently by IBKR, not a discretionary prudence block. Lifting it was never viable. Single-name only; index exposure remains unavailable to this EU account.",
@@ -301,13 +360,14 @@
       }
     ],
     "open_requiring_chris": [
-      "11.3 Final allowlist composition",
       "11.5 MSTR/BTC disposition confirmation",
       "11.6 Definition of 'learning' during the paper run"
     ]
   },
   "follow_up_obligations": [
     "Recalibrate vol_reference_pct from SPY median 20d realized vol over >=5 years via bridge market/bars",
+    "Recompute raw and beta-residual correlations from bridge market/bars over >=3 years and restate the section 1.1 breadth tables from measured values",
+    "Verify market capitalisation for AVGO, LLY, PG, HD, CAT, UNP, NEE and DUK before 19B applies the allowlist",
     "Correct the erroneous max-concurrent-positions row in strategy_v1.md section 8 at promotion",
     "Apply the three H4.1 corrections to strategy_v1.md sections 2 and 3 at promotion",
     "Add the phase19a CLI checkpoint command — now unblocked, main() de-duplication completed 2026-08-01",
@@ -502,6 +562,6 @@
     "algorithm": "sha256",
     "note": "proposal_document_sha256 is the SHA-256 of the proposal document bytes. deterministic_manifest_hash is the SHA-256 of this manifest serialized with sort_keys=True and ensure_ascii=False, excluding the deterministic_manifest_hash field itself."
   },
-  "proposal_document_sha256": "c18afa32c03b866fa23f165638054105dc3c20526a88a8ec7c85cda36f0b35c5",
-  "deterministic_manifest_hash": "02af17ddfb10dea5786ded666273d3fed009817cd380794369d5b10c4f023fe8"
+  "proposal_document_sha256": "30684d3f762daaa21e77b8256d8fa6e8228261b73c1d498396bc2575728748c7",
+  "deterministic_manifest_hash": "176c2dcd3c551c9e47cc627f2c05071dd73227c09843f5852a268c0844828cdc"
 }

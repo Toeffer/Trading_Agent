@@ -1,9 +1,9 @@
 # Strategy v1.1 Proposal — Breadth, Regime Gating, and Volatility Targeting
 
 > **Proposal ID:** `strategy_v1_1_proposal_v0_1`
-> **Proposal Version:** `0.3`
+> **Proposal Version:** `0.4`
 > **Design Review:** `COMPLETE` (2026-07-27) — 6 defects found and corrected; see Version History
-> **Open Decisions:** 3 of 6 resolved (11.1, 11.2, 11.4); 11.3, 11.5, 11.6 remain open
+> **Open Decisions:** 4 of 6 resolved (11.1, 11.2, 11.3, 11.4); 11.5 and 11.6 remain open
 > **Proposal Status:** `PROPOSED`
 > **Strategy Readiness:** `S0`
 > **Autonomy Level:** `1`
@@ -63,19 +63,61 @@ US mega-cap technology or semiconductor names with high pairwise correlation
 IR ≈ IC × √BR
 ```
 
-where `BR` counts **independent** bets, not tickers. Four names inside one factor is
-approximately **1.3 independent bets**. The strategy is, in effect, a single leveraged
-long-tech position expressed four ways.
+where `BR` counts **independent** bets, not tickers. Four correlated names inside one
+factor is close to a single bet expressed four ways.
 
-| Universe change | Tickers | Approx. independent bets | Relative IR |
-|---|---|---|---|
-| v1.0.0 today | 4 | ~1.3 | 1.00× |
-| +6 more tech names | 10 | ~1.8 | ~1.18× |
-| +6 names across new sectors | 10 | ~4.2 | ~1.80× |
-| **v1.1 proposal (22 / 10 sectors)** | **22** | **~6.5** | **~2.24×** |
+> **Design-review correction (v0.4).** Earlier drafts claimed 22 names yields ~6.5
+> independent bets and a **2.24×** IR improvement. Those figures do not survive the
+> standard effective-breadth formula and overstated the gain by roughly 80%. The
+> defensible figures are below. The expansion is still clearly worth making — but for a
+> different reason than the original text gave.
 
-The dominant lever is **decorrelation, not ticker count**. This is the single
-highest-value change available, requires no new data infrastructure, and is a YAML edit.
+#### 1.1.1 Effective breadth, computed
+
+For an equal-weighted portfolio of `n` assets with average pairwise correlation `ρ̄`:
+
+```
+N_eff = n / ( 1 + (n − 1)·ρ̄ )
+```
+
+The correlation that applies depends on **what kind of bet is being made**, and v1.1 makes
+two different kinds.
+
+**Directional component** — long-only equity exposure. Raw return correlations apply,
+because every position is fundamentally the same bet on equity beta.
+
+| Portfolio | n | ρ̄ *(reference)* | `N_eff` | Relative IR |
+|---|---|---|---|---|
+| v1.0.0 (4 mega-cap tech) | 4 | 0.65 | **1.36** | 1.00× |
+| v1.1 (22 across 10 sectors) | 22 | 0.45 | **2.11** | **1.24×** |
+
+**Selection component** — cross-sectional relative strength (§4.3). This bets on *relative*
+performance, so market beta largely cancels and residual correlations apply.
+
+| Portfolio | n | residual ρ̄ *(reference)* | `N_eff` | Relative IR |
+|---|---|---|---|---|
+| v1.0.0 (4 mega-cap tech) | 4 | 0.40 | **1.82** | 1.00× |
+| v1.1 (22 across 10 sectors) | 22 | 0.20 | **4.23** | **1.52×** |
+
+#### 1.1.2 What this means
+
+**The allowlist expansion buys selection breadth, not diversification of market risk.**
+Adding names to a long-only book barely diversifies it — 1.36 → 2.11 effective bets — because
+the dominant risk is shared equity beta. Market risk is the job of the regime gate (§4.5)
+and the inverse-vol scalar (§4.6), not of the ticker count.
+
+Where the expansion genuinely pays is the ranker: going from 4 to 22 names takes the
+cross-sectional sleeve from ~1.8 to ~4.2 independent bets, roughly a **1.5× improvement in
+information ratio on that sleeve**. It also improves rank resolution — the top-50% filter
+selects from 11 candidates instead of 2.
+
+The dominant lever remains **decorrelation, not ticker count**. The change requires no new
+data infrastructure and is a YAML edit. But it should be justified on selection quality, and
+the regime and volatility machinery — not breadth — is what controls drawdown.
+
+**Calibration requirement:** all correlations here are *(reference)* estimates. Recompute
+raw and beta-residual correlations from bridge `market/bars` over ≥3 years before promotion,
+and restate both tables from measured values.
 
 ### 1.2 Contradiction in the current risk envelope
 
@@ -404,16 +446,46 @@ Gate I: reject BUY if the candidate's GICS sector already has
         ≥ max_positions_per_sector open positions
 ```
 
-Proposed value: **`max_positions_per_sector = 2`**.
+**Value: `max_positions_per_sector = 1`.** Approved 2026-08-01 (§11.3).
 
 Semiconductors are treated as a **distinct sector** from Information Technology for this
 gate, because NVDA/AMD correlation is materially higher than either against MSFT
-*(reference)*.
+*(reference)*. That yields **11 sector groups** across the 22 names.
 
-A direct pairwise correlation cap (e.g. reject if 60-day correlation to any open position
-> 0.80) is strictly more precise, but requires a maintained correlation matrix and more
-data plumbing. Per design principle 3 (fewer parameters), the sector cap is proposed for
-v1.1 and the correlation cap is deferred to **v1.2 as a candidate**.
+#### 4.7.1 Why 1 and not 2
+
+An earlier draft proposed 2. The problem is an interaction with §4.3: **momentum clusters by
+sector.** In a semis-led rally the relative-strength filter will rank NVDA *and* AMD in the
+top half at the same time, and a cap of 2 would happily admit both — one bet occupying two
+slots at twice the intended risk for that bet. That is precisely the failure the breadth
+argument exists to prevent.
+
+The proposed universe contains four such near-duplicate pairs:
+
+| Pair | Sector group | ρ̄ *(reference)* | Effectively |
+|---|---|---|---|
+| NVDA / AMD | Semiconductors | ~0.80 | one bet |
+| META / GOOGL | Communication Services | ~0.70 | one bet |
+| JPM / BAC | Financials | ~0.80 | one bet |
+| XOM / CVX | Energy | ~0.85 | one bet |
+
+`CAT`/`UNP` (machinery vs rail) and `AMZN`/`HD` (e-commerce vs home improvement) are
+genuinely different businesses and are unaffected either way.
+
+**The cap costs almost nothing.** At 5% per position against a 30% ceiling, roughly 6
+full-size positions fit, spread across 11 sector groups. A 1-per-sector cap therefore binds
+in exactly one situation — when the ranker wants two correlated winners from the same sector
+— which is the situation it exists to prevent. It does **not** reduce choice: all 22 names
+remain rankable, and the sector simply yields its single slot to the highest-ranked
+candidate.
+
+#### 4.7.2 Deferred alternative
+
+A direct pairwise correlation cap (reject if 60-day correlation to any open position > 0.80)
+is strictly more precise — it would catch cross-sector duplicates such as a utility and a
+REIT moving together on rates. It requires a maintained correlation matrix and more data
+plumbing, so per design principle 3 (fewer parameters) it is deferred to **v1.2 as a
+candidate**. The sector cap is the robust approximation.
 
 ### 4.8 Position sizing — unchanged
 
@@ -523,7 +595,7 @@ interpretable without knowing its universe.
 | Max total exposure (hard ceiling) | 30% NL | **30% NL** (unchanged) | Gate F (`guard.py:1466`) |
 | Effective exposure budget (advisory) | n/a | **30% × gross_scalar × regime_mult** | Advisory layer |
 | Max concurrent positions | "2" (wrong) | **Unconstrained** — see §6.1 | **Not gated** |
-| Max positions per sector | none | **2** | Gate I (**new**) |
+| Max positions per sector | none | **1** | Gate I (**new**) |
 | Max trades per day | 2 | **2** (unchanged) | Gate D (`guard.py:1348`) |
 | Daily loss halt | −1% NL | **−1% NL** (unchanged) | Gate E (`guard.py:1357`) |
 | Weekly loss halt | −3% NL | **−3% NL** (unchanged) | Gate E |
@@ -567,9 +639,11 @@ must be corrected to "Not directly constrained — bounded indirectly by Gates B
 v1.1 is promoted. Until then, v1.0.0 retains the incorrect row, and this document is the
 record of the defect.
 
-Note that Gate I (§4.7) *does* impose a real structural limit — at most 2 positions per
-sector across 10 sectors — but that is a concentration constraint, not a count cap, and it
-binds on sector composition rather than on portfolio size.
+Note that Gate I (§4.7) *does* impose an indirect structural ceiling: at **1 position per
+sector** across **11 sector groups**, no more than 11 positions can be held simultaneously.
+That ceiling is not the binding constraint in practice — Gate F's 30% exposure limit binds
+first at roughly 6 full-size positions — and it constrains sector *composition* rather than
+portfolio size. The point stands: no gate caps position count directly.
 
 ### 6.2 Transition of existing positions
 
@@ -587,10 +661,14 @@ are **grandfathered**:
 | Symbol no longer in the allowlist | Position may still be **closed** (SELL is close-only and Gate A applies to entries) |
 
 **Worked example.** The position recorded in the CLAUDE.md §10 snapshot — META, 72 shares —
-is Communication Services. On activation it occupies **1 of the 2** Gate I slots for that
-sector, so at most one further Communication Services entry (GOOGL) could be added. META
-itself is not re-tested against the RS rank or regime gate, and its existing protective stop
-stands unchanged.
+is Communication Services. Under `max_positions_per_sector = 1` it occupies **the only** Gate
+I slot for that sector, so **no further Communication Services entry is possible while it is
+held** — GOOGL would be rejected by Gate I even if it topped the RS rank. META itself is not
+re-tested against the RS rank or regime gate, and its existing protective stop stands
+unchanged.
+
+This is the intended behavior: a grandfathered position consumes its sector's slot exactly
+as a new one would, so activation cannot quietly double a sector bet.
 
 **Verify against live state, not this document.** Per CLAUDE.md §0, position data here is a
 stale snapshot. Confirm actual holdings via `ibkr_positions` or `GET /positions` at
@@ -776,9 +854,10 @@ symbol_sectors:
   NEE: UTILITIES
   DUK: UTILITIES
 
-# NEW — Gate I parameter (§4.7)
+# NEW — Gate I parameter (§4.7). Value 1: momentum clusters by sector, so a
+# cap of 2 would let the ranker fill two slots with one bet (NVDA+AMD).
 max_positions_per_sector:
-  value: 2
+  value: 1
 
 # NEW — advisory-only section; guard does NOT enforce these
 # Resolves the CLAUDE.md §5 "H3 follow-up" note by giving advisory
@@ -883,7 +962,7 @@ Following the existing convention (`tests/test_phase18b_level1_data_schema_provi
 | `test_phase19a_strategy_v1_1_proposal_governance.py` | Proposal metadata, status `PROPOSED`, `execution_scope: NONE`, doc hashes, canonical v1 unchanged |
 | `test_phase19b_allowlist_expansion.py` | 22 symbols load; every symbol has a sector; `mode: explicit_list` preserved; unknown symbol still fails Gate A |
 | `test_phase19c_advisory_vol_regime.py` | Vol math on known series; regime state truth table (4 cases); `gross_scalar` clamped to [0.25, 1.0]; **effective budget never exceeds YAML ceiling** (property test) |
-| `test_phase19d_gate_i_sector_cap.py` | 3rd position in a sector rejected; 2nd allowed; SELL exempt; unmapped symbol fails closed; semis treated as distinct from IT |
+| `test_phase19d_gate_i_sector_cap.py` | 2nd position in a sector rejected; 1st allowed; SELL exempt; unmapped symbol fails closed; semis treated as distinct from IT; grandfathered position occupies its sector slot |
 | `test_phase19e_invariant_preservation.py` | All CLAUDE.md §3 invariants still hold; `/order` still 403; switches still default off; sizing formula unchanged |
 
 **Required property test:** for randomized `σ̂_ref ∈ (0, 200%]` and all three regime
@@ -1029,14 +1108,14 @@ Record results in `docs/KPI_DASHBOARD.md` conventions and gate promotion on
 
 None of these can be resolved by Werner. Each materially shapes the design.
 
-**Status (v0.3):** 11.1, 11.2, and 11.4 are **RESOLVED**. 11.3, 11.5, and 11.6 remain
+**Status (v0.4):** 11.1, 11.2, 11.3, and 11.4 are **RESOLVED**. 11.5 and 11.6 remain
 **OPEN** and block promotion.
 
 | # | Decision | Status |
 |---|---|---|
 | 11.1 | H4.1 ETF BUY block | **RESOLVED** — keep; it is PRIIPs law, not preference |
 | 11.2 | Maximum concurrent positions | **RESOLVED** — unconstrained |
-| 11.3 | Final allowlist composition | **OPEN** |
+| 11.3 | Final allowlist composition | **RESOLVED** — 22 names, Gate I at 1/sector |
 | 11.4 | Volatility reference value | **RESOLVED** — 16%, renamed |
 | 11.5 | MSTR/BTC disposition | **OPEN** |
 | 11.6 | Meaning of "learning" | **OPEN** |
@@ -1116,11 +1195,40 @@ already constrain, and would fail `strategy_v1.md` §15 anti-overfit check 6.
 
 Follow-up obligation: correct the erroneous row in `strategy_v1.md` §8 when v1.1 is promoted.
 
-### 11.3 Final allowlist
+### 11.3 Final allowlist — RESOLVED
 
-The 22 names in §4.2 are a proposal. Chris owns the list. Considerations: is 22 too many
-to follow attentively; should any sector be dropped; should the semiconductor split be
-retained.
+**Decision: keep all 22 names; tighten Gate I to 1 position per sector.**
+Approved 2026-08-01.
+
+**On list size.** 22 is retained. The concern that it is "too many to follow attentively"
+does not survive inspection of the workflow: Hermes ranks the universe and surfaces a single
+proposal, so the review burden is one candidate per cycle regardless of universe size. The
+real costs are 22 bar requests per cycle plus SPY — comfortably inside IBKR's historical-data
+pacing limits — and more opportunities for a data-quality failure, which §4.10's
+"<50% valid → `NO_TRADE`" rule already handles. The benefit is rank resolution: the top-50%
+filter selects from 11 candidates instead of 2.
+
+**On size verification.** Market capitalisation was checked against live data for 14 of the
+22 names on 2026-07-31; the smallest verified were UNH (~$376B) and KO (~$377B), both far
+above the `strategy_v1.md` §2 threshold of $10B. The remaining 8 (AVGO, LLY, PG, HD, CAT,
+UNP, NEE, DUK) could not be verified in-session because the market-data plan gated further
+requests. They are unambiguous large caps, but **the check should be completed before 19B
+applies the list.**
+
+**On the semiconductor split.** Retained. Treating semis as distinct from Information
+Technology is what makes Gate I able to separate NVDA/AMD from MSFT/AAPL, giving 11 sector
+groups rather than 10.
+
+**On composition.** No symbol substitutions. The four near-duplicate pairs identified in
+§4.7.1 — NVDA/AMD, META/GOOGL, JPM/BAC, XOM/CVX — are handled structurally by the 1-per-sector
+cap rather than by removing names. Keeping both members of each pair preserves optionality:
+the ranker chooses whichever is stronger, and the cap ensures only one is held.
+
+**Deferred:** substituting BAC for a differentiated financial (V or BRK.B) would give the
+Financials sector two genuinely different drivers rather than two money-center banks,
+improving the *quality* of the choice within that sector rather than the risk of the
+resulting position. Logged as a v1.2 candidate; not required, because Gate I already prevents
+holding both.
 
 ### 11.4 Volatility reference value — RESOLVED
 
@@ -1256,5 +1364,6 @@ independently, and the advisory layer is structurally incapable of loosening any
 | Version | Date | Changes |
 |---|---|---|
 | 0.1 | 2026-07-25 | Initial proposal — breadth expansion, regime gate, volatility targeting, Gate I sector cap, leverage rejection, MSTR/BTC disposition, paper-run validation protocol |
+| 0.4 | 2026-08-01 | **Decision 11.3 resolved.** Kept all 22 names and tightened Gate I from 2 to **1 position per sector** (§4.7.1): momentum clusters by sector, so a cap of 2 would let the relative-strength filter fill two slots with one bet (NVDA+AMD, JPM+BAC). **Corrected the §1.1 breadth claim**, which overstated the IR gain as 2.24× — the defensible figures from `N_eff = n/(1+(n−1)ρ̄)` are **1.24× directional** and **1.52× on the selection sleeve**, so the expansion buys selection breadth, not diversification of market risk. Updated §6.1 (Gate I imposes an indirect 11-position ceiling), §6.2 (a grandfathered position now consumes its sector's only slot), and the 19D test expectations. |
 | 0.3 | 2026-08-01 | **Decision 11.1 resolved — KEEP H4.1.** Established that H4.1 is KID/PRIIPs regulation enforced in `guard.py` and independently by IBKR, not the discretionary "prudence" block the v0.1 draft assumed, so "lift" was never a viable option. Documented that index exposure is foreclosed by two interacting rules — PRIIPs (law) and the non-US-equities rule (policy) — and identified EU-domiciled UCITS ETFs as the legal route, deferred to v1.2+ because non-US venues break the 9:30–16:00 ET session model. Recorded three corrections owed to `strategy_v1.md` at promotion. Separately fixed an H2 violation: the hardcoded `_US_ETF_BLOCKLIST` is now `regulatory baseline | YAML extensions`, where the YAML can only add symbols and never shrink the floor. |
 | 0.2 | 2026-07-27 | **Design review applied.** Six defects corrected. §6.1: withdrew the incorrect "6 concurrent positions" claim — position count is unconstrained (§11.2 resolved). §4.6/§4.6.1: renamed `portfolio_vol_target_pct` → `vol_reference_pct` and corrected 12% → 16%; the earlier value was mislabeled and permanently binding (§11.4 resolved). §4.10 added: data-quality thresholds and fail-safe rules for the new signals. §6.2 added: grandfathering of existing positions. §9.6 added: operator CLI command, blocked pending `main()` de-duplication. §9.7 added: reverse-order rollback procedure. Gate letter I verified free against `guard.py`. YAML backward compatibility verified against the rules loader. |

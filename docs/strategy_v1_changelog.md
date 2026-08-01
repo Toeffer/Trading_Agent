@@ -79,7 +79,7 @@ what is pending against which version.
 |---|---|
 | Proposal | `docs/strategy-proposals/STRATEGY_V1_1_PROPOSAL_v0_1.md` |
 | Proposal ID | `strategy_v1_1_proposal_v0_1` |
-| Proposal version | `0.3` |
+| Proposal version | `0.4` |
 | Manifest | `docs/strategy-proposals/strategy_v1_1_proposal_v0_1.manifest.json` |
 | Phase | 19A |
 | Readiness | S0 |
@@ -95,7 +95,7 @@ what is pending against which version.
 | Regime gate | `RISK_ON` / `CAUTION` / `RISK_OFF` on a read-only SPY reference |
 | Inverse-vol scalar | `clamp(vol_reference_pct / σ̂_ref, 0.25, 1.00)` applied to the advisory exposure budget |
 | Cross-sectional filter | 60-day relative-strength top-half requirement |
-| Gate I | Sector concentration cap, max 2 positions per sector |
+| Gate I | Sector concentration cap, max **1** position per sector (11 sector groups) |
 | Leverage | Formally rejected in all forms, including instrument-embedded |
 | Unchanged | Sizing formula, `calc_stop`, all YAML risk ceilings, all CLAUDE.md §3 invariants |
 
@@ -110,9 +110,31 @@ what is pending against which version.
 | 5 | Implementation plan omitted the operator CLI checkpoint command required by convention | Added §9.6. Was blocked pending `main()` de-duplication; **that blocker is now resolved** (see §5) |
 | 6 | This changelog file did not exist despite being referenced | Created (this file) |
 
+**Decision 11.3 — final allowlist (2026-08-01):** keep all 22 names, tighten Gate I from
+2 to **1 position per sector**. Momentum clusters by sector, so a cap of 2 would let the
+relative-strength filter fill two slots with a single bet — the universe contains four
+near-duplicate pairs (NVDA/AMD ~0.80, META/GOOGL ~0.70, JPM/BAC ~0.80, XOM/CVX ~0.85).
+No substitutions: keeping both members of each pair preserves ranker optionality while the
+cap ensures only one is held.
+
+**Breadth claim corrected (2026-08-01).** Proposal versions 0.1–0.3 asserted that 22 names
+yields ~6.5 independent bets and a **2.24×** information-ratio improvement. Those figures do
+not survive `N_eff = n / (1 + (n−1)·ρ̄)` and overstated the gain by roughly 80%.
+
+| Component | Correlation basis | v1.0.0 `N_eff` | v1.1 `N_eff` | Relative IR |
+|---|---|---|---|---|
+| Directional (long-only beta) | raw returns | 1.36 | 2.11 | **1.24×** |
+| Selection (cross-sectional RS) | beta-residual | 1.82 | 4.23 | **1.52×** |
+
+The correct conclusion is that the allowlist expansion buys **selection breadth, not
+diversification of market risk**. Market risk is controlled by the regime gate and the
+inverse-vol scalar. The expansion remains worth making, for a different reason than
+originally stated. All correlations are reference estimates pending recalculation from
+bridge `market/bars`.
+
 **Promotion blockers remaining:**
 
-1. Open decisions 11.3 (final allowlist), 11.5 (MSTR/BTC), 11.6 (definition of "learning"). **11.1 resolved 2026-08-01** (keep H4.1), 11.2 and 11.4 resolved at design review.
+1. Open decisions 11.5 (MSTR/BTC) and 11.6 (definition of "learning"). **11.1 and 11.3 resolved 2026-08-01**; 11.2 and 11.4 resolved at design review.
 2. Anti-overfit checks 2, 4, and 7 unmet — no out-of-sample or walk-forward evidence exists
 3. Phases 19B–19E not started
 4. Paper-run validation §10.1 not performed

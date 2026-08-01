@@ -1,9 +1,9 @@
 # Strategy v1.1 Proposal — Breadth, Regime Gating, and Volatility Targeting
 
 > **Proposal ID:** `strategy_v1_1_proposal_v0_1`
-> **Proposal Version:** `0.6`
+> **Proposal Version:** `0.7`
 > **Design Review:** `COMPLETE` (2026-07-27) — 6 defects found and corrected; see Version History
-> **Open Decisions:** 5 of 7 resolved (11.1–11.5); 11.6 and 11.7 remain open
+> **Open Decisions:** 6 of 7 resolved (11.1–11.5, 11.7); only 11.6 remains open
 > **Proposal Status:** `PROPOSED`
 > **Strategy Readiness:** `S0`
 > **Autonomy Level:** `1`
@@ -1156,8 +1156,8 @@ Record results in `docs/KPI_DASHBOARD.md` conventions and gate promotion on
 
 None of these can be resolved by Werner. Each materially shapes the design.
 
-**Status (v0.6):** 11.1, 11.2, 11.3, 11.4, and 11.5 are **RESOLVED**. 11.6 and 11.7
-remain **OPEN** and block promotion.
+**Status (v0.7):** 11.1–11.5 and 11.7 are **RESOLVED**. Only **11.6** remains open,
+and it blocks promotion.
 
 | # | Decision | Status |
 |---|---|---|
@@ -1167,7 +1167,7 @@ remain **OPEN** and block promotion.
 | 11.4 | Volatility reference value | **RESOLVED** — 16%, renamed |
 | 11.5 | MSTR/BTC disposition | **RESOLVED** — hold at `PROPOSED` |
 | 11.6 | Meaning of "learning" | **OPEN** |
-| 11.7 | "Non-US equities" — venue or domicile? | **OPEN** — raised 2026-08-01 |
+| 11.7 | "Non-US equities" — venue or domicile? | **RESOLVED** — venue + jurisdiction set |
 
 ### 11.1 H4.1 — the ETF BUY block — RESOLVED
 
@@ -1299,33 +1299,91 @@ Outstanding obligation: this remains a *reference* estimate. Recompute SPY's med
 realized volatility over ≥5 years from bridge `market/bars` and set the constant to that
 measured value before promotion. Do not optimize it against strategy P&L.
 
-### 11.7 "Non-US equities" — listing venue or issuer domicile? — OPEN
+### 11.7 "Non-US equities" — listing venue or issuer domicile? — RESOLVED
 
-**Raised 2026-08-01. Blocks nothing in v1.1 as proposed, but must be resolved before 19B
-applies the allowlist, because it governs eligibility for a whole class of instruments.**
+**Decision: venue **plus** an approved-jurisdiction set. Enforcement stays at Gate A.**
+Approved 2026-08-01.
 
-`strategy_v1.md` §3 hard-blocks "Non-US equities" without defining the term. Two readings
-give opposite answers for NASDAQ-listed, foreign-domiciled issuers:
+`strategy_v1.md` §3 hard-blocked "Non-US equities" without defining the term, so
+NASDAQ-listed foreign-domiciled issuers were eligible under one reading and blocked under
+the other.
 
-| Reading | IREN (AU) / NBIS (NL) | Consequence |
+#### 11.7.1 Why neither pure reading works
+
+| Reading | IREN (AU) / NBIS (NL) | Also admits |
 |---|---|---|
-| **Listing venue** | Eligible — both are NASDAQ Global Select | Opens a large class of US-listed foreign issuers |
-| **Issuer domicile** | Blocked — ISINs `AU0000185993`, `NL0009805522` | Current de facto behavior |
+| Issuer domicile | blocked | — |
+| Listing venue | eligible | **VIE structures, HFCAA-exposed issuers, semi-annual-reporting FPIs** |
 
-Operationally the two are indistinguishable from US stocks: USD-denominated, US regular
-trading hours, `isAdr: false` (ordinary shares, no depositary fees), no FX conversion beyond
-the existing EUR/USD handling.
+The domicile reading excludes a large class of legitimate developed-market issuers for no
+risk-based reason. The venue reading is more permissive than it appears: it admits
+Chinese variable-interest-entity structures — where the holder owns a Cayman shell with
+contractual claims rather than the operating company — on the same rule that admits a Dutch
+cloud provider. Those are different risk classes and should not share a gate.
 
-**PRIIPs does not apply here.** That regime covers packaged retail products — ETFs,
-structured products — not direct equities. So unlike H4.1 (§11.1), there is **no regulatory
-barrier**; this is purely a policy choice.
+#### 11.7.2 Admission criteria
 
-Considerations that survive either reading: foreign-domiciled issuers can carry dividend
-withholding and differing disclosure regimes. Both names in question pay no dividend, so that
-consideration is currently moot but would apply to other candidates.
+A symbol may be considered for the allowlist only if **all** hold, in addition to every
+existing `strategy_v1.md` §2/§3 criterion (>$10B, non-penny, liquid, not an ETF, long-only):
 
-**Werner cannot resolve this** — it is a scope decision about the mandate, not a technical
-question.
+| # | Criterion | Rationale |
+|---|---|---|
+| 1 | Listed on a US exchange, USD-denominated | Preserves the 9:30–16:00 ET session model and adds no FX beyond EUR/USD |
+| 2 | **`isAdr: false`** — ordinary shares, not depositary receipts | ADRs carry custodian fees and different settlement mechanics |
+| 3 | Issuer domiciled in the **approved jurisdiction set** | Predictable disclosure and legal regime |
+| 4 | **No VIE or equivalent contractual-control structure** | The holder must own the operating company, not a claim on it |
+
+**Approved jurisdiction set** — developed markets with a US tax treaty and PCAOB audit
+access. That principle governs; the list below is its current instantiation:
+
+```
+US, CA, GB, IE, NL, DE, FR, CH, SE, DK, NO, FI, AU, NZ, JP, IL
+```
+
+#### 11.7.3 Enforcement stays at Gate A
+
+**No new gate.** `guard.py` contains no domicile, country, ISIN, or ADR check — verified
+2026-08-01. Gate A (`guard.py:1305`) is pure membership against the YAML allowlist and
+**fails closed**, so nothing trades unless explicitly added.
+
+The system's existing division is deliberate and is preserved: **code enforces what is
+legally mandated** (H4.1/PRIIPs, §11.1), **the allowlist enforces preferences.** A
+contract-level domicile check would be a Tier-1 guard change requiring contract data that may
+be unavailable at preflight, introducing a fail-open path on lookup failure — real added risk
+to defend against a mistaken YAML edit that Chris performs deliberately under RUNBOOK §L8.
+
+The criteria in §11.7.2 are therefore **admission criteria for the allowlist**, applied when
+a symbol is proposed, not a runtime gate.
+
+#### 11.7.4 Consequences
+
+**IREN and NBIS become eligible for *consideration*, not admitted.** Both satisfy criteria
+1–4 (NASDAQ Global Select, USD, `isAdr: false`, AU and NL domiciles, no VIE). Neither enters
+the v1.1 allowlist, which is frozen at the 22 US-domiciled names per §11.3. Both are logged
+as v1.2 candidates subject to the standard checks, and for IREN specifically:
+
+- **Market-cap stability.** At $13.1B it clears the $10B floor, but its 52-week low of $14.72
+  against a $76.87 high implies a cap well under $10B within the year. A name that crosses
+  the eligibility threshold intra-year needs an explicit rule — measured when?
+- **BTC-proxy test outstanding.** Rolling BTC correlation and beta must be computed before
+  admission (§11.3). A pivot in revenue mix does not establish a pivot in price behavior.
+
+**Reporting cadence caveat.** Foreign Private Issuers file 20-F annually and frequently
+report semi-annually rather than quarterly. This is **irrelevant to v1.1**, whose signals are
+entirely price-based (§4.3: SMA, volume, structure, relative strength, ATR). It would
+materially degrade any future Hermes filing- or earnings-language sleeve — fewer and staler
+observations. Recorded so that sleeve's design accounts for it.
+
+**Tax treatment is out of scope for this document.** Dividend withholding differs by issuer
+domicile, and US estate-tax situs treatment of foreign-issuer shares differs from US-issuer
+shares. Both are moot for IREN and NBIS (neither pays a dividend) but apply to future
+candidates. **Confirm with a tax advisor** — these are not determinations Werner should make.
+
+#### 11.7.5 Correction owed to `strategy_v1.md` at promotion
+
+§3's bare "Non-US equities" row must be replaced with the §11.7.2 criteria. Phase 19A cannot
+modify the canonical strategy, so this joins the §11.1.2 obligations. Closes
+`V1_DEFECT_NON_US_AMBIGUITY`.
 
 ### 11.5 MSTR / BTC — RESOLVED
 
@@ -1494,6 +1552,7 @@ independently, and the advisory layer is structurally incapable of loosening any
 | Version | Date | Changes |
 |---|---|---|
 | 0.1 | 2026-07-25 | Initial proposal — breadth expansion, regime gate, volatility targeting, Gate I sector cap, leverage rejection, MSTR/BTC disposition, paper-run validation protocol |
+| 0.7 | 2026-08-01 | **Decision 11.7 resolved.** Defined "Non-US equities" as **venue plus an approved-jurisdiction set** rather than either pure reading: the domicile reading excluded legitimate developed-market issuers for no risk-based reason, while the pure venue reading would have admitted VIE structures and HFCAA-exposed issuers on the same rule. Added four admission criteria (US-listed and USD, `isAdr: false`, approved domicile, no VIE) and a 16-jurisdiction set. **Enforcement stays at Gate A** — verified that `guard.py` has no domicile check and that Gate A fails closed, preserving the division where code enforces legal mandates and the allowlist enforces preferences. IREN and NBIS become eligible for *consideration* as v1.2 candidates, not admitted; v1.1 stays frozen at 22 US names. |
 | 0.6 | 2026-08-01 | **Decision 11.5 resolved — hold MSTR/BTC at `PROPOSED`.** Confirmed §7 on three strengthened grounds: the issuer self-describes as a "bitcoin treasury company", so the embedded-leverage characterisation is its stated business model rather than an inference; the realised 52-week range of $81.81–$414.36 (≈−77% from high, beta 3.54) demonstrates the compounding risk §7.2 modelled; and Gate I at 1 per sector now means admission would let a Bitcoin proxy **displace** a diversifying name in the Information Technology slot — an argument that did not exist when Gate I was 2. |
 | 0.5 | 2026-08-01 | Added **MU as a v1.2 candidate** (§11.3), noting it adds optionality within the semiconductor slot rather than breadth, since Gate I gives that sector one slot and MU correlates ~0.75–0.85 with NVDA. Raised **new open decision 11.7**: `strategy_v1.md` §3 blocks "Non-US equities" without defining whether that means listing venue or issuer domicile — NASDAQ-listed foreign-domiciled issuers such as IREN (AU) and NBIS (NL) are eligible under one reading and blocked under the other, and PRIIPs does **not** apply to direct equities, so no regulatory barrier exists. Logged a **high-volatility satellite sleeve** as a v1.3 candidate (§9.9), contingent on paper-run evidence. |
 | 0.4 | 2026-08-01 | **Decision 11.3 resolved.** Kept all 22 names and tightened Gate I from 2 to **1 position per sector** (§4.7.1): momentum clusters by sector, so a cap of 2 would let the relative-strength filter fill two slots with one bet (NVDA+AMD, JPM+BAC). **Corrected the §1.1 breadth claim**, which overstated the IR gain as 2.24× — the defensible figures from `N_eff = n/(1+(n−1)ρ̄)` are **1.24× directional** and **1.52× on the selection sleeve**, so the expansion buys selection breadth, not diversification of market risk. Updated §6.1 (Gate I imposes an indirect 11-position ceiling), §6.2 (a grandfathered position now consumes its sector's only slot), and the 19D test expectations. |

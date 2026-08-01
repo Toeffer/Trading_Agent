@@ -1,7 +1,7 @@
 # Strategy v1.1 Proposal — Breadth, Regime Gating, and Volatility Targeting
 
 > **Proposal ID:** `strategy_v1_1_proposal_v0_1`
-> **Proposal Version:** `0.8`
+> **Proposal Version:** `0.9`
 > **Design Review:** `COMPLETE` (2026-07-27) — 6 defects found and corrected; see Version History
 > **Open Decisions:** **all 7 resolved** (11.1–11.7)
 > **Proposal Status:** `PROPOSED`
@@ -1145,8 +1145,9 @@ Logged for later analysis, explicitly **not** used to accept or reject the strat
 **Written and committed before the run starts.** Its purpose is to fix the interpretation of
 results before the results exist, so that outcomes cannot be rationalised after the fact.
 
-**Artifact:** `docs/paper-runs/<run-id>-preregistration.md`, committed and its SHA-256
-recorded before the first cycle. Amending it after the run begins **voids the run** as
+**Artifact:** `docs/paper-runs/<run-id>-preregistration.md`, copied from
+`TEMPLATE-preregistration.md`, committed, and sealed via
+`scripts/seal-preregistration.py` before the first cycle. Amending it after the run begins **voids the run** as
 evidence — start a new one instead.
 
 **Required content:**
@@ -1618,7 +1619,7 @@ This proposal **does not** and **must not**:
 
 To move from `PROPOSED` to active `v1.1.0`:
 
-1. **Chris's explicit approval** of this document
+1. ~~**Chris's explicit approval** of this document~~ — **GRANTED 2026-08-01** (design and decisions only; not execution)
 2. **Open decisions §11 resolved** — at minimum 11.1, 11.2, 11.3
 3. **Phase 19B applied by Chris** — YAML allowlist and advisory config
 4. **Phase 19C and 19D implemented** — 19D under a Tier-1 model with a git-tagged commit
@@ -1674,6 +1675,7 @@ independently, and the advisory layer is structurally incapable of loosening any
 | Version | Date | Changes |
 |---|---|---|
 | 0.1 | 2026-07-25 | Initial proposal — breadth expansion, regime gate, volatility targeting, Gate I sector cap, leverage rejection, MSTR/BTC disposition, paper-run validation protocol |
+| 0.9 | 2026-08-01 | Recorded **Chris's design approval** of the proposal and all seven decisions, satisfying promotion requirements 1 and 2. All `NOT_APPROVED_FOR_*` flags remain true — this approves the design, not execution, and Phase 19B remains Chris's own action under invariant 6. Added the paper-run pre-registration infrastructure: `docs/paper-runs/` with a README and template, and `scripts/seal-preregistration.py` to fix the document's SHA-256 before the first cycle. Fixed the CI push trigger, which did not match `claude/*` and so had never run on this branch. |
 | 0.8 | 2026-08-01 | **Decision 11.6 resolved — the last open decision.** Defined learning as **falsification and calibration**, with P&L, win rate and paper Sharpe recorded but formally excluded as decision inputs. Added a convergence table distinguishing what the run can resolve (deterministic properties at n=1; slippage and fill quality at ~30–50) from what it cannot (Sharpe, drawdown quantiles). Reframed the §10.1 checks as **the primary learning instrument**, not secondary plumbing validation. Identified **the ratchet** — repeated review-and-adjust is in-sample optimisation by hand, invisible to §15, and made worse by an assistant's fluency at explaining noise — and added a mandatory **pre-registration protocol** (§10.4) with a one-revision-per-window budget. Verified no autonomous learning channel exists in `hermes_advisory.py`, and recorded that the property is incidental rather than guaranteed. |
 | 0.7 | 2026-08-01 | **Decision 11.7 resolved.** Defined "Non-US equities" as **venue plus an approved-jurisdiction set** rather than either pure reading: the domicile reading excluded legitimate developed-market issuers for no risk-based reason, while the pure venue reading would have admitted VIE structures and HFCAA-exposed issuers on the same rule. Added four admission criteria (US-listed and USD, `isAdr: false`, approved domicile, no VIE) and a 16-jurisdiction set. **Enforcement stays at Gate A** — verified that `guard.py` has no domicile check and that Gate A fails closed, preserving the division where code enforces legal mandates and the allowlist enforces preferences. IREN and NBIS become eligible for *consideration* as v1.2 candidates, not admitted; v1.1 stays frozen at 22 US names. |
 | 0.6 | 2026-08-01 | **Decision 11.5 resolved — hold MSTR/BTC at `PROPOSED`.** Confirmed §7 on three strengthened grounds: the issuer self-describes as a "bitcoin treasury company", so the embedded-leverage characterisation is its stated business model rather than an inference; the realised 52-week range of $81.81–$414.36 (≈−77% from high, beta 3.54) demonstrates the compounding risk §7.2 modelled; and Gate I at 1 per sector now means admission would let a Bitcoin proxy **displace** a diversifying name in the Information Technology slot — an argument that did not exist when Gate I was 2. |

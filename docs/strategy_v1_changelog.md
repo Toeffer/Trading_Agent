@@ -79,13 +79,14 @@ what is pending against which version.
 |---|---|
 | Proposal | `docs/strategy-proposals/STRATEGY_V1_1_PROPOSAL_v0_1.md` |
 | Proposal ID | `strategy_v1_1_proposal_v0_1` |
-| Proposal version | `0.8` |
+| Proposal version | `0.9` |
 | Manifest | `docs/strategy-proposals/strategy_v1_1_proposal_v0_1.manifest.json` |
 | Phase | 19A |
 | Readiness | S0 |
 | Execution scope | `NONE` |
 | Design review | **COMPLETE** — 2026-07-27 |
-| Promotion | **Blocked** — see below |
+| Design approval | **GRANTED 2026-08-01** — design and decisions only, not execution |
+| Promotion | **Blocked** — evidentiary and implementational only; see below |
 
 **Proposed changes:**
 
@@ -170,11 +171,12 @@ undocumented strategy drift.
 
 **Promotion blockers remaining:**
 
-1. ~~Open decisions~~ — **ALL SEVEN RESOLVED 2026-08-01.** 11.2 and 11.4 at design review; 11.1, 11.3, 11.5, 11.6 and 11.7 subsequently. Open decisions no longer block promotion.
-2. Anti-overfit checks 2, 4, and 7 unmet — no out-of-sample or walk-forward evidence exists
-3. Phases 19B–19E not started
-4. Paper-run validation §10.1 not performed
-5. `vol_reference_pct` still a reference estimate; requires recalibration from bridge `market/bars`
+1. ~~Chris's approval of the design~~ — **GRANTED 2026-08-01.** Approves the design and all seven decisions; does **not** approve execution, YAML mutation, or promotion to active. All `NOT_APPROVED_FOR_*` flags remain true.
+2. ~~Open decisions~~ — **ALL SEVEN RESOLVED 2026-08-01.** 11.2 and 11.4 at design review; 11.1, 11.3, 11.5, 11.6 and 11.7 subsequently. Open decisions no longer block promotion.
+3. Anti-overfit checks 2, 4, and 7 unmet — no out-of-sample or walk-forward evidence exists
+4. Phases 19B–19E not started
+5. Paper-run validation §10.1 not performed
+6. `vol_reference_pct` still a reference estimate; requires recalibration from bridge `market/bars`
 
 ---
 
@@ -257,6 +259,32 @@ Eight malformation shapes are tested to confirm none can weaken the floor:
 section absent, null, empty; list empty, null; section wrong type; list wrong
 type; entries wrong type. Covered by `tests/test_us_etf_blocklist_source.py`
 (53 tests).
+
+### 2026-08-01 — paper-run pre-registration infrastructure
+
+Created `docs/paper-runs/` with a README, a pre-registration template, and
+`scripts/seal-preregistration.py`, implementing the §10.4 protocol required by
+decision 11.6.
+
+**Section 3 of the template is deliberately blank.** The expected-value ranges must
+be Chris's own prior. A number suggested by the assistant and then confirmed is an
+anchor, not a prior, and would defeat the purpose of the document. The template
+gives guidance on how to form each estimate — never the estimate.
+
+The template pre-fills what follows from the design rather than from judgement: all
+15 falsifiers from §10.1, the excluded metrics (P&L, win rate, paper Sharpe, largest
+winner), and the one-revision-per-window budget.
+
+**Seal script behaviours, all verified:** refuses to seal a document with unfilled
+placeholders; records SHA-256 and a UTC timestamp; `--verify` detects any post-seal
+amendment; refuses to reseal an already-sealed document. It touches no broker
+endpoint, guard state, rules file, or H1 token.
+
+### 2026-08-01 — CI push trigger fixed
+
+`.github/workflows/ci.yml` triggered on `[main, master, 'phase*', 'ci-*']`, none of
+which match `claude/*`. **No CI had run on any Phase 19 commit.** Added `'claude/*'`
+to the push trigger, and pinned it with a test so the gap cannot reopen silently.
 
 ### 2026-08-01 — safety-invariant fix in `scripts/`
 

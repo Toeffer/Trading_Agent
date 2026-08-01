@@ -460,3 +460,92 @@ class TestDocumentSafetyBoundary:
         summary = _load_manifest()["design_summary"]["inverse_vol_scalar_proposed"]
         assert summary["is_portfolio_vol_target"] is False
         assert summary["vol_reference_pct"] == 16
+
+
+# ── Paper-run pre-registration infrastructure (§10.4) ───────────────────────
+
+
+class TestPreregistrationInfrastructure:
+
+    TEMPLATE = REPO / "docs" / "paper-runs" / "TEMPLATE-preregistration.md"
+    SEAL = REPO / "scripts" / "seal-preregistration.py"
+
+    def test_template_exists(self):
+        assert self.TEMPLATE.exists()
+
+    def test_readme_exists(self):
+        assert (REPO / "docs" / "paper-runs" / "README.md").exists()
+
+    def test_seal_script_exists(self):
+        assert self.SEAL.exists()
+
+    def test_template_covers_all_seven_required_fields(self):
+        text = self.TEMPLATE.read_text()
+        for heading in ["Run identity", "Strategy version under test",
+                        "Expected observations", "Falsifiers", "Decision rules",
+                        "Explicitly excluded", "Revision budget", "Seal"]:
+            assert heading in text, f"template missing section: {heading}"
+
+    def test_template_carries_all_fifteen_falsifiers(self):
+        text = self.TEMPLATE.read_text()
+        for n in range(1, 16):
+            assert f"| F{n} |" in text, f"falsifier F{n} missing from template"
+
+    def test_expected_values_are_left_blank(self):
+        """§3 must be the operator's prior, never pre-filled by the assistant."""
+        text = self.TEMPLATE.read_text()
+        section = text[text.index("## 3. Expected observations"):text.index("## 4. Falsifiers")]
+        assert section.count("<<FILL IN>>") >= 8, \
+            "expected-observation ranges must be blank — a suggested value is an anchor, not a prior"
+
+    def test_template_excludes_pnl_from_decisions(self):
+        text = self.TEMPLATE.read_text()
+        section = text[text.index("## 6. Explicitly excluded"):text.index("## 7. Revision budget")]
+        for metric in ["Paper P&L", "Win rate", "Paper Sharpe"]:
+            assert metric in section
+
+    def test_revision_budget_is_one(self):
+        text = self.TEMPLATE.read_text()
+        section = text[text.index("## 7. Revision budget"):]
+        assert "**1**" in section
+
+    def test_manifest_records_the_infrastructure(self):
+        infra = _load_manifest()["paper_run_infrastructure"]
+        assert infra["expected_values_supplied_by"] == "Chris only"
+        for key in ["preregistration_template", "readme", "seal_script"]:
+            assert (REPO / infra[key]).exists(), f"{key} points at a missing file"
+
+
+# ── Approval record ─────────────────────────────────────────────────────────
+
+
+class TestApprovalRecord:
+
+    def test_design_approval_recorded(self):
+        a = _load_manifest()["chris_approval"]
+        assert a["design_approved"] is True
+        assert a["approved_utc"]
+
+    def test_approval_does_not_extend_to_execution(self):
+        """Design approval must not silently relax any restrictive flag."""
+        m = _load_manifest()
+        assert m["chris_approval"]["does_not_approve"]
+        for key, value in m["approval_state"].items():
+            assert value is True, \
+                f"{key} was relaxed — design approval does not authorise execution"
+
+    def test_phase_19a_still_declares_no_mutations(self):
+        pi = _load_manifest()["proposal_identity"]
+        for flag in ["allowlist_change", "rules_change", "guard_change", "env_change"]:
+            assert pi[flag] is False
+
+
+# ── CI covers this branch (§9.6 follow-up) ──────────────────────────────────
+
+
+class TestCiCoversDevelopmentBranches:
+
+    def test_ci_push_trigger_includes_claude_branches(self):
+        ci = (REPO / ".github" / "workflows" / "ci.yml").read_text()
+        assert "'claude/*'" in ci, \
+            "CI push trigger does not match claude/* — commits on this branch would run no CI"

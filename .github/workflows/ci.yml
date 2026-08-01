@@ -10,7 +10,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master, 'phase*', 'ci-*']
+    branches: [main, master, 'phase*', 'ci-*', 'claude/*']
   pull_request:
     branches: [main, master]
 

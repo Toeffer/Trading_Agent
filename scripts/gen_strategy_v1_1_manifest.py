@@ -43,7 +43,7 @@ manifest: dict = {
 
     "proposal_identity": {
         "proposal_id": "strategy_v1_1_proposal_v0_1",
-        "proposal_version": "0.8",
+        "proposal_version": "0.9",
         "proposal_status": "PROPOSED",
         "strategy_readiness": "S0",
         "autonomy_level": 1,
@@ -63,6 +63,19 @@ manifest: dict = {
         "human_approval_required_for_promotion": True,
         "next_phase_boundary": "PHASE19B_ALLOWLIST_AND_ADVISORY_CONFIG",
         "canonical_strategy_reference": "docs/strategy_v1.md",
+    },
+
+    "chris_approval": {
+        "design_approved": True,
+        "approved_utc": "2026-08-01",
+        "scope": "Design and all seven decisions (11.1-11.7). Satisfies promotion requirements 1 and 2.",
+        "does_not_approve": [
+            "Execution of any order",
+            "Mutation of paper-trading-rules.yaml — Phase 19B remains Chris's own action under invariant 6",
+            "Mutation of .env or guard state",
+            "Promotion of strategy v1.1.0 to active — the evidentiary requirements are unmet",
+        ],
+        "note": "All NOT_APPROVED_FOR_* flags remain true. This records approval of the design document, not of execution.",
     },
 
     "design_review_state": {
@@ -273,6 +286,21 @@ manifest: dict = {
         ),
     },
 
+    "paper_run_infrastructure": {
+        "preregistration_template": "docs/paper-runs/TEMPLATE-preregistration.md",
+        "readme": "docs/paper-runs/README.md",
+        "seal_script": "scripts/seal-preregistration.py",
+        "created_utc": "2026-08-01",
+        "expected_values_supplied_by": "Chris only",
+        "rationale": "Section 3 of the template is deliberately blank. A value suggested by the assistant and then confirmed is an anchor, not a prior, and would defeat the purpose of pre-registration.",
+        "seal_behaviours_verified": [
+            "refuses to seal a document with unfilled placeholders",
+            "records SHA-256 and UTC timestamp on seal",
+            "verify detects any post-seal amendment",
+            "refuses to reseal an already-sealed document",
+        ],
+    },
+
     "learning_policy": {
         "decision": "falsification_and_calibration",
         "resolved": "2026-08-01",
@@ -472,8 +500,8 @@ manifest: dict = {
         "Correct the erroneous max-concurrent-positions row in strategy_v1.md section 8 at promotion",
         "Apply the three H4.1 corrections to strategy_v1.md sections 2 and 3 at promotion",
         "Add the phase19a CLI checkpoint command — now unblocked, main() de-duplication completed 2026-08-01",
-        "Write and commit the paper-run pre-registration document before the first cycle, recording its SHA-256",
-        "Add 'claude/*' to the CI push trigger, or run Phase 19E validation via pull request",
+        "Complete section 3 expected-value ranges and section 5 decision rules in a copy of the pre-registration template, then seal it before the first cycle",
+        
     ],
 
     "anti_overfit_compliance": {

@@ -79,7 +79,7 @@ what is pending against which version.
 |---|---|
 | Proposal | `docs/strategy-proposals/STRATEGY_V1_1_PROPOSAL_v0_1.md` |
 | Proposal ID | `strategy_v1_1_proposal_v0_1` |
-| Proposal version | `0.2` |
+| Proposal version | `0.3` |
 | Manifest | `docs/strategy-proposals/strategy_v1_1_proposal_v0_1.manifest.json` |
 | Phase | 19A |
 | Readiness | S0 |
@@ -112,7 +112,7 @@ what is pending against which version.
 
 **Promotion blockers remaining:**
 
-1. Open decisions 11.1 (H4.1 ETF BUY block), 11.3 (final allowlist), 11.5 (MSTR/BTC), 11.6 (definition of "learning")
+1. Open decisions 11.3 (final allowlist), 11.5 (MSTR/BTC), 11.6 (definition of "learning"). **11.1 resolved 2026-08-01** (keep H4.1), 11.2 and 11.4 resolved at design review.
 2. Anti-overfit checks 2, 4, and 7 unmet — no out-of-sample or walk-forward evidence exists
 3. Phases 19B–19E not started
 4. Paper-run validation §10.1 not performed
@@ -128,7 +128,7 @@ active governance document and changing it requires a version bump and review.
 | ID | Location | Defect | Fix targeted at |
 |---|---|---|---|
 | `V1_DEFECT_POSITION_COUNT` | `strategy_v1.md` §8 | States "Maximum positions open simultaneously: 2 — *Implied by exposure cap + per-position limit*". The implication is invalid; no gate constrains position count. | v1.1.0 |
-| `V1_DEFECT_H4_1_TENSION` | `strategy_v1.md` §2 vs §3 | §2 lists non-leveraged US-listed ETFs as an allowed instrument type while §3 hard-blocks US-domiciled ETFs for BUY. §3 is operative. | Open decision 11.1 |
+| `V1_DEFECT_H4_1_TENSION` | `strategy_v1.md` §2 vs §3 | §2 lists non-leveraged US-listed ETFs as an allowed instrument type while §3 hard-blocks US-domiciled ETFs for BUY. §3 is operative, and under PRIIPs §2's line can never become true for this account. | **Resolved in principle 2026-08-01** — §2 line to be removed at v1.1.0 promotion (§11.1.2) |
 | `V1_DEFECT_BREADTH` | `strategy_v1.md` §2 | A 4-symbol allowlist of correlated mega-cap tech names provides ~1.3 independent bets. Design limitation, not an error. | v1.1.0 |
 
 ---
@@ -167,6 +167,37 @@ external script via `_PHASE18B_CHECKPOINT_SCRIPT`, which had no other consumer.
 one test asserts no duplicated top-level definitions exist in `ibkr_operator.py`,
 and another asserts the manifest's record of this defect matches the file's actual
 state in both directions.
+
+### 2026-08-01 — H4.1 blocklist moved to `regulatory baseline | YAML`
+
+Closes an H2 single-source-of-truth violation. CLAUDE.md §5 states "no hardcoded
+duplicates exist" and that all parameters are read from the YAML at enforcement
+time, but `guard.py` held `_US_ETF_BLOCKLIST` as a hardcoded 39-symbol set, so
+changing it required a Tier-1 code edit.
+
+**Tier 1 change to `guard.py`** (safety-critical per CLAUDE.md §6), approved by
+Chris 2026-08-01.
+
+| Aspect | Behavior |
+|---|---|
+| Effective blocklist | `_US_ETF_REGULATORY_BASELINE \| yaml.us_etf_blocklist.symbols` |
+| YAML may add symbols | **Yes** |
+| YAML may remove symbols | **No — by design** |
+| YAML key required | **No** — a missing section can never stop the bridge starting |
+| Absent / empty / malformed YAML | Resolves to the baseline alone, never to an empty set |
+| Legacy call signature | Preserved — `_reject_us_domiciled_etf(symbol)` still works |
+| Check ordering | Unchanged — rules load lazily inside the function, so the ETF check still runs before `load_rules()` |
+
+**Why the floor stays in code.** A pure YAML replacement would create a fail-open
+path: deleting one line would silently legalize an instrument the account is not
+permitted to hold. PRIIPs is law, not a risk preference, so the baseline is not a
+tunable. The YAML is now the sole source for the *mutable* part — extensions —
+which is the part H2 is actually about.
+
+Eight malformation shapes are tested to confirm none can weaken the floor:
+section absent, null, empty; list empty, null; section wrong type; list wrong
+type; entries wrong type. Covered by `tests/test_us_etf_blocklist_source.py`
+(53 tests).
 
 ### 2026-08-01 — safety-invariant fix in `scripts/`
 

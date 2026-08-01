@@ -1,8 +1,9 @@
 # Strategy v1.1 Proposal — Breadth, Regime Gating, and Volatility Targeting
 
 > **Proposal ID:** `strategy_v1_1_proposal_v0_1`
-> **Proposal Version:** `0.2`
+> **Proposal Version:** `0.3`
 > **Design Review:** `COMPLETE` (2026-07-27) — 6 defects found and corrected; see Version History
+> **Open Decisions:** 3 of 6 resolved (11.1, 11.2, 11.4); 11.3, 11.5, 11.6 remain open
 > **Proposal Status:** `PROPOSED`
 > **Strategy Readiness:** `S0`
 > **Autonomy Level:** `1`
@@ -801,10 +802,23 @@ advisory:
   hermes_risk_per_trade_pct: 0.25
 ```
 
+Optional H4.1 blocklist extensions (see §11.1):
+
+```yaml
+# OPTIONAL. Extends the regulatory baseline hardcoded in guard.py.
+# Absence, emptiness, or malformation all resolve to the baseline alone —
+# this section can only ADD symbols, never remove them.
+us_etf_blocklist:
+  mode: extend_regulatory_baseline
+  symbols: []
+```
+
 **Backward compatibility verified.** The rules loader (`guard.py:4015`) validates that
 *required* keys are present — `missing = [k for k in required_keys if k not in rules]` — and
-does **not** reject unknown keys. Adding `symbol_sectors`, `max_positions_per_sector`, and
-`advisory` is therefore safe in 19B while `guard.py` is still unmodified.
+does **not** reject unknown keys. Adding `symbol_sectors`, `max_positions_per_sector`,
+`advisory`, and `us_etf_blocklist` is therefore safe in 19B while `guard.py` is otherwise
+unmodified. `us_etf_blocklist` is deliberately **not** added to `required_keys`, so a missing
+section can never prevent the bridge from starting.
 
 **Note:** the `advisory` block also discharges the H3 follow-up recorded in CLAUDE.md §5
 (move the Hermes 0.25% advisory target into the YAML so the two-tier risk model has one
@@ -1015,29 +1029,79 @@ Record results in `docs/KPI_DASHBOARD.md` conventions and gate promotion on
 
 None of these can be resolved by Werner. Each materially shapes the design.
 
-**Status after design review (v0.2):** 11.2 and 11.4 are **RESOLVED**. 11.1, 11.3, 11.5,
-and 11.6 remain **OPEN** and block promotion.
+**Status (v0.3):** 11.1, 11.2, and 11.4 are **RESOLVED**. 11.3, 11.5, and 11.6 remain
+**OPEN** and block promotion.
 
 | # | Decision | Status |
 |---|---|---|
-| 11.1 | H4.1 ETF BUY block | **OPEN** |
+| 11.1 | H4.1 ETF BUY block | **RESOLVED** — keep; it is PRIIPs law, not preference |
 | 11.2 | Maximum concurrent positions | **RESOLVED** — unconstrained |
 | 11.3 | Final allowlist composition | **OPEN** |
 | 11.4 | Volatility reference value | **RESOLVED** — 16%, renamed |
 | 11.5 | MSTR/BTC disposition | **OPEN** |
 | 11.6 | Meaning of "learning" | **OPEN** |
 
-### 11.1 H4.1 — the ETF BUY block
+### 11.1 H4.1 — the ETF BUY block — RESOLVED
 
-**Decision required:** keep or lift the US-domiciled ETF BUY block.
+**Decision: KEEP. Single-name only. The block is law, not preference.**
+Approved 2026-08-01.
 
-| Option | Consequence |
-|---|---|
-| **Keep** | Single-name only, permanently. v1.1 as written applies unchanged. Index/vol-targeted-core and risk-parity families remain unavailable. |
-| **Lift** | Opens the best-evidenced, lowest-complexity strategy family (vol-targeted index trend). Requires a new governance review, and §2/§3 of `strategy_v1.md` must be reconciled — they currently contradict each other. |
+The v0.1 draft framed this as a discretionary "keep or lift" choice, on the strength of
+`strategy_v1.md` §3 describing it as a *"Structural regulatory/prudence block"* and
+`STRATEGY.md` calling it a *"regulatory/prudence gate."* The word **prudence** is wrong.
 
-v1.1 is written to work under **Keep**. It needs no revision either way, but under
-**Lift** a materially stronger v1.2 becomes possible.
+`guard.py` enforces H4.1 in code, and its rejection message states the actual basis:
+
+```
+Symbol 'SPY' is a US-domiciled ETF — blocked for EU paper
+account DUQ542875 under KID/PRIIPs regulation.
+```
+
+Under the EU PRIIPs Regulation a US-domiciled ETF may not be distributed to an EU retail
+investor, because US issuers do not produce a Key Information Document. **IBKR enforces this
+independently.** Lifting the guard block would not unlock the instrument; it would only
+model orders a live account would reject, corrupting the paper record's value as evidence of
+real executability.
+
+Enforcement is genuine, not documentary: a 39-symbol regulatory baseline plus a
+contract-level check rejecting any `secType == "ETF"` on a US exchange. BUY only — SELL
+closes pass, consistent with Gate G.
+
+#### 11.1.1 The real constraint is two rules interacting
+
+Index exposure is foreclosed by a *pair* of rules, only one of which is law:
+
+| Route | Blocked by | Nature |
+|---|---|---|
+| US-domiciled ETF (SPY, QQQ) | H4.1 / PRIIPs | **Legal** — not waivable |
+| UCITS ETF (EQQQ, CSPX, SXR8) | `strategy_v1.md` §3 "Non-US equities" | **Policy** — waivable in principle |
+
+EU-domiciled UCITS ETFs are the legitimate index route for an EU investor: they produce a
+KID and are legal to hold. They are blocked only by the non-US-equities rule.
+
+That route is not a small change, which is why it is not taken here. UCITS ETFs trade on
+LSE, Xetra, and Euronext, while `strategy_v1.md` §4 hardcodes RTH as **9:30–16:00 ET**.
+Xetra runs 09:00–17:30 CET and LSE 08:00–16:30 GMT, so admitting them breaks the session
+model, both entry-blackout windows, and introduces GBP/EUR handling beyond the existing
+EUR/USD conversion. That is a v1.2+ programme, not a YAML edit.
+
+**Consequence for v1.1:** none. All 22 proposed symbols are single names, so Gate A and
+H4.1 are unaffected either way. The vol-targeted index-trend family remains permanently
+unavailable to this account, and §4.1's claimed edge sources are correspondingly limited to
+what single names can express.
+
+#### 11.1.2 Corrections owed to `strategy_v1.md` at promotion
+
+Phase 19A must not modify the canonical strategy — `canonical_strategy_unchanged` is `true`
+and the 19A test module enforces it. These corrections are therefore **obligations recorded
+against v1.1.0 promotion**, applied when that document is rewritten:
+
+1. §3 — replace "Structural regulatory/prudence block" with the accurate basis:
+   **KID/PRIIPs regulation, EU account, enforced by IBKR independently.**
+2. §2 — **remove** "Non-leveraged, non-inverse US-listed ETFs (advisory-only placeholder)".
+   Under PRIIPs that line can never become true for this account, and leaving it implies a
+   future availability that does not exist. This closes `V1_DEFECT_H4_1_TENSION`.
+3. §3 — record UCITS ETFs as the identified legal index route, explicitly deferred.
 
 ### 11.2 Maximum concurrent positions — RESOLVED
 
@@ -1192,4 +1256,5 @@ independently, and the advisory layer is structurally incapable of loosening any
 | Version | Date | Changes |
 |---|---|---|
 | 0.1 | 2026-07-25 | Initial proposal — breadth expansion, regime gate, volatility targeting, Gate I sector cap, leverage rejection, MSTR/BTC disposition, paper-run validation protocol |
+| 0.3 | 2026-08-01 | **Decision 11.1 resolved — KEEP H4.1.** Established that H4.1 is KID/PRIIPs regulation enforced in `guard.py` and independently by IBKR, not the discretionary "prudence" block the v0.1 draft assumed, so "lift" was never a viable option. Documented that index exposure is foreclosed by two interacting rules — PRIIPs (law) and the non-US-equities rule (policy) — and identified EU-domiciled UCITS ETFs as the legal route, deferred to v1.2+ because non-US venues break the 9:30–16:00 ET session model. Recorded three corrections owed to `strategy_v1.md` at promotion. Separately fixed an H2 violation: the hardcoded `_US_ETF_BLOCKLIST` is now `regulatory baseline | YAML extensions`, where the YAML can only add symbols and never shrink the floor. |
 | 0.2 | 2026-07-27 | **Design review applied.** Six defects corrected. §6.1: withdrew the incorrect "6 concurrent positions" claim — position count is unconstrained (§11.2 resolved). §4.6/§4.6.1: renamed `portfolio_vol_target_pct` → `vol_reference_pct` and corrected 12% → 16%; the earlier value was mislabeled and permanently binding (§11.4 resolved). §4.10 added: data-quality thresholds and fail-safe rules for the new signals. §6.2 added: grandfathering of existing positions. §9.6 added: operator CLI command, blocked pending `main()` de-duplication. §9.7 added: reverse-order rollback procedure. Gate letter I verified free against `guard.py`. YAML backward compatibility verified against the rules loader. |

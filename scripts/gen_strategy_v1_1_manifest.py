@@ -37,13 +37,13 @@ manifest: dict = {
     "manifest_version": "1.0.0",
     "manifest_id": "strategy_v1_1_proposal_v0_1.manifest",
     "created_utc": "2026-07-27T00:00:00Z",
-    "last_updated_utc": "2026-07-27T00:00:00Z",
+    "last_updated_utc": "2026-08-01T00:00:00Z",
     "phase": "19A",
     "phase_name": "Level 1 Strategy v1.1 Design Proposal Governance Checkpoint",
 
     "proposal_identity": {
         "proposal_id": "strategy_v1_1_proposal_v0_1",
-        "proposal_version": "0.2",
+        "proposal_version": "0.3",
         "proposal_status": "PROPOSED",
         "strategy_readiness": "S0",
         "autonomy_level": 1,
@@ -248,6 +248,50 @@ manifest: dict = {
         ),
     },
 
+    "h4_1_disposition": {
+        "decision": "KEEP",
+        "basis": "KID/PRIIPs regulation, EU account DUQ542875",
+        "is_law_not_preference": True,
+        "enforced_in_guard": True,
+        "enforced_independently_by_broker": True,
+        "lift_viable": False,
+        "lift_rejection_reason": "IBKR enforces PRIIPs independently, so paper fills would model orders a live account rejects, corrupting the paper record as evidence of executability",
+        "index_exposure_available": False,
+        "legal_index_route_identified": "EU-domiciled UCITS ETFs (EQQQ, CSPX, SXR8)",
+        "legal_route_deferred_to": "v1.2+",
+        "legal_route_blockers": [
+            "Non-US venues (LSE, Xetra, Euronext) break the hardcoded 9:30-16:00 ET session model",
+            "Both entry-blackout windows assume US RTH",
+            "Introduces GBP/EUR handling beyond the existing EUR/USD conversion",
+            "Blocked by the separate non-US-equities rule, which is policy rather than law",
+        ],
+        "v1_1_impact": "None. All 22 proposed symbols are single names.",
+        "corrections_owed_to_strategy_v1_at_promotion": [
+            "Section 3: replace 'Structural regulatory/prudence block' with the accurate KID/PRIIPs basis",
+            "Section 2: remove the non-leveraged US-listed ETF placeholder, which can never become true for this account",
+            "Section 3: record UCITS ETFs as the identified legal index route, explicitly deferred",
+        ],
+    },
+
+    "h2_blocklist_remediation": {
+        "defect": "guard.py hardcoded _US_ETF_BLOCKLIST, contradicting the CLAUDE.md section 5 claim that no hardcoded duplicates exist and all parameters are read from YAML at enforcement time",
+        "status": "FIXED",
+        "fixed_at": "2026-08-01",
+        "model_tier": "Tier 1 (guard.py is safety-critical per CLAUDE.md section 6)",
+        "approach": "Effective blocklist is regulatory_baseline | yaml_extensions",
+        "yaml_key": "us_etf_blocklist.symbols",
+        "yaml_key_required": False,
+        "yaml_can_extend": True,
+        "yaml_can_shrink": False,
+        "rationale": "A pure YAML replacement would create a fail-open path where deleting one line silently legalizes an instrument the account may not hold. The floor stays in code because it encodes a legal constraint, not a risk preference; the YAML is the sole source for the mutable part.",
+        "fail_safe_cases_tested": [
+            "section absent", "section null", "section empty", "list empty",
+            "list null", "section wrong type", "list wrong type", "entries wrong type",
+        ],
+        "legacy_signature_preserved": True,
+        "tests": "tests/test_us_etf_blocklist_source.py (53 tests)",
+    },
+
     "mstr_btc_disposition": {
         "recommendation": "HOLD_AT_PROPOSED",
         "referenced_proposal_id": "mstr_btc_research_v0_1",
@@ -269,9 +313,11 @@ manifest: dict = {
             {"id": "11.4", "topic": "Volatility reference value",
              "resolution": "vol_reference_pct = 16, renamed from portfolio_vol_target_pct",
              "resolved_at": "design_review_2026-07-27"},
+            {"id": "11.1", "topic": "H4.1 US-domiciled ETF BUY block",
+             "resolution": "KEEP. H4.1 is KID/PRIIPs regulation enforced in guard.py and independently by IBKR, not a discretionary prudence block. Lifting it was never viable. Single-name only; index exposure remains unavailable to this EU account.",
+             "resolved_at": "2026-08-01"},
         ],
         "open_requiring_chris": [
-            "11.1 H4.1 US-domiciled ETF BUY block: keep or lift",
             "11.3 Final allowlist composition",
             "11.5 MSTR/BTC disposition confirmation",
             "11.6 Definition of 'learning' during the paper run",
@@ -280,6 +326,7 @@ manifest: dict = {
     "follow_up_obligations": [
         "Recalibrate vol_reference_pct from SPY median 20d realized vol over >=5 years via bridge market/bars",
         "Correct the erroneous max-concurrent-positions row in strategy_v1.md section 8 at promotion",
+        "Apply the three H4.1 corrections to strategy_v1.md sections 2 and 3 at promotion",
         "Add the phase19a CLI checkpoint command — now unblocked, main() de-duplication completed 2026-08-01",
         "Add 'claude/*' to the CI push trigger, or run Phase 19E validation via pull request",
     ],
@@ -318,7 +365,7 @@ manifest: dict = {
             "id": "V1_DEFECT_H4_1_TENSION",
             "description": "strategy_v1.md section 2 lists ETFs as an allowed placeholder while section 3 hard-blocks ETF BUY",
             "severity": "documentation_contradiction",
-            "addressed_by": "proposal section 11.1 open decision",
+            "addressed_by": "proposal section 11.1.2 — correction owed to strategy_v1.md at promotion; decision resolved 2026-08-01",
         },
     ],
 

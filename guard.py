@@ -5002,29 +5002,81 @@ h1_startup_done()
 # Phase H4 — Guardian Alerts (read-only)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# US-domiciled ETF symbol blocklist (structural, not just allowlist-based)
-_US_ETF_BLOCKLIST: set[str] = {
+# ---------------------------------------------------------------------------
+# H4.1 — US-domiciled ETF blocklist
+#
+# PRIIPs/KID is law, not policy. A US-domiciled ETF may not be distributed to
+# an EU retail investor because US issuers do not produce a Key Information
+# Document, and IBKR enforces this independently of this guard.
+#
+# The baseline below is therefore a REGULATORY FLOOR, not a tunable parameter.
+# The rules YAML may EXTEND it (see `us_etf_blocklist.symbols`) but can never
+# shrink it: the effective blocklist is `baseline | yaml`. This is deliberate.
+# A pure YAML replacement would create a fail-open path where deleting one
+# line silently legalizes an instrument the account is not permitted to hold.
+#
+# On H2 (single source of truth): the YAML is the sole source for blocklist
+# *extensions*, which is the mutable part. The floor stays in code because it
+# encodes a legal constraint rather than a risk preference.
+# ---------------------------------------------------------------------------
+_US_ETF_REGULATORY_BASELINE: frozenset = frozenset({
     "SPY", "QQQ", "IVV", "VOO", "VTI", "VEA", "VWO", "BND",
     "AGG", "GLD", "SLV", "IWM", "DIA", "EEM", "EFA", "XLF",
     "XLE", "XLK", "XLV", "XLY", "XLI", "XLP", "XLB", "XLU",
     "TLT", "LQD", "HYG", "VNQ", "ARKK", "SMH", "SOXX", "IBB",
     "TQQQ", "SQQQ", "UPRO", "SPXU", "SOXL", "FAS", "FAZ",
-}
+})
+
+# Backward-compatible alias — existing callers and tests reference this name.
+_US_ETF_BLOCKLIST: frozenset = _US_ETF_REGULATORY_BASELINE
 
 
-def _reject_us_domiciled_etf(symbol: str, contract_provider=None) -> None:
+def _load_us_etf_blocklist(rules: dict | None = None) -> frozenset:
+    """Return the effective US ETF blocklist: regulatory baseline | YAML.
+
+    The YAML section is optional. Its absence, emptiness, or malformation all
+    resolve to the baseline alone — never to an empty set — so no
+    configuration error can weaken the H4.1 block.
+
+    Args:
+        rules: Already-loaded rules dict. If None, rules are loaded lazily so
+            that callers running before `load_rules()` keep their ordering.
+    """
+    if rules is None:
+        try:
+            rules = load_rules()
+        except Exception:
+            rules = None
+
+    extra: set = set()
+    if isinstance(rules, dict):
+        section = rules.get("us_etf_blocklist")
+        if isinstance(section, dict):
+            symbols = section.get("symbols")
+            if isinstance(symbols, list):
+                extra = {
+                    str(s).upper().strip() for s in symbols
+                    if isinstance(s, str) and str(s).strip()
+                }
+
+    return _US_ETF_REGULATORY_BASELINE | frozenset(extra)
+
+
+def _reject_us_domiciled_etf(
+    symbol: str, contract_provider=None, rules: dict | None = None,
+) -> None:
     """Reject US-domiciled ETFs structurally for this EU paper account.
 
     Dual check:
-    1. Symbol-level: match against known US ETF blocklist (always active).
+    1. Symbol-level: match against the effective blocklist (always active).
     2. Contract-level (if provider available): secType=="ETF" on US exchange.
 
     Raises ValueError if the symbol is a US-domiciled ETF.
     """
     sym = symbol.upper().strip()
 
-    # Check 1: known blocklist
-    if sym in _US_ETF_BLOCKLIST:
+    # Check 1: effective blocklist (regulatory baseline | YAML extensions)
+    if sym in _load_us_etf_blocklist(rules):
         raise ValueError(
             f"Symbol '{sym}' is a US-domiciled ETF — blocked for EU paper "
             f"account DUQ542875 under KID/PRIIPs regulation."

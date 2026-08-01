@@ -1,9 +1,9 @@
 # Strategy v1.1 Proposal — Breadth, Regime Gating, and Volatility Targeting
 
 > **Proposal ID:** `strategy_v1_1_proposal_v0_1`
-> **Proposal Version:** `0.7`
+> **Proposal Version:** `0.8`
 > **Design Review:** `COMPLETE` (2026-07-27) — 6 defects found and corrected; see Version History
-> **Open Decisions:** 6 of 7 resolved (11.1–11.5, 11.7); only 11.6 remains open
+> **Open Decisions:** **all 7 resolved** (11.1–11.7)
 > **Proposal Status:** `PROPOSED`
 > **Strategy Readiness:** `S0`
 > **Autonomy Level:** `1`
@@ -1140,7 +1140,41 @@ Logged for later analysis, explicitly **not** used to accept or reject the strat
 | Paper Sharpe | Requires ~4 years at SR 1.0 for t = 2 |
 | Largest winner | Pure selection on noise |
 
-### 10.4 Suggested window
+### 10.4 Pre-registration protocol (mandatory — §11.6)
+
+**Written and committed before the run starts.** Its purpose is to fix the interpretation of
+results before the results exist, so that outcomes cannot be rationalised after the fact.
+
+**Artifact:** `docs/paper-runs/<run-id>-preregistration.md`, committed and its SHA-256
+recorded before the first cycle. Amending it after the run begins **voids the run** as
+evidence — start a new one instead.
+
+**Required content:**
+
+| # | Field | Detail |
+|---|---|---|
+| 1 | Run ID and window | Start date, minimum 60 trading days (§10.4) |
+| 2 | Strategy version under test | Exact version and manifest hash |
+| 3 | Expected observations | For each §10.2 secondary metric, the range expected *before* seeing data — e.g. expected median slippage, expected `RISK_ON` frequency, expected share of trades where the risk cap binds |
+| 4 | Falsifiers | The §10.1 refutation claims, each with the observation that would refute it |
+| 5 | Decision rules | For each plausible outcome, the change it would trigger — written **in advance** |
+| 6 | Explicitly excluded | P&L, win rate, paper Sharpe, largest winner — recorded but formally not decision inputs |
+| 7 | Revision budget | Declared before the run (see below) |
+
+**Revision budget.** At most **one** strategy revision per validation window. After a
+revision, a **fresh window** must complete before another may be proposed. A revision not
+matching a pre-registered decision rule from field 5 requires its own pre-registration and
+its own window — it does not inherit the current one.
+
+**Rationale.** §15 evaluates each change in isolation and cannot see accumulated in-sample
+fitting across repeated looks (§11.6.3). The budget bounds that accumulation directly; the
+pre-registered decision rules ensure a change is a *response* to a stated hypothesis rather
+than a reaction to an observed pattern.
+
+**Honest failure is a valid result.** A run whose pre-registered expectations are wrong is
+more informative than one whose expectations are adjusted to match. Record the mismatch.
+
+### 10.5 Suggested window
 
 Minimum **60 trading days** *or* until every one of checks 1–15 has been positively
 exercised at least once — whichever is **longer**. Checks 4, 8, 9, and 10 may require
@@ -1156,8 +1190,8 @@ Record results in `docs/KPI_DASHBOARD.md` conventions and gate promotion on
 
 None of these can be resolved by Werner. Each materially shapes the design.
 
-**Status (v0.7):** 11.1–11.5 and 11.7 are **RESOLVED**. Only **11.6** remains open,
-and it blocks promotion.
+**Status (v0.8): all seven decisions are RESOLVED.** Open decisions no longer block
+promotion. The remaining blockers are evidentiary and implementational — see §14.
 
 | # | Decision | Status |
 |---|---|---|
@@ -1166,7 +1200,7 @@ and it blocks promotion.
 | 11.3 | Final allowlist composition | **RESOLVED** — 22 names, Gate I at 1/sector |
 | 11.4 | Volatility reference value | **RESOLVED** — 16%, renamed |
 | 11.5 | MSTR/BTC disposition | **RESOLVED** — hold at `PROPOSED` |
-| 11.6 | Meaning of "learning" | **OPEN** |
+| 11.6 | Meaning of "learning" | **RESOLVED** — falsification + calibration; P&L excluded |
 | 11.7 | "Non-US equities" — venue or domicile? | **RESOLVED** — venue + jurisdiction set |
 
 ### 11.1 H4.1 — the ETF BUY block — RESOLVED
@@ -1299,6 +1333,157 @@ Outstanding obligation: this remains a *reference* estimate. Recompute SPY's med
 realized volatility over ≥5 years from bridge `market/bars` and set the constant to that
 measured value before promotion. Do not optimize it against strategy P&L.
 
+### 11.5 MSTR / BTC — RESOLVED
+
+**Decision: HOLD at `PROPOSED`. Do not promote.** Confirmed 2026-08-01.
+
+This confirms the §7 recommendation. Evidence gathered since §7 was written strengthens it
+on three independent grounds.
+
+**1. The company self-describes as a Bitcoin treasury vehicle.** Its own filing description
+opens: *"Strategy Inc … operates as a **bitcoin treasury company** … It offers investors
+varying degrees of economic exposure to Bitcoin by offering a range of securities, including
+equity and fixed income instruments."* The enterprise-analytics software is secondary. §7.2's
+characterisation of MSTR as instrument-embedded leverage is therefore not an inference — it is
+the issuer's own stated business model. (Note the contrast with IREN in §11.3, where an
+equivalent claim rested on vendor prose and was withdrawn as unverified.)
+
+**2. The realised drawdown demonstrates the risk directly.** As of 2026-07-31:
+
+| Metric | Value |
+|---|---|
+| Price | $93.28 |
+| 52-week range | **$81.81 – $414.36** |
+| Drawdown from 52-week high | **≈ −77%** |
+| Beta | **3.54** |
+| Market cap | $30.9B (down from a materially higher level) |
+| Renamed | MicroStrategy → Strategy Inc, August 2025 |
+
+A 5.1× annual range on a single name is precisely the mNAV-premium-plus-BTC-drawdown
+compounding §7.2 described. This is observed, not modelled.
+
+**3. Gate I at 1 per sector makes admission actively costly.** MSTR is classified
+Technology / Software — Application, so it would occupy the **Information Technology** slot,
+competing with AAPL, MSFT, and AVGO. Under the §11.3 decision that sector holds exactly one
+position. Admitting MSTR would let a Bitcoin proxy **displace a genuinely diversifying name**,
+making the portfolio worse on the very axis v1.1 exists to improve. This argument did not
+exist when §7 was written, because Gate I was then set to 2.
+
+**The §7.3 sizing bind is unchanged and still decisive:** at a 5% notional cap with a −5%
+stop floor, MSTR risks 0.25% of NetLiq per trade. Sized legally it cannot move the portfolio;
+it is only interesting sized large, and it cannot be sized large.
+
+**The §9.8 stop-floor mechanics apply with full force.** At beta 3.54 and that range, 2×ATR
+vastly exceeds 5%, so `calc_stop` truncates the stop to −5% — a small fraction of one day's
+typical move. Repeated noise stop-outs, each consuming one of two daily trade slots.
+
+**Not affected by §11.7.** MSTR is US-domiciled (`US5949724083`, Tysons Corner, Virginia), so
+the non-US-equities ambiguity does not arise.
+
+**Status of `mstr_btc_research_v0_1` is unchanged:** `PROPOSED`, `S0`,
+`execution_scope: NONE`, `btc_execution_scope: NONE`. No promotion, no data-collection
+runtime, no allowlist change. The research track may remain documented; nothing about this
+decision forecloses revisiting it on evidence.
+
+### 11.6 Meaning of "learning" during the paper run — RESOLVED
+
+**Decision: learning means falsification and calibration. P&L is excluded as a decision
+input. Pre-registration is required and revisions are capped.** Approved 2026-08-01.
+
+This decision determines whether the paper run produces evidence that can be acted on, or a
+number that merely feels like evidence.
+
+#### 11.6.1 What converges, and how fast
+
+The useful distinction is not "statistical versus not" — it is **rate of convergence**.
+Different quantities need wildly different sample sizes, and the run should target only those
+it can actually resolve.
+
+| Quantity | Observations needed | Learnable in this run? |
+|---|---|---|
+| Gate behavior, stop attachment, regime state, budget ceiling | **n = 1** — deterministic | **Yes, immediately** |
+| Slippage vs entry reference, fill quality, data-failure rate | ~30–50 | **Yes, in weeks** |
+| Binding-cap distribution (`notional` vs `risk`) | ~30–50 | **Yes** |
+| Win rate | >100 for a useful interval | Marginal |
+| Sharpe ratio | ~4 years at SR 1.0 (§8) | **No** |
+| Drawdown quantiles | Substantially more | **No** |
+
+#### 11.6.2 Falsification, not confirmation
+
+At this sample size the strategy **cannot be confirmed**, but specific design claims **can be
+refuted by a single counterexample**:
+
+| Claim | Refuted by |
+|---|---|
+| The advisory budget never exceeds the YAML ceiling | one violation |
+| Every BUY carries a matching child STP | one miss |
+| Gate I never admits two positions in one sector | one admission |
+| Regime is `RISK_OFF` when SPY < 200d SMA and 12m momentum < 0 | one mismatch |
+| A failed child-STP placement cancels the parent BUY | one uncancelled parent |
+
+The §10.1 checks are exactly this. **They are not "mere plumbing validation" — they are the
+only rigorous learning available at this sample size,** and earlier versions of this document
+understated them by framing them as secondary to performance measurement. That reframing is
+the substance of this decision.
+
+#### 11.6.3 The ratchet — why a revision cap is needed
+
+`strategy_v1.md` §15 evaluates each proposed change in isolation. It is genuinely good at
+that, and **structurally blind** to the following:
+
+> Reviewing results and adjusting, then reviewing and adjusting again, is in-sample
+> optimisation performed by hand. Each look consumes the dataset. Five adjustments across one
+> quarter leave a strategy fitted to that quarter — however principled each individual
+> decision felt at the time.
+
+This is the multiple-comparisons problem applied to human judgement, and it is **worse in
+this architecture than in a purely human process**: an LLM assistant asked "why did this
+happen?" will reliably produce a fluent, plausible explanation for pure noise. Fluency of
+explanation is not evidence, and the ease of obtaining one is itself a hazard.
+
+#### 11.6.4 Pre-registration is mandatory
+
+The defence is to fix the interpretation **before** seeing the data. Operational protocol in
+§10.4. Without pre-registration any outcome can be rationalised after the fact; with it, the
+run either matches the recorded expectation or it does not.
+
+#### 11.6.5 The only mechanism by which learning becomes change
+
+Unchanged and reaffirmed. A learning becomes a strategy change through exactly one path:
+
+```
+observation → pre-registered decision rule → §15 anti-overfit checklist
+            → §16 version bump → Chris's approval → changelog entry
+```
+
+**No autonomous parameter adaptation is proposed, and none may be added.** Hermes never
+adjusts its own envelope, thresholds, or rankings based on outcomes.
+
+#### 11.6.6 Verified — no autonomous learning channel exists today
+
+Confirmed against the code 2026-08-01:
+
+| Property | Status |
+|---|---|
+| `hermes_advisory.py` reads past outcomes into prompts | **No** — `build_prompt()` takes an externally supplied baseline, the request, and a fixed template |
+| Past proposals read back | **No** — proposals are persisted to `~/.openclaw/proposals/` and never loaded |
+| Model weights updated | **No** — nothing trains |
+
+The adapter is **stateless with respect to outcomes**, which is the correct property. But it
+holds **incidentally rather than by guarantee**: no test asserts it, and whoever constructs
+the `--baseline` file controls what Hermes sees. Adding outcome data to that baseline would
+create the feedback loop with no code change and no version bump.
+
+**Two obligations follow:**
+
+1. **Pin the property with a test** — assert that `hermes_advisory.py` neither reads the
+   proposals directory nor loads outcome, fill, or P&L data into a prompt.
+2. **Rule for the layer above the adapter.** Session context and `~/.openclaw/memory/` sit
+   *outside* the versioned strategy. Anything that influences what gets proposed must either
+   live in the versioned strategy document or be excluded from the proposal path. Accumulated
+   notes that shape proposals are **undocumented strategy drift**, and defeat §16's versioning
+   discipline as effectively as an unapproved parameter edit.
+
 ### 11.7 "Non-US equities" — listing venue or issuer domicile? — RESOLVED
 
 **Decision: venue **plus** an approved-jurisdiction set. Enforcement stays at Gate A.**
@@ -1384,69 +1569,6 @@ candidates. **Confirm with a tax advisor** — these are not determinations Wern
 §3's bare "Non-US equities" row must be replaced with the §11.7.2 criteria. Phase 19A cannot
 modify the canonical strategy, so this joins the §11.1.2 obligations. Closes
 `V1_DEFECT_NON_US_AMBIGUITY`.
-
-### 11.5 MSTR / BTC — RESOLVED
-
-**Decision: HOLD at `PROPOSED`. Do not promote.** Confirmed 2026-08-01.
-
-This confirms the §7 recommendation. Evidence gathered since §7 was written strengthens it
-on three independent grounds.
-
-**1. The company self-describes as a Bitcoin treasury vehicle.** Its own filing description
-opens: *"Strategy Inc … operates as a **bitcoin treasury company** … It offers investors
-varying degrees of economic exposure to Bitcoin by offering a range of securities, including
-equity and fixed income instruments."* The enterprise-analytics software is secondary. §7.2's
-characterisation of MSTR as instrument-embedded leverage is therefore not an inference — it is
-the issuer's own stated business model. (Note the contrast with IREN in §11.3, where an
-equivalent claim rested on vendor prose and was withdrawn as unverified.)
-
-**2. The realised drawdown demonstrates the risk directly.** As of 2026-07-31:
-
-| Metric | Value |
-|---|---|
-| Price | $93.28 |
-| 52-week range | **$81.81 – $414.36** |
-| Drawdown from 52-week high | **≈ −77%** |
-| Beta | **3.54** |
-| Market cap | $30.9B (down from a materially higher level) |
-| Renamed | MicroStrategy → Strategy Inc, August 2025 |
-
-A 5.1× annual range on a single name is precisely the mNAV-premium-plus-BTC-drawdown
-compounding §7.2 described. This is observed, not modelled.
-
-**3. Gate I at 1 per sector makes admission actively costly.** MSTR is classified
-Technology / Software — Application, so it would occupy the **Information Technology** slot,
-competing with AAPL, MSFT, and AVGO. Under the §11.3 decision that sector holds exactly one
-position. Admitting MSTR would let a Bitcoin proxy **displace a genuinely diversifying name**,
-making the portfolio worse on the very axis v1.1 exists to improve. This argument did not
-exist when §7 was written, because Gate I was then set to 2.
-
-**The §7.3 sizing bind is unchanged and still decisive:** at a 5% notional cap with a −5%
-stop floor, MSTR risks 0.25% of NetLiq per trade. Sized legally it cannot move the portfolio;
-it is only interesting sized large, and it cannot be sized large.
-
-**The §9.8 stop-floor mechanics apply with full force.** At beta 3.54 and that range, 2×ATR
-vastly exceeds 5%, so `calc_stop` truncates the stop to −5% — a small fraction of one day's
-typical move. Repeated noise stop-outs, each consuming one of two daily trade slots.
-
-**Not affected by §11.7.** MSTR is US-domiciled (`US5949724083`, Tysons Corner, Virginia), so
-the non-US-equities ambiguity does not arise.
-
-**Status of `mstr_btc_research_v0_1` is unchanged:** `PROPOSED`, `S0`,
-`execution_scope: NONE`, `btc_execution_scope: NONE`. No promotion, no data-collection
-runtime, no allowlist change. The research track may remain documented; nothing about this
-decision forecloses revisiting it on evidence.
-
-### 11.6 Meaning of "learning" during the paper run
-
-**Nothing in this architecture learns, and v1.1 proposes that it stay that way.** If
-"learning" means Hermes adapting its own parameters from recent P&L, that would be both
-ungoverned and statistically hopeless at this sample size (§8). Under v1.1, learning means
-exactly one thing: **Chris promoting a versioned strategy change on evidence**, through the
-`strategy_v1.md` §15 anti-overfit checklist and §16 versioning discipline. No autonomous
-parameter adaptation is proposed, and none should be added.
-
----
 
 ## 12. Anti-Overfit Compliance (`strategy_v1.md` §15)
 
@@ -1552,6 +1674,7 @@ independently, and the advisory layer is structurally incapable of loosening any
 | Version | Date | Changes |
 |---|---|---|
 | 0.1 | 2026-07-25 | Initial proposal — breadth expansion, regime gate, volatility targeting, Gate I sector cap, leverage rejection, MSTR/BTC disposition, paper-run validation protocol |
+| 0.8 | 2026-08-01 | **Decision 11.6 resolved — the last open decision.** Defined learning as **falsification and calibration**, with P&L, win rate and paper Sharpe recorded but formally excluded as decision inputs. Added a convergence table distinguishing what the run can resolve (deterministic properties at n=1; slippage and fill quality at ~30–50) from what it cannot (Sharpe, drawdown quantiles). Reframed the §10.1 checks as **the primary learning instrument**, not secondary plumbing validation. Identified **the ratchet** — repeated review-and-adjust is in-sample optimisation by hand, invisible to §15, and made worse by an assistant's fluency at explaining noise — and added a mandatory **pre-registration protocol** (§10.4) with a one-revision-per-window budget. Verified no autonomous learning channel exists in `hermes_advisory.py`, and recorded that the property is incidental rather than guaranteed. |
 | 0.7 | 2026-08-01 | **Decision 11.7 resolved.** Defined "Non-US equities" as **venue plus an approved-jurisdiction set** rather than either pure reading: the domicile reading excluded legitimate developed-market issuers for no risk-based reason, while the pure venue reading would have admitted VIE structures and HFCAA-exposed issuers on the same rule. Added four admission criteria (US-listed and USD, `isAdr: false`, approved domicile, no VIE) and a 16-jurisdiction set. **Enforcement stays at Gate A** — verified that `guard.py` has no domicile check and that Gate A fails closed, preserving the division where code enforces legal mandates and the allowlist enforces preferences. IREN and NBIS become eligible for *consideration* as v1.2 candidates, not admitted; v1.1 stays frozen at 22 US names. |
 | 0.6 | 2026-08-01 | **Decision 11.5 resolved — hold MSTR/BTC at `PROPOSED`.** Confirmed §7 on three strengthened grounds: the issuer self-describes as a "bitcoin treasury company", so the embedded-leverage characterisation is its stated business model rather than an inference; the realised 52-week range of $81.81–$414.36 (≈−77% from high, beta 3.54) demonstrates the compounding risk §7.2 modelled; and Gate I at 1 per sector now means admission would let a Bitcoin proxy **displace** a diversifying name in the Information Technology slot — an argument that did not exist when Gate I was 2. |
 | 0.5 | 2026-08-01 | Added **MU as a v1.2 candidate** (§11.3), noting it adds optionality within the semiconductor slot rather than breadth, since Gate I gives that sector one slot and MU correlates ~0.75–0.85 with NVDA. Raised **new open decision 11.7**: `strategy_v1.md` §3 blocks "Non-US equities" without defining whether that means listing venue or issuer domicile — NASDAQ-listed foreign-domiciled issuers such as IREN (AU) and NBIS (NL) are eligible under one reading and blocked under the other, and PRIIPs does **not** apply to direct equities, so no regulatory barrier exists. Logged a **high-volatility satellite sleeve** as a v1.3 candidate (§9.9), contingent on paper-run evidence. |

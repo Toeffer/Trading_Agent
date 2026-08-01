@@ -251,9 +251,17 @@ class TestDecisionsAndPromotion:
         for d in _load_manifest()["decisions"]["resolved"]:
             assert d["resolution"], f"decision {d['id']} lacks a resolution"
 
-    def test_open_decisions_still_listed(self):
-        assert _load_manifest()["decisions"]["open_requiring_chris"], \
-            "Open decisions must remain visible until resolved"
+    def test_open_decisions_consistent_with_resolved_flag(self):
+        """Open decisions stay visible until resolved; once none remain the
+        manifest must say so explicitly rather than just going quiet."""
+        d = _load_manifest()["decisions"]
+        if d["open_requiring_chris"]:
+            assert not d.get("all_decisions_resolved"), \
+                "manifest claims all decisions resolved but still lists open ones"
+        else:
+            assert d.get("all_decisions_resolved") is True, \
+                "no open decisions listed, but all_decisions_resolved is not set"
+            assert d.get("all_decisions_resolved_at")
 
     def test_no_decision_is_both_open_and_resolved(self):
         d = _load_manifest()["decisions"]

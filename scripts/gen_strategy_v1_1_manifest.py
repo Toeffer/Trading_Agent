@@ -43,7 +43,7 @@ manifest: dict = {
 
     "proposal_identity": {
         "proposal_id": "strategy_v1_1_proposal_v0_1",
-        "proposal_version": "0.7",
+        "proposal_version": "0.8",
         "proposal_status": "PROPOSED",
         "strategy_readiness": "S0",
         "autonomy_level": 1,
@@ -273,6 +273,35 @@ manifest: dict = {
         ),
     },
 
+    "learning_policy": {
+        "decision": "falsification_and_calibration",
+        "resolved": "2026-08-01",
+        "autonomous_parameter_adaptation": False,
+        "pnl_is_decision_input": False,
+        "preregistration_required": True,
+        "max_revisions_per_window": 1,
+        "adapter_stateless_wrt_outcomes": True,
+        "convergence_classes": {
+            "n_equals_1_deterministic": ["gate behavior", "stop attachment", "regime state", "budget ceiling"],
+            "fast_30_to_50_observations": ["slippage vs entry reference", "fill quality", "data-failure rate", "binding-cap distribution"],
+            "not_learnable_in_this_run": ["Sharpe ratio (~4 years at SR 1.0)", "drawdown quantiles", "win rate (marginal)"],
+        },
+        "excluded_from_decisions": ["paper P&L", "win rate", "paper Sharpe", "largest winner"],
+        "ratchet_risk": "Repeated review-and-adjust is in-sample optimisation by hand. Each look consumes the dataset. strategy_v1.md section 15 evaluates changes in isolation and is structurally blind to this accumulation. The hazard is amplified because an LLM assistant asked why something happened will reliably produce a fluent explanation for pure noise.",
+        "preregistration_artifact": "docs/paper-runs/<run-id>-preregistration.md, committed with its SHA-256 recorded before the first cycle; amending it after the run begins voids the run as evidence",
+        "change_path": "observation -> pre-registered decision rule -> section 15 anti-overfit checklist -> section 16 version bump -> Chris approval -> changelog entry",
+        "verified_against_code": {
+            "date": "2026-08-01",
+            "build_prompt_reads_outcomes": False,
+            "past_proposals_read_back": False,
+            "model_weights_updated": False,
+            "detail": "build_prompt() takes an externally supplied baseline, the user request and a fixed template. Proposals are persisted to ~/.openclaw/proposals/ and never loaded.",
+            "property_is_incidental_not_guaranteed": True,
+            "pinned_by_test": "tests/test_hermes_no_outcome_feedback.py",
+        },
+        "unversioned_channel_rule": "Session context and ~/.openclaw/memory/ sit outside the versioned strategy. Anything influencing what gets proposed must either live in the versioned strategy document or be excluded from the proposal path; accumulated notes that shape proposals are undocumented strategy drift.",
+    },
+
     "non_us_equity_policy": {
         "decision": "venue_plus_approved_jurisdictions",
         "resolved": "2026-08-01",
@@ -414,6 +443,9 @@ manifest: dict = {
             {"id": "11.4", "topic": "Volatility reference value",
              "resolution": "vol_reference_pct = 16, renamed from portfolio_vol_target_pct",
              "resolved_at": "design_review_2026-07-27"},
+            {"id": "11.6", "topic": "Meaning of learning during the paper run",
+             "resolution": "Learning means falsification and calibration. P&L, win rate and paper Sharpe are recorded but formally excluded as decision inputs. Pre-registration is mandatory before the run starts, and strategy revisions are capped at one per validation window.",
+             "resolved_at": "2026-08-01"},
             {"id": "11.7", "topic": "Non-US equities: listing venue or issuer domicile",
              "resolution": "Venue PLUS an approved-jurisdiction set. Four admission criteria: US-listed and USD-denominated, isAdr false (ordinary shares), issuer domiciled in the approved set, and no VIE or equivalent contractual-control structure. Enforcement stays at Gate A as an allowlist admission criterion, not a runtime gate.",
              "resolved_at": "2026-08-01"},
@@ -427,9 +459,9 @@ manifest: dict = {
              "resolution": "KEEP. H4.1 is KID/PRIIPs regulation enforced in guard.py and independently by IBKR, not a discretionary prudence block. Lifting it was never viable. Single-name only; index exposure remains unavailable to this EU account.",
              "resolved_at": "2026-08-01"},
         ],
-        "open_requiring_chris": [
-            "11.6 Definition of 'learning' during the paper run",
-        ],
+        "open_requiring_chris": [],
+        "all_decisions_resolved": True,
+        "all_decisions_resolved_at": "2026-08-01",
     },
     "follow_up_obligations": [
         "Recalibrate vol_reference_pct from SPY median 20d realized vol over >=5 years via bridge market/bars",
@@ -440,6 +472,7 @@ manifest: dict = {
         "Correct the erroneous max-concurrent-positions row in strategy_v1.md section 8 at promotion",
         "Apply the three H4.1 corrections to strategy_v1.md sections 2 and 3 at promotion",
         "Add the phase19a CLI checkpoint command — now unblocked, main() de-duplication completed 2026-08-01",
+        "Write and commit the paper-run pre-registration document before the first cycle, recording its SHA-256",
         "Add 'claude/*' to the CI push trigger, or run Phase 19E validation via pull request",
     ],
 

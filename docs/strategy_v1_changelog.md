@@ -79,7 +79,7 @@ what is pending against which version.
 |---|---|
 | Proposal | `docs/strategy-proposals/STRATEGY_V1_1_PROPOSAL_v0_1.md` |
 | Proposal ID | `strategy_v1_1_proposal_v0_1` |
-| Proposal version | `0.7` |
+| Proposal version | `0.8` |
 | Manifest | `docs/strategy-proposals/strategy_v1_1_proposal_v0_1.manifest.json` |
 | Phase | 19A |
 | Readiness | S0 |
@@ -141,9 +141,36 @@ admitting it would let a Bitcoin proxy **displace** a diversifying name in the I
 Technology slot — an argument that did not exist when Gate I was set to 2. The status of
 `mstr_btc_research_v0_1` is unchanged: `PROPOSED`, S0, `execution_scope: NONE`.
 
+**Decision 11.6 — meaning of "learning" (2026-08-01):** learning means **falsification and
+calibration**. P&L, win rate and paper Sharpe are recorded but formally **excluded as
+decision inputs**.
+
+The operative distinction is rate of convergence. Deterministic properties — gate behavior,
+stop attachment, regime state, the budget ceiling — are settled at **n = 1**. Slippage, fill
+quality and data-failure rate converge in ~30–50 observations. Sharpe needs ~4 years at
+SR 1.0 and is simply not available. So the §10.1 checks are not "plumbing validation"
+subordinate to performance measurement; **they are the only rigorous learning the run can
+produce**, because a single counterexample refutes a design claim while no achievable sample
+confirms an edge.
+
+Identified **the ratchet**: repeated review-and-adjust is in-sample optimisation performed by
+hand, consuming the dataset with each look. §15 evaluates changes in isolation and is
+structurally blind to that accumulation. The hazard is amplified here because an assistant
+asked "why did this happen?" reliably produces a fluent explanation for pure noise.
+Mitigations: a mandatory **pre-registration** document committed before the first cycle
+(§10.4), and a **one-revision-per-window** budget.
+
+Verified no autonomous learning channel exists: `hermes_advisory.py`'s `build_prompt()` takes
+an externally supplied baseline plus a fixed template, persisted proposals are never read
+back, and nothing trains. The property held **incidentally rather than by guarantee**, so it
+is now pinned by `tests/test_hermes_no_outcome_feedback.py`. Session context and
+`~/.openclaw/memory/` remain outside the versioned strategy — anything influencing proposals
+must live in the versioned document or be excluded from the proposal path, or it is
+undocumented strategy drift.
+
 **Promotion blockers remaining:**
 
-1. Open decision **11.6** (definition of "learning") — the only one remaining. **11.1, 11.3, 11.5, and 11.7 resolved 2026-08-01**; 11.2 and 11.4 resolved at design review.
+1. ~~Open decisions~~ — **ALL SEVEN RESOLVED 2026-08-01.** 11.2 and 11.4 at design review; 11.1, 11.3, 11.5, 11.6 and 11.7 subsequently. Open decisions no longer block promotion.
 2. Anti-overfit checks 2, 4, and 7 unmet — no out-of-sample or walk-forward evidence exists
 3. Phases 19B–19E not started
 4. Paper-run validation §10.1 not performed

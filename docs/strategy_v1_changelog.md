@@ -79,7 +79,7 @@ what is pending against which version.
 |---|---|
 | Proposal | `docs/strategy-proposals/STRATEGY_V1_1_PROPOSAL_v0_1.md` |
 | Proposal ID | `strategy_v1_1_proposal_v0_1` |
-| Proposal version | `0.4` |
+| Proposal version | `0.5` |
 | Manifest | `docs/strategy-proposals/strategy_v1_1_proposal_v0_1.manifest.json` |
 | Phase | 19A |
 | Readiness | S0 |
@@ -134,7 +134,7 @@ bridge `market/bars`.
 
 **Promotion blockers remaining:**
 
-1. Open decisions 11.5 (MSTR/BTC) and 11.6 (definition of "learning"). **11.1 and 11.3 resolved 2026-08-01**; 11.2 and 11.4 resolved at design review.
+1. Open decisions 11.5 (MSTR/BTC), 11.6 (definition of "learning"), and 11.7 (non-US equities: listing venue or issuer domicile — raised 2026-08-01). **11.1 and 11.3 resolved 2026-08-01**; 11.2 and 11.4 resolved at design review.
 2. Anti-overfit checks 2, 4, and 7 unmet — no out-of-sample or walk-forward evidence exists
 3. Phases 19B–19E not started
 4. Paper-run validation §10.1 not performed
@@ -151,6 +151,7 @@ active governance document and changing it requires a version bump and review.
 |---|---|---|---|
 | `V1_DEFECT_POSITION_COUNT` | `strategy_v1.md` §8 | States "Maximum positions open simultaneously: 2 — *Implied by exposure cap + per-position limit*". The implication is invalid; no gate constrains position count. | v1.1.0 |
 | `V1_DEFECT_H4_1_TENSION` | `strategy_v1.md` §2 vs §3 | §2 lists non-leveraged US-listed ETFs as an allowed instrument type while §3 hard-blocks US-domiciled ETFs for BUY. §3 is operative, and under PRIIPs §2's line can never become true for this account. | **Resolved in principle 2026-08-01** — §2 line to be removed at v1.1.0 promotion (§11.1.2) |
+| `V1_DEFECT_NON_US_AMBIGUITY` | `strategy_v1.md` §3 | Hard-blocks "Non-US equities" without defining whether that means listing venue or issuer domicile. NASDAQ-listed, USD-denominated, non-ADR ordinary shares of foreign-domiciled issuers (IREN `AU0000185993`, NBIS `NL0009805522`) are eligible under one reading and blocked under the other. PRIIPs does **not** apply to direct equities, so there is no regulatory barrier — this is purely a policy choice. | Open decision 11.7; must be resolved before 19B |
 | `V1_DEFECT_BREADTH` | `strategy_v1.md` §2 | A 4-symbol allowlist of correlated mega-cap tech names provides ~1.3 independent bets. Design limitation, not an error. | v1.1.0 |
 
 ---

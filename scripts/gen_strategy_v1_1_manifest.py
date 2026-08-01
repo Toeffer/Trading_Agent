@@ -43,7 +43,7 @@ manifest: dict = {
 
     "proposal_identity": {
         "proposal_id": "strategy_v1_1_proposal_v0_1",
-        "proposal_version": "0.4",
+        "proposal_version": "0.5",
         "proposal_status": "PROPOSED",
         "strategy_readiness": "S0",
         "autonomy_level": 1,
@@ -273,6 +273,37 @@ manifest: dict = {
         ),
     },
 
+    "v1_2_candidates": [
+        {"symbol": "MU", "approved_as_candidate": "2026-08-01", "domicile": "US",
+         "eligible": True,
+         "caveat": "Semiconductor. Under Gate I at 1 per sector it competes with NVDA/AMD for a single slot and correlates ~0.75-0.85 with NVDA (reference). Adds optionality within the semis slot, not breadth.",
+         "contingent_on": "correlation recalculation from bridge market/bars"},
+        {"symbol": "BAC -> V or BRK.B", "approved_as_candidate": None,
+         "rationale": "Two genuinely different drivers in Financials rather than two money-center banks"},
+    ],
+
+    "symbols_considered_and_not_admitted": [
+        {"symbol": "IREN", "domicile": "AU", "isin": "AU0000185993", "exchange": "NASDAQ Global Select",
+         "market_cap_usd": 13132354307, "beta": 4.279, "week52_range": "14.72-76.87",
+         "status": "DEFERRED_PENDING_11_7",
+         "note": "Blocked only under the issuer-domicile reading of the non-US-equities rule; NASDAQ-listed, USD, isAdr false. An earlier characterisation of IREN as primarily a Bitcoin miner rested on vendor description prose and is WITHDRAWN as unverified — the same payload classifies it as Information Technology Services. The trading-relevant question is whether the equity still trades as a BTC proxy, which requires rolling BTC correlation and beta; price-history and revenue-segmentation endpoints are gated on the current market-data plan."},
+        {"symbol": "NBIS", "domicile": "NL", "isin": "NL0009805522", "exchange": "NASDAQ Global Select",
+         "market_cap_usd": 45698400000, "beta": 1.402, "week52_range": "50.098-299.86",
+         "status": "DEFERRED_PENDING_11_7",
+         "note": "Formerly Yandex N.V. Blocked only under the issuer-domicile reading."},
+        {"symbol": "SNDK", "domicile": "US", "status": "NOT_ADMITTED",
+         "note": "Spun out of Western Digital in 2025; likely lacks the 252 bars and 60-day RS history required by section 4.10. Memory/semis sector."},
+    ],
+
+    "v1_3_candidates": [
+        {"name": "High-volatility satellite sleeve", "raised": "2026-08-01",
+         "structure": "Wide stop with proportionally smaller position, holding dollar risk constant: shares = risk_budget / stop_distance. 0.25% NL risk over a 15% stop gives a ~1.7% NL position versus ~5% NL in the core.",
+         "key_property": "Needs a different stop rule, not more risk budget — money at risk is identical",
+         "blocked_by": "Requires an exception to the -5% stop floor, a safety invariant; adds a second stop rule and sizing path, failing anti-overfit check 6",
+         "precondition": "Section 10.1 paper validation complete with all 15 plumbing checks passing, plus an out-of-sample record for the core sleeve"},
+        {"name": "Pairwise correlation cap", "note": "Reject if 60-day correlation to any open position exceeds 0.80; more precise than the sector cap but needs a maintained correlation matrix"},
+    ],
+
     "h4_1_disposition": {
         "decision": "KEEP",
         "basis": "KID/PRIIPs regulation, EU account DUQ542875",
@@ -348,12 +379,15 @@ manifest: dict = {
         "open_requiring_chris": [
             "11.5 MSTR/BTC disposition confirmation",
             "11.6 Definition of 'learning' during the paper run",
+            "11.7 'Non-US equities' in strategy_v1.md section 3: listing venue or issuer domicile?",
         ],
     },
     "follow_up_obligations": [
         "Recalibrate vol_reference_pct from SPY median 20d realized vol over >=5 years via bridge market/bars",
         "Recompute raw and beta-residual correlations from bridge market/bars over >=3 years and restate the section 1.1 breadth tables from measured values",
         "Verify market capitalisation for AVGO, LLY, PG, HD, CAT, UNP, NEE and DUK before 19B applies the allowlist",
+        "Resolve open decision 11.7 (non-US equities: listing venue or issuer domicile) before 19B applies the allowlist",
+        "Compute rolling BTC correlation and beta for any AI-infrastructure or former-miner candidate before admitting it, to test whether it still trades as a crypto proxy regardless of revenue mix",
         "Correct the erroneous max-concurrent-positions row in strategy_v1.md section 8 at promotion",
         "Apply the three H4.1 corrections to strategy_v1.md sections 2 and 3 at promotion",
         "Add the phase19a CLI checkpoint command — now unblocked, main() de-duplication completed 2026-08-01",

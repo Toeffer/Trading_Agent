@@ -1,9 +1,9 @@
 # Strategy v1.1 Proposal — Breadth, Regime Gating, and Volatility Targeting
 
 > **Proposal ID:** `strategy_v1_1_proposal_v0_1`
-> **Proposal Version:** `0.4`
+> **Proposal Version:** `0.5`
 > **Design Review:** `COMPLETE` (2026-07-27) — 6 defects found and corrected; see Version History
-> **Open Decisions:** 4 of 6 resolved (11.1, 11.2, 11.3, 11.4); 11.5 and 11.6 remain open
+> **Open Decisions:** 4 of 7 resolved (11.1, 11.2, 11.3, 11.4); 11.5, 11.6, 11.7 remain open
 > **Proposal Status:** `PROPOSED`
 > **Strategy Readiness:** `S0`
 > **Autonomy Level:** `1`
@@ -1032,7 +1032,55 @@ design. Existing positions in removed symbols remain closeable per §6.2.
 **No rollback is required for 19A.** It is documentation only; reverting the commit is
 sufficient and has no runtime effect.
 
-### 9.8 Dependency order
+### 9.8 Deferred — high-volatility satellite sleeve (v1.3 candidate)
+
+Raised 2026-08-01: whether high-volatility names (AI-infrastructure, memory, datacenter)
+should be traded in a **separate sleeve** with its own rules rather than admitted to the core
+allowlist. Recorded here because the idea is sound and the reasoning should not be relitigated
+from scratch later.
+
+**Why such names fail in the core sleeve.** The obstacle is not their volatility — it is the
+interaction between volatility and the −5% stop floor. `calc_stop` takes the **max** of four
+candidates, i.e. the *tightest* stop, so `entry × 0.95` is a hard ceiling on stop distance:
+
+| Name class | ATR(14) ≈ | 2×ATR | Stop applied | Stop in ATRs |
+|---|---|---|---|---|
+| Mega-cap (AAPL) | 1.5% | 3% | −3% | 2.0× — workable |
+| High-beta semi (NVDA) | 3.5% | 7% | −5% (truncated) | 1.4× — tight |
+| AI-infra / miner class | 9% | 18% | −5% (truncated) | **0.55× — inside one day's range** |
+
+A stop at half a day's typical range is triggered by noise rather than by thesis failure.
+Meanwhile sizing is pinned: at a 5% stop distance, `risk_cap_shares = 2% ÷ 5% = 40%` of
+NetLiq, far above the 5% notional cap, so **notional always binds**. The position is 5% of
+NetLiq and risk is 0.25% of NetLiq no matter how volatile the name is. Higher volatility
+therefore buys the *same* dollar exposure with a *higher* probability of losing it — and with
+a long-only mandate there is no offsetting downside capture.
+
+**The correct structure, if it is ever built.** Wide stop, small position, constant dollar
+risk:
+
+```
+shares = risk_budget / stop_distance
+
+0.25% NL risk ÷ 15% stop  →  position ≈ 1.7% NL   (satellite)
+0.25% NL risk ÷  5% stop  →  position ≈ 5.0% NL   (core, today)
+```
+
+The sleeve needs a **different stop rule, not more risk budget** — the money at risk is
+identical. That is the property that makes the idea worth recording.
+
+**Why it is deferred.** It requires carving an exception into the −5% floor, which is a
+safety invariant whose purpose is capping planned loss at 5%. It also adds a second stop rule
+and a second sizing path, roughly doubling the risk-model surface area and its test burden —
+a clear failure of `strategy_v1.md` §15 anti-overfit check 6. Doing that to pursue an
+unproven edge, before the core strategy has produced a single out-of-sample observation,
+inverts the order of evidence.
+
+**Precondition for reconsideration:** the §10.1 paper validation completes with all 15
+plumbing checks passing, and the core sleeve has an out-of-sample record. Until then this
+stays a recorded idea, not a work item.
+
+### 9.9 Dependency order
 
 ```
 19A (docs)  →  19B (YAML, Chris)  →  19C (advisory)  →  19D (Gate I, Tier 1)  →  19E (tests)  →  paper run (§10)
@@ -1108,8 +1156,8 @@ Record results in `docs/KPI_DASHBOARD.md` conventions and gate promotion on
 
 None of these can be resolved by Werner. Each materially shapes the design.
 
-**Status (v0.4):** 11.1, 11.2, 11.3, and 11.4 are **RESOLVED**. 11.5 and 11.6 remain
-**OPEN** and block promotion.
+**Status (v0.5):** 11.1, 11.2, 11.3, and 11.4 are **RESOLVED**. 11.5, 11.6, and 11.7
+remain **OPEN** and block promotion.
 
 | # | Decision | Status |
 |---|---|---|
@@ -1119,6 +1167,7 @@ None of these can be resolved by Werner. Each materially shapes the design.
 | 11.4 | Volatility reference value | **RESOLVED** — 16%, renamed |
 | 11.5 | MSTR/BTC disposition | **OPEN** |
 | 11.6 | Meaning of "learning" | **OPEN** |
+| 11.7 | "Non-US equities" — venue or domicile? | **OPEN** — raised 2026-08-01 |
 
 ### 11.1 H4.1 — the ETF BUY block — RESOLVED
 
@@ -1224,11 +1273,16 @@ groups rather than 10.
 cap rather than by removing names. Keeping both members of each pair preserves optionality:
 the ranker chooses whichever is stronger, and the cap ensures only one is held.
 
-**Deferred:** substituting BAC for a differentiated financial (V or BRK.B) would give the
-Financials sector two genuinely different drivers rather than two money-center banks,
-improving the *quality* of the choice within that sector rather than the risk of the
-resulting position. Logged as a v1.2 candidate; not required, because Gate I already prevents
-holding both.
+**Deferred to v1.2:**
+
+| Candidate | Rationale | Status |
+|---|---|---|
+| BAC → V or BRK.B | Gives Financials two genuinely different drivers rather than two money-center banks. Improves the *quality* of choice within the sector, not the risk of the resulting position. Not required — Gate I already prevents holding both. | v1.2 candidate |
+| **Add MU** | US-domiciled, ~$100B+, deeply liquid, cleanly eligible. Approved as a v1.2 candidate 2026-08-01. **Adds no breadth on its own** — it is a semiconductor, so under Gate I it competes with NVDA/AMD for a single sector slot, and correlates ~0.75–0.85 with NVDA *(reference)*. Its value is optionality within the semis slot, not additional bets. Admission is contingent on the correlation recalculation already listed in the follow-up obligations. | v1.2 candidate |
+
+**Rejected for v1.1:** IREN and NBIS — see §11.7 for why this is an *interpretation* question
+rather than a settled exclusion. SNDK — US-domiciled but spun out of Western Digital in 2025,
+so it likely lacks the 252 bars and 60-day relative-strength history required by §4.10.
 
 ### 11.4 Volatility reference value — RESOLVED
 
@@ -1244,6 +1298,34 @@ markets instead of responding to stress. Setting the constant near SPY's long-ru
 Outstanding obligation: this remains a *reference* estimate. Recompute SPY's median 20-day
 realized volatility over ≥5 years from bridge `market/bars` and set the constant to that
 measured value before promotion. Do not optimize it against strategy P&L.
+
+### 11.7 "Non-US equities" — listing venue or issuer domicile? — OPEN
+
+**Raised 2026-08-01. Blocks nothing in v1.1 as proposed, but must be resolved before 19B
+applies the allowlist, because it governs eligibility for a whole class of instruments.**
+
+`strategy_v1.md` §3 hard-blocks "Non-US equities" without defining the term. Two readings
+give opposite answers for NASDAQ-listed, foreign-domiciled issuers:
+
+| Reading | IREN (AU) / NBIS (NL) | Consequence |
+|---|---|---|
+| **Listing venue** | Eligible — both are NASDAQ Global Select | Opens a large class of US-listed foreign issuers |
+| **Issuer domicile** | Blocked — ISINs `AU0000185993`, `NL0009805522` | Current de facto behavior |
+
+Operationally the two are indistinguishable from US stocks: USD-denominated, US regular
+trading hours, `isAdr: false` (ordinary shares, no depositary fees), no FX conversion beyond
+the existing EUR/USD handling.
+
+**PRIIPs does not apply here.** That regime covers packaged retail products — ETFs,
+structured products — not direct equities. So unlike H4.1 (§11.1), there is **no regulatory
+barrier**; this is purely a policy choice.
+
+Considerations that survive either reading: foreign-domiciled issuers can carry dividend
+withholding and differing disclosure regimes. Both names in question pay no dividend, so that
+consideration is currently moot but would apply to other candidates.
+
+**Werner cannot resolve this** — it is a scope decision about the mandate, not a technical
+question.
 
 ### 11.5 MSTR / BTC
 
@@ -1364,6 +1446,7 @@ independently, and the advisory layer is structurally incapable of loosening any
 | Version | Date | Changes |
 |---|---|---|
 | 0.1 | 2026-07-25 | Initial proposal — breadth expansion, regime gate, volatility targeting, Gate I sector cap, leverage rejection, MSTR/BTC disposition, paper-run validation protocol |
+| 0.5 | 2026-08-01 | Added **MU as a v1.2 candidate** (§11.3), noting it adds optionality within the semiconductor slot rather than breadth, since Gate I gives that sector one slot and MU correlates ~0.75–0.85 with NVDA. Raised **new open decision 11.7**: `strategy_v1.md` §3 blocks "Non-US equities" without defining whether that means listing venue or issuer domicile — NASDAQ-listed foreign-domiciled issuers such as IREN (AU) and NBIS (NL) are eligible under one reading and blocked under the other, and PRIIPs does **not** apply to direct equities, so no regulatory barrier exists. Logged a **high-volatility satellite sleeve** as a v1.3 candidate (§9.9), contingent on paper-run evidence. |
 | 0.4 | 2026-08-01 | **Decision 11.3 resolved.** Kept all 22 names and tightened Gate I from 2 to **1 position per sector** (§4.7.1): momentum clusters by sector, so a cap of 2 would let the relative-strength filter fill two slots with one bet (NVDA+AMD, JPM+BAC). **Corrected the §1.1 breadth claim**, which overstated the IR gain as 2.24× — the defensible figures from `N_eff = n/(1+(n−1)ρ̄)` are **1.24× directional** and **1.52× on the selection sleeve**, so the expansion buys selection breadth, not diversification of market risk. Updated §6.1 (Gate I imposes an indirect 11-position ceiling), §6.2 (a grandfathered position now consumes its sector's only slot), and the 19D test expectations. |
 | 0.3 | 2026-08-01 | **Decision 11.1 resolved — KEEP H4.1.** Established that H4.1 is KID/PRIIPs regulation enforced in `guard.py` and independently by IBKR, not the discretionary "prudence" block the v0.1 draft assumed, so "lift" was never a viable option. Documented that index exposure is foreclosed by two interacting rules — PRIIPs (law) and the non-US-equities rule (policy) — and identified EU-domiciled UCITS ETFs as the legal route, deferred to v1.2+ because non-US venues break the 9:30–16:00 ET session model. Recorded three corrections owed to `strategy_v1.md` at promotion. Separately fixed an H2 violation: the hardcoded `_US_ETF_BLOCKLIST` is now `regulatory baseline | YAML extensions`, where the YAML can only add symbols and never shrink the floor. |
 | 0.2 | 2026-07-27 | **Design review applied.** Six defects corrected. §6.1: withdrew the incorrect "6 concurrent positions" claim — position count is unconstrained (§11.2 resolved). §4.6/§4.6.1: renamed `portfolio_vol_target_pct` → `vol_reference_pct` and corrected 12% → 16%; the earlier value was mislabeled and permanently binding (§11.4 resolved). §4.10 added: data-quality thresholds and fail-safe rules for the new signals. §6.2 added: grandfathering of existing positions. §9.6 added: operator CLI command, blocked pending `main()` de-duplication. §9.7 added: reverse-order rollback procedure. Gate letter I verified free against `guard.py`. YAML backward compatibility verified against the rules loader. |

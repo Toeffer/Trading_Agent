@@ -24,7 +24,13 @@ TESTS=(
   tests/test_phase18a_level1_mstr_btc_research_proposal_governance.py
   tests/test_phase18b_level1_data_schema_provider_governance.py
   tests/test_phase18r1_model_routing_governance.py
+<<<<<<< HEAD
   tests/test_phase18r2_openclaw_routing_adapter.py
+=======
+  tests/test_phase19a_strategy_v1_1_proposal_governance.py
+  tests/test_us_etf_blocklist_source.py
+  tests/test_hermes_no_outcome_feedback.py
+>>>>>>> origin/master
 )
 
 echo "==> Portable CI"

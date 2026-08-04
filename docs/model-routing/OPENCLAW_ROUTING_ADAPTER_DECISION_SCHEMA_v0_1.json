@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OpenClaw Routing Adapter Decision Schema v0.1",
+  "description": "Phase 18R2 SHADOW_ONLY adapter decision output. Must match adapter_state = SHADOW_ROUTE_RESOLVED or HOLD.",
+  "version": "0.1",
+  "governance_identity": {
+    "governance_id": "openclaw_routing_adapter_v0_1",
+    "governance_version": "0.1",
+    "governance_state": "PENDING_INPUT",
+    "governance_phase": "PHASE18R2",
+    "adapter_mode": "SHADOW_ONLY",
+    "adapter_readiness": "A0",
+    "autonomy_level": 1,
+    "advisory_only": true,
+    "human_final_authority": true
+  },
+  "type": "object",
+  "required": [
+    "adapter_schema_version",
+    "governance_id",
+    "governance_version",
+    "adapter_state",
+    "adapter_mode",
+    "phase18r1_routing_state",
+    "role",
+    "task_class",
+    "logical_model_id",
+    "selected_route_tier",
+    "selected_transport",
+    "selected_runtime_alias",
+    "binding_state",
+    "rationale_codes",
+    "shadow_resolution_only",
+    "live_routing_changed",
+    "human_activation_required",
+    "human_final_authority",
+    "adapter_invocation_authorized",
+    "runtime_invocation_authorized",
+    "direct_provider_integration_authorized",
+    "direct_credentials_authorized",
+    "direct_network_authorized",
+    "broker_mutation_authorized",
+    "trading_execution_authorized",
+    "trading_autonomy_unchanged",
+    "deterministic_request_hash",
+    "upstream_decision_hash",
+    "deterministic_adapter_hash"
+  ],
+  "properties": {
+    "adapter_schema_version": {"type": "string", "const": "0.1"},
+    "governance_id": {"type": "string", "const": "openclaw_routing_adapter_v0_1"},
+    "governance_version": {"type": "string", "const": "0.1"},
+    "adapter_state": {"type": "string", "enum": ["SHADOW_ROUTE_RESOLVED", "HOLD"]},
+    "adapter_mode": {"type": "string", "const": "SHADOW_ONLY"},
+    "phase18r1_routing_state": {"type": "string", "enum": ["DEFAULT_ROUTE", "ESCALATED_ROUTE", "HOLD"]},
+    "role": {"type": "string", "enum": ["HERMES", "OC", "UNKNOWN"]},
+    "task_class": {"type": "string"},
+    "logical_model_id": {
+      "anyOf": [
+        {"type": "string", "enum": ["gpt-5.5", "gpt-5.6-sol", "deepseek-v4-pro", "kimi-k3"]},
+        {"type": "null"}
+      ]
+    },
+    "selected_route_tier": {
+      "anyOf": [
+        {"type": "string", "enum": ["DEFAULT", "ESCALATION"]},
+        {"type": "null"}
+      ]
+    },
+    "selected_transport": {
+      "anyOf": [
+        {"type": "string", "enum": ["CODEX", "OPENCODE"]},
+        {"type": "null"}
+      ]
+    },
+    "selected_runtime_alias": {
+      "anyOf": [
+        {"type": "string"},
+        {"type": "null"}
+      ]
+    },
+    "binding_state": {
+      "anyOf": [
+        {"type": "string", "enum": ["BOUND_EXISTING_ALIAS", "UNBOUND", "AMBIGUOUS"]},
+        {"type": "null"}
+      ]
+    },
+    "rationale_codes": {"type": "array", "items": {"type": "string"}},
+    "shadow_resolution_only": {"type": "boolean", "const": true},
+    "live_routing_changed": {"type": "boolean", "const": false},
+    "human_activation_required": {"type": "boolean"},
+    "human_final_authority": {"type": "boolean", "const": true},
+    "adapter_invocation_authorized": {"type": "boolean", "const": false},
+    "runtime_invocation_authorized": {"type": "boolean", "const": false},
+    "direct_provider_integration_authorized": {"type": "boolean", "const": false},
+    "direct_credentials_authorized": {"type": "boolean", "const": false},
+    "direct_network_authorized": {"type": "boolean", "const": false},
+    "broker_mutation_authorized": {"type": "boolean", "const": false},
+    "trading_execution_authorized": {"type": "boolean", "const": false},
+    "trading_autonomy_unchanged": {"type": "boolean", "const": true},
+    "deterministic_request_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "upstream_decision_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "deterministic_adapter_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {"adapter_state": {"const": "SHADOW_ROUTE_RESOLVED"}}
+      },
+      "then": {
+        "properties": {
+          "selected_transport": {"type": "string"},
+          "selected_runtime_alias": {"type": "string"},
+          "logical_model_id": {"type": "string"},
+          "human_activation_required": {"const": true},
+          "shadow_resolution_only": {"const": true},
+          "live_routing_changed": {"const": false}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"adapter_state": {"const": "HOLD"}}
+      },
+      "then": {
+        "properties": {
+          "selected_transport": {"type": "null"},
+          "selected_runtime_alias": {"type": "null"},
+          "human_activation_required": {"const": true},
+          "live_routing_changed": {"const": false},
+          "adapter_invocation_authorized": {"const": false},
+          "runtime_invocation_authorized": {"const": false},
+          "direct_provider_integration_authorized": {"const": false},
+          "direct_credentials_authorized": {"const": false},
+          "direct_network_authorized": {"const": false},
+          "broker_mutation_authorized": {"const": false},
+          "trading_execution_authorized": {"const": false}
+        }
+      }
+    }
+  ]
+}

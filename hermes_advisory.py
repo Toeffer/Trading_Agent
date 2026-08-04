@@ -15,6 +15,8 @@ Output includes Hermes Evidence Block for attribution tracking.
 
 import argparse
 import json
+import math
+import statistics
 import subprocess
 import sys
 import time
@@ -24,6 +26,8 @@ from pathlib import Path
 
 # P3: proposal persistence
 from guard import save_proposal_file
+# Phase 19C: reference-bars fetch + numeric helper, reused rather than duplicated
+from guard import _bridge_post, _safe_float
 
 # ── Hard-coded safety constraints ──────────────────────────────────────────
 FORBIDDEN_COMMANDS = [
@@ -408,6 +412,288 @@ def check_forbidden(response_text: str) -> list:
         if pat.lower() in response_text.lower():
             violations.append(pat)
     return violations
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 19C — Advisory layer (regime, volatility, cross-sectional RS)
+#
+# strategy_v1_1 proposal §9.3. Computes and REPORTS the regime state, the
+# inverse-volatility gross scalar, and relative-strength ranks. Advisory
+# only — no gate, no order path, no size, no leverage. The functions below
+# must never be able to loosen guard.py's enforcement: gate_exposure keeps
+# enforcing the YAML 30% ceiling independently of anything computed here,
+# and compute_effective_budget below asserts its own output stays at or
+# below that ceiling before returning it.
+#
+# "Never a size or leverage" is enforced structurally, not just by
+# docstring: build_proposal's return dict has no shares/quantity/notional/
+# leverage field, and nothing in this section imports guard's sizing
+# functions (compute_final_max_shares, calc_stop, calc_true_range).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# SPY, bars-only, never order-eligible (strategy_v1_1 §4.4). Deliberately
+# excluded from symbol_allowlist.allow — this constant must never be passed
+# to guard.fetch_bars, guard._require_allowed_symbol, or any order path.
+REFERENCE_SYMBOL = "SPY"
+
+TRADING_DAYS_PER_YEAR = 252
+
+REGIME_STATES = ("RISK_ON", "CAUTION", "RISK_OFF")
+# strategy_v1_1 §4.5 — CAUTION halves new-BUY budget, RISK_OFF zeroes it.
+# SELL is never affected by regime — that is enforced by guard.py's gates,
+# not by this advisory module, which never touches the order path at all.
+REGIME_MULTIPLIERS = {"RISK_ON": 1.0, "CAUTION": 0.5, "RISK_OFF": 0.0}
+
+DEFAULT_REGIME_SMA_DAYS = 200
+DEFAULT_REGIME_MOMENTUM_DAYS = 252  # ~12 months at ~21 trading days/month
+
+
+def fetch_reference_bars(duration: str = "1 Y", bar_size: str = "1 day") -> list:
+    """Fetch read-only reference bars for SPY (strategy_v1_1 §4.4).
+
+    Deliberately bypasses guard._require_allowed_symbol: SPY is intentionally
+    excluded from symbol_allowlist.allow and must never become order-eligible.
+    This reads /market/bars only — no gate, no order endpoint, no allowlist.
+
+    Returns:
+        List of bar dicts (oldest first), same shape as guard.fetch_bars:
+        date, open, high, low, close, volume.
+
+    Raises:
+        RuntimeError: bridge unreachable or unexpected response.
+        ValueError: no bars returned.
+    """
+    data = _bridge_post("/market/bars", {
+        "symbol": REFERENCE_SYMBOL,
+        "duration": duration,
+        "bar_size": bar_size,
+        "what_to_show": "TRADES",
+        "use_rth": True,
+    })
+
+    bars = data.get("bars", [])
+    if not bars:
+        raise ValueError(f"No bars returned for reference symbol {REFERENCE_SYMBOL}")
+
+    return [
+        {
+            "date": str(b.get("date", "")),
+            "open": _safe_float(b.get("open")),
+            "high": _safe_float(b.get("high")),
+            "low": _safe_float(b.get("low")),
+            "close": _safe_float(b.get("close")),
+            "volume": int(b["volume"]) if b.get("volume") is not None else None,
+        }
+        for b in bars
+    ]
+
+
+def compute_realized_vol(bars: list, lookback: int = 20) -> float:
+    """Annualized realized volatility from daily log returns (strategy_v1_1 §4.6).
+
+        sigma_hat = stdev(daily log returns, lookback) * sqrt(252)
+
+    Args:
+        bars: bar dicts with a numeric "close", oldest first.
+        lookback: number of most-recent daily returns to use (default 20).
+
+    Returns:
+        Annualized volatility as a fraction (e.g. 0.16 for 16%).
+
+    Raises:
+        ValueError: fewer than lookback + 1 valid closes, or lookback < 1.
+    """
+    if lookback < 1:
+        raise ValueError(f"lookback must be >= 1, got {lookback}")
+    closes = [b["close"] for b in bars if b.get("close") is not None]
+    if len(closes) < lookback + 1:
+        raise ValueError(
+            f"Need at least {lookback + 1} bars with valid closes, got {len(closes)}"
+        )
+    recent = closes[-(lookback + 1):]
+    log_returns = [math.log(recent[i] / recent[i - 1]) for i in range(1, len(recent))]
+    try:
+        daily_stdev = statistics.stdev(log_returns)
+    except statistics.StatisticsError as e:
+        raise ValueError(f"Cannot compute stdev from {len(log_returns)} return(s): {e}")
+    return daily_stdev * math.sqrt(TRADING_DAYS_PER_YEAR)
+
+
+def compute_regime_state(
+    bars: list,
+    sma_days: int = DEFAULT_REGIME_SMA_DAYS,
+    momentum_days: int = DEFAULT_REGIME_MOMENTUM_DAYS,
+) -> str:
+    """Two unfitted regime conditions on the reference series (strategy_v1_1 §4.5).
+
+        A: last close > sma_days-day SMA
+        B: trailing momentum_days-day total return > 0
+
+        RISK_ON  -- A and B
+        CAUTION  -- exactly one of A, B
+        RISK_OFF -- neither
+
+    Never blocks SELL by itself — this is advisory input only. What (if
+    anything) happens with the result is decided entirely by guard.py's
+    gates, which this function never calls.
+
+    Raises:
+        ValueError: fewer than max(sma_days, momentum_days) + 1 valid closes.
+    """
+    closes = [b["close"] for b in bars if b.get("close") is not None]
+    required = max(sma_days, momentum_days) + 1
+    if len(closes) < required:
+        raise ValueError(f"Need at least {required} bars with valid closes, got {len(closes)}")
+
+    last_close = closes[-1]
+    sma = sum(closes[-sma_days:]) / sma_days
+    condition_a = last_close > sma
+
+    momentum_start = closes[-(momentum_days + 1)]
+    total_return = (last_close / momentum_start) - 1.0
+    condition_b = total_return > 0
+
+    if condition_a and condition_b:
+        return "RISK_ON"
+    if condition_a or condition_b:
+        return "CAUTION"
+    return "RISK_OFF"
+
+
+def compute_gross_scalar(sigma_ref: float, cfg: dict) -> float:
+    """Inverse-volatility gross exposure scalar (strategy_v1_1 §4.6).
+
+        gross_scalar = clamp(vol_reference / sigma_ref, floor, 1.00)
+
+    This is a normalization scalar, NOT a portfolio volatility target —
+    see §4.6.1. By construction gross_scalar is always in [floor, 1.0].
+
+    Args:
+        sigma_ref: annualized realized vol of the reference series, as a
+            fraction (e.g. 0.16), from compute_realized_vol.
+        cfg: the YAML `advisory` block — reads vol_reference_pct (percent,
+            e.g. 16) and gross_scalar_floor (fraction, e.g. 0.25).
+
+    Raises:
+        ValueError: sigma_ref <= 0, or cfg values out of range.
+    """
+    if sigma_ref <= 0:
+        raise ValueError(f"sigma_ref must be positive, got {sigma_ref}")
+    vol_reference = cfg["vol_reference_pct"] / 100.0
+    floor = cfg["gross_scalar_floor"]
+    if vol_reference <= 0:
+        raise ValueError(f"vol_reference_pct must be positive, got {cfg['vol_reference_pct']}")
+    if not (0.0 < floor <= 1.0):
+        raise ValueError(f"gross_scalar_floor must be in (0, 1], got {floor}")
+    scalar = vol_reference / sigma_ref
+    return max(floor, min(1.0, scalar))
+
+
+def compute_effective_budget(
+    sigma_ref: float, regime_state: str, rules: dict, cfg: dict,
+) -> float:
+    """Advisory exposure budget (strategy_v1_1 §4.6):
+
+        effective_exposure_budget = max_total_exposure_yaml * gross_scalar * regime_multiplier
+
+    Returns a PERCENT number (e.g. 30.0) — the same units as
+    rules["max_total_exposure"]["value"] — so callers can compare directly
+    against the YAML ceiling without a unit conversion.
+
+    This function is advisory-only: it never gates or sizes an order.
+    guard.py's gate_exposure enforces the YAML ceiling independently of
+    anything this function returns — if the advisory layer is wrong,
+    bypassed, or never called, gate_exposure still holds the line.
+
+    Mandatory safety property (§9.3): because gross_scalar <= 1.0 and
+    regime_multiplier <= 1.0 by construction, the result can only be at or
+    below the YAML ceiling, never above it. This is asserted on the
+    function's own output before returning, so a bug here fails loud
+    instead of silently loosening the guard.
+
+    Raises:
+        ValueError: unknown regime_state.
+        AssertionError: computed budget exceeds the YAML ceiling (should be
+            unreachable — see the mandatory property above).
+    """
+    if regime_state not in REGIME_MULTIPLIERS:
+        raise ValueError(f"Unknown regime_state: {regime_state!r}. Must be one of {REGIME_STATES}")
+
+    max_total_exposure_pct = rules["max_total_exposure"]["value"]
+    gross_scalar = compute_gross_scalar(sigma_ref, cfg)
+    regime_multiplier = REGIME_MULTIPLIERS[regime_state]
+    effective_budget_pct = max_total_exposure_pct * gross_scalar * regime_multiplier
+
+    if effective_budget_pct > max_total_exposure_pct:
+        raise AssertionError(
+            f"effective_budget {effective_budget_pct} exceeds YAML ceiling "
+            f"{max_total_exposure_pct} — the advisory layer must never loosen the guard"
+        )
+    return effective_budget_pct
+
+
+def rank_cross_sectional_rs(
+    symbol_bars: dict, lookback: int = 60, top_fraction: float = 0.5,
+) -> set:
+    """Cross-sectional relative-strength rank (strategy_v1_1 §4.3 reference).
+
+    Ranks each symbol by its trailing `lookback`-day total return and
+    returns the top `top_fraction` of symbols by that measure. Advisory
+    input only — never selects, sizes, or gates an order.
+
+    Args:
+        symbol_bars: {symbol: bars}. bars are daily bar dicts, oldest first,
+            same shape as guard.fetch_bars.
+        lookback: trading days for the trailing return (default 60, §4.3).
+        top_fraction: fraction of symbols to keep (default 0.5, top half).
+
+    Returns:
+        Set of symbols in the top `top_fraction` by trailing return.
+        Symbols with fewer than lookback + 1 valid closes are excluded,
+        never defaulted to a zero return.
+    """
+    if not (0.0 < top_fraction <= 1.0):
+        raise ValueError(f"top_fraction must be in (0, 1], got {top_fraction}")
+
+    trailing_return = {}
+    for symbol, bars in symbol_bars.items():
+        closes = [b["close"] for b in bars if b.get("close") is not None]
+        if len(closes) < lookback + 1:
+            continue
+        recent = closes[-(lookback + 1):]
+        trailing_return[symbol] = (recent[-1] / recent[0]) - 1.0
+
+    if not trailing_return:
+        return set()
+
+    ranked = sorted(trailing_return.items(), key=lambda kv: kv[1], reverse=True)
+    keep_count = max(1, math.ceil(len(ranked) * top_fraction))
+    return {symbol for symbol, _ in ranked[:keep_count]}
+
+
+def build_proposal(
+    symbol: str, rank: int, thesis: str, invalidation_condition: str,
+    *, regime_state: str, in_top_half_rs: bool,
+) -> dict:
+    """Emit an advisory research proposal (strategy_v1_1 §9.3).
+
+    Rank, thesis, and invalidation condition ONLY. This must never include
+    a size, quantity, notional, or leverage field — sizing is the exclusive
+    responsibility of guard.py's compute_final_max_shares and the gates.
+    Structural guarantee, not just a docstring promise: the returned dict
+    below has no such field, by construction.
+    """
+    return {
+        "advisory_schema_version": "0.1",
+        "symbol": symbol,
+        "rank": rank,
+        "thesis": thesis,
+        "invalidation_condition": invalidation_condition,
+        "regime_state": regime_state,
+        "in_top_half_rs": in_top_half_rs,
+        "advisory_only": True,
+        "size_or_leverage_included": False,
+    }
 
 
 def main():

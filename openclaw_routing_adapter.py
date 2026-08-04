@@ -29,15 +29,16 @@ _LOGICAL_TO_BINDING: dict[str, Tuple[str, str, str]] = {
     "gpt-5.5":         ("CODEX",    "gpt-5.5",         "BOUND_EXISTING_ALIAS"),
     "gpt-5.6-sol":     ("CODEX",    "gpt-5.6-sol",     "BOUND_EXISTING_ALIAS"),
     "deepseek-v4-pro": ("OPENCODE", "opencode-go/deepseek-v4-pro", "BOUND_EXISTING_ALIAS"),
-    "kimi-k3":         ("OPENCODE", "kimi-k3",          "UNBOUND"),
 }
 
 _APPROVED_MODEL_IDS = frozenset(_LOGICAL_TO_BINDING.keys())
 
-# Role → (default_model, escalation_model)
-_ROLE_MODEL_MAP = {
+# Role → (default_model, escalation_model). escalation_model is None for a
+# role with no escalation tier — OC_ESCALATION (kimi-k3) was retired in
+# Phase 18R2 (no provider ever bound it locally).
+_ROLE_MODEL_MAP: dict[str, Tuple[str, Optional[str]]] = {
     "HERMES": ("gpt-5.5", "gpt-5.6-sol"),
-    "OC":     ("deepseek-v4-pro", "kimi-k3"),
+    "OC":     ("deepseek-v4-pro", None),
 }
 
 # Permitted routing states
@@ -174,8 +175,11 @@ def _validate_request_decision_pair(
             route_tier = routing_decision.get("selected_route_tier")
             if route_tier == "DEFAULT" and selected_model != default_m:
                 reasons.append(f"DEFAULT_MODEL_MISMATCH: expected={default_m} got={selected_model}")
-            elif route_tier == "ESCALATION" and selected_model != escal_m:
-                reasons.append(f"ESCALATION_MODEL_MISMATCH: expected={escal_m} got={selected_model}")
+            elif route_tier == "ESCALATION":
+                if escal_m is None:
+                    reasons.append(f"ESCALATION_TIER_RETIRED: {rq_role} has no escalation binding in Phase 18R2")
+                elif selected_model != escal_m:
+                    reasons.append(f"ESCALATION_MODEL_MISMATCH: expected={escal_m} got={selected_model}")
 
     # ── Cross-transport check ───────────────────────────────────────────────
     if selected_model in _LOGICAL_TO_BINDING:

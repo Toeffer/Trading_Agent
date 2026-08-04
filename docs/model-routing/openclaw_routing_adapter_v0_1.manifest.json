@@ -4,7 +4,7 @@
   "governance_id": "openclaw_routing_adapter_v0_1",
   "governance_version": "0.1",
   "phase": "18R2",
-  "governance_state": "PENDING_INPUT",
+  "governance_state": "ADAPTER_READY_FOR_MANUAL_ACTIVATION",
   "adapter_readiness": "A0",
   "autonomy_level": 1,
   "advisory_only": true,
@@ -17,7 +17,7 @@
   "direct_model_invocation_scope": "NONE",
   "transport_delegation_scope": "EXISTING_CODEX_AND_OPENCODE_ONLY",
   "trading_execution_scope": "NONE",
-  "next_phase_boundary": "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN",
+  "next_phase_boundary": "PHASE18R2_MANUAL_ACTIVATION_PROOF",
   "upstream_phase18r1_manifest_path": "docs/model-routing/model_routing_governance_v0_1.manifest.json",
   "upstream_phase18r1_manifest_sha256": "4d3acb865e683eb339f860d4bed9741e98189f9e5bb0d740acc14ffcd071c577",
   "upstream_phase18b_manifest_path": "docs/strategy-proposals/data-governance/mstr_btc_data_governance_v0_1.manifest.json",
@@ -28,13 +28,13 @@
     {
       "file": "OPENCLAW_ROUTING_BINDINGS_v0_1.json",
       "path": "docs/model-routing/OPENCLAW_ROUTING_BINDINGS_v0_1.json",
-      "sha256": "cf992b29c594e7080dee00aee407439bcfa0f0d2a6f56b11e7b51d9204ee76a5",
+      "sha256": "3b4195732e6fa32465ebbf0de24cea793e976e5aa72d8d4612e292ed8dbf301f",
       "version": "0.1"
     },
     {
       "file": "OPENCLAW_ROUTING_ADAPTER_POLICY_v0_1.json",
       "path": "docs/model-routing/OPENCLAW_ROUTING_ADAPTER_POLICY_v0_1.json",
-      "sha256": "399cf107e2d3995f235893f7d26ef9d85f6bb68099fa4c45ce40501a0014cb60",
+      "sha256": "8a4cc3ad8687706844ffe123557a3d1250233d6d61626fccec203c2cff94d392",
       "version": "0.1"
     },
     {
@@ -52,7 +52,7 @@
     {
       "file": "openclaw_routing_adapter.py",
       "path": "openclaw_routing_adapter.py",
-      "sha256": "c8a19f2bb5d9df288ff01251923bffdc51883eadb784dd9a15dc53b043c1037d",
+      "sha256": "cdf76e5f6f6f5494994694335647599355023e08d6b7353d640fd24e306af34e",
       "version": "0.1"
     }
   ],
@@ -69,41 +69,31 @@
   "phase18b_artifacts_unchanged": true,
   "canonical_strategy_unchanged": true,
   "binding_summary": {
-    "total_bindings": 4,
+    "total_bindings": 3,
     "bound": 3,
-    "unbound": 1,
+    "unbound": 0,
     "ambiguous": 0
   },
   "blockers": {
-    "active_blockers": [
-      {
-        "blocker_id": "R2_BLK_003",
-        "severity": "HARD_BLOCKER",
-        "title": "kimi-k3 exact local runtime binding not established",
-        "logical_model": "kimi-k3",
-        "transport": "OPENCODE",
-        "detail": "OpenRouter provider model moonshotai/kimi-k3 is externally verified, but no exact local OpenClaw/OpenCode runtime alias or binding has been directly observed. A separately reviewed manual model-entry plan is required.",
-        "classification": "READY_FOR_MANUAL_MODEL_ENTRY"
-      }
-    ],
-    "total": 1,
-    "remediation": "Operator must establish kimi-k3 local OpenClaw/OpenCode runtime binding via a separately reviewed manual model-entry plan before Phase 18C. gpt-5.6-sol binding established via authenticated Codex app-server model/list. deepseek-v4-pro binding established via opencode-go/deepseek-v4-pro."
+    "active_blockers": [],
+    "total": 0,
+    "remediation": "None. All three Phase 18R2 bindings are BOUND_EXISTING_ALIAS: gpt-5.5 via codex provider registry, gpt-5.6-sol via authenticated Codex app-server model/list, deepseek-v4-pro via opencode-go/deepseek-v4-pro. The OC_ESCALATION role (kimi-k3) was retired per Chris's decision that a stronger unified model would supersede it; the OC role now has a default binding only, with no escalation tier."
   },
   "required_output_labels": [
-    "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_PENDING_INPUT",
-    "PENDING_INPUT",
+    "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_READY",
+    "ADAPTER_READY_FOR_MANUAL_ACTIVATION",
     "A0_ADAPTER_READINESS",
     "LEVEL1",
     "ADVISORY_ONLY",
     "HUMAN_FINAL_AUTHORITY",
     "SHADOW_ONLY",
     "LIVE_ROUTING_UNCHANGED",
-    "BINDINGS_INCOMPLETE",
+    "BINDINGS_COMPLETE",
     "BOUND_BINDING_COUNT_3",
     "HERMES_DEFAULT_CODEX_GPT_5_5_BOUND",
     "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_BOUND",
     "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_BOUND",
-    "OC_ESCALATION_OPENCODE_KIMI_K3_UNBOUND",
+    "OC_ESCALATION_ROLE_RETIRED",
     "NO_CROSS_TRANSPORT_FALLBACK",
     "NO_SILENT_MODEL_SUBSTITUTION",
     "NO_DIRECT_PROVIDER_INTEGRATION",
@@ -114,8 +104,6 @@
     "NO_TRADING_EXECUTION",
     "TRADING_AUTONOMY_UNCHANGED",
     "FAIL_CLOSED_ADAPTER",
-    "MANUAL_MODEL_ENTRY_PLAN_REQUIRED",
-    "KIMI_K3_EXTERNALLY_VERIFIED_LOCALLY_UNBOUND",
     "PHASE18R1_UNCHANGED",
     "PHASE18B_UNCHANGED",
     "STRATEGY_V1_UNCHANGED",
@@ -142,13 +130,11 @@
     "no transport config mutated"
   ],
   "adapter_diagnosis": {
-    "ready": false,
-    "status": "phase18r2_pending_input_bindings_incomplete",
-    "blocker_count": 1,
-    "error_count": 1,
-    "active_blockers": [
-      "R2_BLK_003"
-    ]
+    "ready": true,
+    "status": "phase18r2_openclaw_routing_adapter_ready",
+    "blocker_count": 0,
+    "error_count": 0,
+    "active_blockers": []
   },
-  "deterministic_governance_hash": "3a6b665bdd27a68f15a6bdc451e59313111a57fd0cef5f4293486cd2c407e5cb"
+  "deterministic_governance_hash": "6ad120e4d69b804f7955642f63740d3dd1a6e033de55d5c9fad4b90bf8d5341b"
 }

@@ -2,7 +2,8 @@
 
 Full acceptance suite:
 - Governance (files, JSON, bindings, transports, roles, manifest, hashes)
-- Phase 18R1 integration (all four routes, request/decision hash verification)
+- Phase 18R1 integration (all three routes, request/decision hash verification,
+  OC_ESCALATION retirement fail-closed behavior)
 - Fail-closed (missing/unbound/ambiguous/duplicate/wrong transport/cross-transport/
   unknown model/invalid hashes/role mismatch/task-class mismatch/auth flag/
   advisory/human authority/autonomy/alias override/model override/transport override/
@@ -11,10 +12,19 @@ Full acceptance suite:
 - Purity (no file writes, no network, no socket, no subprocess, no shell,
   no provider SDK, no direct Codex/OpenCode client, no bridge/guard import,
   no runtime mutation, no order/preflight/approve/submit/H1 access)
-- CLI (checkpoint aliases, adapter-decision four routes, activation-plan,
+- CLI (checkpoint aliases, adapter-decision routes, activation-plan,
   no file writes, help)
 - Repository safety (model_routing.py, Phase 18R1/18B, bridge.py, guard.py,
   STRATEGY.md, .env, allowlist, rules, workflow, HOME config, live routing)
+
+Phase 18R2 correction: the OC_ESCALATION role (kimi-k3) has been retired.
+No provider ever bound it locally, and Chris decided a future unified model
+would supersede it rather than waiting on a manual binding. All three
+remaining bindings (gpt-5.5, gpt-5.6-sol, deepseek-v4-pro) are
+BOUND_EXISTING_ALIAS, so the adapter is ADAPTER_READY_FOR_MANUAL_ACTIVATION
+with zero blockers. Phase 18R1's model_routing.py is unchanged and still
+logically proposes kimi-k3 for OC/ESCALATION task classes — the adapter must
+always HOLD for that case, which these tests pin.
 """
 
 import hashlib
@@ -166,29 +176,33 @@ class TestJsonValidity:
 
 
 class TestBindingContract:
-    def test_exactly_four_bindings(self):
-        assert len(_load_json(BINDINGS)["bindings"]) == 4
+    def test_exactly_three_bindings(self):
+        assert len(_load_json(BINDINGS)["bindings"]) == 3
 
     @pytest.mark.parametrize("model_id,expected_role,expected_transport", [
         ("gpt-5.5", "HERMES_DEFAULT", "CODEX"),
         ("gpt-5.6-sol", "HERMES_ESCALATION", "CODEX"),
         ("deepseek-v4-pro", "OC_DEFAULT", "OPENCODE"),
-        ("kimi-k3", "OC_ESCALATION", "OPENCODE"),
     ])
     def test_binding_fields(self, model_id, expected_role, expected_transport):
         b = _load_json(BINDINGS)
         mb = next(x for x in b["bindings"] if x["logical_model_id"] == model_id)
         assert mb["logical_role"] == expected_role
         assert mb["transport"] == expected_transport
-        if mb["logical_model_id"] in ("gpt-5.5", "gpt-5.6-sol", "deepseek-v4-pro"):
-            assert mb["binding_state"] == "BOUND_EXISTING_ALIAS"
-        else:
-            assert mb["binding_state"] == "UNBOUND"
+        assert mb["binding_state"] == "BOUND_EXISTING_ALIAS"
 
     def test_no_extra_models(self):
         b = _load_json(BINDINGS)
         model_ids = [x["logical_model_id"] for x in b["bindings"]]
-        assert set(model_ids) == {"gpt-5.5", "gpt-5.6-sol", "deepseek-v4-pro", "kimi-k3"}
+        assert set(model_ids) == {"gpt-5.5", "gpt-5.6-sol", "deepseek-v4-pro"}
+
+    def test_no_kimi_k3_binding(self):
+        """OC_ESCALATION (kimi-k3) is retired — it must not appear as a binding."""
+        b = _load_json(BINDINGS)
+        model_ids = {x["logical_model_id"] for x in b["bindings"]}
+        assert "kimi-k3" not in model_ids
+        roles = {x["logical_role"] for x in b["bindings"]}
+        assert "OC_ESCALATION" not in roles
 
     def test_exact_transports(self):
         b = _load_json(BINDINGS)
@@ -196,7 +210,6 @@ class TestBindingContract:
         assert transports["gpt-5.5"] == "CODEX"
         assert transports["gpt-5.6-sol"] == "CODEX"
         assert transports["deepseek-v4-pro"] == "OPENCODE"
-        assert transports["kimi-k3"] == "OPENCODE"
 
     def test_exact_logical_roles(self):
         b = _load_json(BINDINGS)
@@ -204,7 +217,6 @@ class TestBindingContract:
         assert roles["gpt-5.5"] == "HERMES_DEFAULT"
         assert roles["gpt-5.6-sol"] == "HERMES_ESCALATION"
         assert roles["deepseek-v4-pro"] == "OC_DEFAULT"
-        assert roles["kimi-k3"] == "OC_ESCALATION"
 
     def test_no_cross_transport(self):
         b = _load_json(BINDINGS)
@@ -235,35 +247,31 @@ class TestBindingContract:
                            "account_id", "credential_path", "HOME", "password", "secret"]:
             assert forbidden not in raw
 
-    def test_summary_pending(self):
+    def test_summary_ready(self):
         s = _load_json(BINDINGS)["binding_summary"]
-        assert s["total_bindings"] == 4
+        assert s["total_bindings"] == 3
         assert s["bound"] == 3
-        assert s["unbound"] == 1
-        assert s["governance_state"] == "PENDING_INPUT"
+        assert s["unbound"] == 0
+        assert s["governance_state"] == "ADAPTER_READY_FOR_MANUAL_ACTIVATION"
 
     def test_discovered_aliases_match_logical(self):
+        expected_alias = {
+            "gpt-5.5": "gpt-5.5",
+            "gpt-5.6-sol": "gpt-5.6-sol",
+            "deepseek-v4-pro": "opencode-go/deepseek-v4-pro",
+        }
         b = _load_json(BINDINGS)
         for binding in b["bindings"]:
-            if binding["binding_state"] == "BOUND_EXISTING_ALIAS":
-                if binding["logical_model_id"] == "gpt-5.5":
-                    assert binding["runtime_alias"] == "gpt-5.5"
-                elif binding["logical_model_id"] == "gpt-5.6-sol":
-                    assert binding["runtime_alias"] == "gpt-5.6-sol"
-                elif binding["logical_model_id"] == "deepseek-v4-pro":
-                    assert binding["runtime_alias"] == "opencode-go/deepseek-v4-pro"
-            else:
-                # UNBOUND bindings have null runtime_alias
-                assert binding["runtime_alias"] is None
-            assert len(binding["logical_model_id"]) > 0
+            assert binding["binding_state"] == "BOUND_EXISTING_ALIAS"
+            assert binding["runtime_alias"] == expected_alias[binding["logical_model_id"]]
 
 
 class TestManifestStructure:
     def test_governance_id(self):
         assert _load_manifest()["governance_id"] == "openclaw_routing_adapter_v0_1"
 
-    def test_blocked_state(self):
-        assert _load_manifest()["governance_state"] == "PENDING_INPUT"
+    def test_ready_state(self):
+        assert _load_manifest()["governance_state"] == "ADAPTER_READY_FOR_MANUAL_ACTIVATION"
 
     def test_a0_readiness(self):
         assert _load_manifest()["adapter_readiness"] == "A0"
@@ -277,14 +285,14 @@ class TestManifestStructure:
     def test_five_governed_files(self):
         assert len(_load_manifest()["governed_files"]) == 5
 
-    def test_three_bound_one_unbound(self):
+    def test_three_bound_zero_unbound(self):
         bs = _load_manifest()["binding_summary"]
-        assert bs["total_bindings"] == 4
+        assert bs["total_bindings"] == 3
         assert bs["bound"] == 3
-        assert bs["unbound"] == 1
+        assert bs["unbound"] == 0
 
-    def test_one_blocker(self):
-        assert len(_load_manifest()["blockers"]["active_blockers"]) == 1
+    def test_zero_blockers(self):
+        assert len(_load_manifest()["blockers"]["active_blockers"]) == 0
 
     def test_all_auth_flags_false(self):
         m = _load_manifest()
@@ -295,7 +303,7 @@ class TestManifestStructure:
             assert m[flag] is False, f"{flag} must be false"
 
     def test_next_phase(self):
-        assert _load_manifest()["next_phase_boundary"] == "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN"
+        assert _load_manifest()["next_phase_boundary"] == "PHASE18R2_MANUAL_ACTIVATION_PROOF"
 
 
 class TestManifestHashes:
@@ -339,7 +347,6 @@ class TestManifestHashes:
 
 class TestPhase18r1Integration:
     def test_hermes_default_to_codex_gpt55(self):
-        """Only gpt-5.5 (BOUND) resolves; UNBOUND models HOLD."""
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         decision = _decide_logical(req)
         adapter = _resolve_shadow(req, decision)
@@ -350,7 +357,7 @@ class TestPhase18r1Integration:
         assert adapter["binding_state"] == "BOUND_EXISTING_ALIAS"
 
     def test_hermes_escalation_bound_resolves(self):
-        """gpt-5.6-sol is now BOUND → resolves via CODEX."""
+        """gpt-5.6-sol is BOUND → resolves via CODEX."""
         req = _make_request("HERMES", "PHASE_ARCHITECTURE")
         decision = _decide_logical(req)
         adapter = _resolve_shadow(req, decision)
@@ -371,14 +378,23 @@ class TestPhase18r1Integration:
         assert adapter["logical_model_id"] == "deepseek-v4-pro"
         assert adapter["binding_state"] == "BOUND_EXISTING_ALIAS"
 
-    def test_oc_escalation_unbound_hold(self):
-        """kimi-k3 is UNBOUND → HOLD."""
+    def test_oc_escalation_retired_always_holds(self):
+        """OC_ESCALATION (kimi-k3) is retired in Phase 18R2. Phase 18R1's
+        model_routing.py is unchanged and still logically proposes kimi-k3
+        for this task class — the adapter must always HOLD, never resolve."""
         req = _make_request("OC", "REPEATED_CI_RECOVERY")
         decision = _decide_logical(req)
+        assert decision["selected_model_id"] == "kimi-k3"
+        assert decision["selected_route_tier"] == "ESCALATION"
         adapter = _resolve_shadow(req, decision)
         assert adapter["adapter_state"] == "HOLD"
         assert adapter["selected_runtime_alias"] is None
-        assert adapter["binding_state"] == "UNBOUND"
+        assert adapter["selected_transport"] is None
+        assert adapter["binding_state"] is None
+        assert adapter["logical_model_id"] is None
+        codes = " ".join(str(c) for c in adapter["rationale_codes"])
+        assert "SELECTED_MODEL_NOT_APPROVED" in codes
+        assert "ESCALATION_TIER_RETIRED" in codes
 
     def test_request_hash_verified(self):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
@@ -406,6 +422,62 @@ class TestPhase18r1Integration:
         source = ADAPTER_PY.read_text()
         assert "from model_routing import" not in source
         # The adapter validates R1 decisions, doesn't produce them
+
+    def test_bound_gpt56sol_resolves(self):
+        req = _make_request("HERMES", "PHASE_ARCHITECTURE")
+        decision = _decide_logical(req)
+        assert decision["selected_model_id"] == "gpt-5.6-sol"
+        adapter = _resolve_shadow(req, decision)
+        assert adapter["adapter_state"] == "SHADOW_ROUTE_RESOLVED"
+        assert adapter["selected_transport"] == "CODEX"
+        assert adapter["selected_runtime_alias"] == "gpt-5.6-sol"
+        assert adapter["logical_model_id"] == "gpt-5.6-sol"
+        assert adapter["binding_state"] == "BOUND_EXISTING_ALIAS"
+
+    def test_bound_deepseekv4pro_resolves(self):
+        req = _make_request("OC", "ROUTINE_IMPLEMENTATION")
+        decision = _decide_logical(req)
+        assert decision["selected_model_id"] == "deepseek-v4-pro"
+        adapter = _resolve_shadow(req, decision)
+        assert adapter["adapter_state"] == "SHADOW_ROUTE_RESOLVED"
+        assert adapter["selected_transport"] == "OPENCODE"
+        assert adapter["selected_runtime_alias"] == "opencode-go/deepseek-v4-pro"
+        assert adapter["binding_state"] == "BOUND_EXISTING_ALIAS"
+
+    def test_bound_gpt55_still_resolves(self):
+        req = _make_request("HERMES", "ROUTINE_RESEARCH")
+        decision = _decide_logical(req)
+        adapter = _resolve_shadow(req, decision)
+        assert adapter["adapter_state"] == "SHADOW_ROUTE_RESOLVED"
+        assert adapter["selected_transport"] == "CODEX"
+        assert adapter["selected_runtime_alias"] == "gpt-5.5"
+        assert adapter["binding_state"] == "BOUND_EXISTING_ALIAS"
+
+    def test_gpt56sol_resolves_not_fallback(self):
+        req = _make_request("HERMES", "PHASE_ARCHITECTURE")
+        decision = _decide_logical(req)
+        adapter = _resolve_shadow(req, decision)
+        assert adapter["adapter_state"] == "SHADOW_ROUTE_RESOLVED"
+        assert adapter["selected_runtime_alias"] == "gpt-5.6-sol"
+        assert adapter["logical_model_id"] == "gpt-5.6-sol"
+
+    def test_no_fallback_kimi_k26(self):
+        """Never fall back to kimi-k2.6 for a retired OC_ESCALATION request."""
+        req = _make_request("OC", "REPEATED_CI_RECOVERY")
+        decision = _decide_logical(req)
+        adapter = _resolve_shadow(req, decision)
+        assert adapter["adapter_state"] == "HOLD"
+        assert adapter.get("selected_runtime_alias") is None
+        assert "kimi-k2.6" not in json.dumps(adapter)
+
+    def test_no_fallback_openrouter_deepseek(self):
+        """Never fall back to openrouter/deepseek/deepseek-v4-pro."""
+        req = _make_request("OC", "ROUTINE_IMPLEMENTATION")
+        decision = _decide_logical(req)
+        adapter = _resolve_shadow(req, decision)
+        assert adapter["adapter_state"] == "SHADOW_ROUTE_RESOLVED"
+        assert adapter["selected_runtime_alias"] == "opencode-go/deepseek-v4-pro"
+        assert "openrouter" not in str(adapter.get("selected_runtime_alias", ""))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -533,75 +605,6 @@ class TestFailClosed:
         decision = _decide_logical(req)
         adapter = _resolve_shadow(req, decision)
         assert adapter["shadow_resolution_only"] is True
-
-    def test_bound_gpt56sol_resolves(self):
-        """gpt-5.6-sol (now BOUND) must resolve via CODEX alias gpt-5.6-sol."""
-        req = _make_request("HERMES", "PHASE_ARCHITECTURE")
-        decision = _decide_logical(req)
-        assert decision["selected_model_id"] == "gpt-5.6-sol"
-        adapter = _resolve_shadow(req, decision)
-        assert adapter["adapter_state"] == "SHADOW_ROUTE_RESOLVED"
-        assert adapter["selected_transport"] == "CODEX"
-        assert adapter["selected_runtime_alias"] == "gpt-5.6-sol"
-        assert adapter["logical_model_id"] == "gpt-5.6-sol"
-        assert adapter["binding_state"] == "BOUND_EXISTING_ALIAS"
-
-    def test_bound_deepseekv4pro_resolves(self):
-        """Requests for deepseek-v4-pro (BOUND) must resolve via opencode-go."""
-        req = _make_request("OC", "ROUTINE_IMPLEMENTATION")
-        decision = _decide_logical(req)
-        assert decision["selected_model_id"] == "deepseek-v4-pro"
-        adapter = _resolve_shadow(req, decision)
-        assert adapter["adapter_state"] == "SHADOW_ROUTE_RESOLVED"
-        assert adapter["selected_transport"] == "OPENCODE"
-        assert adapter["selected_runtime_alias"] == "opencode-go/deepseek-v4-pro"
-        assert adapter["binding_state"] == "BOUND_EXISTING_ALIAS"
-
-    def test_unbound_kimi_k3_returns_hold(self):
-        """Requests for kimi-k3 (UNBOUND) must HOLD."""
-        req = _make_request("OC", "REPEATED_CI_RECOVERY")
-        decision = _decide_logical(req)
-        assert decision["selected_model_id"] == "kimi-k3"
-        adapter = _resolve_shadow(req, decision)
-        assert adapter["adapter_state"] == "HOLD"
-        assert adapter["selected_runtime_alias"] is None
-
-    def test_bound_gpt55_still_resolves(self):
-        """gpt-5.5 (BOUND) should still resolve in shadow mode."""
-        req = _make_request("HERMES", "ROUTINE_RESEARCH")
-        decision = _decide_logical(req)
-        adapter = _resolve_shadow(req, decision)
-        assert adapter["adapter_state"] == "SHADOW_ROUTE_RESOLVED"
-        assert adapter["selected_transport"] == "CODEX"
-        assert adapter["selected_runtime_alias"] == "gpt-5.5"
-        assert adapter["binding_state"] == "BOUND_EXISTING_ALIAS"
-
-    def test_gpt56sol_resolves_not_fallback(self):
-        """gpt-5.6-sol is now BOUND and resolves, no fallback to gpt-5.4."""
-        req = _make_request("HERMES", "PHASE_ARCHITECTURE")
-        decision = _decide_logical(req)
-        adapter = _resolve_shadow(req, decision)
-        assert adapter["adapter_state"] == "SHADOW_ROUTE_RESOLVED"
-        assert adapter["selected_runtime_alias"] == "gpt-5.6-sol"
-        assert adapter["logical_model_id"] == "gpt-5.6-sol"
-
-    def test_no_fallback_kimi_k26(self):
-        """Never fall back to kimi-k2.6 when kimi-k3 is UNBOUND."""
-        req = _make_request("OC", "REPEATED_CI_RECOVERY")
-        decision = _decide_logical(req)
-        adapter = _resolve_shadow(req, decision)
-        assert adapter["adapter_state"] == "HOLD"
-        assert adapter.get("selected_runtime_alias") is None
-        assert adapter.get("logical_model_id") == "kimi-k3"
-
-    def test_no_fallback_openrouter_deepseek(self):
-        """Never fall back to openrouter/deepseek/deepseek-v4-pro."""
-        req = _make_request("OC", "ROUTINE_IMPLEMENTATION")
-        decision = _decide_logical(req)
-        adapter = _resolve_shadow(req, decision)
-        assert adapter["adapter_state"] == "SHADOW_ROUTE_RESOLVED"
-        assert adapter["selected_runtime_alias"] == "opencode-go/deepseek-v4-pro"
-        assert "openrouter" not in str(adapter.get("selected_runtime_alias", ""))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -773,9 +776,9 @@ class TestCliCheckpoint:
         assert isinstance(r, dict)
 
     @pytest.mark.parametrize("command", CLI_COMMANDS)
-    def test_adapter_ready_for_manual_activation(self, command):
+    def test_governance_state_is_ready(self, command):
         r = _run_cli(command)
-        assert r["governance_state"] == "PENDING_INPUT"
+        assert r["governance_state"] == "ADAPTER_READY_FOR_MANUAL_ACTIVATION"
 
     @pytest.mark.parametrize("command", CLI_COMMANDS)
     def test_a0_readiness(self, command):
@@ -790,30 +793,24 @@ class TestCliCheckpoint:
         assert _run_cli(command)["live_routing_changed"] is False
 
     @pytest.mark.parametrize("command", CLI_COMMANDS)
-    def test_binding_count_4(self, command):
-        assert _run_cli(command)["binding_count"] == 4
+    def test_binding_count_3(self, command):
+        assert _run_cli(command)["binding_count"] == 3
 
     @pytest.mark.parametrize("command", CLI_COMMANDS)
     def test_bound_binding_count_3(self, command):
         assert _run_cli(command)["bound_binding_count"] == 3
 
     @pytest.mark.parametrize("command", CLI_COMMANDS)
-    def test_one_blocker(self, command):
-        assert len(_run_cli(command)["blockers"]) == 1
-
-    @pytest.mark.parametrize("command", CLI_COMMANDS)
-    def test_only_r2_blk_003_remains(self, command):
-        r = _run_cli(command)
-        blocker_ids = {b.get("blocker_id", "") for b in r.get("blockers", []) if isinstance(b, dict)}
-        assert blocker_ids == {"R2_BLK_003"}
+    def test_zero_blockers(self, command):
+        assert len(_run_cli(command)["blockers"]) == 0
 
     @pytest.mark.parametrize("command", CLI_COMMANDS)
     def test_next_phase(self, command):
-        assert _run_cli(command)["next_phase_boundary"] == "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN"
+        assert _run_cli(command)["next_phase_boundary"] == "PHASE18R2_MANUAL_ACTIVATION_PROOF"
 
     @pytest.mark.parametrize("command", CLI_COMMANDS)
-    def test_30_labels(self, command):
-        assert len(_run_cli(command)["output_labels"]) == 30
+    def test_28_labels(self, command):
+        assert len(_run_cli(command)["output_labels"]) == 28
 
     def test_identical_hashes(self):
         hashes = [_run_cli(cmd)["deterministic_evidence_hash"] for cmd in CLI_COMMANDS]
@@ -999,8 +996,7 @@ class TestRuntimeInvocationAuthorized:
 
 class TestCliAdapterDecision:
     def test_bound_gpt55_resolves(self):
-        """Only the directly observed gpt-5.5 resolves; UNBOUND models HOLD."""
-        # gpt-5.5: BOUND → resolves
+        """Only directly observed, bound models resolve."""
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         decision = _decide_logical(req)
         p1, p2 = "/tmp/test_r2_req.json", "/tmp/test_r2_dec.json"
@@ -1025,22 +1021,22 @@ class TestCliAdapterDecision:
         assert result["selected_transport"] == "OPENCODE"
         assert result["selected_runtime_alias"] == "opencode-go/deepseek-v4-pro"
 
-    def test_unbound_models_hold_in_cli(self):
-        """UNBOUND models return HOLD via CLI with nonzero exit.
-        gpt-5.6-sol is now BOUND → resolves; only kimi-k3 remains UNBOUND."""
-        for role, tc, expected_model in [
-            ("OC", "REPEATED_CI_RECOVERY", "kimi-k3"),
-        ]:
-            req = _make_request(role, tc)
-            decision = _decide_logical(req)
-            p1, p2 = "/tmp/test_r2_req_u.json", "/tmp/test_r2_dec_u.json"
-            with open(p1, "w") as f: json.dump(req, f)
-            with open(p2, "w") as f: json.dump(decision, f)
-            rc, result = _run_adapter_decision(p1, p2)
-            assert rc != 0, f"{role}/{tc} should exit nonzero"
-            assert result["adapter_state"] == "HOLD", f"{role}/{tc}: {result['adapter_state']}"
-            assert result["selected_runtime_alias"] is None, f"{role}/{tc} should have null alias"
-            assert result["logical_model_id"] == expected_model
+    def test_retired_oc_escalation_holds_in_cli(self):
+        """OC_ESCALATION (kimi-k3) is retired. Phase 18R1 still logically
+        proposes it for REPEATED_CI_RECOVERY — the CLI must HOLD with a
+        nonzero exit and a null logical_model_id (fails validation before
+        the model can even be echoed back)."""
+        req = _make_request("OC", "REPEATED_CI_RECOVERY")
+        decision = _decide_logical(req)
+        assert decision["selected_model_id"] == "kimi-k3"
+        p1, p2 = "/tmp/test_r2_req_u.json", "/tmp/test_r2_dec_u.json"
+        with open(p1, "w") as f: json.dump(req, f)
+        with open(p2, "w") as f: json.dump(decision, f)
+        rc, result = _run_adapter_decision(p1, p2)
+        assert rc != 0
+        assert result["adapter_state"] == "HOLD"
+        assert result["selected_runtime_alias"] is None
+        assert result["logical_model_id"] is None
 
     def test_hold_structured_json_nonzero(self):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
@@ -1057,17 +1053,17 @@ class TestCliAdapterDecision:
 
 
 class TestCliActivationPlan:
-    def test_blocked_state(self):
+    def test_ready_state(self):
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "model-routing-activation-plan", "--json"],
             capture_output=True, text=True, timeout=30,
             cwd=str(REPO),
         )
         d = json.loads(result.stdout)
-        assert result.returncode == 1  # BLOCKED → exit 1
-        assert d["plan_state"] == "BLOCKED"
-        assert d["bindings_complete"] is False
-        assert len(d["blockers"]) == 1  # 1 UNBOUND binding (kimi-k3)
+        assert result.returncode == 0  # READY → exit 0
+        assert d["plan_state"] == "READY"
+        assert d["bindings_complete"] is True
+        assert len(d["blockers"]) == 0
 
     def test_no_secrets(self):
         result = subprocess.run(
@@ -1120,20 +1116,23 @@ class TestCliActivationPlan:
         assert d["live_routing_unchanged"] is True
         assert d["live_routing_changed"] is False
 
-    def test_lists_two_missing_bindings(self):
+    def test_lists_zero_missing_bindings(self):
         d = _run_activation_plan()
         missing = [b for b in d["bindings"] if b["binding_state"] == "UNBOUND"]
-        assert len(missing) == 1
-        missing_ids = {b["logical_model_id"] for b in missing}
-        assert missing_ids == {"kimi-k3"}
+        assert len(missing) == 0
 
-    def test_exit_nonzero(self):
+    def test_no_kimi_k3_in_plan(self):
+        d = _run_activation_plan()
+        model_ids = {b["logical_model_id"] for b in d["bindings"]}
+        assert "kimi-k3" not in model_ids
+
+    def test_exit_zero(self):
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "model-routing-activation-plan", "--json"],
             capture_output=True, text=True, timeout=30,
             cwd=str(REPO),
         )
-        assert result.returncode != 0
+        assert result.returncode == 0
 
     def test_no_credentials_exposed(self):
         d = _run_activation_plan()
@@ -1141,29 +1140,34 @@ class TestCliActivationPlan:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PENDING-INPUT CHECKPOINT SEMANTICS (fail-closed label/diagnosis fix)
+# READY-STATE CHECKPOINT SEMANTICS (fail-closed label/diagnosis, all bound)
 # ══════════════════════════════════════════════════════════════════════════════
 
-FORBIDDEN_READY_LABELS = {
-    "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_READY",
-    "ADAPTER_READY_FOR_MANUAL_ACTIVATION",
-}
-
-REQUIRED_PENDING_LABELS = {
+FORBIDDEN_PENDING_LABELS = {
     "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_PENDING_INPUT",
     "PENDING_INPUT",
+    "BINDINGS_INCOMPLETE",
+    "OC_ESCALATION_OPENCODE_KIMI_K3_UNBOUND",
+    "MANUAL_MODEL_ENTRY_PLAN_REQUIRED",
+    "KIMI_K3_EXTERNALLY_VERIFIED_LOCALLY_UNBOUND",
+    "BOUND_BINDING_COUNT_4",
+}
+
+REQUIRED_READY_LABELS = {
+    "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_READY",
+    "ADAPTER_READY_FOR_MANUAL_ACTIVATION",
     "A0_ADAPTER_READINESS",
     "LEVEL1",
     "ADVISORY_ONLY",
     "HUMAN_FINAL_AUTHORITY",
     "SHADOW_ONLY",
     "LIVE_ROUTING_UNCHANGED",
-    "BINDINGS_INCOMPLETE",
+    "BINDINGS_COMPLETE",
     "BOUND_BINDING_COUNT_3",
     "HERMES_DEFAULT_CODEX_GPT_5_5_BOUND",
     "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_BOUND",
     "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_BOUND",
-    "OC_ESCALATION_OPENCODE_KIMI_K3_UNBOUND",
+    "OC_ESCALATION_ROLE_RETIRED",
     "NO_CROSS_TRANSPORT_FALLBACK",
     "NO_SILENT_MODEL_SUBSTITUTION",
     "NO_DIRECT_PROVIDER_INTEGRATION",
@@ -1174,152 +1178,96 @@ REQUIRED_PENDING_LABELS = {
     "NO_TRADING_EXECUTION",
     "TRADING_AUTONOMY_UNCHANGED",
     "FAIL_CLOSED_ADAPTER",
-    "MANUAL_MODEL_ENTRY_PLAN_REQUIRED",
-    "KIMI_K3_EXTERNALLY_VERIFIED_LOCALLY_UNBOUND",
     "PHASE18R1_UNCHANGED",
     "PHASE18B_UNCHANGED",
     "STRATEGY_V1_UNCHANGED",
     "PHASE18C_NOT_STARTED",
 }
 
-UNBOUND_MODEL_LABELS = {
-    "OC_ESCALATION_OPENCODE_KIMI_K3_UNBOUND",
-}
 
-BOUND_MODEL_LABELS = {
-    "HERMES_DEFAULT_CODEX_GPT_5_5_BOUND",
-    "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_BOUND",
-}
-
-
-class TestPendingInputCheckpointSemantics:
-    """Fail-closed checkpoint semantics for PENDING_INPUT governance state."""
-
-    # ── Requirement 1: PENDING_INPUT never emits ready labels ──────────────
+class TestReadyCheckpointSemantics:
+    """Fail-closed checkpoint semantics once all bindings are complete."""
 
     @pytest.mark.parametrize("command", CLI_COMMANDS)
-    def test_no_ready_labels_in_pending_input(self, command):
-        """Requirement 1: PENDING_INPUT must not emit ready labels."""
+    def test_no_pending_labels_once_ready(self, command):
         r = _run_cli(command)
         labels = set(r["output_labels"])
-        for forbidden in FORBIDDEN_READY_LABELS:
+        for forbidden in FORBIDDEN_PENDING_LABELS:
             assert forbidden not in labels, \
-                f"Forbidden ready label '{forbidden}' found in PENDING_INPUT labels"
+                f"Forbidden pending-state label '{forbidden}' found while ready"
 
     @pytest.mark.parametrize("command", CLI_COMMANDS)
-    def test_all_pending_labels_present(self, command):
-        """All required PENDING_INPUT labels are present (30 labels)."""
+    def test_all_ready_labels_present(self, command):
         r = _run_cli(command)
         labels = set(r["output_labels"])
-        assert labels == REQUIRED_PENDING_LABELS, \
-            f"Missing: {REQUIRED_PENDING_LABELS - labels}, Extra: {labels - REQUIRED_PENDING_LABELS}"
+        assert labels == REQUIRED_READY_LABELS, \
+            f"Missing: {REQUIRED_READY_LABELS - labels}, Extra: {labels - REQUIRED_READY_LABELS}"
 
-    # ── Requirement 2: Ready labels require 4 bound and 0 blockers ─────────
-
-    def test_bound_binding_count_is_three(self):
-        """Requirement 2: Ready labels require 4 bound + 0 blockers.
-        With 3 bound and 1 blocker, ready labels must not appear."""
+    def test_bound_binding_count_is_three_of_three(self):
         r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
+        assert r["binding_count"] == 3
         assert r["bound_binding_count"] == 3
-        assert len(r["blockers"]) == 1
-        labels = set(r["output_labels"])
-        # Sanity: no ready labels leak through
-        for forbidden in FORBIDDEN_READY_LABELS:
-            assert forbidden not in labels
+        assert len(r["blockers"]) == 0
 
-    def test_governance_state_is_pending_input(self):
-        """Governance state must be PENDING_INPUT, not ADAPTER_READY."""
+    def test_governance_state_is_ready_not_pending(self):
         r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
-        assert r["governance_state"] == "PENDING_INPUT"
-        assert r["governance_state"] != "ADAPTER_READY_FOR_MANUAL_ACTIVATION"
+        assert r["governance_state"] == "ADAPTER_READY_FOR_MANUAL_ACTIVATION"
+        assert r["governance_state"] != "PENDING_INPUT"
 
-    # ── Requirement 3: Each unbound model gets explicit UNBOUND label ───────
-
-    def test_each_unbound_model_has_unbound_label(self):
-        """Requirement 3: Each unbound model gets an explicit UNBOUND label."""
+    def test_oc_escalation_role_has_retired_label(self):
         r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
         labels = set(r["output_labels"])
-        for ul in UNBOUND_MODEL_LABELS:
-            assert ul in labels, f"Missing UNBOUND label: {ul}"
+        assert "OC_ESCALATION_ROLE_RETIRED" in labels
 
-    def test_bound_model_has_bound_label(self):
-        """The single bound model (gpt-5.5) gets a BOUND label."""
+    def test_all_bound_models_have_bound_label(self):
         r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
         labels = set(r["output_labels"])
-        for bl in BOUND_MODEL_LABELS:
+        for bl in {
+            "HERMES_DEFAULT_CODEX_GPT_5_5_BOUND",
+            "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_BOUND",
+            "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_BOUND",
+        }:
             assert bl in labels, f"Missing BOUND label: {bl}"
 
-    # ── Requirement 4: diagnosis never reports ready while blockers exist ──
-
     @pytest.mark.parametrize("command", CLI_COMMANDS)
-    def test_diagnosis_ready_false_while_blockers(self, command):
-        """Requirement 4: diagnosis.ready must be False while blockers exist."""
+    def test_diagnosis_ready_true_with_no_blockers(self, command):
         r = _run_cli(command)
         diag = r["diagnosis"]
         assert isinstance(diag, dict), f"diagnosis must be dict, got {type(diag)}"
-        assert diag["ready"] is False, \
-            f"diagnosis.ready must be False while blockers exist, got {diag['ready']}"
+        assert diag["ready"] is True
 
     @pytest.mark.parametrize("command", CLI_COMMANDS)
-    def test_diagnosis_status_is_pending(self, command):
-        """diagnosis.status must be phase18r2_pending_input_bindings_incomplete."""
+    def test_diagnosis_status_is_ready(self, command):
         r = _run_cli(command)
         diag = r["diagnosis"]
-        assert diag.get("status") == "phase18r2_pending_input_bindings_incomplete", \
-            f"Expected pending status, got {diag.get('status')}"
-
-    # ── Requirement 5: blocker_count/error_count consistent with 3 blockers ─
+        assert diag.get("status") == "phase18r2_openclaw_routing_adapter_ready", \
+            f"Expected ready status, got {diag.get('status')}"
 
     @pytest.mark.parametrize("command", CLI_COMMANDS)
-    def test_blocker_count_is_one(self, command):
-        """Requirement 5: blocker_count/error_count are 1."""
+    def test_blocker_and_error_counts_are_zero(self, command):
         r = _run_cli(command)
-        assert r.get("blocker_count") == 1, \
-            f"blocker_count should be 1, got {r.get('blocker_count')}"
-
-    @pytest.mark.parametrize("command", CLI_COMMANDS)
-    def test_diagnosis_blocker_count_is_one(self, command):
-        """diagnosis.blocker_count must be 1."""
-        r = _run_cli(command)
+        assert r.get("blocker_count") == 0
         diag = r["diagnosis"]
-        assert diag.get("blocker_count") == 1, \
-            f"diagnosis.blocker_count should be 1, got {diag.get('blocker_count')}"
-
-    @pytest.mark.parametrize("command", CLI_COMMANDS)
-    def test_diagnosis_error_count_is_one(self, command):
-        """diagnosis.error_count must be 1 (not 0)."""
-        r = _run_cli(command)
-        diag = r["diagnosis"]
-        assert diag.get("error_count") == 1, \
-            f"diagnosis.error_count should be 1, got {diag.get('error_count')}"
-
-    # ── Requirement 6: all three checkpoint aliases produce identical labels and evidence hashes ─
+        assert diag.get("blocker_count") == 0
+        assert diag.get("error_count") == 0
 
     def test_all_aliases_produce_identical_labels(self):
-        """Requirement 6: All three CLI aliases produce identical output_labels."""
         label_sets = [set(_run_cli(cmd)["output_labels"]) for cmd in CLI_COMMANDS]
         assert len(set(frozenset(ls) for ls in label_sets)) == 1, \
             f"All aliases must produce identical label sets: {label_sets}"
 
     def test_all_aliases_produce_identical_evidence_hash(self):
-        """All three aliases produce identical deterministic_evidence_hash."""
         hashes = [_run_cli(cmd)["deterministic_evidence_hash"] for cmd in CLI_COMMANDS]
         assert len(set(hashes)) == 1, \
             f"All aliases must produce identical evidence hashes: {hashes}"
 
-    # ── Requirement 7: live_routing_changed remains false ──────────────────
-
     @pytest.mark.parametrize("command", CLI_COMMANDS)
     def test_live_routing_always_false(self, command):
-        """Requirement 7: live_routing_changed must remain false."""
         r = _run_cli(command)
         assert r["live_routing_changed"] is False
 
-    # ── Requirement 8: all authorization flags remain false ────────────────
-
     @pytest.mark.parametrize("command", CLI_COMMANDS)
     def test_all_authorization_flags_false(self, command):
-        """Requirement 8: all_authorization_flags_false must be True."""
         r = _run_cli(command)
         assert r["all_authorization_flags_false"] is True
 
@@ -1365,11 +1313,11 @@ class TestPendingInputCheckpointSemantics:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# GPT-5.6-SOL BINDING VERIFICATION (Phase 18R2 — 3/4 bindings)
+# GPT-5.6-SOL BINDING VERIFICATION (Phase 18R2 — 3/3 bindings)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestGpt56SolBinding:
-    """Verify gpt-5.6-sol is BOUND_EXISTING_ALIAS via CODEX after Phase 18R2 refresh."""
+    """Verify gpt-5.6-sol is BOUND_EXISTING_ALIAS via CODEX."""
 
     def test_binding_state_is_bound_existing_alias(self):
         b = _load_json(BINDINGS)
@@ -1392,7 +1340,6 @@ class TestGpt56SolBinding:
         assert gpt56["evidence_observation"] == "DIRECTLY_OBSERVED"
 
     def test_shadow_route_resolves(self):
-        """gpt-5.6-sol shadow route resolves successfully."""
         req = _make_request("HERMES", "PHASE_ARCHITECTURE")
         decision = _decide_logical(req)
         adapter = _resolve_shadow(req, decision)
@@ -1403,14 +1350,12 @@ class TestGpt56SolBinding:
         assert adapter["binding_state"] == "BOUND_EXISTING_ALIAS"
 
     def test_no_invocation_authorized(self):
-        """Zero invocation authorization for gpt-5.6-sol."""
         b = _load_json(BINDINGS)
         gpt56 = next(x for x in b["bindings"] if x["logical_model_id"] == "gpt-5.6-sol")
         assert gpt56["adapter_invocation_authorized"] is False
         assert gpt56["live_activation_authorized"] is False
 
     def test_no_credential_provider_network_scope(self):
-        """No credential/provider/network scope for gpt-5.6-sol."""
         b = _load_json(BINDINGS)
         gpt56 = next(x for x in b["bindings"] if x["logical_model_id"] == "gpt-5.6-sol")
         dangerous = ["direct_provider_access", "direct_network_access",
@@ -1419,7 +1364,6 @@ class TestGpt56SolBinding:
             assert gpt56[key] is False, f"{key} must be False for gpt-5.6-sol"
 
     def test_shadow_only_no_live_activation(self):
-        """gpt-5.6-sol resolution is shadow-only, live_routing_changed remains false."""
         req = _make_request("HERMES", "PHASE_ARCHITECTURE")
         decision = _decide_logical(req)
         adapter = _resolve_shadow(req, decision)
@@ -1428,63 +1372,52 @@ class TestGpt56SolBinding:
         assert adapter["live_routing_changed"] is False
         assert adapter["human_activation_required"] is True
 
-    def test_three_of_four_bound(self):
-        """3 of 4 bindings bound."""
+    def test_three_of_three_bound(self):
         r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
-        assert r["binding_count"] == 4
+        assert r["binding_count"] == 3
         assert r["bound_binding_count"] == 3
 
-    def test_only_r2_blk_003_remains(self):
-        """Only R2_BLK_003 (kimi-k3) remains as blocker."""
+    def test_zero_blockers_remain(self):
         r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
-        blockers = r.get("blockers", [])
-        blocker_ids = {b.get("blocker_id", "") for b in blockers if isinstance(b, dict)}
-        assert blocker_ids == {"R2_BLK_003"}
+        assert len(r.get("blockers", [])) == 0
 
-    def test_kimi_k3_remains_hold_unbound(self):
-        """kimi-k3 remains HOLD/UNBOUND."""
+    def test_kimi_k3_escalation_retired_holds(self):
+        """kimi-k3 (OC_ESCALATION) is retired — not a tracked binding at all;
+        Phase 18R1's logical proposal for it must still HOLD."""
         req = _make_request("OC", "REPEATED_CI_RECOVERY")
         decision = _decide_logical(req)
         assert decision["selected_model_id"] == "kimi-k3"
         adapter = _resolve_shadow(req, decision)
         assert adapter["adapter_state"] == "HOLD"
-        assert adapter["binding_state"] == "UNBOUND"
+        assert adapter["binding_state"] is None
         assert adapter["selected_runtime_alias"] is None
 
-    def test_state_remains_pending_input_a0_shadow_only(self):
-        """State remains PENDING_INPUT/A0/SHADOW_ONLY."""
+    def test_state_is_ready_a0_shadow_only(self):
         r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
-        assert r["governance_state"] == "PENDING_INPUT"
+        assert r["governance_state"] == "ADAPTER_READY_FOR_MANUAL_ACTIVATION"
         assert r["adapter_readiness"] == "A0"
         assert r["adapter_mode"] == "SHADOW_ONLY"
 
-    def test_no_ready_labels(self):
-        """With 3/4 bound, no ready labels appear."""
+    def test_ready_labels_present(self):
         r = _run_cli("phase18r2")
         labels = set(r["output_labels"])
-        FORBIDDEN = {
-            "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_READY",
-            "ADAPTER_READY_FOR_MANUAL_ACTIVATION",
-            "BOUND_BINDING_COUNT_4",
-        }
-        assert FORBIDDEN.isdisjoint(labels)
+        assert "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_READY" in labels
+        assert "ADAPTER_READY_FOR_MANUAL_ACTIVATION" in labels
+        assert FORBIDDEN_PENDING_LABELS.isdisjoint(labels)
 
-    def test_pending_labels_include_three_bound(self):
-        """Pending labels reflect 3/4 bound, gpt-5.6-sol BOUND, kimi-k3 UNBOUND."""
+    def test_ready_labels_include_three_bound(self):
         r = _run_cli("phase18r2")
         labels = set(r["output_labels"])
         assert "BOUND_BINDING_COUNT_3" in labels
         assert "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_BOUND" in labels
-        assert "OC_ESCALATION_OPENCODE_KIMI_K3_UNBOUND" in labels
-        assert "BINDINGS_INCOMPLETE" in labels
+        assert "OC_ESCALATION_ROLE_RETIRED" in labels
+        assert "BINDINGS_COMPLETE" in labels
 
     def test_all_authorization_flags_false(self):
-        """All authorization flags remain false."""
         r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
         assert r["all_authorization_flags_false"] is True
 
     def test_direct_scopes_are_none(self):
-        """All direct scopes remain NONE."""
         r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
         assert r["direct_provider_integration_scope"] == "NONE"
         assert r["direct_credential_scope"] == "NONE"
@@ -1492,127 +1425,14 @@ class TestGpt56SolBinding:
         assert r["direct_model_invocation_scope"] == "NONE"
 
     def test_transport_delegation_unchanged(self):
-        """Transport delegation remains EXISTING_CODEX_AND_OPENCODE_ONLY."""
         r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
         assert r["transport_delegation_scope"] == "EXISTING_CODEX_AND_OPENCODE_ONLY"
 
     def test_hermes_escalation_label_is_bound(self):
-        """Checkpoint labels reflect HERMES_ESCALATION as BOUND."""
         r = _run_cli("phase18r2")
         labels = set(r["output_labels"])
         assert "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_BOUND" in labels
         assert "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_UNBOUND" not in labels
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# KIMI K3 CORRECTED BLOCKER SEMANTICS (Phase 18R2 Correction)
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestKimiK3CorrectedBlockerSemantics:
-    """Verify kimi-k3 blocker semantics are corrected: externally verified,
-    locally unbound, shadow_resolution_authorized=false, ready for manual entry."""
-
-    def test_binding_state_is_unbound(self):
-        b = _load_json(BINDINGS)
-        kimi = next(x for x in b["bindings"] if x["logical_model_id"] == "kimi-k3")
-        assert kimi["binding_state"] == "UNBOUND"
-        assert kimi["runtime_alias"] is None
-
-    def test_provider_model_id_is_moonshotai_kimi_k3(self):
-        b = _load_json(BINDINGS)
-        kimi = next(x for x in b["bindings"] if x["logical_model_id"] == "kimi-k3")
-        assert kimi.get("provider_model_id") == "moonshotai/kimi-k3"
-
-    def test_external_availability_verified_true(self):
-        b = _load_json(BINDINGS)
-        kimi = next(x for x in b["bindings"] if x["logical_model_id"] == "kimi-k3")
-        assert kimi.get("external_availability_verified") is True
-
-    def test_shadow_resolution_authorized_false(self):
-        b = _load_json(BINDINGS)
-        kimi = next(x for x in b["bindings"] if x["logical_model_id"] == "kimi-k3")
-        assert kimi["shadow_resolution_authorized"] is False
-
-    def test_adapter_invocation_authorized_false(self):
-        b = _load_json(BINDINGS)
-        kimi = next(x for x in b["bindings"] if x["logical_model_id"] == "kimi-k3")
-        assert kimi["adapter_invocation_authorized"] is False
-        assert kimi["runtime_invocation_authorized"] is False
-        assert kimi["live_activation_authorized"] is False
-
-    def test_human_activation_required_true(self):
-        b = _load_json(BINDINGS)
-        kimi = next(x for x in b["bindings"] if x["logical_model_id"] == "kimi-k3")
-        assert kimi["human_activation_required"] is True
-
-    def test_r2_blk_003_has_corrected_title(self):
-        m = _load_manifest()
-        blk = m["blockers"]["active_blockers"][0]
-        assert blk["blocker_id"] == "R2_BLK_003"
-        assert "exact local runtime binding not established" in blk["title"]
-        assert blk["classification"] == "READY_FOR_MANUAL_MODEL_ENTRY"
-
-    def test_r2_blk_003_detail_externally_verified(self):
-        m = _load_manifest()
-        blk = m["blockers"]["active_blockers"][0]
-        assert "moonshotai/kimi-k3 is externally verified" in blk["detail"]
-        assert "manual model-entry plan" in blk["detail"]
-
-    def test_no_obsolete_no_provider_claim(self):
-        """Obsolete claim that no provider has Kimi K3 must be absent."""
-        raw = BINDINGS.read_text() + MANIFEST.read_text()
-        assert "No provider has kimi-k3" not in raw
-        assert "kimi-k3 not in OpenRouter registry" not in raw
-
-    def test_next_phase_boundary_is_manual_model_entry_plan(self):
-        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
-        assert r["next_phase_boundary"] == "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN"
-
-    def test_state_remains_pending_input_a0_shadow_only(self):
-        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
-        assert r["governance_state"] == "PENDING_INPUT"
-        assert r["adapter_readiness"] == "A0"
-        assert r["adapter_mode"] == "SHADOW_ONLY"
-
-    def test_bound_binding_count_3(self):
-        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
-        assert r["bound_binding_count"] == 3
-        assert r["binding_count"] == 4
-
-    def test_blocker_count_1_only_r2_blk_003(self):
-        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
-        assert r["blocker_count"] == 1
-        blocker_ids = {b.get("blocker_id", "") for b in r.get("blockers", []) if isinstance(b, dict)}
-        assert blocker_ids == {"R2_BLK_003"}
-
-    def test_labels_include_kimi_externally_verified_locally_unbound(self):
-        r = _run_cli("phase18r2")
-        labels = set(r["output_labels"])
-        assert "KIMI_K3_EXTERNALLY_VERIFIED_LOCALLY_UNBOUND" in labels
-        assert "MANUAL_MODEL_ENTRY_PLAN_REQUIRED" in labels
-        assert "OC_ESCALATION_OPENCODE_KIMI_K3_UNBOUND" in labels
-
-    def test_labels_exclude_obsolete_manual_binding_input(self):
-        r = _run_cli("phase18r2")
-        labels = set(r["output_labels"])
-        assert "MANUAL_BINDING_INPUT_REQUIRED" not in labels
-
-    def test_kimi_k3_still_holds_in_adapter(self):
-        """kimi-k3 must still HOLD in adapter (UNBOUND)."""
-        req = _make_request("OC", "REPEATED_CI_RECOVERY")
-        decision = _decide_logical(req)
-        adapter = _resolve_shadow(req, decision)
-        assert adapter["adapter_state"] == "HOLD"
-        assert adapter["binding_state"] == "UNBOUND"
-        assert adapter["selected_runtime_alias"] is None
-
-    def test_all_authorization_flags_false(self):
-        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
-        assert r["all_authorization_flags_false"] is True
-
-    def test_live_routing_unchanged(self):
-        r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
-        assert r["live_routing_changed"] is False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1722,7 +1542,6 @@ class TestDeepSeekBinding:
         assert ds["transport"] == "OPENCODE"
 
     def test_no_openrouter_substitution(self):
-        """Runtime alias must NOT reference openrouter."""
         b = _load_json(BINDINGS)
         ds = next(x for x in b["bindings"] if x["logical_model_id"] == "deepseek-v4-pro")
         assert "openrouter" not in ds["runtime_alias"]
@@ -1733,7 +1552,6 @@ class TestDeepSeekBinding:
         assert ds["evidence_observation"] == "DIRECTLY_OBSERVED"
 
     def test_shadow_route_resolves(self):
-        """DeepSeek shadow route resolves successfully."""
         req = _make_request("OC", "ROUTINE_IMPLEMENTATION")
         decision = _decide_logical(req)
         adapter = _resolve_shadow(req, decision)
@@ -1744,7 +1562,6 @@ class TestDeepSeekBinding:
         assert adapter["binding_state"] == "BOUND_EXISTING_ALIAS"
 
     def test_no_runtime_modification_authorized(self):
-        """No runtime modification flags should be true."""
         b = _load_json(BINDINGS)
         ds = next(x for x in b["bindings"] if x["logical_model_id"] == "deepseek-v4-pro")
         dangerous = ["adapter_invocation_authorized", "live_activation_authorized",
@@ -1754,7 +1571,6 @@ class TestDeepSeekBinding:
             assert ds[key] is False, f"{key} must be False for deepseek-v4-pro"
 
     def test_shadow_only_no_live_activation(self):
-        """DeepSeek resolution is shadow-only, live_routing_changed remains false."""
         req = _make_request("OC", "ROUTINE_IMPLEMENTATION")
         decision = _decide_logical(req)
         adapter = _resolve_shadow(req, decision)
@@ -1764,37 +1580,28 @@ class TestDeepSeekBinding:
         assert adapter["human_activation_required"] is True
 
     def test_bound_count_is_three(self):
-        """gpt-5.5, gpt-5.6-sol, and deepseek-v4-pro are bound."""
+        """gpt-5.5, gpt-5.6-sol, and deepseek-v4-pro are bound — the full set."""
         r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
         assert r["bound_binding_count"] == 3
+        assert r["binding_count"] == 3
 
-    def test_only_one_blocker_remains(self):
-        """Only kimi-k3 remains blocked."""
+    def test_zero_blockers_remain(self):
         r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
         blockers = r.get("blockers", [])
-        assert len(blockers) == 1
-        blocker_ids = {b.get("blocker_id", "") for b in blockers if isinstance(b, dict)}
-        assert blocker_ids == {"R2_BLK_003"}
+        assert len(blockers) == 0
 
     def test_oc_default_label_is_bound(self):
-        """Checkpoint labels reflect OC_DEFAULT as BOUND."""
         r = _run_cli("phase18r2")
         labels = set(r["output_labels"])
         assert "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_BOUND" in labels
         assert "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_UNBOUND" not in labels
 
     def test_live_routing_unchanged(self):
-        """live_routing_changed remains false."""
         r = _run_cli("level1-openclaw-routing-adapter-checkpoint")
         assert r["live_routing_changed"] is False
 
-    def test_no_ready_labels_with_three_bound(self):
-        """With 3/4 bound, no ready labels appear."""
+    def test_ready_labels_present_with_three_bound(self):
         r = _run_cli("phase18r2")
         labels = set(r["output_labels"])
-        FORBIDDEN = {
-            "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_READY",
-            "ADAPTER_READY_FOR_MANUAL_ACTIVATION",
-            "BOUND_BINDING_COUNT_4",
-        }
-        assert FORBIDDEN.isdisjoint(labels)
+        assert FORBIDDEN_PENDING_LABELS.isdisjoint(labels)
+        assert "PHASE18R2_OPENCLAW_ROUTING_ADAPTER_READY" in labels

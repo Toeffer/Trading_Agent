@@ -50564,11 +50564,6 @@ _PHASE18R2_PENDING_INPUT_LABELS = [
     "SHADOW_ONLY",
     "LIVE_ROUTING_UNCHANGED",
     "BINDINGS_INCOMPLETE",
-    "BOUND_BINDING_COUNT_3",
-    "HERMES_DEFAULT_CODEX_GPT_5_5_BOUND",
-    "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_BOUND",
-    "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_BOUND",
-    "OC_ESCALATION_OPENCODE_KIMI_K3_UNBOUND",
     "NO_CROSS_TRANSPORT_FALLBACK",
     "NO_SILENT_MODEL_SUBSTITUTION",
     "NO_DIRECT_PROVIDER_INTEGRATION",
@@ -50579,8 +50574,6 @@ _PHASE18R2_PENDING_INPUT_LABELS = [
     "NO_TRADING_EXECUTION",
     "TRADING_AUTONOMY_UNCHANGED",
     "FAIL_CLOSED_ADAPTER",
-    "MANUAL_MODEL_ENTRY_PLAN_REQUIRED",
-    "KIMI_K3_EXTERNALLY_VERIFIED_LOCALLY_UNBOUND",
     "PHASE18R1_UNCHANGED",
     "PHASE18B_UNCHANGED",
     "STRATEGY_V1_UNCHANGED",
@@ -50597,11 +50590,11 @@ _PHASE18R2_READY_LABELS = [
     "SHADOW_ONLY",
     "LIVE_ROUTING_UNCHANGED",
     "BINDINGS_COMPLETE",
-    "BOUND_BINDING_COUNT_4",
+    "BOUND_BINDING_COUNT_3",
     "HERMES_DEFAULT_CODEX_GPT_5_5_BOUND",
     "HERMES_ESCALATION_CODEX_GPT_5_6_SOL_BOUND",
     "OC_DEFAULT_OPENCODE_DEEPSEEK_V4_PRO_BOUND",
-    "OC_ESCALATION_OPENCODE_KIMI_K3_BOUND",
+    "OC_ESCALATION_ROLE_RETIRED",
     "NO_CROSS_TRANSPORT_FALLBACK",
     "NO_SILENT_MODEL_SUBSTITUTION",
     "NO_DIRECT_PROVIDER_INTEGRATION",
@@ -50646,7 +50639,7 @@ def _phase18r2_no_go(checkpoint_id: str, ts_str: str, error_msg: str,
         "output_labels": [],
         "blocker_count": 1,
         "warnings": [],
-        "next_phase_boundary": "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN",
+        "next_phase_boundary": "PHASE18R2_MANUAL_ACTIVATION_PROOF",
         "deterministic_evidence_hash": "",
         "diagnosis": {
             "ready": False,
@@ -50722,7 +50715,7 @@ def _run_level1_openclaw_routing_adapter_checkpoint() -> dict:
 
     # 4. Core values
     for k, v in {
-        "governance_state": "PENDING_INPUT",
+        "governance_state": "ADAPTER_READY_FOR_MANUAL_ACTIVATION",
         "governance_id": "openclaw_routing_adapter_v0_1",
         "adapter_readiness": "A0",
         "autonomy_level": 1,
@@ -50736,7 +50729,7 @@ def _run_level1_openclaw_routing_adapter_checkpoint() -> dict:
         "direct_model_invocation_scope": "NONE",
         "transport_delegation_scope": "EXISTING_CODEX_AND_OPENCODE_ONLY",
         "trading_execution_scope": "NONE",
-        "next_phase_boundary": "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN",
+        "next_phase_boundary": "PHASE18R2_MANUAL_ACTIVATION_PROOF",
     }.items():
         if manifest.get(k) != v:
             errors.append(f"MANIFEST_VALUE_MISMATCH: {k} expected={v} got={manifest.get(k)}")
@@ -50785,11 +50778,11 @@ def _run_level1_openclaw_routing_adapter_checkpoint() -> dict:
 
     if _has_failures():
         output_labels = []
-    elif manifest_gs == "PENDING_INPUT" or bound_count < 4 or blocker_count > 0:
+    elif manifest_gs == "PENDING_INPUT" or bound_count < 3 or blocker_count > 0:
         # Fail-closed: only emit pending labels when not fully ready
         output_labels = list(_PHASE18R2_PENDING_INPUT_LABELS)
     else:
-        # ADAPTER_READY_FOR_MANUAL_ACTIVATION: all 4 bound, zero blockers
+        # ADAPTER_READY_FOR_MANUAL_ACTIVATION: all 3 bound, zero blockers
         output_labels = list(_PHASE18R2_READY_LABELS)
 
     # Compute all_authorization_flags_false from manifest + bindings
@@ -50842,8 +50835,8 @@ def _run_level1_openclaw_routing_adapter_checkpoint() -> dict:
         "governance_id": "openclaw_routing_adapter_v0_1",
         "governance_version": "0.1",
         "governance_state": ("PENDING_INPUT" if manifest.get("governance_state") == "PENDING_INPUT"
-                               else ("ADAPTER_READY_FOR_MANUAL_ACTIVATION" if (not _has_failures() and bound_count == 4 and blocker_count == 0) else "BLOCKED")),
-        "binding_count": manifest.get("binding_summary", {}).get("total_bindings", 4),
+                               else ("ADAPTER_READY_FOR_MANUAL_ACTIVATION" if (not _has_failures() and bound_count == 3 and blocker_count == 0) else "BLOCKED")),
+        "binding_count": manifest.get("binding_summary", {}).get("total_bindings", 3),
         "bound_binding_count": manifest.get("binding_summary", {}).get("bound", 0),
         "adapter_readiness": "A0",
         "autonomy_level": 1,
@@ -50863,7 +50856,7 @@ def _run_level1_openclaw_routing_adapter_checkpoint() -> dict:
         "blocker_count": len(errors) if _has_failures() else blocker_count,
         "output_labels": output_labels,
         "warnings": [],
-        "next_phase_boundary": "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN",
+        "next_phase_boundary": "PHASE18R2_MANUAL_ACTIVATION_PROOF",
         "deterministic_evidence_hash": "",
         "diagnosis": {},
     }
@@ -50877,7 +50870,7 @@ def _run_level1_openclaw_routing_adapter_checkpoint() -> dict:
             "blocker_count": len(errors),
             "error_count": len(errors),
         }
-    elif manifest_gs == "PENDING_INPUT" or bound_count < 4 or blocker_count > 0:
+    elif manifest_gs == "PENDING_INPUT" or bound_count < 3 or blocker_count > 0:
         _diag = {
             "ready": False,
             "status": _PHASE18R2_DIAGNOSIS["pending"],
@@ -51026,12 +51019,12 @@ def _run_model_routing_activation_plan() -> dict:
         "codex": {
             "source": "~/.openclaw/agents/main/agent/models.json — codex provider",
             "directly_observed_aliases": ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"],
-            "status": "gpt-5.5 bound; gpt-5.6-sol NOT in codex registry",
+            "status": "gpt-5.5 bound via codex provider; gpt-5.6-sol bound via authenticated Codex app-server model/list",
         },
         "opencode": {
             "source": "auth-profiles.json — opencode-go:default profile authenticated",
             "openrouter_directly_observed_aliases": ["openrouter/auto", "kimi-k2.6", "kimi-k2.5"],
-            "status": "deepseek-v4-pro NOT in openrouter registry; kimi-k3 NOT found (kimi-k2.6 exists)",
+            "status": "deepseek-v4-pro bound via opencode-go/deepseek-v4-pro (active primary model). OC_ESCALATION role retired — no escalation model tracked",
         },
     }
 

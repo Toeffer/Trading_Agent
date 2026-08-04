@@ -17,7 +17,7 @@
     "direct_model_invocation_scope": "NONE",
     "transport_delegation_scope": "EXISTING_CODEX_AND_OPENCODE_ONLY",
     "trading_execution_scope": "NONE",
-    "next_phase_boundary": "PHASE18R2_MANUAL_MODEL_ENTRY_PLAN"
+    "next_phase_boundary": "PHASE18R2_MANUAL_ACTIVATION_PROOF"
   },
   "bindings": [
     {
@@ -76,43 +76,20 @@
       "human_activation_required": true,
       "evidence_observation": "DIRECTLY_OBSERVED",
       "repository_tracked_source": false
-    },
-    {
-      "logical_model_id": "kimi-k3",
-      "logical_role": "OC_ESCALATION",
-      "transport": "OPENCODE",
-      "runtime_alias": null,
-      "provider_model_id": "moonshotai/kimi-k3",
-      "external_availability_verified": true,
-      "binding_state": "UNBOUND",
-      "binding_source": "OpenRouter provider model moonshotai/kimi-k3 externally verified; no local OpenClaw/OpenCode runtime binding directly observed",
-      "transport_handles_credentials": true,
-      "adapter_reads_credentials": false,
-      "adapter_stores_credentials": false,
-      "direct_provider_access": false,
-      "direct_network_access": false,
-      "adapter_invocation_authorized": false,
-      "runtime_invocation_authorized": false,
-      "shadow_resolution_authorized": false,
-      "live_activation_authorized": false,
-      "human_activation_required": true,
-      "evidence_observation": "NOT_OBSERVED",
-      "repository_tracked_source": false
     }
   ],
   "binding_summary": {
-    "total_bindings": 4,
+    "total_bindings": 3,
     "bound": 3,
-    "unbound": 1,
+    "unbound": 0,
     "ambiguous": 0,
-    "governance_state": "PENDING_INPUT",
-    "note": "gpt-5.5 directly observed in codex provider registry. gpt-5.6-sol directly observed in authenticated Codex app-server model/list. deepseek-v4-pro directly observed via opencode-go/deepseek-v4-pro (active primary model). kimi-k3 externally verified as moonshotai/kimi-k3 on OpenRouter but no local runtime binding directly observed."
+    "governance_state": "ADAPTER_READY_FOR_MANUAL_ACTIVATION",
+    "note": "gpt-5.5 directly observed in codex provider registry. gpt-5.6-sol directly observed in authenticated Codex app-server model/list. deepseek-v4-pro directly observed via opencode-go/deepseek-v4-pro (active primary model). The OC_ESCALATION role (kimi-k3) has been retired: no provider model was ever locally bound, and the OC role now has a default binding only, with no escalation tier."
   },
   "transport_constraints": {
     "gpt-5.5_must_not_resolve_to_OPENCODE": true,
     "gpt-5.6-sol_must_not_resolve_to_OPENCODE": true,
     "deepseek-v4-pro_must_not_resolve_to_CODEX": true,
-    "kimi-k3_must_not_resolve_to_CODEX": true,
     "cross_transport_fallback_prohibited": true
   },
   "authorization_flags": {

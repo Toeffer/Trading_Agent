@@ -3,7 +3,7 @@
   "governance_identity": {
     "governance_id": "openclaw_routing_adapter_v0_1",
     "governance_version": "0.1",
-    "governance_state": "PENDING_INPUT",
+    "governance_state": "ADAPTER_READY_FOR_MANUAL_ACTIVATION",
     "governance_phase": "PHASE18R2",
     "adapter_mode": "SHADOW_ONLY",
     "adapter_readiness": "A0",
@@ -80,11 +80,10 @@
   "routing_rules": {
     "HERMES": {
       "default": {"logical_model": "gpt-5.5", "transport": "CODEX", "binding_state": "BOUND_EXISTING_ALIAS"},
-      "escalation": {"logical_model": "gpt-5.6-sol", "transport": "CODEX", "binding_state": "UNBOUND"}
+      "escalation": {"logical_model": "gpt-5.6-sol", "transport": "CODEX", "binding_state": "BOUND_EXISTING_ALIAS"}
     },
     "OC": {
-      "default": {"logical_model": "deepseek-v4-pro", "transport": "OPENCODE", "binding_state": "UNBOUND"},
-      "escalation": {"logical_model": "kimi-k3", "transport": "OPENCODE", "binding_state": "UNBOUND"}
+      "default": {"logical_model": "deepseek-v4-pro", "transport": "OPENCODE", "binding_state": "BOUND_EXISTING_ALIAS"}
     }
   },
   "safety_constraints": {
@@ -105,7 +104,7 @@
     "fail_closed_default": true,
     "verify_request_decision_pair_integrity": true,
     "gpt_models_must_not_resolve_to_OPENCODE": true,
-    "deepseek_kimi_models_must_not_resolve_to_CODEX": true
+    "deepseek_models_must_not_resolve_to_CODEX": true
   },
   "authorization_flags": {
     "runtime_invocation_authorized": false,

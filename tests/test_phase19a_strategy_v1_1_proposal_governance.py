@@ -298,12 +298,20 @@ class TestDecisionsAndPromotion:
 class TestClaimsVerifiedAgainstCode:
     """The proposal makes assertions about guard.py. Verify them, don't trust them."""
 
-    def test_gate_letter_i_is_actually_free(self):
+    def test_gate_letter_i_is_sector_concentration(self):
+        """§4.7/§9.4 claimed Gate I was free at 19A time and reserved it for
+        the sector-concentration cap. Phase 19D has since implemented it —
+        verify the letter landed on the right function, exactly once, not
+        that it's still unclaimed."""
         source = GUARD_PATH.read_text()
         letters = set(re.findall(r"Gate ([A-Z])\b", source))
-        assert "I" not in letters, \
-            "Gate I is claimed free but guard.py already uses it"
-        assert {"A", "B", "C", "D", "E", "F", "G", "H"} <= letters
+        assert {"A", "B", "C", "D", "E", "F", "G", "H", "I"} <= letters
+        claims = re.findall(r'"""Gate ([A-Z]) —', source)
+        assert claims.count("I") == 1, \
+            f"Expected exactly one Gate I claim, found {claims.count('I')}"
+        idx = source.find("def gate_sector_concentration")
+        assert idx != -1, "gate_sector_concentration not found — Gate I not implemented"
+        assert "Gate I" in source[idx:idx + 400]
 
     def test_gate_h_is_proposal_discipline(self):
         source = GUARD_PATH.read_text()

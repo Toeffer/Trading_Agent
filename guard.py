@@ -1479,6 +1479,74 @@ def gate_exposure(
     return (True, f"Total exposure ${total_exposure_usd:,.2f} within ${max_exposure_usd:,.2f} cap", {"current_exposure_usd": round(current_exposure_usd,2), "proposed_notional_usd": round(proposed_notional_usd,2), "total_exposure_usd": round(total_exposure_usd,2), "max_exposure_usd": round(max_exposure_usd,2)})
 
 
+# --- Phase 19D: Sector Concentration Gate (Gate I) ---
+#
+# strategy_v1_1 proposal §4.7 / §9.4. Momentum clusters by sector (§4.7.1),
+# so without this gate the ranker could fill two slots with one correlated
+# bet (e.g. NVDA + AMD) at effectively double the intended risk. Sector map
+# and cap are read from the YAML at enforcement time (H2 invariant) — no
+# hardcoded duplicate of either exists here.
+
+
+def gate_sector_concentration(symbol: str, positions: list, rules: dict) -> tuple:
+    """Gate I — reject BUY if the candidate's sector is already at capacity.
+
+    Fails CLOSED: a symbol with no sector mapping in rules["symbol_sectors"]
+    is rejected, matching gate_allowlist's fail-closed behavior for symbols
+    outside the allowlist. load_rules() already guarantees every allowlisted
+    symbol has a mapping, so an unmapped symbol here means either a
+    programming error upstream or a request for a symbol outside the
+    allowlist — either way, reject rather than guess.
+
+    BUY only. SELL is exempt — closing a position can only reduce
+    concentration, never increase it (consistent with Gate G close-only
+    logic), so callers must not invoke this gate for SELL.
+
+    Args:
+        symbol: Candidate BUY symbol.
+        positions: Current open positions (same shape as gate_exposure's
+            `positions` — dicts with at least "symbol" and "position").
+        rules: Loaded rules dict; reads symbol_sectors and
+            max_positions_per_sector.
+
+    Returns:
+        (pass, reason, details_dict)
+    """
+    sector_map = rules.get("symbol_sectors", {})
+    sym = symbol.upper().strip()
+    sector = sector_map.get(sym)
+    if not sector:
+        return (
+            False,
+            f"Symbol '{sym}' has no sector mapping in symbol_sectors — failing closed",
+            {"symbol": sym, "sector": None},
+        )
+
+    max_per_sector = rules["max_positions_per_sector"]["value"]
+
+    occupants = []
+    for pos in positions:
+        pos_symbol = str(pos.get("symbol", "")).upper().strip()
+        if not pos_symbol or pos.get("position", 0) <= 0:
+            continue
+        if sector_map.get(pos_symbol) == sector:
+            occupants.append(pos_symbol)
+
+    if len(occupants) >= max_per_sector:
+        return (
+            False,
+            f"Sector '{sector}' already at capacity ({len(occupants)}/{max_per_sector}): {occupants}",
+            {"symbol": sym, "sector": sector, "occupants": occupants,
+             "max_positions_per_sector": max_per_sector},
+        )
+    return (
+        True,
+        f"Sector '{sector}' has capacity ({len(occupants)}/{max_per_sector}): {occupants}",
+        {"symbol": sym, "sector": sector, "occupants": occupants,
+         "max_positions_per_sector": max_per_sector},
+    )
+
+
 # --- Phase 2G: Close-Only Position Gate (Gate G) ---
 
 # Known test order IDs that should be excluded from position calculation
@@ -2509,6 +2577,18 @@ def run_preflight(
             [],
         )
         gates.append({"gate": "exposure", "passed": ok, "reason": reason, "details": details})
+        if not ok:
+            all_pass = False
+
+        # Gate I \u2014 sector concentration (Phase 19D, BUY only)
+        try:
+            sector_positions = position_provider() if position_provider else []
+            if not isinstance(sector_positions, list):
+                sector_positions = []
+        except Exception:
+            sector_positions = []
+        ok, reason, details = gate_sector_concentration(symbol, sector_positions, rules)
+        gates.append({"gate": "sector_concentration", "passed": ok, "reason": reason, "details": details})
         if not ok:
             all_pass = False
 
@@ -4024,6 +4104,12 @@ def load_rules(path: Path | None = None) -> dict:
         "guard_state",
         "preflight",
         "logging",
+        # Phase 19D — Gate I (sector concentration). NOTE: these two keys
+        # must exist in the live YAML before this guard.py version is
+        # deployed (strategy_v1_1 proposal §9.9 — "19D must not land before
+        # 19B"), or load_rules() raises here and the bridge fails to start.
+        "symbol_sectors",
+        "max_positions_per_sector",
     ]
     missing = [k for k in required_keys if k not in rules]
     if missing:
@@ -4041,6 +4127,26 @@ def load_rules(path: Path | None = None) -> dict:
         raise ValueError("symbol_allowlist.allow must be a non-empty list")
     # Phase H2: YAML is the single source of truth for allowlist.
     # No hardcoded comparison — the YAML defines what is allowed.
+
+    # --- Sector map validation (Phase 19D — Gate I, strategy_v1_1 §9.4) ---
+    # Every allowlisted symbol must have a sector mapping, else raise at
+    # load. Sector map and cap are read from the YAML, never hardcoded —
+    # this check only confirms the two already-required keys are
+    # well-formed and mutually consistent with the allowlist.
+    sector_map = rules.get("symbol_sectors", {})
+    if not isinstance(sector_map, dict):
+        raise ValueError("symbol_sectors must be a dict mapping symbol -> sector")
+    unmapped = [s for s in allowed if s not in sector_map]
+    if unmapped:
+        raise ValueError(
+            f"symbol_allowlist.allow contains symbols with no symbol_sectors "
+            f"mapping (Gate I requires one for every allowlisted symbol): {unmapped}"
+        )
+    per_sector_cap = rules.get("max_positions_per_sector", {}).get("value")
+    if not isinstance(per_sector_cap, int) or per_sector_cap <= 0:
+        raise ValueError(
+            f"max_positions_per_sector.value must be a positive int, got {per_sector_cap!r}"
+        )
 
     # --- Numeric cap validation (sanity checks) ---
     notional = rules.get("max_position_notional", {}).get("value")

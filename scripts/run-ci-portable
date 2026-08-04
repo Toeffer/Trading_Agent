@@ -26,6 +26,10 @@ TESTS=(
   tests/test_phase18r1_model_routing_governance.py
   tests/test_phase18r2_openclaw_routing_adapter.py
   tests/test_phase19a_strategy_v1_1_proposal_governance.py
+  tests/test_phase19b_allowlist_expansion.py
+  tests/test_phase19c_advisory_vol_regime.py
+  tests/test_phase19d_gate_i_sector_cap.py
+  tests/test_phase19e_invariant_preservation.py
   tests/test_us_etf_blocklist_source.py
   tests/test_hermes_no_outcome_feedback.py
 )

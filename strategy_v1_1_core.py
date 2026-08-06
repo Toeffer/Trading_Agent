@@ -31,6 +31,16 @@ from typing import Any, Dict, List, Optional, Tuple
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # §4.6 — Inverse-volatility scalar
+# NOTE (2026-08-06): this module constant is the original HIQ-008
+# spec-frozen value, pinned exactly by TestComputeGrossScalar /
+# TestGrossScalarExtended's hardcoded 0.16-based assertions in B2 — do not
+# change it here, it would break those frozen tests. It is only a
+# fallback for callers that omit vol_reference_pct; HIQ-008 already states
+# "vol_reference_pct and floor come from advisory config" at runtime. The
+# proposal's own recalibration (16 -> 13, from real SPY history — see
+# docs/strategy-proposals/PHASE19B_PROPOSED_YAML_CHANGES_v0_1.md) lives in
+# the proposed advisory.vol_reference_pct YAML value, which is what would
+# actually be supplied once this module is wired in (deferred to B4).
 DEFAULT_VOL_REFERENCE_PCT: float = 16.0
 DEFAULT_VOL_LOOKBACK_DAYS: int = 20
 DEFAULT_GROSS_SCALAR_FLOOR: float = 0.25

@@ -293,6 +293,43 @@ stop or while drift/open-order/live-alert is present, NO TRADE at daily loss ≥
 - Data-provenance policy: Hermes source-labeling, IBKR = truth.
 - Allowlist updated to AAPL/META/NVDA/AMD (SPY/QQQ removed).
 
+### Phase 19B — `strategy_v1_1_core.py` deterministic pure evaluation library (B1/B2)
+- Chris added `strategy_v1_1_core.py` (Gate 0.1, HIQ-001–012 resolved 2026-08-01): a
+  standalone, pure module (no network/filesystem/current-time/side effects) implementing
+  regime state, realized-vol/gross-scalar, cross-sectional RS ranking, budget computation,
+  and `gate_sector_concentration` (Gate I) — plus 257 B2 unit/golden-vector tests, all in
+  commit `5dbc726`. `Execution: NONE` — not yet wired into `guard.py` or `bridge.py`;
+  wiring is deferred to B4 (out of scope here).
+- **Note — architecture diverges from `STRATEGY_V1_1_PROPOSAL_v0_1.md` §9.3/§9.4.** The
+  proposal's original plan assigns this logic to `hermes_advisory.py` (Phase 19C) and a
+  `guard.py`-resident `gate_sector_concentration` (Phase 19D, Tier 1). `strategy_v1_1_core.py`
+  is a third, independent implementation of the same regime/vol/RS/Gate-I logic, built to
+  the proposal's frozen 22-symbol/11-sector universe but not following its file layout.
+  Both this module and the unmerged `phase19c-advisory-layer` branch (`hermes_advisory.py`
+  + `guard.py` Gate I, commits `8609691`/`fd21617`/`16a1483`) existed unmerged and
+  unreconciled at the same time.
+- **Decision (2026-08-06, Chris — "as long as Hermes still works as a learning brain, you
+  decide what's best"):** `strategy_v1_1_core.py` is canonical. It is pure (no network, no
+  side effects), has a fuller reason-code inventory and tie-break spec, and — critically —
+  never invokes Hermes or replaces its signal generation; it only validates Hermes's
+  already-produced `signal_alignment` output (`validate_hermes_output`, HIQ-010) and
+  computes portfolio-level scaffolding around it, so Hermes remains the sole "brain."
+  `hermes_advisory.py` mixed network I/O (`fetch_reference_bars` calling `guard.py`'s
+  `_bridge_post`) into the same functions it wanted tested deterministically, and its
+  `guard.py` Gate I duplicate carries the harder Tier-1/git-tag + 19B-ordering hazard for
+  no added benefit now that an equivalent gate exists in `strategy_v1_1_core.py`.
+  `phase19c-advisory-layer` is **superseded — do not merge**; the branch is left pushed
+  and unmodified for reference only. Any future wiring phase (B4) should call into
+  `strategy_v1_1_core.py`'s pure functions from a thin, separately-tested I/O layer rather
+  than reintroducing `hermes_advisory.py`'s design.
+- **2026-08-06 fixes (this entry):** corrected a stale module docstring claiming
+  `Tests: NOT AUTHORIZED (B2 separately gated)` while the same commit already contained
+  and passed 257 B2 tests; registered all 7 new test files
+  (`test_strategy_v1_1_core.py`, `test_phase19b_{budget,gate_i,golden_vectors,regime,
+  rs_rank,vol_scalar}_unit.py`) in `scripts/run-ci-portable` — they existed but were never
+  part of the curated CI gate, so the branch's prior green CI run did not actually exercise
+  them.
+
 ---
 
 ## Verification Queue (resolve against the live system)

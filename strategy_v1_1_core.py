@@ -9,9 +9,14 @@ Phase 19B Gate 0.1 — HUMAN DECISIONS INCORPORATED (2026-08-01)
 HIQ-001 through HIQ-012 resolved per Chris approval.
 
 Governance:  Level 1 advisory-only
-Execution:   NONE
+Execution:   NONE — no caller wires this module into guard.py or bridge.py
 Authorized:  APPROVAL_GATE_PHASE19B_B1_CORE_IMPLEMENTATION
-Tests:       NOT AUTHORIZED (B2 separately gated)
+Tests:       B2 unit + golden-vector suite committed alongside B1 in the same
+             commit (257/257 passing) — the "NOT AUTHORIZED (B2 separately
+             gated)" line above was stale boilerplate carried over from an
+             earlier template and contradicted the tests already present in
+             this commit; corrected 2026-08-06. Registered in
+             scripts/run-ci-portable so the curated CI gate actually runs them.
 Activation:  NOT AUTHORIZED (B4 out of scope)
 """
 

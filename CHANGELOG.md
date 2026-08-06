@@ -329,6 +329,26 @@ stop or while drift/open-order/live-alert is present, NO TRADE at daily loss ≥
   rs_rank,vol_scalar}_unit.py`) in `scripts/run-ci-portable` — they existed but were never
   part of the curated CI gate, so the branch's prior green CI run did not actually exercise
   them.
+- **2026-08-06 — `vol_reference_pct` recalibrated from real data, per Chris's request to
+  fill the proposed YAML with the financially/scientifically best values.** §4.6.1
+  instructs recomputing SPY's median 20-day annualized realized vol from ≥5 years of data
+  and setting the constant to that measured median — not fitting it to P&L. Computed from
+  FMP SPY daily history (2019-01-02 to 2026-08-06, 1,909 bars, not IBKR-sourced): median
+  20d realized vol = 13.23% (full sample), 13.40% (last ~5y), 13.26% (excluding the 2020
+  COVID tail) — consistent across all three windows. `advisory.vol_reference_pct` in the
+  proposed YAML (`docs/strategy-proposals/PHASE19B_PROPOSED_YAML_CHANGES_v0_1.md`) is now
+  `13`, down from the proposal's `16` placeholder (which was closer to the *mean*, pulled
+  up by the 2020 tail, than the *median* the proposal specifies). This can only tighten
+  the advisory-suggested exposure budget relative to the placeholder, never loosen it
+  (design principle 1). `strategy_v1_1_core.py`'s own `DEFAULT_VOL_REFERENCE_PCT` module
+  constant was deliberately **left at 16.0** — `TestComputeGrossScalar` /
+  `TestGrossScalarExtended` in B2 hardcode numeric assertions built on that exact default,
+  and HIQ-008 already specifies the value comes from advisory config at runtime, not the
+  module fallback. Every other advisory parameter (200d SMA, 12mo momentum, 60d RS
+  lookback, 0.25 floor, 0.5 top-fraction, 1-per-sector cap) is intentionally left at the
+  proposal's conventional/field-standard value — design principle 4 forbids fitting them,
+  and `max_positions_per_sector` is already a separately-resolved decision (§11.3).
+  Full methodology and per-parameter rationale in the proposed-YAML doc.
 
 ---
 

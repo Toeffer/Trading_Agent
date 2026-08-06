@@ -10,6 +10,14 @@
 > against `strategy_v1_1_core.py`'s `FROZEN_UNIVERSE` and advisory defaults on
 > `phase19b-strategy-v1-1-implementation` — the 22-symbol/11-sector map and every advisory
 > constant match exactly between the two; no drift found.
+>
+> **2026-08-06 update:** one parameter, `vol_reference_pct`, has been recalibrated from
+> real SPY price history per the proposal's own §4.6.1 instruction ("recompute SPY's
+> median 20-day realized volatility... over at least 5 years and set the constant to that
+> measured median"). See **Methodology** below. Every other advisory parameter is left at
+> the proposal's conventional/field-standard value on purpose — §4 and design principle 4
+> forbid fitting them, and doing so would violate the proposal's own anti-overfit
+> discipline. See **Why the rest stay put**.
 
 ## What changes
 
@@ -18,7 +26,7 @@
 | `symbol_allowlist.allow` | 4 symbols (AAPL, META, NVDA, AMD) | 22 symbols (§4.2) |
 | `symbol_sectors` | *(absent)* | **NEW** — 22-symbol → 11-sector map, for Gate I |
 | `max_positions_per_sector` | *(absent)* | **NEW** — `value: 1` |
-| `advisory` | *(absent)* | **NEW** — regime/vol/RS constants, non-enforced |
+| `advisory` | *(absent)* | **NEW** — regime/vol/RS constants, non-enforced (`vol_reference_pct` recalibrated to `13` from real SPY data, not the proposal's `16` placeholder — see Methodology) |
 | `us_etf_blocklist` | *(absent)* | **OPTIONAL** — extends the regulatory baseline only |
 
 `symbol_sectors` and `max_positions_per_sector` are **not yet** in `guard.py`'s
@@ -91,8 +99,12 @@ max_positions_per_sector:
 # parameters a home in the same source file.
 advisory:
   # Inverse-vol scalar (§4.6). NOT a portfolio vol target — see §4.6.1.
-  # Recalibrate to SPY's measured median 20d realized vol before promotion.
-  vol_reference_pct: 16
+  # RECALIBRATED 2026-08-06 from real SPY history (was 16, the proposal's
+  # placeholder reference estimate) — see "Methodology" below. Median
+  # 20-trading-day annualized realized vol, 2019-01-02 to 2026-08-06
+  # (source: FMP historical-price-eod-full, not the IBKR bridge — recompute
+  # from bridge market/bars before this ever gates a live paper cycle).
+  vol_reference_pct: 13
   vol_lookback_days: 20
   gross_scalar_floor: 0.25
   regime_sma_days: 200
@@ -133,6 +145,79 @@ us_etf_blocklist:
 3. Validate with `guard.py`'s existing loader semantics before/after: unknown keys are
    never rejected, so applying this alone (with `guard.py` unmodified) cannot break
    startup.
-4. Recalibrate `vol_reference_pct: 16` against SPY's actual measured 20-day realized vol
-   before treating any sizing output as validated — the proposal marks this a
-   *(reference)* estimate, not a live-computed value.
+4. `vol_reference_pct` below has been recalibrated from real data (see Methodology) — it
+   is no longer the proposal's `16` placeholder. **Recompute it again from the IBKR
+   bridge's own `market/bars` before this ever gates a live paper cycle** — FMP data is a
+   real, independent, non-IBKR source, sufficient for this design-time recalibration, but
+   CLAUDE.md §8 still names IBKR as ground truth for anything that actually sizes a trade.
+
+## Methodology — `vol_reference_pct` recalibration
+
+The proposal (§4.6.1) explicitly instructs recalibrating this constant from data, and
+explicitly forbids fitting it to strategy P&L: *"recompute SPY's median 20-day realized
+volatility from bridge `market/bars` over at least 5 years and set the constant to that
+measured median. Do not optimize it against strategy P&L — pick it from the volatility
+distribution alone."* The bridge isn't reachable from this session, so the recomputation
+below uses FMP's `historical-price-eod-full` endpoint for SPY as a real, independent
+substitute — label it as such, not as IBKR-sourced, per CLAUDE.md §8.
+
+**Data:** SPY daily OHLCV, 2019-01-02 through 2026-08-06 (1,909 daily bars, ~7.6 years).
+**Method:** daily log returns → 20-trading-day rolling window → population stdev ×
+`√252` (annualized) → median of that rolling series.
+
+| Window | n obs | Median | Mean |
+|---|---:|---:|---:|
+| Full sample (2019-01-02 – 2026-08-06, incl. 2020 COVID crash) | 1,889 | **13.23%** | 15.87% |
+| Last ~5 years (2021-08-02 onward) | 1,239 | **13.40%** | 15.25% |
+| 2021-01-01 onward (excludes 2020 entirely) | 1,384 | **13.26%** | 14.94% |
+
+All three windows — full sample, last-5-years, and with the 2020 crash excluded entirely —
+agree to within 0.2 points: **median ≈ 13%**. The mean runs 2-3 points higher in every
+window because it is pulled up by the fat right tail (max observed: 91.86% during the
+2020 crash) — exactly why the proposal specifies *median*, not mean, as the calibration
+target. `vol_reference_pct` is set to **13** (rounded from 13.2-13.4%), down from the
+proposal's `16` placeholder, which was already flagged there as "SPY's typical realized
+volatility is ~15-16% *(reference)*" — closer to the mean than the median.
+
+**Why this matters mechanically:** `gross_scalar = clamp(vol_reference_pct / σ̂_ref, 0.25, 1.00)`.
+A lower reference constant means the scalar clamps to 1.00 (full budget) only when
+realized vol is at or below 13%, rather than 16% — i.e. it starts tightening exposure
+*sooner* as volatility rises, matching where SPY's volatility distribution actually sits
+rather than its less-typical elevated tail. This is a **tightening** change only — it can
+only reduce the advisory-suggested budget relative to the placeholder, never increase it,
+consistent with design principle 1 ("the advisory layer may only tighten, never loosen").
+
+**Where the `13` actually lives.** `strategy_v1_1_core.py`'s own `DEFAULT_VOL_REFERENCE_PCT`
+module constant is left at `16.0` — B2's `TestComputeGrossScalar`/`TestGrossScalarExtended`
+hardcode numeric assertions built on that exact default (e.g. `compute_gross_scalar(0.20)`
+→ `0.8`, which is `0.16/0.20`), so changing the constant would break frozen tests for no
+functional gain. HIQ-008 already documents that `vol_reference_pct` "comes from advisory
+config" at runtime — the module default is only a fallback for callers that omit it. The
+recalibrated `13` belongs in, and is sourced from, the YAML `advisory.vol_reference_pct`
+value above; that's what a future B4 wiring pass would actually pass in.
+
+## Why the rest stay put
+
+Design principle 4 states plainly: *"Conventional parameter values only. 200-day SMA,
+12-month momentum, ATR(14) — no fitted values, no optimization over the backtest."* And
+§4.3: the 60-day RS lookback is *"conventional value, not fitted."* Refitting any of these
+against a backtest — even a well-intentioned one — would violate that discipline and the
+`strategy_v1.md` §15 anti-overfit check the proposal holds itself to. So "financially/
+scientifically best" for these means *keep the literature-standard value*, not search for
+a better-looking number:
+
+| Parameter | Value | Basis |
+|---|---|---|
+| `regime_sma_days` | 200 | Field-standard trend filter (≈10-month SMA timing; Faber 2007-style trend-following, shown to reduce drawdowns cross-market over long samples) |
+| `regime_momentum_months` | 12 | Classic academic momentum formation window (Jegadeesh & Titman 1993 cross-sectional momentum; Moskowitz/Ooi/Pedersen time-series momentum use similar horizons cross-market) |
+| `cross_sectional_rs_lookback_days` | 60 | Explicitly "conventional value, not fitted" per §4.3 — an intermediate-term relative-strength window, deliberately short of a full backtest sweep |
+| `cross_sectional_rs_top_fraction` | 0.5 | Keeps breadth (all 22 names stay rankable) rather than over-concentrating on a fitted percentile |
+| `gross_scalar_floor` | 0.25 | Risk-management choice, not a data-fit — worked example in §4.6 shows this caps the crisis-state gross budget at 7.5% of NetLiq against the 30% ceiling |
+| `regime_caution_multiplier` | 0.5 | Risk-management choice — halves budget on a mixed trend/momentum read rather than binarizing regime state |
+| `max_positions_per_sector` | 1 | Already resolved by Chris (decision 11.3, 2026-08-01) on empirical correlation grounds (NVDA/AMD, META/GOOGL, JPM/BAC, XOM/CVX pairs) — out of scope for this recalibration pass; not touched here |
+| `hermes_risk_per_trade_pct` | 0.25 | Governance-locked — CLAUDE.md §5's two-tier risk model already fixes this at 0.25% NetLiq; not a tunable |
+
+If useful, I can also empirically re-verify the sector-pair correlations behind
+`max_positions_per_sector` (currently *(reference)* estimates in §4.7.1) against real
+price history the same way — that's a separate, already-resolved decision, so I didn't do
+it unprompted here.

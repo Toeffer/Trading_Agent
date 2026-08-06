@@ -5,8 +5,10 @@ Tests all 19 public functions plus ReasonCode inventory.
 stdlib only. unittest.TestCase. No pytest, numpy, pandas, network, filesystem,
 environment, current-time, random, guard.py, broker, OpenClaw, Hermes.
 
-Source immutability:
-  SKD-256 e7762ceb04989d210346512af61c908ea684514de2a6308381088d3304dc6f6a
+Source immutability (informational label, not an enforced assertion — recompute with
+`sha256sum strategy_v1_1_core.py` after any edit; last updated 2026-08-06 for the
+2026-08-06 docstring/comment fixes, which only touched comments, not behavior):
+  SHA-256 a053e4c4a8feeabe46861b10a13189933ba39f570b97e5671a1c34dcefbc9b21
 """
 
 import importlib

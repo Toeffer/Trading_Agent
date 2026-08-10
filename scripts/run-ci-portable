@@ -26,6 +26,13 @@ TESTS=(
   tests/test_phase18r1_model_routing_governance.py
   tests/test_phase18r2_openclaw_routing_adapter.py
   tests/test_phase19a_strategy_v1_1_proposal_governance.py
+  tests/test_strategy_v1_1_core.py
+  tests/test_phase19b_budget_unit.py
+  tests/test_phase19b_gate_i_unit.py
+  tests/test_phase19b_golden_vectors.py
+  tests/test_phase19b_regime_unit.py
+  tests/test_phase19b_rs_rank_unit.py
+  tests/test_phase19b_vol_scalar_unit.py
   tests/test_us_etf_blocklist_source.py
   tests/test_hermes_no_outcome_feedback.py
 )

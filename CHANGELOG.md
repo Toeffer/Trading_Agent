@@ -349,6 +349,26 @@ stop or while drift/open-order/live-alert is present, NO TRADE at daily loss ≥
   proposal's conventional/field-standard value — design principle 4 forbids fitting them,
   and `max_positions_per_sector` is already a separately-resolved decision (§11.3).
   Full methodology and per-parameter rationale in the proposed-YAML doc.
+- **2026-08-10 — Phase 19B confirmed APPLIED LIVE.** Chris edited
+  `/home/chris/.openclaw/risk-rules/paper-trading-rules.yaml` himself; Werner walked
+  through the diff but never wrote the file (invariant 6 held throughout — confirmed
+  explicitly after Chris initially offered to have Werner perform the write directly,
+  which was declined per CLAUDE.md §3's own bar against ad hoc verbal exceptions to a
+  safety invariant). First attempt landed only the `advisory` section (with a mangled/
+  mis-indented `min_symbol_bars_for_rs` field, corrected before saving); a follow-up
+  check found the allowlist expansion, `symbol_sectors`, and `max_positions_per_sector`
+  hadn't actually been applied despite an earlier walkthrough describing them — caught by
+  cross-referencing section-header line numbers before assuming completion. Final
+  verification, field-by-field, via Werner's read-only output: 22-symbol allowlist in
+  spec order with updated rationale text; `symbol_sectors` — 22 entries, exact 1:1 match
+  with the allowlist, 10 distinct sectors, no orphans; `max_positions_per_sector.value: 1`
+  (labeled `9a`/`9b` to avoid colliding with the file's existing rule 10); `advisory` — all
+  14 fields, correctly nested, `vol_reference_pct: 13`; NOTES line added;
+  `yaml.safe_load()` parses cleanly; `/health` and `/readiness` unchanged in shape before
+  and after (still `startup_safety: 11/11`, no drift, no new blocks) — the live edit had
+  zero effect on bridge behavior, exactly as expected for a purely additive, not-yet-wired
+  change. `docs/strategy-proposals/PHASE19B_PROPOSED_YAML_CHANGES_v0_1.md` updated to
+  reflect applied status.
 
 ---
 

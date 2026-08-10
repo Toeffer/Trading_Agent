@@ -1,10 +1,27 @@
-# Phase 19B — Proposed `paper-trading-rules.yaml` Changes (Draft)
+# Phase 19B — `paper-trading-rules.yaml` Changes — APPLIED LIVE (2026-08-10)
 
-> **This file is a draft for Chris to review and apply himself.** It is not the live rules
-> file and is not read by `guard.py` or the bridge. Per CLAUDE.md invariant 6, Werner never
-> modifies `.env` or `paper-trading-rules.yaml` — this document exists so Chris can copy the
-> block below into `~/.openclaw/risk-rules/paper-trading-rules.yaml` on the bridge host
-> himself, per RUNBOOK §L8.
+> **Status: confirmed applied to the live bridge host.** Chris made this edit himself on
+> `/home/chris/.openclaw/risk-rules/paper-trading-rules.yaml`, per CLAUDE.md invariant 6 —
+> Werner walked through the diff but never wrote the file. Verified field-by-field via
+> Werner's read-only output (headers, `grep`/`sed` extracts, `yaml.safe_load()` parse check,
+> `/health`, `/readiness`) on 2026-08-10:
+>
+> - `symbol_allowlist.allow` — exactly the 22 symbols below, correct order, rationale text
+>   updated (no longer says "three symbols validated in Phase 1")
+> - `symbol_sectors` — 22 entries, exact 1:1 match with the allowlist, no orphans/extras,
+>   10 distinct sectors
+> - `max_positions_per_sector.value: 1` — present, no numbering collision with the file's
+>   existing rule 10 (landed as sub-rules `9a`/`9b`)
+> - `advisory` — all 14 fields present, correctly nested, `vol_reference_pct: 13`
+> - NOTES block updated with the Phase 19B line
+> - `yaml.safe_load()` parses cleanly; `/health` and `/readiness` unaffected (still
+>   `startup_safety: 11/11`, no drift, no new blocks) both before and after the full edit
+>
+> This document is kept below as the historical draft/spec this was applied from. Per
+> CLAUDE.md invariant 6, Werner never modified `.env` or `paper-trading-rules.yaml` at any
+> point in this process — this document exists so Chris could copy the block below into
+> `~/.openclaw/risk-rules/paper-trading-rules.yaml` on the bridge host himself, per
+> RUNBOOK §L8, which is what happened.
 >
 > Content verbatim from `STRATEGY_V1_1_PROPOSAL_v0_1.md` §9.2, cross-checked 2026-08-06
 > against `strategy_v1_1_core.py`'s `FROZEN_UNIVERSE` and advisory defaults on

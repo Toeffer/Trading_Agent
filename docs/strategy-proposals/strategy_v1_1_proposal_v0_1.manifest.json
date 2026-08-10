@@ -753,9 +753,9 @@
     "unknown": "unknown"
   },
   "verified_against_code": {
-    "gate_letter_i_free": {
+    "gate_letter_i_fulfilled": {
       "verified": true,
-      "detail": "guard.py defines Gates A-H; H is gate_proposal_discipline at guard.py:1771. gate_open_orders at guard.py:1959 carries no letter."
+      "detail": "RESOLVED 2026-08-10 (Phase 19B/B4, Tier 1, Chris-approved). Gate I letter, claimed free at 19A time (guard.py defined only Gates A-H; H is gate_proposal_discipline; gate_open_orders carried no letter), is now guard.py's gate_sector_concentration() — a thin adapter over strategy_v1_1_core.py's pure gate_sector_concentration (B1, no hardcoded duplicate), wired into run_preflight's BUY branch after Gate F. Renamed from gate_letter_i_free — the claim being verified changed from 'still unclaimed' to 'landed correctly, exactly once, on the right function.'"
     },
     "yaml_unknown_keys_accepted": {
       "verified": true,
@@ -779,5 +779,5 @@
     "note": "proposal_document_sha256 is the SHA-256 of the proposal document bytes. deterministic_manifest_hash is the SHA-256 of this manifest serialized with sort_keys=True and ensure_ascii=False, excluding the deterministic_manifest_hash field itself."
   },
   "proposal_document_sha256": "81af70b486d6244d8cd02ce60daea70a371455ceebbac1dfdb12234028e66050",
-  "deterministic_manifest_hash": "ab9f6a9f5e9d89f9713a8decee954b6a1a07e8a02f6e6a6af31f09706be011ce"
+  "deterministic_manifest_hash": "33bfa9f8ababd4153e7f1ebc0ece0e93a0aba719cf470977514420682fe2ef62"
 }

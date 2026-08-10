@@ -298,12 +298,21 @@ class TestDecisionsAndPromotion:
 class TestClaimsVerifiedAgainstCode:
     """The proposal makes assertions about guard.py. Verify them, don't trust them."""
 
-    def test_gate_letter_i_is_actually_free(self):
+    def test_gate_letter_i_is_actually_fulfilled(self):
+        """§4.7/§9.4 claimed Gate I was free at 19A time; Phase 19B/B4 has since
+        implemented it — verify the letter landed on the right function,
+        exactly once, not that it's still unclaimed."""
         source = GUARD_PATH.read_text()
-        letters = set(re.findall(r"Gate ([A-Z])\b", source))
-        assert "I" not in letters, \
-            "Gate I is claimed free but guard.py already uses it"
-        assert {"A", "B", "C", "D", "E", "F", "G", "H"} <= letters
+        # Scoped to the official '"""Gate X — ...' docstring claim format —
+        # run_preflight's inline '# Gate X — ...' comments echo the same
+        # letter and would double-count if not excluded.
+        claims = re.findall(r'"""Gate ([A-Z]) —', source)
+        assert claims.count("I") == 1, \
+            f"Expected exactly one Gate I claim in guard.py, found {claims.count('I')}"
+        assert {"A", "B", "C", "D", "E", "F", "G", "H", "I"} <= set(claims)
+        idx = source.find("def gate_sector_concentration")
+        assert idx != -1
+        assert "Gate I" in source[idx:idx + 400]
 
     def test_gate_h_is_proposal_discipline(self):
         source = GUARD_PATH.read_text()
@@ -332,7 +341,7 @@ class TestClaimsVerifiedAgainstCode:
 
     def test_manifest_code_claims_marked_verified(self):
         vac = _load_manifest()["verified_against_code"]
-        for key in ["gate_letter_i_free", "yaml_unknown_keys_accepted",
+        for key in ["gate_letter_i_fulfilled", "yaml_unknown_keys_accepted",
                     "sizing_formula_unchanged"]:
             assert vac[key]["verified"] is True
 

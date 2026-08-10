@@ -32,6 +32,12 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+# Phase 19B/B4: Gate I (sector concentration) — single source of truth for
+# the counting/precedence logic lives in strategy_v1_1_core.py (B1, pure,
+# 257 tests). guard.py's gate_sector_concentration() below is a thin adapter
+# only — it must never reimplement this logic (H2 invariant).
+from strategy_v1_1_core import gate_sector_concentration as _core_gate_sector_concentration
+
 try:
     import yaml
 except ImportError:
@@ -1479,6 +1485,37 @@ def gate_exposure(
     return (True, f"Total exposure ${total_exposure_usd:,.2f} within ${max_exposure_usd:,.2f} cap", {"current_exposure_usd": round(current_exposure_usd,2), "proposed_notional_usd": round(proposed_notional_usd,2), "total_exposure_usd": round(total_exposure_usd,2), "max_exposure_usd": round(max_exposure_usd,2)})
 
 
+def gate_sector_concentration(symbol: str, positions: list, rules: dict) -> tuple:
+    """Gate I — reject BUY if the candidate's sector is already at capacity.
+
+    Thin adapter over strategy_v1_1_core.gate_sector_concentration (B1) — all
+    counting and failure-precedence logic lives there (H2 invariant: no
+    hardcoded duplicates). This function only maps guard.py's rules dict onto
+    that function's explicit sector_map/max_per_sector arguments, and filters
+    positions to currently-held (qty > 0) entries, matching
+    _get_existing_position's own convention for what counts as "held."
+
+    Fails CLOSED on a symbol with no sector mapping (enforced inside the B1
+    function; load_rules() also refuses to start if any allowlisted symbol
+    lacks one, so this should be unreachable for a BUY that already passed
+    Gate A). SELL is exempt by construction — this is only ever called from
+    run_preflight's BUY branch.
+    """
+    sector_map = rules.get("symbol_sectors", {})
+    max_per_sector = rules.get("max_positions_per_sector", {}).get("value", 1)
+    held = [
+        p for p in (positions or [])
+        if isinstance(p, dict) and int(p.get("position", 0) or 0) > 0
+    ]
+    return _core_gate_sector_concentration(
+        symbol=symbol,
+        positions=held,
+        sector_map=sector_map,
+        max_per_sector=max_per_sector,
+        side="BUY",
+    )
+
+
 # --- Phase 2G: Close-Only Position Gate (Gate G) ---
 
 # Known test order IDs that should be excluded from position calculation
@@ -2509,6 +2546,29 @@ def run_preflight(
             [],
         )
         gates.append({"gate": "exposure", "passed": ok, "reason": reason, "details": details})
+        if not ok:
+            all_pass = False
+
+        # Gate I — sector concentration. Requires live position data to be
+        # meaningful (an empty-positions default would make the cap
+        # unenforceable); fails closed if positions can't be fetched, the
+        # same way a failed account/quote/bars fetch aborts preflight above.
+        try:
+            gate_i_positions = position_provider() if position_provider else None
+            if not isinstance(gate_i_positions, list):
+                gate_i_positions = None
+        except Exception:
+            gate_i_positions = None
+
+        if gate_i_positions is None:
+            ok, reason, details = (
+                False,
+                "GATE_I_POSITIONS_UNAVAILABLE",
+                {"symbol": symbol, "sector": None, "exempt": False},
+            )
+        else:
+            ok, reason, details = gate_sector_concentration(symbol, gate_i_positions, rules)
+        gates.append({"gate": "sector_concentration", "passed": ok, "reason": reason, "details": details})
         if not ok:
             all_pass = False
 
@@ -4024,6 +4084,10 @@ def load_rules(path: Path | None = None) -> dict:
         "guard_state",
         "preflight",
         "logging",
+        # Phase 19B/B4 (Gate I) — safe to require now that the live YAML has
+        # carried these sections since 2026-08-10; see CHANGELOG.
+        "symbol_sectors",
+        "max_positions_per_sector",
     ]
     missing = [k for k in required_keys if k not in rules]
     if missing:
@@ -4041,6 +4105,25 @@ def load_rules(path: Path | None = None) -> dict:
         raise ValueError("symbol_allowlist.allow must be a non-empty list")
     # Phase H2: YAML is the single source of truth for allowlist.
     # No hardcoded comparison — the YAML defines what is allowed.
+
+    # --- Sector concentration validation (Gate I, Phase 19B/B4) ---
+    sector_map = rules.get("symbol_sectors", {})
+    if not isinstance(sector_map, dict):
+        raise ValueError("symbol_sectors must be a mapping of symbol -> sector")
+    unmapped = [s for s in allowed if s not in sector_map]
+    if unmapped:
+        raise ValueError(
+            f"symbol_sectors is missing a mapping for allowlisted symbol(s): "
+            f"{unmapped} — every allowlisted symbol must have a sector "
+            f"(H2: no hardcoded duplicates, so this is checked at load time, "
+            f"not assumed)"
+        )
+    max_per_sector = rules.get("max_positions_per_sector", {}).get("value")
+    if not isinstance(max_per_sector, int) or max_per_sector <= 0:
+        raise ValueError(
+            f"max_positions_per_sector.value must be a positive int, "
+            f"got {max_per_sector!r}"
+        )
 
     # --- Numeric cap validation (sanity checks) ---
     notional = rules.get("max_position_notional", {}).get("value")

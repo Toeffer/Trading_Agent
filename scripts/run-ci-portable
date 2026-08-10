@@ -33,6 +33,12 @@ TESTS=(
   tests/test_phase19b_regime_unit.py
   tests/test_phase19b_rs_rank_unit.py
   tests/test_phase19b_vol_scalar_unit.py
+  tests/test_phase19b_b3_contract.py
+  tests/test_phase19b_b3_golden_vectors.py
+  tests/test_phase19b_b3_orchestration.py
+  tests/test_phase19b_b3_precedence.py
+  tests/test_phase19b_b3_safety.py
+  tests/test_phase19_b4_gate_i_guard_wiring.py
   tests/test_us_etf_blocklist_source.py
   tests/test_hermes_no_outcome_feedback.py
 )
@@ -40,7 +46,7 @@ TESTS=(
 echo "==> Portable CI"
 echo "==> Python: $($PYTHON --version)"
 
-$PYTHON -m py_compile bridge.py guard.py ibkr_operator.py
+$PYTHON -m py_compile bridge.py guard.py ibkr_operator.py strategy_v1_1_core.py strategy_v1_1_advisory.py
 
 $PYTHON -m pytest --collect-only -q "${TESTS[@]}" \
   -m "not integration and not live and not acceptance"

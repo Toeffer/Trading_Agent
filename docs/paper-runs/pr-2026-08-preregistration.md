@@ -39,8 +39,8 @@
 
 **Note on start date:** two things should be true before this window opens, neither of
 which this document can verify for you — (1) the Gate I wiring
-(`phase19-b4-gate-i-guard-wiring`, commit `b712f71`, tag `phase19b4_gate_i_chris_approved`)
-is actually merged to `master` and **deployed to the live bridge host**
+is actually merged to `master` and **deployed to the live bridge host** pinned in §2 to commit
+`108e05b0a12487d9abf4fa2edc74ff57d7272139`
 (`~/agents/ibkr-bridge/guard.py`) — a git tag on GitHub does not deploy anything by
 itself; (2) `paper-trading-rules.yaml` on the bridge host still matches what's pinned in
 §2 below. Falsifier F2 (Gate I) can't be meaningfully exercised until the deployed
@@ -53,8 +53,9 @@ itself; (2) `paper-trading-rules.yaml` on the bridge host still matches what's p
 | Strategy version | v1.1.0 *(not yet "active" per the 19A manifest — this run is what would produce the evidence to promote it)* |
 | Proposal version | 0.9 |
 | Manifest `deterministic_manifest_hash` | `33bfa9f8ababd4153e7f1ebc0ece0e93a0aba719cf470977514420682fe2ef62` |
-| `paper-trading-rules.yaml` SHA-256 | `<<FILL IN — run `sha256sum` on the live file yourself at deploy time>>` |
-| Git commit | `b712f71e70d7a824e54b056281b08b3ff46ea2db` *(on `phase19-b4-gate-i-guard-wiring` — update this if it gets merged/rebased before deploy; it must match what's actually on the bridge host at run start, not what's on GitHub)* |
+| `paper-trading-rules.yaml` SHA-256 | `fadb4402f0a7c286945fab5f1d429113063200532e3936f47f0f8ed555a0442b` |
+| Git commit | `108e05b0a12487d9abf4fa2edc74ff57d7272139` *(deployed `master` commit on the bridge host at run start; this must continue to match the actually deployed code for the duration of the run)* |
+
 
 Recording all five pins exactly what was under test. If any changes mid-run, the run
 ends and a new one begins.
@@ -70,15 +71,15 @@ State each as a **range**, not a point. A range you would be surprised to fall o
 
 | # | Quantity | Your expected range | Basis for the estimate |
 |---|---|---|---|
-| 3.1 | Median slippage vs entry reference (bps) | `<<FILL IN>>` | Observed bid-ask spread on the allowlist during RTH, not on hope |
-| 3.2 | Worst-case single-trade slippage (bps) | `<<FILL IN>>` | Widest spread seen outside the blackout windows |
-| 3.3 | Share of trades where the **risk** cap binds (vs notional) | `<<FILL IN>>` % | §4.8 — depends on whether ATR stops exceed the 5% floor for your names |
-| 3.4 | `RISK_ON` frequency over the window | `<<FILL IN>>` % | SPY vs its 200d SMA and 12m momentum over comparable historical periods |
-| 3.5 | Median `gross_scalar` | `<<FILL IN>>` | `16% ÷ realised SPY vol`; scalar ≈ 1.0 if SPY sits near its long-run median |
-| 3.6 | Trades reaching preflight per week | `<<FILL IN>>` | Signal stack: 2-of-4, RS top-half, regime, Gate I. Gate D caps at 2/day |
-| 3.7 | Share of cycles ending `NO_TRADE` | `<<FILL IN>>` % | A high number is not failure — it is the filters working |
-| 3.8 | Gate I rejections over the window | `<<FILL IN>>` | Zero would mean the sector cap never bound; that is informative either way |
-| 3.9 | Data-quality failures per week | `<<FILL IN>>` | §4.10 thresholds, 23 series fetched per cycle |
+| 3.1 | Median slippage vs entry reference (bps) | `5-15` | Observed bid-ask spread on the allowlist during RTH, not on hope |
+| 3.2 | Worst-case single-trade slippage (bps) | `75-250` | Widest spread seen outside the blackout windows |
+| 3.3 | Share of trades where the **risk** cap binds (vs notional) | `0-10` % | §4.8 — depends on whether ATR stops exceed the 5% floor for your names |
+| 3.4 | `RISK_ON` frequency over the window | `55-75` % | SPY vs its 200d SMA and 12m momentum over comparable historical periods |
+| 3.5 | Median `gross_scalar` | `0.85-1.00` | `16% ÷ realised SPY vol`, clamped to `[0.25, 1.00]`; scalar = 1.0 when the unclamped ratio is ≥1.0 |
+| 3.6 | Trades reaching preflight per week | `2-6` | Signal stack: 2-of-4, RS top-half, regime, Gate I. Gate D caps at 2/day |
+| 3.7 | Share of cycles ending `NO_TRADE` | `90-98` % | A high number is not failure — it is the filters working |
+| 3.8 | Gate I rejections over the window | `0-2` | Zero would mean the sector cap never bound; that is informative either way |
+| 3.9 | Data-quality failures per week | `0-5` | §4.10 thresholds, 23 series fetched per cycle |
 
 **If any of 3.1–3.9 lands outside your stated range, that is a finding**, whether or
 not the run was otherwise uneventful. Record it in the results document.
@@ -121,12 +122,12 @@ response to a stated hypothesis rather than a reaction to an observed pattern.
 | Observation | Pre-registered response |
 |---|---|
 | Any falsifier F1–F15 refuted | Halt. Fix. Restart the window. *(fixed — not negotiable)* |
-| Slippage exceeds 3.2 | `<<FILL IN — e.g. tighten entry to limit orders? reduce universe to tighter spreads? accept?>>` |
-| `RISK_ON` frequency far outside 3.4 | `<<FILL IN — regime parameters are conventional and should NOT be tuned to fit one window; state what you would actually do>>` |
-| Trade frequency far below 3.6 | `<<FILL IN — is the filter stack over-determined? which filter would you examine first?>>` |
-| Data-quality failures exceed 3.9 | `<<FILL IN>>` |
-| Gate I never binds | `<<FILL IN — evidence the cap is inert, or that the ranker is well spread?>>` |
-| Nothing unexpected happens | `<<FILL IN — most likely outcome; "proceed to X" is a valid answer>>` |
+| Slippage exceeds 3.2 | `Investigate execution quality first: reference-price timing, bid-ask spread, order type, market-data freshness, and concentration by symbol/time of day. Do not change strategy-selection parameters based on slippage. If a reproducible execution defect is identified, fix that defect and restart the validation window; otherwise record the miss and make no strategy revision.` |
+| `RISK_ON` frequency far outside 3.4 | `Verify the SPY input series, 200-day SMA calculation, 12-month momentum calculation, and regime classification implementation. Do not tune the conventional regime parameters to fit this single window. If implementation/data are correct, record the prior mismatch and change nothing.` |
+| Trade frequency far below 3.6 | `Measure which eligibility stage most frequently prevents proposals from reaching preflight (signal alignment, RS eligibility, regime state, Gate I, or another existing gate). Investigate the dominant blocker first and do not loosen multiple filters together. Any proposed strategy-rule change must fit the one-revision budget and requires a fresh validation window after the revision.` |
+| Data-quality failures exceed 3.9 | `Identify the failing series/provider/path and determine whether required strategy inputs were missing, stale, malformed, or incomplete. If failures compromise a cycle's required inputs, treat that cycle as invalid evidence. Fix any reproducible data-path defect and restart the validation window if the run's plumbing claims can no longer be evaluated cleanly; do not weaken data-quality thresholds merely to reduce failure counts.` |
+| Gate I never binds | `Record that Gate I was not exercised naturally during this window. Do not remove or loosen the sector cap solely because it was inert. Exercise the Gate I falsifier separately under a controlled validation scenario if needed to satisfy the requirement that every §10.1 check be positively exercised.` |
+| Nothing unexpected happens | `Complete the full minimum validation window and ensure every F1–F15 plumbing check has been positively exercised at least once. If all falsifiers remain unrefuted, evaluate the next governance/promotion step using the pre-registered engineering evidence only; do not use paper P&L, win rate, Sharpe, or largest winner/loser as promotion evidence.` |
 
 A response of **"record it and change nothing"** is legitimate and often correct. Not
 every observation warrants action, and at this sample size most do not.

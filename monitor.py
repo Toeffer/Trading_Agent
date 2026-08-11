@@ -782,6 +782,43 @@ def health_summary() -> dict:
 # Position drift (file-based, no IBKR)
 # ---------------------------------------------------------------------------
 
+# Phase 19F — Position-Drift Reconciliation
+#
+# Separate from _KNOWN_TEST_APPROVALS/_KNOWN_TEST_ORDER_IDS above: those are
+# permanent, hardcoded test-fixture exclusions baked into the codebase.
+# Reconciliations recorded here are live operator actions (via
+# `ibkr-operator position-drift-reconcile --apply`), evidenced against a
+# live IBKR read at the time of repair, and stored outside guard-state.json
+# so the append-only event-log/guard-state boundary (§ file registry) stays
+# intact — this is an adjustment record, not a rewrite of history.
+POSITION_RECONCILIATIONS_PATH = Path(os.environ.get(
+    "IBKR_POSITION_RECONCILIATIONS_PATH",
+    str(Path.home() / ".openclaw" / "position-reconciliations.json")
+))
+
+
+def load_position_reconciliations(path: Path | None = None) -> dict:
+    """Load recorded position-drift reconciliations (Phase 19F).
+
+    Fails open to an empty list if the file is missing or corrupt — this
+    is an adjustment overlay, not authoritative state, so a bad read must
+    never crash position_drift_check() or silently hide real drift.
+    """
+    p = path or POSITION_RECONCILIATIONS_PATH
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not isinstance(data.get("reconciliations"), list):
+            return {"schema_version": 1, "reconciliations": []}
+        return data
+    except FileNotFoundError:
+        return {"schema_version": 1, "reconciliations": []}
+    except Exception:
+        # Corrupt file — fail open to empty, never raise. A corrupt
+        # reconciliations file must never mask or fabricate drift.
+        return {"schema_version": 1, "reconciliations": []}
+
+
 def position_drift_check(include_dry_run: bool = False) -> dict:
     """Check position drift using only file-based data.
 
@@ -866,12 +903,34 @@ def position_drift_check(include_dry_run: bool = False) -> dict:
         elif action == "SELL":
             positions[sym] = positions.get(sym, 0) - qty
 
+    # Apply recorded reconciliations (Phase 19F). These are additive
+    # adjustments to the fill-derived netting above — they do not remove
+    # or reinterpret any event, and do not assert that any unconfirmed
+    # order actually filled. Each one records "computed expected quantity
+    # was adjusted by qty_delta to match a live IBKR read taken at the
+    # time of repair," with the unconfirmed approval_ids that were open
+    # for that symbol at the time, for audit purposes only.
+    applied_reconciliations: list[dict] = []
+    recon_data = load_position_reconciliations()
+    for rec in recon_data.get("reconciliations", []):
+        sym = rec.get("symbol", "")
+        delta = rec.get("qty_delta", 0) or 0
+        if not sym or not delta:
+            continue
+        positions[sym] = positions.get(sym, 0) + delta
+        applied_reconciliations.append({
+            "repair_id": rec.get("repair_id"),
+            "symbol": sym,
+            "qty_delta": delta,
+        })
+
     return {
         "expected_positions": positions,
         "symbols": sorted(positions.keys()),
         "total_traded_symbols": len(positions),
         "unconfirmed_count": len(all_unconfirmed),
         "unconfirmed_approval_ids": sorted(all_unconfirmed) if all_unconfirmed else None,
+        "applied_reconciliations": applied_reconciliations if applied_reconciliations else None,
     }
 
 

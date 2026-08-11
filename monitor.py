@@ -1582,6 +1582,26 @@ def _run_self_test(silent: bool = False) -> dict:
     else:
         results.append(("G10: /readiness verdict non-empty", False, "non-dict response"))
 
+    # G11: /readiness drift section must agree with /monitor/positions/drift
+    # (regression for the 2026-08-11 masking bug — /readiness previously called
+    # the bare position_drift_check(), which has no drift_detected/mismatches
+    # keys, so drift_detected read back False unconditionally no matter what
+    # /monitor/positions/drift — the real comparison against live IBKR — found.)
+    code_g11, real_drift = _get("/monitor/positions/drift")
+    if isinstance(rdy, dict) and code_g11 == 200 and isinstance(real_drift, dict):
+        rdy_drift = rdy.get("summary", {}).get("drift", {})
+        real_detected = real_drift.get("drift_detected", False)
+        real_mismatches = len(real_drift.get("mismatches", []))
+        rdy_detected = rdy_drift.get("drift_detected", False)
+        rdy_mismatches = rdy_drift.get("mismatches", None)
+        g11_ok = (rdy_detected == real_detected) and (rdy_mismatches == real_mismatches)
+        results.append(("G11: /readiness drift agrees with /monitor/positions/drift", g11_ok,
+                        f"readiness(detected={rdy_detected}, mismatches={rdy_mismatches}) "
+                        f"vs real(detected={real_detected}, mismatches={real_mismatches})"))
+    else:
+        results.append(("G11: /readiness drift agrees with /monitor/positions/drift", False,
+                        f"HTTP {code_g11} or non-dict response"))
+
     # G11: startup_safety section present and passing
     if isinstance(rdy, dict):
         ss = rdy.get("summary", {}).get("startup_safety", {})

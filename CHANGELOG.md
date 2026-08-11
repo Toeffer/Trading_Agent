@@ -415,6 +415,78 @@ stop or while drift/open-order/live-alert is present, NO TRADE at daily loss ≥
 
 ---
 
+## 2026-08-11 — `/readiness` drift-masking bug fixed (Tier 1)
+
+### Bug
+
+`bridge.py`'s `/readiness` handler computed its `drift` summary from the bare
+`monitor.position_drift_check()` — a file-only helper that returns
+`expected_positions` (a dict), `symbols`, `unconfirmed_count`, and
+`unconfirmed_approval_ids`, and **nothing else**. It has no `drift_detected` key and no
+`mismatches` key. Every downstream read in `/readiness` —
+`drift_info.get("drift_detected", False)`, `drift_info.get("mismatches", [])` — was
+therefore reading keys that don't exist and silently taking the `.get(...)` default.
+`/readiness` reported `drift_detected: false, mismatches: 0` unconditionally,
+regardless of real state, on every call.
+
+The real comparison against live IBKR positions already existed, in a separate
+function: `monitor_positions_drift()` (`@app.get("/monitor/positions/drift")`,
+`bridge.py:2598`), which wraps `position_drift_check()`, fetches live positions when
+connected, computes true per-symbol `mismatches`, and sets
+`drift_detected = len(mismatches) > 0`. `/readiness` never called it.
+
+### Discovery
+
+Caught during a readiness audit prompted by a third-party status report (channel
+running `opencode-go/deepseek-v4-pro`, OC_DEFAULT binding per
+`OPENCLAW_ROUTING_BINDINGS_v0_1.json`) that claimed an active AAPL position-drift alert
+and 5 unconfirmed QQQ/1 AAPL legacy orders. Verified independently, side by side, with
+live output from Chris's terminal:
+
+```
+/monitor/positions/drift  → drift_detected: true,  mismatches: [{AAPL: expected 1.0, actual 0}]
+/readiness (same moment)  → drift_detected: false, mismatches: 0
+```
+
+`guard-events.jsonl` confirms the underlying `position_drift` alert (`severity:
+critical`) had been re-firing every ~15 minutes for at least ~2 hours before discovery,
+unresolved, because the one endpoint meant to surface it was masking it the entire
+time. Root order: `order_id 24` (AAPL) sits in `legacy_unconfirmed` — cross-referenced
+against the existing H3 note above (§ Verification Queue item 2 lineage): order 24 was
+"Submitted but not filled," distinct from order 36 (the real, filled AAPL BUY @
+$314.50). The confirmed-fill netting in `position_drift_check()` still shows
+`AAPL: +1` from order 36 with nothing confirmed to net it back to 0, while live IBKR
+genuinely shows 0 — a real bookkeeping gap, not a live broker risk (orders remain
+triple-blocked regardless).
+
+### Fix
+
+- `bridge.py`: `readiness()` now calls `monitor_positions_drift()` instead of the bare
+  `position_drift_check()`. One-line change; the correctly-shaped dict already flows
+  through the existing `drift_status` construction unchanged. Safe when IBKR is
+  disconnected — `monitor_positions_drift()` already guards on `is_connected()`
+  internally (Step 15C — no blocking on IBKR calls).
+- `monitor.py`: added **G11** to the readiness self-test section — asserts
+  `/readiness`'s drift block agrees with `/monitor/positions/drift`'s real output
+  (`drift_detected` and `mismatches` count). Regression coverage for this exact class
+  of bug; requires a live bridge to run (same as G1–G10).
+
+### Still open (not fixed by this change)
+
+- The AAPL phantom position itself (order 24 stuck unconfirmed) is a separate data
+  cleanup, not a code bug — needs a position-level reconciliation path (no existing
+  `ibkr-operator` subcommand covers this; the existing `guard-state-reconcile` is
+  trade-count/date only).
+- The QQQ 5-unconfirmed-order artifacts (order IDs 40/46/52/60/71) are unrelated
+  historical KID/PRIIPs artifacts, already root-caused above (§ Verification Queue
+  item 2) — no new action needed there.
+- `canonical_trade_date` in `guard-state.json` remains a permanently-stale legacy field
+  (`stale_trade_date_repaired` repairs update `trade_date` but never touch it) — has now
+  caused two separate false "stale date" reports from different channels. Not fixed
+  here; worth a follow-up.
+
+---
+
 ## Verification Queue (resolve against the live system)
 
 0. ✅ **RESOLVED (H2): Risk-rails divergence.** Reading (A) confirmed — guard.py enforces

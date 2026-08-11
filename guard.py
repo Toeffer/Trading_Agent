@@ -478,65 +478,102 @@ def load_guard_state(path: Path | None = None) -> dict:
 
 
 def _rollover_guard_state(state: dict) -> bool:
-    """Roll over guard state counters if trade_date < current canonical date.
+    """Roll over guard state counters — daily and weekly — if stale.
 
-    Uses canonical_trade_date() for consistent date comparison across all
-    guard-state consumers (reconcile, sentinel, monitor, KPI).
+    Uses canonical_trade_date() for the daily comparison (single source of
+    truth across reconcile, sentinel, monitor, KPI) and
+    _current_week_monday_utc_str() for the weekly comparison.
 
-    Resets daily_trade_count to 0, clears daily_halt_active, updates
-    trade_date, and captures day_start_nl_eur if available.
+    Daily: resets daily_trade_count to 0, clears daily_halt_active, updates
+    trade_date, and captures day_start_nl_eur. Then restores count from
+    confirmed events already on the new date using the same canonical
+    counting logic as monitor.reconcile_snapshot() and the
+    guard-state-drift-sentinel.
 
-    Then restores count from confirmed events already on the new date
-    using the same canonical counting logic as monitor.reconcile_snapshot()
-    and the guard-state-drift-sentinel.
+    Weekly (Phase 19G — previously missing entirely; week_start_date/
+    week_start_nl_eur were only ever set once, in default_guard_state(),
+    and never rolled forward. That left the -3% weekly loss halt in
+    gate_loss_halts() structurally inert — week_start_nl_eur stayed None
+    indefinitely, and gate_loss_halts() only evaluates the weekly check
+    `if week_start and week_start > 0`, so it silently never fired):
+    clears weekly_halt_active, updates week_start_date to the current
+    UTC week's Monday, and captures week_start_nl_eur — mirroring the
+    daily behavior exactly. A weekly halt clears on week rollover the
+    same way a daily halt clears on day rollover; there is no count to
+    restore (weekly has no trade-count rule, only the loss-halt).
+
+    Both use a single shared fetch_account() call when either rolls over,
+    to avoid a redundant live call on the (common) day-only-rollover case.
 
     Args:
         state: Guard state dict (loaded by load_guard_state), mutated in place
-        and persisted if rollover occurs.
+        and persisted if either rollover occurs.
 
     Returns:
-        True if rollover occurred, False if no rollover needed.
+        True if a daily or weekly rollover occurred, False if neither was needed.
     """
     now_utc = datetime.now(timezone.utc)
     today_str = canonical_trade_date(now_utc)
     current_trade_date = state.get("trade_date", "")
+    day_rollover_needed = bool(current_trade_date) and current_trade_date < today_str
 
-    if not current_trade_date or current_trade_date >= today_str:
+    monday_str = _current_week_monday_utc_str()
+    current_week_start = state.get("week_start_date", "")
+    week_rollover_needed = bool(current_week_start) and current_week_start < monday_str
+
+    if not day_rollover_needed and not week_rollover_needed:
         return False
 
-    state["trade_date"] = today_str
-    state["daily_trade_count"] = 0
-    state["daily_halt_active"] = False
-    state["last_updated_utc"] = now_utc.isoformat()
-
-    # Restore count from confirmed events already on today's date
-    # using the SAME canonical counting logic as reconcile_snapshot()
-    # and guard-state-drift-sentinel (composite identity, test-artifact
-    # exclusion, unconfirmed exclusion).
-    try:
-        restored_count = _stream_count_confirmed_orders_for_date(today_str)
-        if restored_count > 0:
-            state["daily_trade_count"] = restored_count
-    except Exception:
-        pass
-
-    # Try to capture day_start_nl_eur from current account data
-    # If unavailable, leave as-is (loss halts will recompute)
+    # Fetch account once, shared by whichever rollover(s) need it, rather
+    # than one live call per rollover type.
+    acct: dict | None = None
     try:
         acct = fetch_account()
-        nl = acct.get("net_liquidation_eur")
-        if nl and nl > 0:
-            state["day_start_nl_eur"] = nl
     except Exception:
-        pass
+        acct = None
+    nl = acct.get("net_liquidation_eur") if acct else None
+    nl_valid = bool(nl and nl > 0)
 
+    if day_rollover_needed:
+        state["trade_date"] = today_str
+        state["daily_trade_count"] = 0
+        state["daily_halt_active"] = False
+
+        # Restore count from confirmed events already on today's date
+        # using the SAME canonical counting logic as reconcile_snapshot()
+        # and guard-state-drift-sentinel (composite identity, test-artifact
+        # exclusion, unconfirmed exclusion).
+        try:
+            restored_count = _stream_count_confirmed_orders_for_date(today_str)
+            if restored_count > 0:
+                state["daily_trade_count"] = restored_count
+        except Exception:
+            pass
+
+        if nl_valid:
+            state["day_start_nl_eur"] = nl
+
+    if week_rollover_needed:
+        state["week_start_date"] = monday_str
+        state["weekly_halt_active"] = False
+
+        if nl_valid:
+            state["week_start_nl_eur"] = nl
+
+    state["last_updated_utc"] = now_utc.isoformat()
     save_guard_state_atomic(state)
 
     append_guard_event("guard_calendar_rollover", {
-        "from_trade_date": current_trade_date,
-        "to_trade_date": today_str,
-        "daily_trade_count_reset": True,
-        "daily_halt_cleared": True,
+        "daily_rollover_occurred": day_rollover_needed,
+        "from_trade_date": current_trade_date if day_rollover_needed else None,
+        "to_trade_date": today_str if day_rollover_needed else None,
+        "daily_trade_count_reset": day_rollover_needed,
+        "daily_halt_cleared": day_rollover_needed,
+        "weekly_rollover_occurred": week_rollover_needed,
+        "from_week_start_date": current_week_start if week_rollover_needed else None,
+        "to_week_start_date": monday_str if week_rollover_needed else None,
+        "weekly_halt_cleared": week_rollover_needed,
+        "nl_captured": nl_valid,
         "canonical_trade_date": today_str,
     })
 

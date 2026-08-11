@@ -41,6 +41,8 @@ TESTS=(
   tests/test_phase19_b4_gate_i_guard_wiring.py
   tests/test_us_etf_blocklist_source.py
   tests/test_hermes_no_outcome_feedback.py
+  tests/test_phase19f_position_drift_reconcile.py
+  tests/test_phase19g_weekly_loss_halt_rollover.py
 )
 
 echo "==> Portable CI"

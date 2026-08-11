@@ -32,9 +32,9 @@
 | Field | Value |
 |---|---|
 | Run ID | `pr-2026-08` — rename if you'd rather |
-| Start date | `<<FILL IN — your call; see note below>>` |
+| Start date | `2026-08-17` |
 | Minimum window | 60 trading days, or until every §10.1 check has been exercised at least once — whichever is **longer** (§10.5) |
-| Planned end date | `<<FILL IN — start date + ~60 trading days, adjust for your calendar>>` |
+| Planned end date | `2026-11-13` |
 | Operator | Chris |
 
 **Note on start date:** two things should be true before this window opens, neither of

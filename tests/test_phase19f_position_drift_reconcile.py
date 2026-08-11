@@ -252,7 +252,9 @@ class TestSafetyGatesBlockRepair:
                   side_effect=_make_urlopen_side_effect(_aapl_drift(), _HEALTH_CONNECTED, _NO_OPEN_ORDERS)),
             patch("ibkr_operator._POSITION_DRIFT_REPAIRS_DIR", tmp_path / "position-drift-repairs"),
             patch("monitor.load_events", side_effect=_make_load_events_side_effect(_AAPL_UNCONFIRMED_EVENT)),
-            patch("ibkr_operator.os.getenv", return_value="true"),  # IBKR_ALLOW_ORDERS=true
+            # os.getenv mocked to "true" for every lookup, including
+            # IBKR_ALLOW_ORDERS — simulates the kill switch being unlocked.
+            patch("ibkr_operator.os.getenv", return_value="true"),
         ]
         with patches_list[0], patches_list[1], patches_list[2], patches_list[3], patches_list[4]:
             result = _run_position_drift_reconcile(apply_repair=False, confirm_local_state_repair=False)

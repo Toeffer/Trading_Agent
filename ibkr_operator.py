@@ -3746,6 +3746,430 @@ def _print_guard_state_reconcile(result: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 19F — Position-Drift Reconciliation for Unconfirmed-Order Mismatches
+# ---------------------------------------------------------------------------
+#
+# Sibling to Step 15O (guard-state-reconcile) above, same architectural
+# pattern (dry-run default, explicit --apply --confirm-local-state-repair,
+# backup, audit export, evidence hash) — but scoped to POSITION mismatches
+# rather than trade-count/date mismatches. guard-state.json carries no
+# per-symbol position field to overwrite; monitor.position_drift_check()
+# computes expected quantity fresh on every call by replaying
+# guard-events.jsonl. So "repair" here cannot mean "edit a stored number" —
+# it means recording an evidenced adjustment (Phase 19F:
+# position-reconciliations.json, applied inside position_drift_check()).
+#
+# Important: this command does NOT assert that any unconfirmed order
+# actually filled at the broker. It only asserts that live IBKR is ground
+# truth, and records — with a full audit trail of which unconfirmed
+# approval_ids were open for that symbol at the time — that the computed
+# expected quantity was adjusted to match it. Whether those specific
+# unconfirmed orders actually executed is left an open question; CHANGELOG
+# history on order 24 (AAPL) shows that assumption can be wrong even when
+# the final live-IBKR-match numbers work out.
+
+_POSITION_DRIFT_REPAIRS_DIR = OPENCLAW_DIR / "position-drift-repairs"
+
+_POSITION_DRIFT_RECONCILE_EXPLICIT_NON_ACTIONS: list[str] = [
+    "This command did not change autonomy level.",
+    "This command did not open an order window.",
+    "This command did not call any no-order endpoints.",
+    "This command did not read H1 token.",
+    "This command did not place, modify, cancel, or transmit any order.",
+    "This command did not enable IBKR_ALLOW_ORDERS.",
+    "This command did not enable rules.enforced.",
+    "This command does not assert that any unconfirmed order filled at "
+    "the broker — it records an adjustment to computed expected quantity, "
+    "evidenced against a live IBKR read, with an audit trail of the "
+    "unconfirmed approval_ids open for that symbol at time of repair.",
+    "This command repairs local position-reconciliations.json only — no "
+    "broker mutation, no rewrite of guard-events.jsonl (append-only).",
+]
+
+
+def _run_position_drift_reconcile(
+    apply_repair: bool = False,
+    confirm_local_state_repair: bool = False,
+    symbol_filter: str | None = None,
+) -> dict:
+    """Reconcile position-drift mismatches against unconfirmed-order evidence (Phase 19F).
+
+    Dry-run by default. Repairs only when --apply and
+    --confirm-local-state-repair are both present.
+
+    For each symbol where /monitor/positions/drift reports a mismatch,
+    checks whether at least one unconfirmed order exists for that exact
+    symbol (i.e. the mismatch has a candidate explanation on record —
+    it isn't a wholly unexplained drift, which this tool refuses to
+    touch). If so, and IBKR is connected and safety gates pass, repair is
+    recommended: record a position-reconciliations.json entry that
+    adjusts the computed expected quantity to match the live IBKR read
+    taken during this run.
+
+    Repair policy:
+      - Requires IBKR connected (live read is the ground truth being
+        reconciled against — never repair from a disconnected/unknown
+        state).
+      - Requires at least one unconfirmed order on record for that exact
+        symbol. A mismatch with no unconfirmed-order evidence at all is
+        left alone — that's an unexplained drift, not this tool's job.
+      - Requires 0 live IBKR orders for the symbol, 0 open orders overall,
+        locked safety (IBKR_ALLOW_ORDERS=false), rules.enforced=false.
+      - Never asserts the unconfirmed order(s) filled — only that the
+        computed quantity was adjusted to match a live IBKR snapshot.
+
+    Returns comprehensive reconciliation dict.
+    """
+    import json as _json
+    import shutil
+    from datetime import datetime, timezone
+    import urllib.request
+    from monitor import (
+        load_events,
+        load_position_reconciliations,
+        position_drift_check,
+        POSITION_RECONCILIATIONS_PATH,
+    )
+
+    now_utc = datetime.now(timezone.utc)
+    ts_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_file = now_utc.strftime("%Y%m%dT%H%M%SZ")
+    repair_id = f"posdrift-repair-{ts_file}"
+    mode = "apply" if (apply_repair and confirm_local_state_repair) else "dry_run"
+
+    git = _git_metadata(BRIDGE_DIR)
+
+    # ------------------------------------------------------------------
+    # 1. Live drift read — the real comparison, /monitor/positions/drift
+    # ------------------------------------------------------------------
+    drift: dict = {}
+    ibkr_connected = False
+    try:
+        req = urllib.request.Request(f"{BRIDGE_URL}/monitor/positions/drift")
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            drift = _json.loads(resp.read().decode())
+    except Exception as e:
+        drift = {}
+        blockers_early = [{"severity": "HOLD", "check": "bridge_unreachable",
+                           "detail": f"/monitor/positions/drift unreachable: {e}"}]
+        return _position_drift_reconcile_result(
+            repair_id, ts_str, mode, git, [], blockers_early, {},
+            _POSITION_DRIFT_REPAIRS_DIR, ts_file,
+        )
+
+    try:
+        health_req = urllib.request.Request(f"{BRIDGE_URL}/health")
+        with urllib.request.urlopen(health_req, timeout=5.0) as resp:
+            health = _json.loads(resp.read().decode())
+            ibkr_connected = health.get("connected", False)
+    except Exception:
+        ibkr_connected = False
+
+    open_order_count: int | None = None
+    ibkr_live_order_count: int | None = None
+    try:
+        orders_req = urllib.request.Request(f"{BRIDGE_URL}/monitor/open-orders")
+        with urllib.request.urlopen(orders_req, timeout=5.0) as resp:
+            orders_data = _json.loads(resp.read().decode())
+            open_order_count = orders_data.get("open_order_count", 0)
+            ibkr_live_order_count = orders_data.get("ibkr_order_count", open_order_count)
+    except Exception:
+        open_order_count = None
+        ibkr_live_order_count = None
+
+    env_allow_orders = os.getenv("IBKR_ALLOW_ORDERS", "false").lower()
+    safety_locked = env_allow_orders == "false"
+    try:
+        from monitor import load_rules
+        rules = load_rules()
+        rules_enforced = rules.get("enforced", False)
+    except Exception:
+        rules_enforced = False
+
+    # ------------------------------------------------------------------
+    # 2. Look up unconfirmed order records by symbol (need symbol/qty,
+    #    which the drift response's flat unconfirmed_approval_ids list
+    #    doesn't carry)
+    # ------------------------------------------------------------------
+    unconfirmed_ids = set(drift.get("unconfirmed_approval_ids") or [])
+    submitted_events = load_events(event_type="order_submitted")
+    unconfirmed_by_symbol: dict[str, list[str]] = {}
+    for e in submitted_events:
+        aid = e.get("approval_id", "")
+        if aid in unconfirmed_ids:
+            sym = e.get("symbol", "")
+            if sym:
+                unconfirmed_by_symbol.setdefault(sym, []).append(aid)
+
+    # ------------------------------------------------------------------
+    # 3. Per-symbol repair evaluation
+    # ------------------------------------------------------------------
+    mismatches = drift.get("mismatches") or []
+    per_symbol_results: list[dict] = []
+    blockers: list[dict] = []
+
+    for m in mismatches:
+        sym = m.get("symbol", "")
+        if symbol_filter and sym != symbol_filter:
+            continue
+        expected_qty = m.get("expected_qty", 0) or 0
+        actual_qty = m.get("actual_qty", 0) or 0
+        qty_delta = actual_qty - expected_qty
+        candidate_approval_ids = unconfirmed_by_symbol.get(sym, [])
+
+        sym_blockers: list[dict] = []
+        checks_ok = True
+
+        if not ibkr_connected:
+            sym_blockers.append({"severity": "NO-GO", "check": "ibkr_not_connected",
+                                 "detail": "Cannot reconcile against unknown live state"})
+            checks_ok = False
+
+        if not candidate_approval_ids:
+            sym_blockers.append({"severity": "HOLD", "check": "no_unconfirmed_evidence",
+                                 "detail": f"No unconfirmed order on record for {sym} — "
+                                           f"unexplained drift, not repairable by this tool"})
+            checks_ok = False
+
+        if ibkr_live_order_count is not None and ibkr_live_order_count > 0:
+            sym_blockers.append({"severity": "HOLD", "check": "live_orders_exist",
+                                 "detail": f"{ibkr_live_order_count} live IBKR order(s) — cannot repair"})
+            checks_ok = False
+
+        if open_order_count is not None and open_order_count > 0:
+            sym_blockers.append({"severity": "HOLD", "check": "open_orders_exist",
+                                 "detail": f"{open_order_count} open order(s) — cannot repair"})
+            checks_ok = False
+
+        if not safety_locked:
+            sym_blockers.append({"severity": "NO-GO", "check": "safety_unlocked",
+                                 "detail": "IBKR_ALLOW_ORDERS is not false"})
+            checks_ok = False
+
+        if rules_enforced:
+            sym_blockers.append({"severity": "NO-GO", "check": "rules_enforced",
+                                 "detail": "rules.enforced is true"})
+            checks_ok = False
+
+        if qty_delta == 0:
+            sym_blockers.append({"severity": "HOLD", "check": "zero_delta",
+                                 "detail": "Mismatch reported but delta computes to 0 — no-op"})
+            checks_ok = False
+
+        blockers.extend(sym_blockers)
+        per_symbol_results.append({
+            "symbol": sym,
+            "expected_qty_before": expected_qty,
+            "actual_qty": actual_qty,
+            "qty_delta": qty_delta,
+            "candidate_unconfirmed_approval_ids": candidate_approval_ids,
+            "repair_recommended": checks_ok,
+            "repair_applied": False,
+            "blockers": sym_blockers,
+        })
+
+    # ------------------------------------------------------------------
+    # 4. Apply (only symbols that passed all checks)
+    # ------------------------------------------------------------------
+    if apply_repair and confirm_local_state_repair:
+        recon_path = POSITION_RECONCILIATIONS_PATH
+        recon_data = load_position_reconciliations()
+
+        applied_any = False
+        for res in per_symbol_results:
+            if not res["repair_recommended"]:
+                continue
+
+            if not applied_any:
+                # Backup once per run, before the first write
+                _POSITION_DRIFT_REPAIRS_DIR.mkdir(parents=True, exist_ok=True)
+                if recon_path.exists():
+                    backup_path = _POSITION_DRIFT_REPAIRS_DIR / f"position-reconciliations.bak-{ts_file}.json"
+                    shutil.copy2(recon_path, backup_path)
+                applied_any = True
+
+            recon_data.setdefault("reconciliations", []).append({
+                "repair_id": repair_id,
+                "timestamp_utc": ts_str,
+                "symbol": res["symbol"],
+                "qty_delta": res["qty_delta"],
+                "expected_qty_before": res["expected_qty_before"],
+                "actual_qty_at_reconciliation": res["actual_qty"],
+                "associated_unconfirmed_approval_ids": res["candidate_unconfirmed_approval_ids"],
+                "reason": "live_ibkr_ground_truth_reconciliation",
+                "note": ("Does not assert the associated unconfirmed order(s) filled — "
+                         "records that computed expected quantity was adjusted to match "
+                         "live IBKR truth at time of repair."),
+            })
+            res["repair_applied"] = True
+
+        if applied_any:
+            recon_data["schema_version"] = recon_data.get("schema_version", 1)
+            _atomic_write_json(recon_path, recon_data)
+
+            # Re-verify: re-read via position_drift_check (same process,
+            # file already updated) for the applied symbols.
+            fresh = position_drift_check()
+            fresh_expected = fresh.get("expected_positions", {})
+            for res in per_symbol_results:
+                if res["repair_applied"]:
+                    res["expected_qty_after"] = fresh_expected.get(res["symbol"], 0)
+                    res["repair_verified"] = (
+                        res["expected_qty_after"] == res["actual_qty"]
+                    )
+                    if not res["repair_verified"]:
+                        blockers.append({"severity": "HOLD", "check": "repair_verification_failed",
+                                         "detail": f"{res['symbol']}: after repair expected="
+                                                   f"{res['expected_qty_after']}, actual={res['actual_qty']}"})
+
+    return _position_drift_reconcile_result(
+        repair_id, ts_str, mode, git, per_symbol_results, blockers, drift,
+        _POSITION_DRIFT_REPAIRS_DIR, ts_file,
+        ibkr_connected=ibkr_connected,
+        ibkr_live_order_count=ibkr_live_order_count,
+        open_order_count=open_order_count,
+        safety_locked=safety_locked,
+        rules_enforced=rules_enforced,
+        env_allow_orders=env_allow_orders,
+    )
+
+
+def _position_drift_reconcile_result(
+    repair_id: str, ts_str: str, mode: str, git: dict,
+    per_symbol_results: list, blockers: list, drift: dict,
+    repairs_dir: Path, ts_file: str,
+    ibkr_connected: bool = False,
+    ibkr_live_order_count: int | None = None,
+    open_order_count: int | None = None,
+    safety_locked: bool = True,
+    rules_enforced: bool = False,
+    env_allow_orders: str = "false",
+) -> dict:
+    """Assemble the position-drift-reconcile result dict and write its audit export."""
+    import json as _json
+
+    hashable = {
+        "repair_id": repair_id,
+        "mode": mode,
+        "per_symbol_results": [
+            {k: v for k, v in r.items() if k not in ("blockers",)}
+            for r in per_symbol_results
+        ],
+        "blocker_checks": sorted(b["check"] for b in blockers),
+        "git_commit": git.get("commit", "?"),
+        "no_broker_mutation": True,
+    }
+    evidence_hash = _compute_evidence_hash(hashable)
+
+    repairs_dir.mkdir(parents=True, exist_ok=True)
+    audit_export_path = repairs_dir / f"{repair_id}.json"
+
+    result = {
+        "command": "ibkr-operator position-drift-reconcile",
+        "advisory": (
+            "Read-only local position-drift repair tool (Phase 19F). "
+            "No broker mutation. No order window. No H1 token. "
+            "Does not assert any unconfirmed order filled — records an "
+            "evidenced adjustment to computed expected quantity only."
+        ),
+        "timestamp": ts_str,
+        "repair_id": repair_id,
+        "mode": mode,
+        "git": {
+            "branch": git.get("branch", "?"),
+            "commit": git.get("commit", "?"),
+            "tag": git.get("tag", "?"),
+        },
+        "drift_detected": drift.get("drift_detected", False),
+        "mismatch_count": len(drift.get("mismatches") or []),
+        "per_symbol_results": per_symbol_results,
+        "safety_flags": {
+            "env_IBKR_ALLOW_ORDERS": env_allow_orders,
+            "rules_enforced": rules_enforced,
+            "safety_locked": safety_locked,
+        },
+        "ibkr_connected": ibkr_connected,
+        "ibkr_live_order_count": ibkr_live_order_count,
+        "open_order_count": open_order_count,
+        "repair_recommended": any(r.get("repair_recommended") for r in per_symbol_results),
+        "repair_applied": any(r.get("repair_applied") for r in per_symbol_results),
+        "blockers": blockers,
+        "no_broker_mutation": True,
+        "no_order_window_opened": True,
+        "explicit_non_actions": _POSITION_DRIFT_RECONCILE_EXPLICIT_NON_ACTIONS,
+        "evidence_hash": evidence_hash,
+        "_export_path": str(audit_export_path),
+    }
+
+    try:
+        with open(audit_export_path, "w", encoding="utf-8") as f:
+            _json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        pass
+
+    return result
+
+
+def _print_position_drift_reconcile(result: dict) -> None:
+    """Print position-drift reconciliation result in human-readable format."""
+    mode = result.get("mode", "dry_run")
+    mode_label = f"{GREEN}APPLY{RESET}" if mode == "apply" else f"{YELLOW}DRY-RUN{RESET}"
+
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Position-Drift Reconciliation (Phase 19F){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+
+    print(f"  Repair ID:   {result.get('repair_id', '?')}")
+    print(f"  Timestamp:   {result.get('timestamp', '?')}")
+    print(f"  Mode:        {mode_label}")
+    print(f"  Drift:       {'YES' if result.get('drift_detected') else 'NO'}"
+          f"  ({result.get('mismatch_count', 0)} mismatch(es))")
+    print()
+
+    per_symbol = result.get("per_symbol_results", [])
+    if not per_symbol:
+        print(f"  {GREEN}No mismatches to evaluate.{RESET}\n")
+    for r in per_symbol:
+        print(f"  {BOLD}{r['symbol']}{RESET}")
+        print(f"    Expected (before): {r.get('expected_qty_before')}")
+        print(f"    Actual (live):     {r.get('actual_qty')}")
+        print(f"    Delta:             {r.get('qty_delta')}")
+        print(f"    Candidate unconfirmed approval_ids: "
+              f"{r.get('candidate_unconfirmed_approval_ids') or '(none)'}")
+        rec_str = f"{GREEN}YES{RESET}" if r.get("repair_recommended") else "NO"
+        app_str = f"{GREEN}YES{RESET}" if r.get("repair_applied") else "NO"
+        print(f"    Repair Recommended: {rec_str}   Repair Applied: {app_str}")
+        if r.get("repair_applied"):
+            print(f"    Expected (after):   {r.get('expected_qty_after')}"
+                  f"  verified={r.get('repair_verified')}")
+        for b in r.get("blockers", []):
+            sev_color = RED if b["severity"] == "NO-GO" else RESET
+            print(f"    {sev_color}{b['severity']:<6}{RESET} {b['check']}: {b.get('detail', '?')}")
+        print()
+
+    sf = result.get("safety_flags", {})
+    print(f"  {BOLD}Safety{RESET}")
+    print(f"    Locked:           {sf.get('safety_locked', '?')}")
+    print(f"    IBKR_ALLOW_ORDERS:{sf.get('env_IBKR_ALLOW_ORDERS', '?')}")
+    print(f"    rules.enforced:   {sf.get('rules_enforced', '?')}")
+    print(f"    IBKR connected:   {result.get('ibkr_connected', '?')}")
+    print()
+
+    na = result.get("explicit_non_actions", [])
+    if na:
+        print(f"  {BOLD}Explicit Non-Actions{RESET}")
+        for a in na:
+            print(f"    ✗  {a}")
+        print()
+
+    print(f"  Evidence Hash:     {result.get('evidence_hash', '?')[:16]}...")
+    print()
+    print(f"  {BOLD}══════════════════════════════════════════════════{RESET}")
+
+
+# ---------------------------------------------------------------------------
 # Phase 5B.1 — Hermes Advisory Proposal
 # ---------------------------------------------------------------------------
 
@@ -51290,6 +51714,34 @@ def main() -> None:
     rtc.add_argument("--apply", action="store_true")
     rtc.add_argument("--confirm-local-state-repair", action="store_true")
 
+    # Phase 19F — Position-drift reconciliation (sibling to Step 15O above,
+    # scoped to position mismatches explained by unconfirmed orders rather
+    # than trade-count/date mismatches)
+    pdr = sub.add_parser("position-drift-reconcile",
+                         help="Reconcile position-drift mismatches against unconfirmed-order evidence")
+    pdr.add_argument("--json", action="store_true")
+    pdr.add_argument("--export", action="store_true")
+    pdr.add_argument("--apply", action="store_true")
+    pdr.add_argument("--confirm-local-state-repair", action="store_true")
+    pdr.add_argument("--symbol", type=str, default=None,
+                      help="Restrict repair evaluation to a single symbol")
+    # Alias
+    pdr_a1 = sub.add_parser("position-drift-repair",
+                            help="Alias for position-drift-reconcile")
+    pdr_a1.add_argument("--json", action="store_true")
+    pdr_a1.add_argument("--export", action="store_true")
+    pdr_a1.add_argument("--apply", action="store_true")
+    pdr_a1.add_argument("--confirm-local-state-repair", action="store_true")
+    pdr_a1.add_argument("--symbol", type=str, default=None)
+    # Alias
+    pdr_a2 = sub.add_parser("reconcile-position-drift",
+                            help="Alias for position-drift-reconcile")
+    pdr_a2.add_argument("--json", action="store_true")
+    pdr_a2.add_argument("--export", action="store_true")
+    pdr_a2.add_argument("--apply", action="store_true")
+    pdr_a2.add_argument("--confirm-local-state-repair", action="store_true")
+    pdr_a2.add_argument("--symbol", type=str, default=None)
+
     # Step 15Q — Market-data diagnostics
     mdd = sub.add_parser("market-data-diagnostics",
                          help="Diagnose market-data entitlement/subscription issues")
@@ -53124,6 +53576,26 @@ def main() -> None:
             print(json.dumps(result, indent=2, default=str))
         else:
             _print_guard_state_reconcile(result)
+        if args.export:
+            ep = result.get("_export_path")
+            if ep:
+                print(f"  Export written: {ep}", file=sys.stderr)
+        exit_code = 0 if result.get("repair_recommended") or result.get("repair_applied") else 1
+        sys.exit(exit_code)
+
+    if args.command in ("position-drift-reconcile", "position-drift-repair", "reconcile-position-drift"):
+        apply_flag = getattr(args, "apply", False)
+        confirm_flag = getattr(args, "confirm_local_state_repair", False)
+        symbol_flag = getattr(args, "symbol", None)
+        result = _run_position_drift_reconcile(
+            apply_repair=apply_flag,
+            confirm_local_state_repair=confirm_flag,
+            symbol_filter=symbol_flag,
+        )
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_position_drift_reconcile(result)
         if args.export:
             ep = result.get("_export_path")
             if ep:

@@ -2921,7 +2921,16 @@ def readiness() -> Dict[str, Any]:
         })
 
     # 5. Positions / drift
-    drift_info = position_drift_check()
+    # Bug fix (2026-08-11): this previously called the bare position_drift_check()
+    # from monitor.py, which returns no "drift_detected" or "mismatches" keys at
+    # all — every .get(..., False)/.get(..., []) below silently defaulted, so
+    # this block reported drift_detected=False unconditionally regardless of
+    # real state. monitor_positions_drift() (the same function backing
+    # /monitor/positions/drift) wraps position_drift_check() with the actual
+    # live-IBKR comparison and returns the correctly-shaped dict. It already
+    # guards on is_connected() internally, so it stays safe to call when IBKR
+    # is disconnected (Step 15C — no blocking on IBKR calls).
+    drift_info = monitor_positions_drift()
     open_orders_info = open_orders_check()
 
     drift_status = {

@@ -415,6 +415,162 @@ stop or while drift/open-order/live-alert is present, NO TRADE at daily loss ≥
 
 ---
 
+## 2026-08-11 — `/readiness` drift-masking bug fixed (Tier 1)
+
+### Bug
+
+`bridge.py`'s `/readiness` handler computed its `drift` summary from the bare
+`monitor.position_drift_check()` — a file-only helper that returns
+`expected_positions` (a dict), `symbols`, `unconfirmed_count`, and
+`unconfirmed_approval_ids`, and **nothing else**. It has no `drift_detected` key and no
+`mismatches` key. Every downstream read in `/readiness` —
+`drift_info.get("drift_detected", False)`, `drift_info.get("mismatches", [])` — was
+therefore reading keys that don't exist and silently taking the `.get(...)` default.
+`/readiness` reported `drift_detected: false, mismatches: 0` unconditionally,
+regardless of real state, on every call.
+
+The real comparison against live IBKR positions already existed, in a separate
+function: `monitor_positions_drift()` (`@app.get("/monitor/positions/drift")`,
+`bridge.py:2598`), which wraps `position_drift_check()`, fetches live positions when
+connected, computes true per-symbol `mismatches`, and sets
+`drift_detected = len(mismatches) > 0`. `/readiness` never called it.
+
+### Discovery
+
+Caught during a readiness audit prompted by a third-party status report (channel
+running `opencode-go/deepseek-v4-pro`, OC_DEFAULT binding per
+`OPENCLAW_ROUTING_BINDINGS_v0_1.json`) that claimed an active AAPL position-drift alert
+and 5 unconfirmed QQQ/1 AAPL legacy orders. Verified independently, side by side, with
+live output from Chris's terminal:
+
+```
+/monitor/positions/drift  → drift_detected: true,  mismatches: [{AAPL: expected 1.0, actual 0}]
+/readiness (same moment)  → drift_detected: false, mismatches: 0
+```
+
+`guard-events.jsonl` confirms the underlying `position_drift` alert (`severity:
+critical`) had been re-firing every ~15 minutes for at least ~2 hours before discovery,
+unresolved, because the one endpoint meant to surface it was masking it the entire
+time. Root order: `order_id 24` (AAPL) sits in `legacy_unconfirmed` — cross-referenced
+against the existing H3 note above (§ Verification Queue item 2 lineage): order 24 was
+"Submitted but not filled," distinct from order 36 (the real, filled AAPL BUY @
+$314.50). The confirmed-fill netting in `position_drift_check()` still shows
+`AAPL: +1` from order 36 with nothing confirmed to net it back to 0, while live IBKR
+genuinely shows 0 — a real bookkeeping gap, not a live broker risk (orders remain
+triple-blocked regardless).
+
+### Fix
+
+- `bridge.py`: `readiness()` now calls `monitor_positions_drift()` instead of the bare
+  `position_drift_check()`. One-line change; the correctly-shaped dict already flows
+  through the existing `drift_status` construction unchanged. Safe when IBKR is
+  disconnected — `monitor_positions_drift()` already guards on `is_connected()`
+  internally (Step 15C — no blocking on IBKR calls).
+- `monitor.py`: added **G11** to the readiness self-test section — asserts
+  `/readiness`'s drift block agrees with `/monitor/positions/drift`'s real output
+  (`drift_detected` and `mismatches` count). Regression coverage for this exact class
+  of bug; requires a live bridge to run (same as G1–G10).
+
+### Still open (not fixed by this change)
+
+- The AAPL phantom position itself (order 24 stuck unconfirmed) is a separate data
+  cleanup, not a code bug — needs a position-level reconciliation path (no existing
+  `ibkr-operator` subcommand covers this; the existing `guard-state-reconcile` is
+  trade-count/date only).
+- The QQQ 5-unconfirmed-order artifacts (order IDs 40/46/52/60/71) are unrelated
+  historical KID/PRIIPs artifacts, already root-caused above (§ Verification Queue
+  item 2) — no new action needed there.
+- `canonical_trade_date` in `guard-state.json` remains a permanently-stale legacy field
+  (`stale_trade_date_repaired` repairs update `trade_date` but never touch it) — has now
+  caused two separate false "stale date" reports from different channels. Not fixed
+  here; worth a follow-up.
+
+---
+
+## 2026-08-11 — Phase 19F: Position-Drift Reconciliation for Unconfirmed-Order Mismatches
+
+### Why
+
+Follow-up to the `/readiness` drift-masking fix above. Fixing the masking bug makes
+the AAPL phantom-position drift (§ above) *visible* on every `/readiness` call instead
+of hidden — an improvement, but on its own that just converts a hidden problem into a
+permanently-firing, never-resolved critical alert every ~15 minutes. `guard-state.json`
+has no per-symbol position field to edit (expected quantity is computed fresh on every
+call by `monitor.position_drift_check()` replaying `guard-events.jsonl`), so closing
+this out needed a new, general repair path — not a one-off edit.
+
+### Design constraint (important — read before extending this)
+
+This tool does **not** assert that any unconfirmed order actually filled at the
+broker. It only asserts that live IBKR is ground truth, and records — with a full
+audit trail of which unconfirmed `approval_id`s were open for that symbol at the time
+— that the computed expected quantity was adjusted to match it.
+
+This distinction matters concretely: the existing Verification Queue items 1–2 above
+show that assuming an unconfirmed order "must have filled because the final numbers
+work out" can be wrong even when it happens to produce the right answer — order 24
+(AAPL) is on record as "Submitted but not filled," a different order (36) was the real
+fill, and the QQQ unconfirmed orders are unrelated KID/PRIIPs artifacts. Recording an
+evidenced adjustment (delta only, no claim about *why*) instead of "marking the order
+as confirmed" avoids inventing a fill that may never have happened, regardless of
+whether that story happens to be tidy.
+
+### Implementation
+
+- **`monitor.py`**: new `POSITION_RECONCILIATIONS_PATH` /
+  `load_position_reconciliations()` (fails open to empty on missing/corrupt file — an
+  adjustment overlay must never crash or mask real drift). `position_drift_check()`
+  now applies each recorded reconciliation's `qty_delta` on top of the existing
+  fill-derived netting, additively — no event is removed or reinterpreted, and the
+  return dict now carries `applied_reconciliations` for transparency. This flows
+  through `monitor_positions_drift()` and therefore the now-fixed `/readiness`
+  automatically — one adjustment point.
+- **`ibkr_operator.py`**: new `position-drift-reconcile` command (aliases
+  `position-drift-repair`, `reconcile-position-drift`), sibling to Step 15O
+  (`guard-state-reconcile`) — same architectural pattern: dry-run by default,
+  `--apply --confirm-local-state-repair` required to write, automatic backup before
+  first write, audit export, evidence hash. Per-symbol repair evaluation: requires
+  IBKR connected (never reconcile against unknown state), requires at least one
+  unconfirmed order on record for that *exact* symbol (a mismatch with zero
+  unconfirmed-order evidence is left alone — an unexplained drift is not this tool's
+  job), 0 live/open orders, `IBKR_ALLOW_ORDERS=false`, `rules.enforced=false`.
+- **`tests/test_phase19f_position_drift_reconcile.py`** (16 tests, all offline/unit —
+  no live bridge needed, unlike the G11 test added to the previous fix): dry-run
+  detection, refusal on unexplained mismatches, refusal when the unconfirmed order is
+  for a different symbol, all four safety gates, apply-without-confirmation stays
+  dry-run, apply writes the file and is honoured by `position_drift_check()` end to
+  end (not just the tool's own re-verify step), missing/corrupt reconciliations file
+  fails open, explicit non-actions present.
+
+### Verification
+
+- `python3.12 -m py_compile ibkr_operator.py monitor.py bridge.py` — clean. (This
+  sandbox's default `python3` is 3.11, which rejects backslashes inside f-string
+  expressions on a pre-existing, unrelated line elsewhere in `ibkr_operator.py` —
+  confirmed via `.github/workflows/*.yml` that CI actually targets 3.12, where that
+  line is valid; used 3.12 here to match.)
+- `python3.12 -m pytest tests/test_phase19f_position_drift_reconcile.py -v` — 16/16
+  passed.
+- `python3.12 -m pytest tests/test_step15o_guard_state_reconcile.py
+  tests/test_step15u_guard_state_drift_sentinel.py -v` — 51/52 passed; the one failure
+  (`test_aliases_registered` in the 15U suite) hardcodes
+  `/home/chris/agents/ibkr-bridge`, which doesn't exist in this sandbox — pre-existing,
+  environment-specific, unrelated to this change.
+- Did **not** run this against the live bridge — no IB Gateway in this sandbox. The
+  actual AAPL reconciliation (running `position-drift-reconcile --apply
+  --confirm-local-state-repair` for real) is Chris's to run against the live system,
+  not something to execute unreviewed from here.
+
+### Still open
+
+- Running the actual repair against the live AAPL mismatch — this PR ships the tool,
+  not the applied fix. Chris runs `ibkr-operator position-drift-reconcile` (dry-run
+  first) against the live bridge to close out the real AAPL drift.
+- `canonical_trade_date` stale-field cleanup (noted in the entry above) — still not
+  addressed.
+
+---
+
 ## Verification Queue (resolve against the live system)
 
 0. ✅ **RESOLVED (H2): Risk-rails divergence.** Reading (A) confirmed — guard.py enforces

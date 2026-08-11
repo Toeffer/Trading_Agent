@@ -349,6 +349,69 @@ stop or while drift/open-order/live-alert is present, NO TRADE at daily loss ≥
   proposal's conventional/field-standard value — design principle 4 forbids fitting them,
   and `max_positions_per_sector` is already a separately-resolved decision (§11.3).
   Full methodology and per-parameter rationale in the proposed-YAML doc.
+- **2026-08-10 — Phase 19B YAML confirmed APPLIED LIVE.** Chris edited
+  `/home/chris/.openclaw/risk-rules/paper-trading-rules.yaml` himself; Werner walked
+  through the diff but never wrote the file (invariant 6 held throughout, including
+  after Chris explicitly offered to have Werner perform the write directly, which was
+  declined per §3's bar against ad hoc verbal exceptions to a safety invariant). Two
+  real gaps caught during verification: a first save landed only the `advisory` section
+  with a mangled/mis-indented `min_symbol_bars_for_rs` field (corrected before saving);
+  a later save's walkthrough described all five changes as applied, but cross-referencing
+  the file's section-header line numbers showed the allowlist expansion, `symbol_sectors`,
+  and `max_positions_per_sector` hadn't actually landed. Final state verified
+  field-by-field: 22-symbol allowlist, `symbol_sectors` 22/22 exact match across 10
+  sectors, `max_positions_per_sector.value: 1`, `advisory` 14/14 fields with
+  `vol_reference_pct: 13`, NOTES line added. `/health`/`/readiness` unchanged in shape
+  before and after — zero effect on bridge behavior, as expected for an additive,
+  not-yet-wired change at that point.
+
+### Phase 19B/B4 — Gate I wired into `guard.py` (Tier 1, Chris-approved 2026-08-10)
+- **Resolved the open "is Gate I a real gate or advisory-only" question**, delegated
+  explicitly by Chris ("resolve the gate issue for me... afterwards handle guard.py").
+  Not a new architectural call — the proposal's own §10.1 check #2 ("Gate I rejects 3rd
+  same-sector position, 100% rejection") is a paper-run pass/fail criterion that cannot
+  be satisfied unless something actually rejects the order at preflight. B3's
+  `strategy_v1_1_advisory.py` computes the same sector-eligibility check but wraps every
+  result `advisory_only: True, execution_authorized: False` by design — it structurally
+  never blocks anything. So the real, order-rejecting gate has to live in `guard.py`,
+  matching the original 19D template (§9.4) almost exactly.
+- `guard.py` now imports `strategy_v1_1_core.gate_sector_concentration` directly (aliased
+  `_core_gate_sector_concentration`) and adds a thin adapter,
+  `guard.gate_sector_concentration(symbol, positions, rules)`, that extracts
+  `symbol_sectors`/`max_positions_per_sector` from the rules dict, filters positions to
+  currently-held (qty > 0) entries, and delegates — zero duplicate counting/precedence
+  logic in `guard.py` (H2 invariant). Wired into `run_preflight`'s BUY branch as Gate I,
+  right after Gate F (exposure), following §9.4's placement plan.
+- **Fails closed on missing position data.** Unlike the pre-existing `gate_exposure` call
+  (which runs with a hardcoded `[]` — a known, out-of-scope simplification), Gate I
+  actually fetches live positions via `position_provider()` and rejects the whole
+  preflight if that fails, returns `None`, or isn't a list — an empty-positions default
+  would make the concentration cap unenforceable exactly when position data is least
+  trustworthy.
+- `load_rules()`'s `required_keys` now includes `symbol_sectors` and
+  `max_positions_per_sector` — safe now that the live YAML has carried both since the
+  2026-08-10 confirmation above (the §9.9/§9.7 ordering hazard this was originally held
+  against is resolved). Added validation that every allowlisted symbol has a sector
+  mapping, failing closed at load time rather than assuming it at enforcement time.
+- New test module `tests/test_phase19_b4_gate_i_guard_wiring.py` (24 tests): the adapter
+  delegates without reimplementing (no hardcoded counting loop), `load_rules()` rejects
+  documents missing the new sections or with an unmapped allowlist symbol, `run_preflight`
+  actually rejects a 2nd same-sector BUY and allows the 1st and a different-sector BUY,
+  SELL never reaches Gate I, and position-fetch failure/absence fails closed (four
+  separate failure modes: raising provider, `None` provider, `None` return, non-list
+  return).
+- Fixed `test_phase19a_strategy_v1_1_proposal_governance.py`'s
+  `test_gate_letter_i_is_actually_free`, which pinned the pre-B4 "Gate I still unclaimed"
+  state — rewritten as `test_gate_letter_i_is_actually_fulfilled` to verify the letter
+  landed exactly once, on the right function. Renamed the manifest's
+  `verified_against_code.gate_letter_i_free` to `gate_letter_i_fulfilled` to match, with
+  `deterministic_manifest_hash` recomputed.
+- **Also registered B3's 5 test files in `scripts/run-ci-portable`**
+  (`test_phase19b_b3_{contract,golden_vectors,orchestration,precedence,safety}.py`) —
+  same gap as the earlier B1/B2 fix: they existed on master (merged via PR #3) but were
+  never part of the curated CI gate. Extended the compile check to
+  `strategy_v1_1_core.py`/`strategy_v1_1_advisory.py`.
+- Full curated suite: 2436 passed, 3150 subtests passed (0:22:46).
 
 ---
 

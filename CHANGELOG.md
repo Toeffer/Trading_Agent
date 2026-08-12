@@ -571,6 +571,88 @@ whether that story happens to be tidy.
 
 ---
 
+## 2026-08-11 — Phase 19G: Weekly Loss-Halt Rollover (Tier 1)
+
+### Bug
+
+`guard._rollover_guard_state()` handled the daily calendar rollover (`trade_date`,
+`daily_trade_count`, `daily_halt_active`, `day_start_nl_eur`) but had no weekly
+equivalent. `week_start_date` and `week_start_nl_eur` were set exactly once, in
+`default_guard_state()`, and never rolled forward by anything. Since
+`gate_loss_halts()` only evaluates its weekly branch `if week_start and week_start > 0`,
+and `week_start_nl_eur` stayed `None` indefinitely, **the −3% weekly loss halt has been
+structurally inert since whatever session last created a fresh `guard-state.json`** —
+not a display bug, a dead safety check. `week_start_date` showing a stale value (first
+noticed as `"2026-06-01"` during tonight's readiness audit, now over two months old)
+was the visible symptom; the actual defect was the missing rollover, not the stale
+display value itself.
+
+### Fix
+
+`guard.py`: `_rollover_guard_state()` now evaluates both the daily and weekly
+staleness conditions before doing anything (so the common case — neither stale —
+stays a zero-cost no-op, same as before). When the current UTC week's Monday
+(`_current_week_monday_utc_str()`, already existed, previously only called from
+`default_guard_state()`) is later than the stored `week_start_date`: clears
+`weekly_halt_active`, updates `week_start_date`, and captures `week_start_nl_eur` from
+a live account fetch — mirroring the daily capture exactly. A weekly halt clears on
+week rollover the same way a daily halt clears on day rollover; there's no count to
+restore for the weekly side (only day has a trade-count rule). When both are stale at
+once, `fetch_account()` is called once and shared, not once per rollover type. The
+`guard_calendar_rollover` event payload now carries both daily and weekly fields,
+`None` for whichever side didn't roll over.
+
+### Test coverage
+
+`_rollover_guard_state()` had **zero direct test coverage before this change** —
+daily rollover was only ever exercised indirectly through `run_preflight()`
+integration, never asserted against directly. `tests/test_phase19g_weekly_loss_halt_rollover.py`
+(12 tests) covers both: the pre-existing daily behavior (locking in current behavior
+that was previously untested) and the new weekly behavior — no-op when neither is
+stale (and no live account call at all on that path), daily-only, weekly-only, both
+together (single shared account fetch, asserted via call count), account-fetch failure
+degrading gracefully on either side, event-payload shape for each combination, and an
+end-to-end check that `gate_loss_halts()` actually triggers the weekly branch once
+`week_start_nl_eur` is populated — the exact path that was unreachable before.
+
+### Also fixed: the same curated-CI-gate gap as B1/B2/B3, recurring
+
+`tests/test_phase19f_position_drift_reconcile.py` (added earlier tonight, already
+merged) was never added to `scripts/run-ci-portable`'s curated `TESTS` array — the
+exact gap the B1/B2/B3 phases already hit and got flagged for above. CI's green
+checkmark on that merge did not actually exercise those 16 tests; `--collect-only`
+against the curated list would have shown it missing. Registered both that file and
+this one's `test_phase19g_weekly_loss_halt_rollover.py` now. Worth a standing habit:
+`scripts/run-ci-portable --collect-only` (or just grepping the new file's name against
+the script) after adding any new test file, not just running it standalone.
+
+### Verification
+
+- `python3.12 -m py_compile bridge.py guard.py ibkr_operator.py strategy_v1_1_core.py
+  strategy_v1_1_advisory.py` — clean.
+- `python3.12 -m pytest tests/test_phase19g_weekly_loss_halt_rollover.py
+  tests/test_ci_invariant_assertions.py` — 31/31 passed.
+- Confirmed `tests/test_p5_bracket_stops.py`'s unrelated `FileNotFoundError:
+  paper-trading-rules.yaml` failures (14 of them) are pre-existing and environment-only
+  — reproduced identically on unmodified `guard.py` via `git stash`. This sandbox has
+  no `~/.openclaw/risk-rules/paper-trading-rules.yaml`; not something to fix here.
+- Full curated suite (`scripts/run-ci-portable`'s exact `TESTS` array, 38 files after
+  the two registrations above, `--collect-only` confirms 2464 tests collected, zero
+  collection errors) run locally under Python 3.12 to match CI — result pending at
+  time of writing this entry; will not push until it's actually green, not assumed
+  green from the file-by-file checks above.
+
+### Still open
+
+- The weekly halt will now start tracking correctly going forward, but
+  `week_start_nl_eur` for *this* week won't be captured until the next preflight call
+  after this deploys (rollover only runs inside `run_preflight()`) — the very first
+  preflight after deploy will both roll the stale week forward and capture a fresh
+  start value in the same call, per the new test coverage.
+- `canonical_trade_date` stale-field cleanup — still open, unrelated to this fix.
+
+---
+
 ## Verification Queue (resolve against the live system)
 
 0. ✅ **RESOLVED (H2): Risk-rails divergence.** Reading (A) confirmed — guard.py enforces

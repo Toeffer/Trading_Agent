@@ -40,11 +40,47 @@
 | Strategy version | `<<FILL IN — e.g. v1.1.0>>` |
 | Proposal version | `<<FILL IN — e.g. 0.8>>` |
 | Manifest `deterministic_manifest_hash` | `<<FILL IN — from strategy_v1_1_proposal_v0_1.manifest.json>>` |
-| `paper-trading-rules.yaml` SHA-256 | `<<FILL IN>>` |
-| Git commit | `<<FILL IN>>` |
+| paper-trading-rules.yaml normalized configuration SHA-256 | `<<FILL IN>>` |
+| Git runtime-safety pin | `<<FILL IN>>` |
 
-Recording all five pins exactly what was under test. If any changes mid-run, the run
-ends and a new one begins.
+Recording all strategy/runtime pins exactly defines what is under test. A change to
+any pinned strategy/runtime input ends the run unless the change is explicitly
+excluded by the pin definitions below.
+
+**Git runtime-safety pin.** This is the most recent commit that changed any of the
+enumerated runtime-safety paths, not repository HEAD. Documentation-only commits may
+be layered above it without invalidating this pin, provided none of the enumerated
+runtime-safety paths change. Do **not** pin raw `git log -1` HEAD — sealing this very
+document is itself a commit, so the moment it lands (and its merge, if sealed via PR),
+HEAD moves past whatever it pinned. This is not hypothetical: the `pr-2026-08-v2` seal
+pinned `5a4654b...` as "the deployed master commit," and that pin went stale within
+hours, invalidated by its own sealing commit landing on the same branch.
+
+Compute it with:
+
+```bash
+git log -1 --format=%H -- \
+  bridge.py guard.py monitor.py ibkr_operator.py \
+  strategy_v1_1_core.py strategy_v1_1_advisory.py
+```
+
+If this command returns a different commit during the run, the runtime-safety baseline
+has changed and the run ends.
+
+**YAML configuration pin.** The YAML pin is computed after normalizing only the
+operational `enforced` boolean to `false`. This permits the documented
+`false → true → false` order-enablement cycle (RUNBOOK §L8, required to actually start
+the run being pre-registered here) without changing the strategy/risk configuration
+under test. No other YAML field, comment, mapping, limit, allowlist, sector assignment,
+or byte content is excluded from the pin.
+
+The normalized pin is computed by replacing exactly one `enforced: true|false` value
+with `enforced: false` before SHA-256 hashing. If zero or more than one `enforced`
+field is found, verification fails closed. Any change that causes the normalized
+SHA-256 to differ from the pin recorded above ends the run.
+
+Both pins can be computed and — once this document is sealed — checked against it in
+one read-only command: `ibkr-operator preregistration-pin-verify --doc <this file>`.
 
 ## 3. Expected observations — YOUR PRIOR, WRITTEN BEFORE THE RUN
 

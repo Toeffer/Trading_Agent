@@ -286,7 +286,13 @@ def _build_summary(data: dict) -> dict:
     mismatches = len(drift.get("mismatches", []))
     alert_list = alerts.get("alerts", [])
     live_alerts = sum(1 for a in alert_list if a.get("requires_action", False))
-    recon_pass = recon.get("pass", recon.get("ok", False))
+    # Bug fix (2026-08-13): /monitor/reconciliation (reconcile_snapshot() in
+    # monitor.py) returns its verdict under the key "passed", not "pass" or
+    # "ok" — neither of which the real response has ever had. This silently
+    # defaulted to False on every checklist run regardless of the actual
+    # reconciliation state, showing a false HOLD/fail even when all six
+    # underlying checks passed.
+    recon_pass = recon.get("passed", recon.get("pass", recon.get("ok", False)))
     open_count = oo.get("open_count", 0)
     manual_terminal = oo.get("manual_terminal_count", 0)
 
@@ -3770,6 +3776,54 @@ def _print_guard_state_reconcile(result: dict) -> None:
 
 _POSITION_DRIFT_REPAIRS_DIR = OPENCLAW_DIR / "position-drift-repairs"
 
+def _filter_ruled_unconfirmed_approvals(candidate_ids: list[str]) -> tuple[list[str], list[str]]:
+    """Split candidate approval_ids into (ruled, unruled) by their own record.
+
+    Bug fix (2026-08-13): an order_submitted event should never exist without
+    a prior approval ruling (preflight -> approve -> submit is the only order
+    path). But legacy data can violate that — e.g. aprv_d39f1f84 (order_id=24,
+    AAPL SELL) has an order_submitted event yet its own approval-records.jsonl
+    entry shows status="pending", ruled_by=None, expired within 5 minutes of
+    creation back on 2026-06-03. A never-ruled, expired approval cannot be
+    real evidence that an order filled, and must not be presented as an
+    ordinary "possibly unconfirmed-but-filled" candidate on equal footing
+    with genuinely-approved-and-submitted orders. This matches the same class
+    of legacy inconsistency guard.py's legacy_unconfirmed scan already knows
+    about for this exact order_id.
+
+    Returns:
+        (ruled, unruled) — ruled candidates have status == "approved" in
+        approval-records.jsonl; everything else (pending/denied/missing/
+        unreadable) is unruled and excluded from repair consideration.
+    """
+    from guard import APPROVAL_RECORDS_PATH
+
+    status_by_id: dict[str, str] = {}
+    if APPROVAL_RECORDS_PATH.exists():
+        try:
+            for line in APPROVAL_RECORDS_PATH.read_text().splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                aid = rec.get("approval_id")
+                if aid:
+                    status_by_id[aid] = rec.get("status", "")
+        except OSError:
+            pass
+
+    ruled, unruled = [], []
+    for aid in candidate_ids:
+        if status_by_id.get(aid) == "approved":
+            ruled.append(aid)
+        else:
+            unruled.append(aid)
+    return ruled, unruled
+
+
 _POSITION_DRIFT_RECONCILE_EXPLICIT_NON_ACTIONS: list[str] = [
     "This command did not change autonomy level.",
     "This command did not open an order window.",
@@ -3915,7 +3969,8 @@ def _run_position_drift_reconcile(
         expected_qty = m.get("expected_qty", 0) or 0
         actual_qty = m.get("actual_qty", 0) or 0
         qty_delta = actual_qty - expected_qty
-        candidate_approval_ids = unconfirmed_by_symbol.get(sym, [])
+        raw_candidate_ids = unconfirmed_by_symbol.get(sym, [])
+        candidate_approval_ids, unruled_candidate_ids = _filter_ruled_unconfirmed_approvals(raw_candidate_ids)
 
         sym_blockers: list[dict] = []
         checks_ok = True
@@ -3925,7 +3980,14 @@ def _run_position_drift_reconcile(
                                  "detail": "Cannot reconcile against unknown live state"})
             checks_ok = False
 
-        if not candidate_approval_ids:
+        if not candidate_approval_ids and unruled_candidate_ids:
+            sym_blockers.append({"severity": "HOLD", "check": "only_legacy_unruled_evidence",
+                                 "detail": f"{sym}: only never-approved/legacy approval(s) on "
+                                           f"record ({unruled_candidate_ids}) — a submission "
+                                           f"without a ruled approval is not evidence an order "
+                                           f"filled, cannot support a repair"})
+            checks_ok = False
+        elif not candidate_approval_ids:
             sym_blockers.append({"severity": "HOLD", "check": "no_unconfirmed_evidence",
                                  "detail": f"No unconfirmed order on record for {sym} — "
                                            f"unexplained drift, not repairable by this tool"})
@@ -3963,6 +4025,7 @@ def _run_position_drift_reconcile(
             "actual_qty": actual_qty,
             "qty_delta": qty_delta,
             "candidate_unconfirmed_approval_ids": candidate_approval_ids,
+            "excluded_unruled_approval_ids": unruled_candidate_ids,
             "repair_recommended": checks_ok,
             "repair_applied": False,
             "blockers": sym_blockers,

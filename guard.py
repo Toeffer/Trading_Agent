@@ -3260,6 +3260,26 @@ def reconcile_approvals_on_startup() -> dict:
 
     # 6. Detect legacy order_submitted events that have no ibkr_metadata
     # (pre-fix submissions like order_id=24 that were never acknowledged by IBKR)
+    #
+    # Bug fix (2026-08-13): this previously re-flagged the same legacy event on
+    # every single startup forever, even after a human had already manually
+    # reconciled it via monitor.append_manual_reconciliation() (e.g. order_id=24
+    # was confirmed NotFoundInIBKR/filled=0.0 on 2026-06-11, yet kept resurfacing
+    # here on every restart for two more months because this scan never checked
+    # the manual-reconciliation record). A (order_id, symbol) pair with an
+    # existing manual_terminal record is excluded here — that question has
+    # already been answered by a human and should not be re-asked.
+    already_reconciled: set[tuple] = set()
+    try:
+        from monitor import load_manual_reconciliations
+        for rec in load_manual_reconciliations():
+            oid = rec.get("order_id")
+            sym = rec.get("symbol")
+            if oid is not None and sym:
+                already_reconciled.add((oid, sym))
+    except Exception:
+        pass  # fail open — if manual reconciliations can't be read, fall back to old behavior
+
     legacy_unconfirmed = []
     if events_path.exists():
         try:
@@ -3276,11 +3296,15 @@ def reconcile_approvals_on_startup() -> dict:
                     if ibkr is None and evt.get("action") == "SELL":
                         # Legacy SELL close event without IBKR confirmation
                         aid_check = evt.get("approval_id", "")
+                        evt_order_id = evt.get("order_id")
+                        evt_symbol = evt.get("symbol")
+                        if (evt_order_id, evt_symbol) in already_reconciled:
+                            continue  # already manually resolved — stop re-flagging it
                         if aid_check and aid_check not in unconfirmed_approval_ids:
                             legacy_unconfirmed.append({
                                 "approval_id": aid_check,
-                                "order_id": evt.get("order_id"),
-                                "symbol": evt.get("symbol"),
+                                "order_id": evt_order_id,
+                                "symbol": evt_symbol,
                             })
         except OSError:
             pass

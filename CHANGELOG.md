@@ -653,6 +653,95 @@ the script) after adding any new test file, not just running it standalone.
 
 ---
 
+## 2026-08-13 — Phase 19H/19I: Three tooling bugs found during a live paper-mode
+readiness check (Tier 2 — read-only tooling, no runtime-safety files touched)
+
+**Bug 1 (19F follow-up) — `position-drift-reconcile` trusted never-approved
+approvals as fill evidence.** Live-checked ahead of the 2026-08-17 run start:
+`/monitor/positions/drift` reported AAPL expected=1.0, actual=0, and
+`position-drift-reconcile` named `aprv_d39f1f84-b8fd-4d6a-9a99-0485b677dd4f`
+(order_id=24) as the candidate explanation. Inspecting the approval record
+directly showed `"status": "pending", "ruled_by": null`, expired 2026-06-03 —
+it was never approved, so per the order path (preflight → approve → submit)
+it could not possibly have reached the broker. The tool's candidate selection
+only matched `order_submitted` events against the drift endpoint's
+`unconfirmed_approval_ids`; it never checked whether the matched approval had
+actually been ruled. Fixed: `_filter_ruled_unconfirmed_approvals()` in
+`ibkr_operator.py` looks up each candidate's own `approval-records.jsonl`
+status and excludes anything not `"approved"` from repair consideration,
+surfacing a new `only_legacy_unruled_evidence` blocker and an
+`excluded_unruled_approval_ids` field on the result for audit visibility
+instead of silently treating implausible evidence as ordinary.
+
+**Bug 2 — `legacy_unconfirmed` re-flagged the same resolved item on every
+startup, forever.** The same order_id=24/AAPL event has an
+`order_submitted` entry with no `ibkr_metadata` — the exact "legacy pre-fix
+submission" case `guard.py`'s own comment already named. A human
+(Werner-H4.1) manually reconciled it as `NotFoundInIBKR, filled=0.0` on
+2026-06-11 via `monitor.append_manual_reconciliation()`. But
+`reconcile_approvals_on_startup()`'s legacy-detection scan never consulted
+that reconciliation record, so it kept re-flagging the identical entry on
+every single bridge restart for two more months (~32,000 matching lines in
+`guard-events.jsonl` by the time this was caught) — almost certainly the
+source of the stale `expected_qty: 1.0` for AAPL that motivated the live
+drift investigation in the first place. Fixed: the scan now loads
+`monitor.load_manual_reconciliations()` and excludes any `(order_id, symbol)`
+pair already carrying a manual-terminal record; fails open to the old
+behavior if the reconciliations file can't be read.
+
+**Bug 3 — checklist `reconciliation_pass` read the wrong key, always `False`.**
+`ibkr_operator._build_summary()` read `recon.get("pass", recon.get("ok",
+False))`, but `/monitor/reconciliation` (`monitor.reconcile_snapshot()`) has
+only ever returned its verdict under `"passed"`. Neither `"pass"` nor `"ok"`
+has ever existed in the real response, so `reconciliation_pass` silently
+defaulted to `False` on every checklist run regardless of actual state —
+caught live when a same-moment `/monitor/reconciliation` call showed
+`"passed": true` with all six sub-checks true, while the checklist reported
+`reconciliation_pass: false`. Fixed: reads `"passed"` first, falls back to
+the old keys defensively.
+
+### Discovery path
+
+All three surfaced from one live investigation, not a code review: Chris ran
+a paper-mode readiness check; `/monitor/positions/drift` showed a real
+AAPL mismatch once IBKR was genuinely connected (an earlier "clean" read had
+been a disconnected-state placeholder). The tool's named candidate turned out
+to be provably wrong (bug 1), tracing *why* led to the stale legacy-flag
+computation (bug 2), and cross-checking the checklist's own summary against
+the endpoints it aggregates surfaced the key mismatch (bug 3). The AAPL
+position itself was separately corrected via `position-drift-reconcile
+--apply --confirm-local-state-repair`, grounded in the live IBKR read and
+Chris's direct operator confirmation the account was flat — not in the
+disproven candidate-approval reasoning.
+
+### Verification
+
+- `python3.12 -m py_compile bridge.py guard.py ibkr_operator.py
+  strategy_v1_1_core.py strategy_v1_1_advisory.py monitor.py` — clean.
+- New tests: `tests/test_phase19h_checklist_reconciliation_key_fix.py` (6),
+  `tests/test_phase19i_legacy_unconfirmed_manual_reconciliation.py` (5);
+  `tests/test_phase19f_position_drift_reconcile.py` extended with the
+  never-ruled-candidate regression and an approval-status fixture threaded
+  through the existing dry-run/apply tests. Both new files registered in
+  `scripts/run-ci-portable`'s curated `TESTS` array.
+- Full curated suite run locally under Python 3.12 before push — see commit
+  for pass/fail count, not assumed green from the file-by-file checks above.
+
+### Still open
+
+- No code in this repo yet *computes* the normalized-YAML-hash pin the
+  `pr-2026-08-v4` pre-registration document describes (replace exactly one
+  `enforced: true|false` with `enforced: false`, hash, fail closed on
+  zero/multiple matches) — it was verified by hand against the live host
+  tonight. Worth a real `ibkr-operator` read-only check before it's leaned on
+  again for a run boundary.
+- `TEMPLATE-preregistration.md` still has the original, unfixed §2 wording
+  (bare Git-commit/YAML-hash `<<FILL IN>>`, no pathspec/normalization
+  guidance) — `pr-2026-08-v4`'s improved approach was never folded back into
+  the reusable template.
+
+---
+
 ## Verification Queue (resolve against the live system)
 
 0. ✅ **RESOLVED (H2): Risk-rails divergence.** Reading (A) confirmed — guard.py enforces

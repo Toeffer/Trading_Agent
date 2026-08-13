@@ -116,9 +116,23 @@ _AAPL_UNCONFIRMED_EVENT = [
 ]
 
 
-def _base_patches(tmp_path, drift, health, open_orders, events=None):
-    """Common patch set for a single call to _run_position_drift_reconcile."""
+def _write_approval_records(path, records: dict):
+    """Write a minimal approval-records.jsonl: {approval_id: status}."""
+    lines = [json.dumps({"approval_id": aid, "status": status}) for aid, status in records.items()]
+    path.write_text("\n".join(lines) + ("\n" if lines else ""))
+
+
+def _base_patches(tmp_path, drift, health, open_orders, events=None, approval_records=None):
+    """Common patch set for a single call to _run_position_drift_reconcile.
+
+    approval_records: {approval_id: status} written to a tmp_path-redirected
+    approval-records.jsonl. Defaults to empty (no record for any candidate) —
+    the same shape as the real aprv_d39f1f84 incident, where an
+    order_submitted event existed with no corresponding ruled approval.
+    """
     events = events if events is not None else _AAPL_UNCONFIRMED_EVENT
+    records_path = tmp_path / "approval-records.jsonl"
+    _write_approval_records(records_path, approval_records or {})
     return [
         patch("ibkr_operator._git_metadata", return_value={
             "branch": "test", "commit": "abc123", "tag": "test"}),
@@ -127,12 +141,13 @@ def _base_patches(tmp_path, drift, health, open_orders, events=None):
         patch("ibkr_operator._POSITION_DRIFT_REPAIRS_DIR", tmp_path / "position-drift-repairs"),
         patch("monitor.load_events", side_effect=_make_load_events_side_effect(events)),
         patch("ibkr_operator.os.getenv", return_value="false"),
+        patch("guard.APPROVAL_RECORDS_PATH", records_path),
     ]
 
 
 def _run_with_patches(patches, **kwargs):
     from ibkr_operator import _run_position_drift_reconcile
-    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
         return _run_position_drift_reconcile(**kwargs)
 
 
@@ -160,8 +175,14 @@ class TestCommandExists:
 # ---------------------------------------------------------------------------
 
 class TestDryRunDetectsRepairableMismatch:
-    def test_mismatch_with_unconfirmed_evidence_recommends_repair(self, tmp_path):
-        patches = _base_patches(tmp_path, _aapl_drift(), _HEALTH_CONNECTED, _NO_OPEN_ORDERS)
+    def test_mismatch_with_ruled_unconfirmed_evidence_recommends_repair(self, tmp_path):
+        # A genuinely approved-and-submitted order that IBKR never
+        # acknowledged — the case this tool exists for. Not aprv_d39f1f84
+        # (that ID is reserved below for the legacy/never-ruled regression).
+        patches = _base_patches(
+            tmp_path, _aapl_drift(), _HEALTH_CONNECTED, _NO_OPEN_ORDERS,
+            approval_records={"aprv_d39f1f84-b8fd-4d6a-9a99-0485b677dd4f": "approved"},
+        )
         result = _run_with_patches(patches, apply_repair=False, confirm_local_state_repair=False)
 
         assert result["mode"] == "dry_run"
@@ -172,6 +193,7 @@ class TestDryRunDetectsRepairableMismatch:
         assert r["symbol"] == "AAPL"
         assert r["qty_delta"] == -1.0
         assert r["candidate_unconfirmed_approval_ids"] == ["aprv_d39f1f84-b8fd-4d6a-9a99-0485b677dd4f"]
+        assert r["excluded_unruled_approval_ids"] == []
         assert r["repair_recommended"] is True
         assert r["repair_applied"] is False
 
@@ -188,6 +210,44 @@ class TestDryRunDetectsRepairableMismatch:
 # ---------------------------------------------------------------------------
 # T3: Refuses to repair an unexplained mismatch
 # ---------------------------------------------------------------------------
+
+class TestRefusesNeverRuledCandidateApproval:
+    """Regression for the live 2026-08-13 incident: aprv_d39f1f84 has an
+    order_submitted event (order_id=24, AAPL SELL) but its own
+    approval-records.jsonl entry was never ruled (status="pending",
+    ruled_by=None, expired 5 minutes after creation on 2026-06-03). A
+    submission without a ruled approval cannot be real fill evidence and
+    must not be presented as an ordinary unconfirmed-but-possibly-filled
+    candidate."""
+
+    def test_pending_never_ruled_approval_does_not_recommend_repair(self, tmp_path):
+        patches = _base_patches(
+            tmp_path, _aapl_drift(), _HEALTH_CONNECTED, _NO_OPEN_ORDERS,
+            approval_records={"aprv_d39f1f84-b8fd-4d6a-9a99-0485b677dd4f": "pending"},
+        )
+        result = _run_with_patches(patches, apply_repair=False, confirm_local_state_repair=False)
+
+        r = result["per_symbol_results"][0]
+        assert r["repair_recommended"] is False
+        assert r["candidate_unconfirmed_approval_ids"] == []
+        assert r["excluded_unruled_approval_ids"] == ["aprv_d39f1f84-b8fd-4d6a-9a99-0485b677dd4f"]
+        checks = {b["check"] for b in r["blockers"]}
+        assert "only_legacy_unruled_evidence" in checks
+
+    def test_missing_approval_record_entirely_does_not_recommend_repair(self, tmp_path):
+        # No approval-records.jsonl entry at all for the candidate — same
+        # "cannot vouch for this" outcome as an explicitly unruled one.
+        patches = _base_patches(
+            tmp_path, _aapl_drift(), _HEALTH_CONNECTED, _NO_OPEN_ORDERS,
+            approval_records={},
+        )
+        result = _run_with_patches(patches, apply_repair=False, confirm_local_state_repair=False)
+
+        r = result["per_symbol_results"][0]
+        assert r["repair_recommended"] is False
+        checks = {b["check"] for b in r["blockers"]}
+        assert "only_legacy_unruled_evidence" in checks
+
 
 class TestRefusesUnexplainedMismatch:
     def test_mismatch_with_no_unconfirmed_evidence_is_blocked(self, tmp_path):
@@ -245,6 +305,8 @@ class TestSafetyGatesBlockRepair:
 
     def test_safety_unlocked_blocks(self, tmp_path):
         from ibkr_operator import _run_position_drift_reconcile
+        records_path = tmp_path / "approval-records.jsonl"
+        _write_approval_records(records_path, {"aprv_d39f1f84-b8fd-4d6a-9a99-0485b677dd4f": "approved"})
         patches_list = [
             patch("ibkr_operator._git_metadata", return_value={
                 "branch": "test", "commit": "abc123", "tag": "test"}),
@@ -255,8 +317,9 @@ class TestSafetyGatesBlockRepair:
             # os.getenv mocked to "true" for every lookup, including
             # IBKR_ALLOW_ORDERS — simulates the kill switch being unlocked.
             patch("ibkr_operator.os.getenv", return_value="true"),
+            patch("guard.APPROVAL_RECORDS_PATH", records_path),
         ]
-        with patches_list[0], patches_list[1], patches_list[2], patches_list[3], patches_list[4]:
+        with patches_list[0], patches_list[1], patches_list[2], patches_list[3], patches_list[4], patches_list[5]:
             result = _run_position_drift_reconcile(apply_repair=False, confirm_local_state_repair=False)
 
         r = result["per_symbol_results"][0]
@@ -286,7 +349,10 @@ class TestSafetyGatesBlockRepair:
 class TestApplyRequiresConfirmation:
     def test_apply_without_confirmation_is_dry_run(self, tmp_path):
         recon_path = tmp_path / "position-reconciliations.json"
-        patches = _base_patches(tmp_path, _aapl_drift(), _HEALTH_CONNECTED, _NO_OPEN_ORDERS)
+        patches = _base_patches(
+            tmp_path, _aapl_drift(), _HEALTH_CONNECTED, _NO_OPEN_ORDERS,
+            approval_records={"aprv_d39f1f84-b8fd-4d6a-9a99-0485b677dd4f": "approved"},
+        )
         with patch("monitor.POSITION_RECONCILIATIONS_PATH", recon_path):
             result = _run_with_patches(patches, apply_repair=True, confirm_local_state_repair=False)
 
@@ -302,6 +368,8 @@ class TestApplyRequiresConfirmation:
 class TestApplyWritesReconciliation:
     def test_apply_writes_file_and_nets_to_zero(self, tmp_path):
         recon_path = tmp_path / "position-reconciliations.json"
+        records_path = tmp_path / "approval-records.jsonl"
+        _write_approval_records(records_path, {"aprv_d39f1f84-b8fd-4d6a-9a99-0485b677dd4f": "approved"})
 
         with patch("ibkr_operator._git_metadata", return_value={
                 "branch": "test", "commit": "abc123", "tag": "test"}), \
@@ -310,6 +378,7 @@ class TestApplyWritesReconciliation:
              patch("ibkr_operator._POSITION_DRIFT_REPAIRS_DIR", tmp_path / "position-drift-repairs"), \
              patch("monitor.load_events", side_effect=_make_load_events_side_effect(_AAPL_UNCONFIRMED_EVENT)), \
              patch("ibkr_operator.os.getenv", return_value="false"), \
+             patch("guard.APPROVAL_RECORDS_PATH", records_path), \
              patch("monitor.POSITION_RECONCILIATIONS_PATH", recon_path):
             from ibkr_operator import _run_position_drift_reconcile
             result = _run_position_drift_reconcile(apply_repair=True, confirm_local_state_repair=True)

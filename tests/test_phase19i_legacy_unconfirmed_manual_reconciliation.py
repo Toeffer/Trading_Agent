@@ -63,12 +63,22 @@ def _run_reconcile(tmp_path, events, manual_records):
     manual_path = tmp_path / "order-reconciliations.jsonl"
     _write_manual_reconciliations(manual_path, manual_records)
 
+    # load_guard_state()/save_guard_state_atomic() are mocked directly rather
+    # than redirecting GUARD_STATE_PATH -- guard-state.json is an H1-protected
+    # path (Phase H1.2), and whether an unmocked write there is exempt
+    # depends on module-global H1 startup state left over from whatever else
+    # ran earlier in the same pytest process. That's exactly what broke this
+    # test in CI while passing locally: order-dependent, not deterministic.
+    # This suite only cares about legacy_unconfirmed detection, not guard
+    # state, so mock both calls out entirely.
     with patch("guard.GUARD_EVENTS_PATH", events_path), \
          patch("guard._load_submitted_approvals", return_value=set()), \
          patch("guard._save_submitted_approvals"), \
          patch("guard._load_active_approvals"), \
          patch("guard._save_active_approvals"), \
          patch("guard.append_guard_event"), \
+         patch("guard.load_guard_state", return_value={"daily_trade_count": 0}), \
+         patch("guard.save_guard_state_atomic"), \
          patch("guard.APPROVAL_RECORDS_PATH", tmp_path / "approval-records.jsonl"), \
          patch("monitor.MANUAL_ORDER_RECON_PATH", manual_path):
         return guard.reconcile_approvals_on_startup()
@@ -131,6 +141,8 @@ class TestLegacyUnconfirmedRespectsManualReconciliation:
              patch("guard._load_active_approvals"), \
              patch("guard._save_active_approvals"), \
              patch("guard.append_guard_event"), \
+             patch("guard.load_guard_state", return_value={"daily_trade_count": 0}), \
+             patch("guard.save_guard_state_atomic"), \
              patch("guard.APPROVAL_RECORDS_PATH", tmp_path / "approval-records.jsonl"), \
              patch("monitor.load_manual_reconciliations", side_effect=RuntimeError("disk error")):
             result = guard.reconcile_approvals_on_startup()

@@ -45,6 +45,7 @@ TESTS=(
   tests/test_phase19g_weekly_loss_halt_rollover.py
   tests/test_phase19h_checklist_reconciliation_key_fix.py
   tests/test_phase19i_legacy_unconfirmed_manual_reconciliation.py
+  tests/test_phase19j_prereg_pin_verify.py
 )
 
 echo "==> Portable CI"

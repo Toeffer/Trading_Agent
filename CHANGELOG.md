@@ -742,6 +742,64 @@ disproven candidate-approval reasoning.
 
 ---
 
+## 2026-08-13 — Phase 19J: pre-registration pin verification, implemented (Tier 2
+— read-only tooling)
+
+Both items left open above are closed by this entry.
+
+**New `ibkr-operator preregistration-pin-verify` command** (alias
+`prereg-pin-verify`) implements, as actual executable code, the pin-computation
+procedure `pr-2026-08-v4-preregistration.md`'s §2 describes — until now verified
+by hand against the live host:
+
+- **Git runtime-safety pin**: `git log -1 --format=%H --` filtered to
+  `bridge.py guard.py monitor.py ibkr_operator.py strategy_v1_1_core.py
+  strategy_v1_1_advisory.py`. Immune to docs-only commits landing on top of it —
+  verified against a throwaway git repo in the test suite, not just asserted.
+- **YAML normalized configuration pin**: `paper-trading-rules.yaml`'s SHA-256
+  after replacing exactly one `enforced: true|false` field with
+  `enforced: false`. Fails closed (returns an error, not a guessed hash) on zero
+  or more than one `enforced:` match.
+- With `--doc <path>`, parses a pre-registration document's own §2 table and
+  compares live pins against what it recorded — `MATCH`/`MISMATCH`/`NOT_FOUND_IN_DOC`
+  per pin, non-zero exit on any mismatch. Without `--doc`, just prints the live
+  pins. Read-only: no protected file, no order path, no H1 token, no writes
+  anywhere.
+- The YAML rules path is read from `guard.RULES_PATH` by reference (not a copied
+  default), so an `IBKR_RULES_PATH` override on the live host is honoured
+  automatically rather than risking a second, independently-drifting constant —
+  worth calling out because `ibkr_operator.py` already had an unrelated,
+  differently-valued `_RULES_PATH` constant (`BRIDGE_DIR / "rules" / ...`) that
+  this deliberately does not reuse.
+
+**`TEMPLATE-preregistration.md` updated** to match: §2's Git-commit/YAML-hash
+rows renamed to "Git runtime-safety pin" / "paper-trading-rules.yaml normalized
+configuration SHA-256," with the pathspec command, the normalization procedure,
+and the `pr-2026-08-v2` self-referential-pin incident cited as the concrete
+reason for both, plus a pointer to the new command for sealed-document
+verification. Only the template changed — `pr-2026-08-v2` and `pr-2026-08-v4`
+themselves are sealed and were not touched (and, per their own rule, must not
+be).
+
+### Verification
+
+- `python3.12 -m py_compile ibkr_operator.py` — clean.
+- Manually cross-checked both pin functions against tonight's independently
+  hand-verified live-host values (`ff7973328184df73b31c4d8d27adeee5d83620c9`,
+  `fadb4402f0a7c286945fab5f1d429113063200532e3936f47f0f8ed555a0442b`) before
+  writing the formal suite.
+- `tests/test_phase19j_prereg_pin_verify.py` (19 tests): pathspec-filtered pin
+  matches an independent raw `git log` call; a real throwaway-repo commit
+  proves a docs-only commit doesn't move the pin; YAML pin fails closed on
+  zero/two `enforced:` matches; `true`/`false` normalize identically (proving
+  the trade-window cycle doesn't void a run) while any other field change still
+  moves the pin; document-comparison MATCH/MISMATCH paths, including a direct
+  regression using zeroed-out pins for the exact class of staleness the
+  `pr-2026-08-v2` incident produced; CLI alias registration and `--json` output
+  validity. Registered in `scripts/run-ci-portable`.
+
+---
+
 ## Verification Queue (resolve against the live system)
 
 0. ✅ **RESOLVED (H2): Risk-rails divergence.** Reading (A) confirmed — guard.py enforces

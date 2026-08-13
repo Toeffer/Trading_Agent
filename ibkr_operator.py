@@ -4233,6 +4233,218 @@ def _print_position_drift_reconcile(result: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 19J — Paper-run pre-registration pin verification (read-only)
+#
+# Implements, as an actual executable check, the pin-computation procedure
+# described in docs/paper-runs/pr-2026-08-v4-preregistration.md's §2 (and
+# the corrected wording queued for TEMPLATE-preregistration.md). Until now
+# both pins were verified by hand -- this makes that verification
+# repeatable and fail-closed instead of a one-off manual exercise.
+#
+# Two pins:
+#   1. Git runtime-safety pin -- the most recent commit touching any of the
+#      enumerated runtime-safety files, NOT bare `git log -1` HEAD. Immune
+#      to docs-only commits landing on top of it (that immunity is the
+#      whole point -- see the pr-2026-08-v2 self-referential-pin incident
+#      in CHANGELOG.md).
+#   2. YAML normalized configuration pin -- paper-trading-rules.yaml's
+#      SHA-256 after normalizing exactly one `enforced: true|false` field
+#      to `enforced: false`. Fails closed if zero or more than one such
+#      field is found. This is what makes the documented
+#      false -> true -> false order-enablement cycle not void the run.
+# ---------------------------------------------------------------------------
+
+_PREREG_RUNTIME_SAFETY_PATHS: list[str] = [
+    "bridge.py", "guard.py", "monitor.py", "ibkr_operator.py",
+    "strategy_v1_1_core.py", "strategy_v1_1_advisory.py",
+]
+
+
+def _prereg_runtime_safety_git_pin(repo_dir: Path) -> tuple[str | None, str | None]:
+    """Pathspec-filtered git commit pin. Returns (sha, error)."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%H", "--"] + _PREREG_RUNTIME_SAFETY_PATHS,
+            cwd=str(repo_dir), capture_output=True, text=True, timeout=10,
+        )
+    except Exception as e:
+        return None, f"git invocation failed: {e}"
+    if result.returncode != 0:
+        return None, f"git exited {result.returncode}: {result.stderr.strip()[:200]}"
+    sha = result.stdout.strip()
+    if not sha:
+        return None, "git returned no commit for the runtime-safety pathspec"
+    return sha, None
+
+
+def _prereg_normalized_yaml_pin(yaml_path: Path) -> tuple[str | None, str | None]:
+    """Normalized (enforced forced to false) SHA-256. Returns (hex, error).
+
+    Fails closed -- returns an error, not a guessed hash -- if the file is
+    unreadable or doesn't contain exactly one `enforced:` field.
+    """
+    import re as _re
+    if not yaml_path.exists():
+        return None, f"YAML not found: {yaml_path}"
+    try:
+        text = yaml_path.read_text()
+    except OSError as e:
+        return None, f"cannot read YAML: {e}"
+    matches = list(_re.finditer(r"enforced:\s*(true|false)", text))
+    if len(matches) != 1:
+        return None, (f"expected exactly one 'enforced:' field, found {len(matches)} "
+                       f"-- verification fails closed")
+    m = matches[0]
+    normalized = text[:m.start()] + "enforced: false" + text[m.end():]
+    return hashlib.sha256(normalized.encode()).hexdigest(), None
+
+
+def _parse_prereg_recorded_pins(doc_text: str) -> dict:
+    """Extract the recorded §2 pins from a pre-registration document's own
+    text, so a live check can be compared against what was actually sealed
+    -- not just printed side-by-side for a human to eyeball."""
+    import re as _re
+    pins: dict[str, str] = {}
+    m = _re.search(r"\|\s*Git runtime-safety pin\s*\|\s*`([0-9a-f]{40})`", doc_text)
+    if not m:
+        # Older documents (e.g. pr-2026-08-v2) used the plain "Git commit" label.
+        m = _re.search(r"\|\s*Git commit\s*\|\s*`([0-9a-f]{40})", doc_text)
+    if m:
+        pins["git_runtime_safety_pin"] = m.group(1)
+    m = _re.search(
+        r"paper-trading-rules\.yaml.*?SHA-256\s*\|\s*`([0-9a-f]{64})`", doc_text)
+    if m:
+        pins["yaml_normalized_sha256"] = m.group(1)
+    return pins
+
+
+def _run_prereg_pin_verify(doc_path: str | None = None) -> dict:
+    """Compute the live runtime-safety and YAML pins, and -- if a
+    pre-registration document is given -- compare against what it recorded.
+
+    Read-only. Touches no protected file, no order path, no H1 token.
+    """
+    now_utc = datetime.now(timezone.utc)
+
+    git_pin, git_error = _prereg_runtime_safety_git_pin(BRIDGE_DIR)
+    yaml_pin, yaml_error = _prereg_normalized_yaml_pin(_prereg_rules_path())
+
+    live = {
+        "git_runtime_safety_pin": git_pin,
+        "git_runtime_safety_pin_error": git_error,
+        "yaml_normalized_sha256": yaml_pin,
+        "yaml_normalized_sha256_error": yaml_error,
+    }
+
+    result: dict = {
+        "command": "ibkr-operator preregistration-pin-verify",
+        "timestamp_utc": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "advisory": ("Read-only. Computes the pr-2026-08-v4-style pre-registration "
+                     "pins live and, if a document is given, compares against what "
+                     "it recorded. No file writes, no order path, no H1 token."),
+        "live": live,
+        "doc_path": doc_path,
+        "recorded": None,
+        "comparisons": None,
+        "pass": None,
+    }
+
+    if git_error or yaml_error:
+        result["pass"] = False
+        result["fail_reason"] = "fail_closed_on_pin_computation_error"
+        return result
+
+    if not doc_path:
+        result["pass"] = True  # nothing to compare against; live computation succeeded
+        return result
+
+    doc = Path(doc_path)
+    if not doc.exists():
+        result["pass"] = False
+        result["fail_reason"] = f"document not found: {doc_path}"
+        return result
+
+    try:
+        doc_text = doc.read_text()
+    except OSError as e:
+        result["pass"] = False
+        result["fail_reason"] = f"cannot read document: {e}"
+        return result
+
+    recorded = _parse_prereg_recorded_pins(doc_text)
+    result["recorded"] = recorded
+
+    comparisons = {}
+    overall_pass = True
+    for key in ("git_runtime_safety_pin", "yaml_normalized_sha256"):
+        recorded_val = recorded.get(key)
+        live_val = live.get(key)
+        if recorded_val is None:
+            comparisons[key] = {"status": "NOT_FOUND_IN_DOC", "live": live_val}
+            overall_pass = False
+        elif recorded_val == live_val:
+            comparisons[key] = {"status": "MATCH", "value": live_val}
+        else:
+            comparisons[key] = {"status": "MISMATCH", "recorded": recorded_val, "live": live_val}
+            overall_pass = False
+
+    result["comparisons"] = comparisons
+    result["pass"] = overall_pass
+    return result
+
+
+def _prereg_rules_path() -> Path:
+    """The canonical live paper-trading-rules.yaml path (guard.RULES_PATH).
+
+    Deliberately imported lazily and by reference to guard's own module
+    attribute (not a copied/duplicated default) so an IBKR_RULES_PATH env
+    override on the live host is honoured automatically -- this must never
+    drift from the path guard.py itself enforces against.
+    """
+    from guard import RULES_PATH
+    return RULES_PATH
+
+
+def _print_prereg_pin_verify(result: dict) -> None:
+    """Print pre-registration pin verification result in human-readable form."""
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
+    print(f"{BOLD}  Pre-Registration Pin Verification (Phase 19J){RESET}")
+    print(f"{BOLD}══════════════════════════════════════════════════{RESET}\n")
+
+    live = result["live"]
+    print(f"  {BOLD}Live pins{RESET}")
+    if live.get("git_runtime_safety_pin"):
+        print(f"    Git runtime-safety pin:  {live['git_runtime_safety_pin']}")
+    else:
+        print(f"    {RED}Git runtime-safety pin:  ERROR — {live.get('git_runtime_safety_pin_error')}{RESET}")
+    if live.get("yaml_normalized_sha256"):
+        print(f"    YAML normalized SHA-256: {live['yaml_normalized_sha256']}")
+    else:
+        print(f"    {RED}YAML normalized SHA-256: ERROR — {live.get('yaml_normalized_sha256_error')}{RESET}")
+    print()
+
+    if result.get("doc_path"):
+        print(f"  {BOLD}Compared against{RESET}: {result['doc_path']}")
+        comparisons = result.get("comparisons") or {}
+        for key, c in comparisons.items():
+            status = c["status"]
+            color = GREEN if status == "MATCH" else RED
+            print(f"    {color}{status:<16}{RESET} {key}")
+            if status == "MISMATCH":
+                print(f"      recorded: {c['recorded']}")
+                print(f"      live:     {c['live']}")
+        print()
+
+    pass_str = f"{GREEN}PASS{RESET}" if result.get("pass") else f"{RED}FAIL{RESET}"
+    print(f"  Overall: {pass_str}")
+    if result.get("fail_reason"):
+        print(f"  Reason:  {result['fail_reason']}")
+    print()
+    print(f"  {BOLD}══════════════════════════════════════════════════{RESET}")
+
+
+# ---------------------------------------------------------------------------
 # Phase 5B.1 — Hermes Advisory Proposal
 # ---------------------------------------------------------------------------
 
@@ -51805,6 +52017,20 @@ def main() -> None:
     pdr_a2.add_argument("--confirm-local-state-repair", action="store_true")
     pdr_a2.add_argument("--symbol", type=str, default=None)
 
+    # Phase 19J — Pre-registration pin verification (read-only). Computes
+    # the runtime-safety git pin and normalized YAML pin live and, if a
+    # document is given, compares against what it recorded.
+    ppv = sub.add_parser("preregistration-pin-verify",
+                         help="Verify a paper-run pre-registration document's §2 pins against live state")
+    ppv.add_argument("--doc", type=str, default=None,
+                      help="Path to a <run-id>-preregistration.md to compare against; omit to just print live pins")
+    ppv.add_argument("--json", action="store_true")
+    # Alias
+    ppv_a1 = sub.add_parser("prereg-pin-verify",
+                            help="Alias for preregistration-pin-verify")
+    ppv_a1.add_argument("--doc", type=str, default=None)
+    ppv_a1.add_argument("--json", action="store_true")
+
     # Step 15Q — Market-data diagnostics
     mdd = sub.add_parser("market-data-diagnostics",
                          help="Diagnose market-data entitlement/subscription issues")
@@ -53665,6 +53891,14 @@ def main() -> None:
                 print(f"  Export written: {ep}", file=sys.stderr)
         exit_code = 0 if result.get("repair_recommended") or result.get("repair_applied") else 1
         sys.exit(exit_code)
+
+    if args.command in ("preregistration-pin-verify", "prereg-pin-verify"):
+        result = _run_prereg_pin_verify(doc_path=getattr(args, "doc", None))
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_prereg_pin_verify(result)
+        sys.exit(0 if result.get("pass") else 1)
 
     if args.command in ("market-data-diagnostics", "market-data-doctor", "md-diagnostics"):
         symbol = getattr(args, "symbol", "AAPL")

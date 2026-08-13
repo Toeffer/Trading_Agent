@@ -43,6 +43,8 @@ TESTS=(
   tests/test_hermes_no_outcome_feedback.py
   tests/test_phase19f_position_drift_reconcile.py
   tests/test_phase19g_weekly_loss_halt_rollover.py
+  tests/test_phase19h_checklist_reconciliation_key_fix.py
+  tests/test_phase19i_legacy_unconfirmed_manual_reconciliation.py
 )
 
 echo "==> Portable CI"

@@ -2387,9 +2387,26 @@ def run_preflight(
         rules = load_rules()
         state = load_guard_state()
 
-        # Calendar day rollover: if trade_date < current UTC date,
-        # reset daily counters before running any gates.
-        _rollover_guard_state(state)
+        # Calendar day/week rollover: if trade_date or week_start_date is
+        # stale, reset counters before running any gates.
+        #
+        # Bug fix (2026-08-17): this call writes to guard-state.json (a
+        # Phase H1.2 protected path) via save_guard_state_atomic() whenever
+        # either rollover actually fires. Preflight itself never carries H1
+        # authorization -- H1 is scoped to /order/approve and /order/submit
+        # only (invariant #17) -- so an unguarded call here raised
+        # PermissionError, uncaught by the except clause below, producing an
+        # unhandled 500 instead of the validation-only response preflight is
+        # documented to always return. Confirmed live: this hard-blocked
+        # preflight entirely once trade_date and week_start_date were both
+        # stale (both trigger the same write path). The rollover itself is
+        # deterministic, wall-clock-driven housekeeping with no adversarial
+        # degrees of freedom -- not an order mutation -- so it gets its own
+        # narrow h1_authorized_scope(), exactly the pattern that context
+        # manager exists for. This does not widen H1 authorization for
+        # anything else in this request; the scope ends immediately after.
+        with h1_authorized_scope():
+            _rollover_guard_state(state)
 
         account = account_provider() if account_provider else fetch_account()
         quote = quote_provider(symbol) if quote_provider else fetch_quote(symbol)

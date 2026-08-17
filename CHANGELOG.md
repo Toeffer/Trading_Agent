@@ -883,6 +883,89 @@ it, and `ibkr_operator.py` calls that instead.
 
 ---
 
+## 2026-08-17 — Phase 19L: preflight's rollover write needed H1 scope (Tier 1)
+
+Live incident, on the run's own start day. `run_preflight()` returned HTTP
+500 (via OpenClaw, cross-checked against source before acting): `guard-state
+.json`'s `trade_date` was stale (2026-08-11 vs 2026-08-17). Repaired via the
+existing `ibkr-operator guard-state-reconcile --apply --confirm-local-state-
+repair` (safe, non-H1, its own independent gates — daily trade_date only, by
+design). Preflight still 500'd — `week_start_date` (2026-06-01) was *also*
+stale, and `guard-state-reconcile` has never covered week fields.
+
+**Root cause, traced directly, not taken on report:** `run_preflight()` ->
+`load_guard_state()` -> `_rollover_guard_state()` -> `save_guard_state_atomic
+()` writes `guard-state.json`, a Phase H1.2 protected path, whenever either
+the daily or weekly rollover actually fires (guard.py:2392, unchanged since
+Phase 19G). Preflight itself never carries H1 authorization — H1 is scoped
+to `/order/approve` and `/order/submit` only (invariant #17). The call was
+unwrapped, and `run_preflight()`'s surrounding `except` only caught
+`RuntimeError`/`ValueError`/`FileNotFoundError`, not `PermissionError`, so
+the unauthorized write raised straight through the request handler instead
+of the documented validation-only response. No CHANGELOG entry, code
+comment, or test anywhere tied H1 enforcement to this call site — a latent
+gap between two features (H1 protected-path enforcement, Phase H1.2; and
+preflight-triggered rollover, Phase 19G) built at different times and never
+reasoned through together, which had simply never manifested before: it
+needs guard-state.json to have gone stale *and* H1 enforcement active *and*
+someone to actually call preflight, and this is the first time all three
+lined up.
+
+**Fix:** the rollover is deterministic, wall-clock-driven housekeeping with
+no adversarial degrees of freedom — not an order mutation — so it now gets
+its own narrow `with h1_authorized_scope():` around the one call, exactly
+the pattern that context manager's own docstring describes
+(`h1_authorized_scope()`: "Sets authorization only for the narrow critical
+section"). Authorization ends the instant the `with` block exits; nothing
+else in the request gains it.
+
+### Why not `guard-state-reconcile` extended to cover week_start_date instead
+
+Considered and rejected as the primary fix: it would duplicate logic that
+already exists correctly in `_rollover_guard_state()`, in a second,
+hand-maintained tool, rather than fixing the actual call site that fails.
+The narrow scope fix resolves the daily case, the weekly case, and any
+future field the rollover grows, in one place.
+
+### Verification
+
+- `python3.12 -m py_compile bridge.py guard.py ibkr_operator.py
+  strategy_v1_1_core.py strategy_v1_1_advisory.py monitor.py` — clean.
+- New: `tests/test_phase19l_preflight_rollover_h1_scope.py` (7) —
+  reproduces the original bug directly (`_assert_h1_authorized_for_path`
+  raises under real enforcement, unscoped); confirms the scope suppresses
+  it and doesn't leak past its `with` block; exercises
+  `_rollover_guard_state()` both unwrapped (raises, the exact live
+  incident shape) and wrapped (succeeds, persists both trade_date and
+  week_start_date) against a real, isolated protected path (not mocked
+  away — `PROTECTED_PATHS` is a module-level set, extended with a tmp
+  path and restored after, so the test can't pass by accident with
+  enforcement silently disabled); an end-to-end `run_preflight()` call
+  with a doubly-stale state under real enforcement, confirming no
+  exception and that both fields actually rolled; a source-text regression
+  guard pinning the `with h1_authorized_scope():` wrapper in place.
+  Registered in `scripts/run-ci-portable`.
+- 5 pre-existing failures in `test_contextvar_h1_race.py` (`ModuleNotFound
+  Error: fastapi`, this sandbox only) reproduced identically against
+  unmodified `guard.py` via `git stash` before being dismissed as
+  unrelated — not assumed.
+
+### Still open
+
+- **Requires a bridge restart to take effect** — unlike Phase 19H-19K
+  (`ibkr_operator.py`-only, fresh subprocess every invocation), `guard.py`
+  is imported by the long-running `ibkr-bridge.service` process at module
+  load. Pulling this commit alone does not change live preflight behavior;
+  `systemctl restart ibkr-bridge.service` is required. Per invariant #12
+  this invalidates any in-memory pending/approved-but-unsubmitted
+  approvals — expected to be a no-op today (kill switches locked, nothing
+  mid-cycle), but stated explicitly rather than assumed silent.
+- Tier-1 file — held for explicit merge approval rather than self-merged,
+  per routing policy, even though found and fixed same-day as a live
+  blocker.
+
+---
+
 ## Verification Queue (resolve against the live system)
 
 0. ✅ **RESOLVED (H2): Risk-rails divergence.** Reading (A) confirmed — guard.py enforces

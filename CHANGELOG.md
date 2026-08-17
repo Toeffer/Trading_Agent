@@ -800,6 +800,89 @@ be).
 
 ---
 
+## 2026-08-17 — Phase 19K: heartbeat systemd timer tracked in git, staleness
+threshold tightened, failure alerting wired (Tier 2 — read-only tooling)
+
+Chris asked whether a cron/timer was needed for the heartbeat, or whether the
+interval was worth reducing for trading purposes — investigation found a
+timer already existed, deployed directly on the live host since 2026-06-13
+(Phase 7), never checked into this repo. `tests/test_p7_heartbeat.py` had
+been written expecting exactly this (`~/.config/systemd/user/ibkr-heartbeat.
+{service,timer}`, `systemctl --user is-enabled`) and is deliberately excluded
+from portable CI as a host/workstation acceptance test — but the unit files
+themselves were never committed, so the repo carried a test spec for an
+implementation it didn't track.
+
+**`systemd/ibkr-heartbeat.service` and `.timer` added**, copied verbatim from
+the live, active deployment (confirmed via `systemctl --user list-timers`
+before this was written): `OnCalendar=*:0/15` (every 15 min),
+`RandomizedDelaySec=30`, `Persistent=true`; the service runs `ibkr-operator
+heartbeat --json --quiet` read-only, hardened (`ProtectSystem=strict`,
+`NoNewPrivileges=true`, no `ExecStartPre/Post`, no forbidden endpoints).
+15 minutes was kept as-is rather than shortened — every order this system
+executes requires a human to personally initiate and approve each step, so
+the heartbeat's job is "notice infrastructure is down before it's used," not
+real-time safety monitoring; a 15-min worst-case lag ahead of an
+actively-driven session doesn't need shrinking, and doing so mostly adds log
+volume for little benefit.
+
+**Two real gaps did need fixing, found by reading `run_kpi()` and
+`_run_heartbeat()` against the actual deployed cadence:**
+
+1. `HEARTBEAT_STALE_THRESHOLD_SECONDS` (new named constant, `2700` = 45 min)
+   replaces two independently-hardcoded `86400` (24h) literals in
+   `run_kpi()` — one gating a `heartbeat_stale` HOLD, one setting
+   `heartbeat.recent`. 24h tolerated silence for nearly a full day on a
+   system whose real cadence is 15 minutes; 45 min tolerates a few missed/
+   slow cycles without a false HOLD while catching a real outage the same
+   trading day.
+2. A failing heartbeat never surfaced anywhere — `_run_heartbeat()` only
+   wrote its own JSON artifact, invisible to `/monitor/alerts`, doctor, or
+   checklist until the (old, 24h) staleness threshold elapsed. Endpoint
+   failures now log a `monitor_alert` event via a new
+   `monitor.append_heartbeat_alert()`, the same pipeline every other alert
+   in this codebase already flows through. Deliberately keyed on the
+   bridge's own endpoints failing, not on IBKR `connected` — a disconnected
+   Gateway overnight/pre-market is routine, not an infrastructure failure,
+   and alerting on it every 15 minutes would just be noise.
+
+**Why `monitor.append_heartbeat_alert()` and not a direct call from
+`ibkr_operator.py`:** `append_guard_event` is on `ibkr_operator.py`'s own
+AST-level `_FORBIDDEN_NAMES` safety check (`_enforce_safety()`, module import
+time) — it must stay strictly read-only, and the check caught the first
+draft of this fix immediately (`SystemExit(99)` on import). `monitor.py`
+already owns the one write path in this layer (`append_manual_
+reconciliation`); `append_heartbeat_alert` follows the same pattern next to
+it, and `ibkr_operator.py` calls that instead.
+
+### Verification
+
+- `python3.12 -m py_compile bridge.py guard.py ibkr_operator.py
+  strategy_v1_1_core.py strategy_v1_1_advisory.py monitor.py` — clean, and
+  confirms `_enforce_safety()`'s AST check passes (`ibkr-operator heartbeat
+  --help` exits 0, not 99).
+- New: `tests/test_phase19k_heartbeat_alerting.py` (20) — threshold value
+  pinned as a deliberate regression guard; `_heartbeat_age_seconds()`
+  exercised against real controlled artifact mtimes (not a mocked
+  `run_kpi()`) at fresh/just-past-threshold/old-would-have-passed
+  boundaries; alert wiring covered for all-ok (no alert), one endpoint
+  failing (alert fires, detail includes the failing endpoint), alert-path
+  itself failing (heartbeat still succeeds), and IBKR-disconnected-alone
+  (no alert — the routine case). Plus repo-side sanity checks that the
+  tracked systemd files match what's deployed (interval, hardening flags,
+  no forbidden endpoints). Registered in `scripts/run-ci-portable`.
+
+### Still open
+
+- `tests/test_p7_heartbeat.py` and `test_p8_systemd_hardening.py` remain
+  host-only, excluded from portable CI by design — they validate the live
+  `~/.config/systemd/user/` deployment directly, not the repo copies added
+  here. Worth periodically diffing the two by hand if the live units are
+  ever hand-edited without a matching repo commit, to avoid this exact gap
+  recurring.
+
+---
+
 ## Verification Queue (resolve against the live system)
 
 0. ✅ **RESOLVED (H2): Risk-rails divergence.** Reading (A) confirmed — guard.py enforces

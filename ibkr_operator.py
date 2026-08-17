@@ -2086,6 +2086,15 @@ _FORBIDDEN_HEARTBEAT_SUBSTRINGS = [
     "/order",
 ]
 
+# How stale a heartbeat artifact can be before doctor/execution-readiness/
+# cycle-rehearsal checks treat it as untrustworthy (2026-08-17). Previously
+# hardcoded to 86400 (24h) in each call site independently -- far looser
+# than useful given the deployed systemd timer (systemd/ibkr-heartbeat.timer)
+# actually runs every 15 minutes. 2700s (45min) tolerates a couple of
+# missed/slow cycles without a false HOLD, while still catching a real
+# outage the same trading day instead of up to a day later.
+HEARTBEAT_STALE_THRESHOLD_SECONDS = 2700
+
 
 def _run_heartbeat() -> dict:
     """Run a read-only heartbeat against the IBKR bridge.
@@ -2218,6 +2227,22 @@ def _run_heartbeat() -> dict:
     artifact["ok"] = execution_ok
     if artifact_path is not None:
         artifact["_artifact_path"] = str(artifact_path)
+
+    # Surface endpoint failures into the same monitor_alert pipeline every
+    # other alert already flows through (2026-08-17). Previously a failing
+    # heartbeat only sat in its own JSON artifact -- invisible to
+    # /monitor/alerts, doctor, and checklist until HEARTBEAT_STALE_THRESHOLD_
+    # SECONDS elapsed with no fresh artifact at all. Deliberately keyed on
+    # all_endpoints_ok (the bridge's own read endpoints failing), not on
+    # IBKR `connected` -- a disconnected Gateway overnight/pre-market is
+    # routine, not an infrastructure failure, and alerting on it every 15
+    # minutes (the deployed timer's cadence) would just be noise.
+    if not all_endpoints_ok:
+        try:
+            from monitor import append_heartbeat_alert
+            append_heartbeat_alert(endpoint_failures, len(_HEARTBEAT_ENDPOINTS))
+        except Exception:
+            pass  # non-critical — never fail the heartbeat itself over alert logging
 
     return artifact
 
@@ -2771,7 +2796,7 @@ def run_kpi() -> dict:
     if hb_age is None:
         hold_reasons.append({"severity": "HOLD", "check": "heartbeat_missing",
                              "detail": "No heartbeat artifacts found"})
-    elif hb_age > 86400:  # > 24 hours
+    elif hb_age > HEARTBEAT_STALE_THRESHOLD_SECONDS:
         hold_reasons.append({"severity": "HOLD", "check": "heartbeat_stale",
                              "detail": f"Heartbeat artifact age: {hb_age/3600:.1f}h"})
 
@@ -2893,7 +2918,7 @@ def run_kpi() -> dict:
         "heartbeat": {
             "age_seconds": hb_age,
             "age_human": f"{hb_age/3600:.1f}h" if hb_age is not None else "none",
-            "recent": hb_age is not None and hb_age < 86400,
+            "recent": hb_age is not None and hb_age < HEARTBEAT_STALE_THRESHOLD_SECONDS,
         },
         "doctor": {
             "pass": doctor.get("pass", False),

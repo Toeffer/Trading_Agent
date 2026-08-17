@@ -4137,8 +4137,9 @@ def load_manual_reconciliations() -> list[dict]:
 def append_manual_reconciliation(record: dict) -> dict:
     """Append a manual terminal reconciliation record to the JSONL file.
 
-    This is the only write operation in monitor.py. It creates a new
-    record, never modifies or deletes existing records or events.
+    Creates a new record, never modifies or deletes existing records or
+    events. (See also append_heartbeat_alert() below, the other write
+    operation in this module.)
 
     Args:
         record: Dict with fields: order_id, permId, symbol, action,
@@ -4171,6 +4172,41 @@ def append_manual_reconciliation(record: dict) -> dict:
         pass
 
     return {"status": "recorded", "record": record}
+
+
+def append_heartbeat_alert(endpoint_failures: list[str], total_endpoints: int) -> dict:
+    """Log a heartbeat endpoint-failure alert to guard-events.jsonl (2026-08-17).
+
+    Exists so ibkr_operator.py's read-only heartbeat check can surface a
+    failure into the same monitor_alert pipeline every other alert already
+    flows through, without itself calling append_guard_event -- that name
+    is on ibkr_operator.py's own AST-level _FORBIDDEN_NAMES safety check
+    (it must stay strictly read-only). monitor.py already owns the one
+    other write path in this codebase's read-only-tooling layer
+    (append_manual_reconciliation, above), so this follows it exactly.
+
+    Args:
+        endpoint_failures: list of "endpoint (reason)" strings from a
+            failed heartbeat run.
+        total_endpoints: total endpoints attempted, for the detail text.
+
+    Returns:
+        {"status": "recorded"} on success, {"status": "error", ...} if the
+        event couldn't be appended. Never raises -- a broken alert path
+        must never take the heartbeat check itself down with it.
+    """
+    from guard import append_guard_event
+
+    try:
+        append_guard_event("monitor_alert", {
+            "alert_type": "heartbeat_endpoint_failure",
+            "severity": "high",
+            "detail": f"{len(endpoint_failures)}/{total_endpoints} heartbeat "
+                      f"endpoint(s) failed: {', '.join(endpoint_failures)}",
+        })
+        return {"status": "recorded"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)[:200]}
 
 
 def _build_manual_recon_map(records: list[dict]) -> dict:

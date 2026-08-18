@@ -12428,11 +12428,25 @@ def _run_hermes_canary() -> dict:
 def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
     """Generate a Hermes-advised trade proposal.
 
-    Advisory only. No order enablement. No state mutation.
+    Advisory only. No order enablement. No state mutation (beyond
+    persisting the validated proposal file itself -- see Phase 19M below).
     """
     from datetime import datetime, timezone
     import json
     import subprocess
+
+    # Phase 19M (2026-08-18): build the prompt from the same template
+    # hermes_advisory.py uses, instead of this function's own ad hoc copy.
+    # The two had drifted: this copy never asked Hermes for a
+    # `position_sizing` object, which Gate H (guard.gate_proposal_discipline)
+    # hard-requires for every BUY proposal, and this function never
+    # persisted its result anywhere -- so a proposal generated via
+    # `ibkr-operator hermes-proposal` (the command RUNBOOK.md and Chris's
+    # own workflow actually use) could never pass Gate H, no matter how
+    # good Hermes's answer was. hermes_advisory.py already had both pieces
+    # right; importing its template/instruction text and persistence call
+    # closes the gap here without maintaining a second copy of either.
+    from hermes_advisory import build_prompt
 
     request_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -12454,70 +12468,8 @@ def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
     except Exception:
         baseline["doctor"] = {"error": "doctor unavailable"}
 
-    # Build Hermes prompt
-    prompt_parts = [
-        "You are Hermes, an advisory-only trading research engine.",
-        "You are generating a trade proposal for Chris to review.",
-        "",
-        "IMPORTANT RULES:",
-        "- Advisory only. No order enabled or submitted.",
-        "- You must NOT call any trading endpoints.",
-        "- You must NOT suggest that orders are already approved.",
-        "- You must NOT mutate any files.",
-        "- Your proposal is a DRAFT for Chris to review.",
-        "",
-        "RISK RAILS (Phase 5 Pilot):",
-        "- Max single position: 5% of Net Liq",
-        "- Max total exposure: 25% of Net Liq",
-        "- Max risk per trade: 0.25% of Net Liq",
-        "- Max daily trades: 2, Max weekly: 5",
-        "- No trade without stop/invalidation",
-        "- No trade if drift, open order, or live requires_action alert",
-        "- No trade if daily loss >= 1% or weekly >= 3% Net Liq",
-        "",
-        "CLOSE-ONLY SELL NOTE:",
-        "Close-only SELLs (reducing/exiting existing long positions) are exempt from",
-        "position sizing, notional caps, exposure limits, risk-per-trade, and",
-        "stop/invalidation rails. Trade count limits, loss halt gates, and open order",
-        "conflict checks still apply.",
-        "",
-        "HUMAN CONFIRMATION:",
-        "- Every trade > EUR 0 requires Chris approval",
-        "- Any order enablement requires Chris approval",
-        "- Any order submit requires Chris approval",
-        "",
-        "BASELINE DATA:",
-        json.dumps(baseline, indent=2, default=str),
-        "",
-        f"USER REQUEST: Generate a trade proposal for {side} {qty} {symbol}.",
-        "",
-        "OUTPUT FORMAT: Valid JSON only. Use this exact structure:",
-        """{
-  "symbol": "...",
-  "side": "...",
-  "quantity": N,
-  "entry_reference": "...",
-  "stop_loss_invalidation": "...",
-  "max_loss_eur": N.N,
-  "max_loss_pct": N.N,
-  "position_notional_eur": N.N,
-  "position_notional_pct": N.N,
-  "portfolio_exposure_after_pct": N.N,
-  "daily_drawdown_status": "...",
-  "weekly_drawdown_status": "...",
-  "reason_to_trade": "...",
-  "reason_not_to_trade": "...",
-  "preflight_command": "...",
-  "facts": [...],
-  "assumptions": [...],
-  "estimates": [...],
-  "unknowns": [...],
-  "why_not_wait": "...",
-  "awaiting_chris_approval": true,
-  "advisory_only": true
-}""",
-    ]
-    prompt = "\n".join(prompt_parts)
+    user_request = f"Generate a trade proposal for {side} {qty} {symbol}."
+    prompt = build_prompt(baseline, user_request)
 
     try:
         start = time.time()
@@ -12549,6 +12501,22 @@ def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
         except (json.JSONDecodeError, ValueError):
             proposal = None
 
+        # Phase 19M: persist a valid proposal to ~/.openclaw/proposals/ in
+        # the bare, unwrapped shape Gate H expects -- mirrors
+        # hermes_advisory.py's P3 persistence step. Never persist an
+        # unparsed/malformed response (no phantom proposal files); a
+        # persist failure is reported but does not fail the command,
+        # since Hermes's advisory answer is still useful to show even if
+        # disk I/O fails.
+        proposal_path = None
+        proposal_persist_error = None
+        if isinstance(proposal, dict):
+            from guard import save_proposal_file
+            try:
+                proposal_path = str(save_proposal_file(proposal))
+            except (ValueError, OSError) as e:
+                proposal_persist_error = str(e)[:300]
+
         evidence = {
             "hermes_invoked": True,
             "hermes_command_or_adapter": "ibkr-operator hermes-proposal -> hermes chat -q",
@@ -12569,6 +12537,8 @@ def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
             "timestamp_utc": response_ts,
             "ok": proposal is not None,
             "proposal": proposal,
+            "proposal_path": proposal_path,
+            "proposal_persist_error": proposal_persist_error,
             "raw_response": stdout[:2000],
             "evidence": evidence,
             "advisory_only": True,
@@ -12646,6 +12616,12 @@ def _print_hermes_result(result: dict) -> None:
         print()
         print(f"  {BOLD}Awaiting Chris approval{RESET} \u2014 {p.get('awaiting_chris_approval', False)}")
         print(f"  {BOLD}Advisory only{RESET} \u2014 {p.get('advisory_only', False)}")
+        print()
+        if result.get("proposal_path"):
+            print(f"  {BOLD}Persisted{RESET} \u2014 {result['proposal_path']}")
+            print(f"  (pass this path as proposal_path to /order/preflight for Gate H)")
+        elif result.get("proposal_persist_error"):
+            print(f"  {BOLD}NOT persisted{RESET} \u2014 {result['proposal_persist_error']}")
 
     print()
     print(f"{BOLD}Advisory only. No order enabled or submitted. No state mutated.{RESET}")

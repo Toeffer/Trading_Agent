@@ -966,6 +966,97 @@ future field the rollover grows, in one place.
 
 ---
 
+## 2026-08-18 — Phase 19M: `ibkr-operator hermes-proposal` never actually
+produced a Gate-H-passing proposal (Tier 2)
+
+Chris, direct operator question: "How to get the proper proposal from
+Hermes via OC since it should work this way or am i wrong?" — after
+OpenClaw reported preflight running fully clean and asked whether to
+generate a real proposal file. Traced against source rather than assumed
+working because the field names *looked* deliberately matched.
+
+**What was actually there:** two independent, never-reconciled
+implementations of "ask Hermes for a proposal, in JSON":
+
+- `hermes_advisory.py` (Phase 5B.1/P3) — a standalone script. Its prompt
+  template already includes a `position_sizing` object (`method`,
+  `stop_price`, `final_shares`, plus supporting detail),
+  and it already calls `guard.save_proposal_file()` to persist the parsed
+  response, bare and unwrapped, to `~/.openclaw/proposals/`. Correct, but
+  not wired to any `ibkr-operator` subcommand — nothing runs it day to day.
+- `ibkr_operator.py`'s `_run_hermes_proposal()` (Phase 5B.1 "(original)")
+  — the function actually behind the `ibkr-operator hermes-proposal`
+  command Chris and OpenClaw use. Its own private copy of the prompt
+  template never asked for `position_sizing` at all, and the function
+  never persisted anything to disk. Its documented `--output <path>` flag
+  writes the *whole wrapped result* (`{"command":..., "proposal":
+  {...}, "raw_response":..., "evidence":...}`), not the bare object Gate H
+  (`guard.gate_proposal_discipline`) reads at the top level. Net effect: a
+  BUY proposal generated this way could never pass Gate H — missing
+  `position_sizing` unconditionally fails it (`guard.py`'s
+  `_MANDATORY_POSITION_SIZING_FIELDS`, no exception for BUY) — regardless
+  of how good Hermes's answer was, and there was no file on disk for Gate H
+  to read in the first place.
+
+**Fix:** `_run_hermes_proposal()` now imports and calls
+`hermes_advisory.build_prompt()` for the prompt instead of maintaining its
+own copy, and — when Hermes's response parses as a JSON object — persists
+it via `guard.save_proposal_file()`, the same call `hermes_advisory.py`
+already used. One shared template, one shared persistence path, called
+from the command operators actually run. A malformed/unparsable response
+is never persisted (no phantom proposal files); a persistence failure
+(disk full, etc.) is reported in the result (`proposal_persist_error`) but
+does not fail the command — Hermes's advisory answer is still worth
+showing even if the write fails. The result dict gains `proposal_path`;
+`_print_hermes_result()` now prints it, or the persist error if the write
+failed.
+
+### Why not fix this by adding `position_sizing` + persistence directly
+inside `_run_hermes_proposal()` instead of importing from
+`hermes_advisory.py`
+
+Considered and rejected: that would leave two hand-maintained copies of
+the same template able to drift again exactly as they already had —
+`hermes_advisory.py`'s copy grew a field the other one never got. Importing
+the one canonical template and the one canonical persistence function
+removes the duplication instead of patching one side of it.
+
+### Verification
+
+- `python3.12 -m py_compile ibkr_operator.py guard.py hermes_advisory.py
+  strategy_v1_1_core.py strategy_v1_1_advisory.py` — clean.
+- `python3.12 ibkr_operator.py hermes-proposal --help` — module still
+  imports cleanly (confirms `save_proposal_file` isn't caught by
+  `ibkr_operator.py`'s own `_enforce_safety()` AST check — it isn't in
+  `_FORBIDDEN_NAMES`, and it performs no order/guard-state mutation).
+- New: `tests/test_phase19m_hermes_proposal_persistence.py` (7) — source
+  regression guards that the private ad hoc template is gone and the
+  shared `build_prompt()` is actually imported and invoked; a valid parsed
+  response gets persisted and the file on disk round-trips with
+  `position_sizing` intact; the persisted file is fed straight into
+  `guard.gate_proposal_discipline()` and asserted to **pass** — the
+  concrete end-to-end proof this was previously impossible and now isn't;
+  an unparsable Hermes response leaves no file behind; a
+  `save_proposal_file()` failure is reported, not raised, and doesn't
+  block the advisory answer from being returned. Registered in
+  `scripts/run-ci-portable`.
+- Not a Tier-1 change — touches `ibkr_operator.py` only (calls into
+  `guard.save_proposal_file()`, an existing, unmodified function; `guard.py`
+  itself is untouched).
+
+### Still open
+
+- `hermes_advisory.py` itself still has the Gate-I/regime-logic
+  duplication concern flagged in the Phase 19B entry above (unrelated to
+  this fix — that concern is about its sector-concentration signal
+  generation, not the prompt-template/persistence path touched here).
+- This makes `ibkr-operator hermes-proposal` capable of producing a
+  Gate-H-passing file; it does not itself validate that Hermes's actual
+  live numbers (price, ATR, sizing math) are correct — that's Hermes's
+  advisory judgment and Chris's review, same as before.
+
+---
+
 ## Verification Queue (resolve against the live system)
 
 0. ✅ **RESOLVED (H2): Risk-rails divergence.** Reading (A) confirmed — guard.py enforces

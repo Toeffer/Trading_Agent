@@ -49,6 +49,7 @@ TESTS=(
   tests/test_phase19k_heartbeat_alerting.py
   tests/test_phase19l_preflight_rollover_h1_scope.py
   tests/test_phase19m_hermes_proposal_persistence.py
+  tests/test_phase19n_preflight_bounded_market_data.py
 )
 
 echo "==> Portable CI"

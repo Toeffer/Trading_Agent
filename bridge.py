@@ -801,7 +801,59 @@ def _internal_fetch_bars(symbol: str) -> list:
             "volume": int(b.volume) if b.volume is not None else None,
         })
 
+    # Symmetric with _internal_fetch_quote: if a caller timed out waiting on
+    # this call via _internal_fetch_bars_safe (tracked as a leaked thread),
+    # decrement the counter now that the work has actually finished.
+    _decrement_leaked_md_thread()
+
     return result
+
+
+def _internal_fetch_bars_safe(symbol: str, timeout: float = _MARKET_SNAPSHOT_TIMEOUT) -> list:
+    """Fetch bars with bounded timeout -- never hangs (Phase 19N fix).
+
+    Bug (2026-08-27): order_preflight() wired the unbounded
+    _internal_fetch_quote/_internal_fetch_bars directly as guard.py's
+    quote_provider/bars_provider. Both call ib.qualifyContracts(), which can
+    block indefinitely against a stalled IB Gateway with no deadline. guard.py's
+    run_preflight() catches only (RuntimeError, ValueError, FileNotFoundError)
+    around this fetch -- a blocked ib call raises nothing, so preflight hung
+    forever instead of returning its documented validation-only response.
+    _internal_fetch_quote_safe already existed as the bounded pattern for
+    quotes (Step 15L-B/15N) but was never applied to preflight's wiring, and
+    no bars equivalent existed at all. This is that equivalent, mirroring
+    _internal_fetch_quote_safe exactly: run in a thread executor with a hard
+    deadline, raise RuntimeError (caught by run_preflight's except clause) on
+    timeout, never block the caller on a hung background thread.
+
+    Runs _internal_fetch_bars in a thread executor with a hard deadline.
+    On timeout: raises RuntimeError with detail="market_data_timeout".
+
+    Uses shutdown(wait=False) so the caller is never blocked by a hung
+    historical-data thread after the timeout fires -- same rationale as
+    _internal_fetch_quote_safe (Step 15N): ib.qualifyContracts /
+    ib.reqHistoricalData can still be mid-flight against a bad ib object;
+    the leaked thread cleans up on its own once it eventually completes.
+
+    Returns the same list format as _internal_fetch_bars on success.
+    """
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(_internal_fetch_bars, symbol)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            # Tracked on the same shared counter as leaked quote threads --
+            # same class of problem (a lingering ib_insync-driven background
+            # thread after executor.shutdown(wait=False)), same warning
+            # threshold applies regardless of which fetch caused it.
+            _track_leaked_md_thread()
+            raise RuntimeError(
+                f"market_data_timeout: bars data did not arrive within {timeout:.0f}s"
+            )
+    finally:
+        # Never wait for a potentially hung historical-data thread
+        executor.shutdown(wait=False)
 
 
 def _internal_fetch_positions() -> list:
@@ -1521,11 +1573,19 @@ def order_preflight(req: PreflightRequest) -> Dict[str, Any]:
     """
     request_dict = req.model_dump(exclude_none=True)
     proposal_path = request_dict.pop("proposal_path", None)
+    # Phase 19N (2026-08-27): quote/bars must be the bounded (_safe) variants
+    # here. The unbounded _internal_fetch_quote/_internal_fetch_bars call
+    # ib.qualifyContracts() with no deadline -- against a stalled IB Gateway
+    # this hangs the request forever, before any gate ever runs, and raises
+    # nothing that run_preflight()'s except clause can catch. The _safe
+    # wrappers bound the wait to _MARKET_SNAPSHOT_TIMEOUT and raise
+    # RuntimeError on timeout instead, which run_preflight() already handles
+    # as a normal "Data retrieval failed" validation response.
     result = run_preflight(
         request_dict,
         account_provider=_internal_fetch_account if is_connected() else None,
-        quote_provider=_internal_fetch_quote if is_connected() else None,
-        bars_provider=_internal_fetch_bars if is_connected() else None,
+        quote_provider=_internal_fetch_quote_safe if is_connected() else None,
+        bars_provider=_internal_fetch_bars_safe if is_connected() else None,
         position_provider=_internal_fetch_positions if is_connected() else None,
         open_order_provider=open_orders_check,
         proposal_path=proposal_path,
@@ -1796,14 +1856,20 @@ def order_submit(
 
     # 3. Both kill switches pass — delegate to guard.submit_order
     # Phase H1: Authorize guard mutations for this request
+    # Phase 19N: same bounded-fetch fix as order_preflight() above -- this
+    # path's submit-time revalidation (guard.revalidate_before_submit, per
+    # invariant #5) hits the same unbounded ib.qualifyContracts() call and
+    # would hang the same way against a stalled Gateway. Its except clauses
+    # already catch RuntimeError specifically for quote/bars, so the _safe
+    # variants slot in with no other change needed.
     with h1_authorized_scope():
         result = submit_order(
             req.approval_id,
             order_provider=_internal_place_order,
             status_provider=_internal_order_status,
             account_provider=_internal_fetch_account if is_connected() else None,
-            quote_provider=_internal_fetch_quote if is_connected() else None,
-            bars_provider=_internal_fetch_bars if is_connected() else None,
+            quote_provider=_internal_fetch_quote_safe if is_connected() else None,
+            bars_provider=_internal_fetch_bars_safe if is_connected() else None,
         )
     return result
 
@@ -1898,12 +1964,13 @@ def order_dry_run(req: DryRunRequest) -> Dict[str, Any]:
                 "code": "INVALID_FILL"}
 
     # 1. Run preflight validation (same logic as /order/preflight)
+    # Phase 19N: same bounded-fetch fix as /order/preflight and /order/submit.
     try:
         preflight = run_preflight(
             request_dict,
             account_provider=_internal_fetch_account if is_connected() else None,
-            quote_provider=_internal_fetch_quote if is_connected() else None,
-            bars_provider=_internal_fetch_bars if is_connected() else None,
+            quote_provider=_internal_fetch_quote_safe if is_connected() else None,
+            bars_provider=_internal_fetch_bars_safe if is_connected() else None,
             position_provider=_internal_fetch_positions if is_connected() else None,
             open_order_provider=open_orders_check,
             proposal_path=proposal_path,

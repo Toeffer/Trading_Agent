@@ -1055,6 +1055,107 @@ removes the duplication instead of patching one side of it.
   live numbers (price, ATR, sizing math) are correct — that's Hermes's
   advisory judgment and Chris's review, same as before.
 
+## 2026-08-27 — Phase 19N: `/order/preflight` could hang indefinitely on a
+stalled Gateway (Tier 1)
+
+Live incident, run day: Chris ran the exact documented `/order/preflight`
+curl against a real, previously-persisted (Phase 19M) proposal file. It
+never returned — killed manually past 75s, then confirmed with
+`--max-time 60` → `HTTP 000`, 0 bytes. The bridge itself was healthy the
+whole time (`/`, `/health`, `/account`, `/positions` all responded
+instantly) — only this one endpoint was affected.
+
+**Diagnosed by OpenClaw, independently verified against this exact
+checkout before any fix was written** — every claim checked out, exact
+line numbers included:
+
+- `bridge.py`'s `order_preflight()` wired `guard.run_preflight()`'s
+  `quote_provider`/`bars_provider` to the *unbounded*
+  `_internal_fetch_quote`/`_internal_fetch_bars`.
+- Both call `ib.qualifyContracts()` — a synchronous IBKR round-trip with no
+  deadline. Against a stalled/slow Gateway this blocks forever.
+- `guard.run_preflight()`'s except clause around the account/quote/bars
+  fetch catches only `(RuntimeError, ValueError, FileNotFoundError)`. A
+  blocked `ib` call raises nothing — there was never an exception available
+  to catch. Preflight hung before any gate ever ran, which is also why
+  uvicorn's access log showed no `POST /order/preflight` line at all (it
+  only logs after the handler returns).
+- `_internal_fetch_quote_safe` already existed (Step 15L-B/15N) as exactly
+  the right bounded pattern — thread executor, `future.result(timeout=...)`,
+  raises `RuntimeError("market_data_timeout: ...")` on timeout — but was
+  never wired into `order_preflight()`. No bars equivalent existed.
+
+While tracing the fix, found the same unbounded pair wired into two more
+places, same bug, not yet hit live:
+
+- `/order/submit`'s revalidation step (`guard.revalidate_before_submit`,
+  invariant #5 — "submit-time revalidation") — would hang the same way
+  mid-submit against a stalled Gateway.
+- `/order/dry-run`'s internal `run_preflight()` call.
+
+**Fix:** added `_internal_fetch_bars_safe()`, mirroring
+`_internal_fetch_quote_safe()` exactly (thread executor, bounded
+`future.result(timeout=_MARKET_SNAPSHOT_TIMEOUT)`, `RuntimeError` on
+timeout, `executor.shutdown(wait=False)` so a leaked background thread
+never blocks the caller, shares the existing leaked-thread counter/warning
+so repeated bars timeouts are tracked the same way repeated quote timeouts
+already are — including the symmetric `_decrement_leaked_md_thread()` call
+at the end of `_internal_fetch_bars()` itself, matching
+`_internal_fetch_quote()`'s own pattern, so the counter doesn't drift
+upward forever). Re-wired all three call sites
+(`order_preflight()`, `submit_order()`'s revalidation wiring,
+`/order/dry-run`'s internal preflight call) to the `_safe` variants.
+
+No `guard.py` change was needed: `run_preflight()`'s except clause already
+catches `RuntimeError`, and `revalidate_before_submit()`'s quote/bars except
+clauses already catch `RuntimeError` specifically — the `_safe` wrappers'
+timeout `RuntimeError` slots into handling that already existed and was
+already correct. This was purely a wiring bug in `bridge.py`.
+
+Built and PR'd through the normal repo workflow rather than a live hotfix
+directly on the host — `bridge.py` is Tier 1 and the order-safety path;
+git history, tests, and Chris's explicit review apply the same as any
+other Tier-1 change, same as Phase 19L.
+
+### Verification
+
+- `python3.12 -m py_compile bridge.py guard.py ibkr_operator.py
+  hermes_advisory.py strategy_v1_1_core.py strategy_v1_1_advisory.py` —
+  clean.
+- New: `tests/test_phase19n_preflight_bounded_market_data.py` (10 in the
+  curated suite + 3 `@pytest.mark.integration`, mirroring
+  `test_step15n_backpressure_leak.py`'s existing pattern for the quote
+  wrapper). Curated-suite tests: source regression proving all three call
+  sites actually use the `_safe` variants (not just that the variants
+  exist), that no unbounded wiring survived anywhere in `bridge.py`, that
+  the new wrapper actually bounds the call (thread executor +
+  `future.result(timeout=...)`) rather than being a same-named passthrough,
+  and that the leaked-thread counter is symmetric. Plus a guard.py-only
+  behavioral pair (no `bridge.py`/`fastapi` import needed) proving the
+  exact original failure mode is fixed: a `quote_provider`/`bars_provider`
+  that raises `RuntimeError` (exactly what the `_safe` wrappers do on
+  timeout) now produces a clean `{"passed": False, "error": "..."}`
+  response from `run_preflight()`, never an uncaught exception. Integration
+  tests (skipped in this sandbox — no `fastapi` installed here, same as the
+  existing Step 15N ones) mirror `TestFetchQuoteSafeTimeout` for the new
+  bars wrapper, plus an end-to-end test simulating both fetches hung and
+  asserting `/order/preflight`'s own code path returns in well under the
+  live ~75s+ hang. Registered in `scripts/run-ci-portable`. Full curated
+  suite: 2540 passed (was 2530), 0 failures, 3150 subtests passed.
+
+### Still open
+
+- Confirm live, once merged and the bridge is restarted: re-run the exact
+  curl Chris used against the same persisted AAPL proposal file and
+  confirm a full gate-by-gate JSON response (not a hang) — OC already
+  confirmed Gate H passes independently via a direct
+  `guard.gate_proposal_discipline()` call against the file; this closes the
+  loop through the actual endpoint.
+- Requires a bridge restart to take effect (unlike Phase 19M, which only
+  touched `ibkr_operator.py`/`hermes_advisory.py` and needed none) — the
+  bridge is a long-running process, not invoked fresh per call.
+- Tier-1 file — held for explicit merge approval rather than self-merged.
+
 ---
 
 ## Verification Queue (resolve against the live system)

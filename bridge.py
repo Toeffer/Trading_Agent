@@ -182,6 +182,7 @@ def _verify_h1_token(token: str | None) -> bool:
     Returns False if no H1 token hash is configured (backward compat).
     """
     import hashlib
+    import hmac
     if not H1_APPROVAL_TOKEN_HASH:
         return False
     if not token or not isinstance(token, str):
@@ -189,7 +190,15 @@ def _verify_h1_token(token: str | None) -> bool:
     token = token.strip()
     if not token:
         return False
-    return hashlib.sha256(token.encode()).hexdigest() == H1_APPROVAL_TOKEN_HASH
+    # Constant-time compare (2026-09-04, Fable code review): a plain ==
+    # short-circuits on the first differing byte, leaking timing
+    # information about how much of the hash an attacker has guessed
+    # correctly. Low real-world exploitability here (local-only process,
+    # root-owned token file, not a network-facing auth endpoint an
+    # attacker can time precisely) but hmac.compare_digest is the correct
+    # primitive for any secret comparison and costs nothing to use.
+    computed = hashlib.sha256(token.encode()).hexdigest()
+    return hmac.compare_digest(computed, H1_APPROVAL_TOKEN_HASH)
 
 
 ib = IB() if IB else None
@@ -1877,7 +1886,6 @@ def order_submit(
 # --- Read-only market data endpoints ---
 
 import math
-import asyncio
 from pydantic import BaseModel
 
 try:
@@ -1948,7 +1956,7 @@ def order_dry_run(req: DryRunRequest) -> Dict[str, Any]:
       - SELL 3 AAPL (simulates approval + partial fill)
       - Manual-terminal reconciliation exercises
     """
-    from guard import run_preflight, append_guard_event, _now_utc_iso
+    from guard import run_preflight, append_guard_event
     from datetime import datetime, timezone
     import json
 
@@ -2266,195 +2274,6 @@ def market_quote(req: QuoteRequest):
 
     return result
 
-# --- Read-only market data endpoints ---
-
-import math
-import asyncio
-from pydantic import BaseModel
-
-try:
-    from ib_insync import Stock
-except Exception:
-    Stock = None
-
-
-class QuoteRequest(BaseModel):
-    symbol: str
-    exchange: str = "SMART"
-    currency: str = "USD"
-    delayed: bool = True
-
-
-def _safe_float(x):
-    try:
-        if x is None:
-            return None
-        y = float(x)
-        if math.isnan(y):
-            return None
-        return y
-    except Exception:
-        return None
-
-
-def _ensure_worker_event_loop():
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
-
-
-@app.post("/market/quote")
-def market_quote(req: QuoteRequest):
-    """
-    Read-only quote endpoint.
-    No orders. Uses delayed data by default.
-    """
-    _ensure_worker_event_loop()
-
-    if IB is None or Stock is None or ib is None:
-        raise HTTPException(status_code=500, detail="ib_insync not available")
-
-    if not ib.isConnected():
-        connect()
-
-    contract = Stock(req.symbol.upper(), req.exchange, req.currency)
-    qualified = ib.qualifyContracts(contract)
-
-    if not qualified:
-        return {
-            "ok": False,
-            "symbol": req.symbol.upper(),
-            "error": "contract not found"
-        }
-
-    contract = qualified[0]
-
-    # 1 = live, 3 = delayed, 4 = delayed-frozen
-    if req.delayed:
-        ib.reqMarketDataType(3)
-    else:
-        ib.reqMarketDataType(1)
-
-    ticker = ib.reqMktData(contract, "", False, False)
-    ib.sleep(3)
-
-    result = {
-        "ok": True,
-        "symbol": contract.symbol,
-        "conId": contract.conId,
-        "exchange": contract.exchange,
-        "primaryExchange": getattr(contract, "primaryExchange", None),
-        "currency": contract.currency,
-        "delayed": req.delayed,
-        "bid": _safe_float(ticker.bid),
-        "ask": _safe_float(ticker.ask),
-        "last": _safe_float(ticker.last),
-        "close": _safe_float(ticker.close),
-        "marketPrice": _safe_float(ticker.marketPrice()),
-    }
-
-    try:
-        ib.cancelMktData(contract)
-    except Exception:
-        pass
-
-    return result
-
-# --- Read-only market data endpoints ---
-
-import math
-import asyncio
-from pydantic import BaseModel
-
-try:
-    from ib_insync import Stock
-except Exception:
-    Stock = None
-
-
-class QuoteRequest(BaseModel):
-    symbol: str
-    exchange: str = "SMART"
-    currency: str = "USD"
-    delayed: bool = True
-
-
-def _safe_float(x):
-    try:
-        if x is None:
-            return None
-        y = float(x)
-        if math.isnan(y):
-            return None
-        return y
-    except Exception:
-        return None
-
-
-def _ensure_worker_event_loop():
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
-
-
-@app.post("/market/quote")
-def market_quote(req: QuoteRequest):
-    """
-    Read-only quote endpoint.
-    No orders. Uses delayed data by default.
-    """
-    _ensure_worker_event_loop()
-
-    if IB is None or Stock is None or ib is None:
-        raise HTTPException(status_code=500, detail="ib_insync not available")
-
-    if not ib.isConnected():
-        connect()
-
-    contract = Stock(req.symbol.upper(), req.exchange, req.currency)
-    qualified = ib.qualifyContracts(contract)
-
-    if not qualified:
-        return {
-            "ok": False,
-            "symbol": req.symbol.upper(),
-            "error": "contract not found"
-        }
-
-    contract = qualified[0]
-
-    # 1 = live, 3 = delayed, 4 = delayed-frozen
-    if req.delayed:
-        ib.reqMarketDataType(3)
-    else:
-        ib.reqMarketDataType(1)
-
-    ticker = ib.reqMktData(contract, "", False, False)
-    ib.sleep(3)
-
-    result = {
-        "ok": True,
-        "symbol": contract.symbol,
-        "conId": contract.conId,
-        "exchange": contract.exchange,
-        "primaryExchange": getattr(contract, "primaryExchange", None),
-        "currency": contract.currency,
-        "delayed": req.delayed,
-        "bid": _safe_float(ticker.bid),
-        "ask": _safe_float(ticker.ask),
-        "last": _safe_float(ticker.last),
-        "close": _safe_float(ticker.close),
-        "marketPrice": _safe_float(ticker.marketPrice()),
-    }
-
-    try:
-        ib.cancelMktData(contract)
-    except Exception:
-        pass
-
-    return result
 # --- Read-only historical bars endpoint ---
 
 class BarsRequest(BaseModel):

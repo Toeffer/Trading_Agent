@@ -7831,6 +7831,14 @@ def _run_post_gateway_reconnect_proof(
     severity = "HOLD"
     operator_action_required = False
     suggested_operator_actions: list[str] = []
+    # Bug fix (2026-09-04, Fable code review / ruff F821): this branch used
+    # to write `result["guard_state_blocker"] = True` here, but `result`
+    # isn't built until step 11 below -- reaching this branch (a guard-state
+    # hash mismatch during a reconnect proof, i.e. exactly the scenario
+    # this flag exists to surface) raised NameError instead of returning
+    # the "DO NOT PROCEED" result. Set a plain flag here instead and fold
+    # it into `result` once it actually exists.
+    guard_state_blocker = False
 
     # Check active monitor alerts
     live_alerts = monitor_alerts_after.get("live", []) if monitor_alerts_after else []
@@ -7893,7 +7901,7 @@ def _run_post_gateway_reconnect_proof(
                 "Run: ibkr-operator guard-state-reconcile --json",
                 "Run: ibkr-operator doctor --json",
             ]
-            result["guard_state_blocker"] = True
+            guard_state_blocker = True
         else:
             diagnosis = "post_connect_evidence_ok"
             severity = "OK"
@@ -8013,6 +8021,7 @@ def _run_post_gateway_reconnect_proof(
         "severity": severity,
         "operator_action_required": operator_action_required,
         "suggested_operator_actions": suggested_operator_actions,
+        "guard_state_blocker": guard_state_blocker,
         "no_broker_mutation": True,
         "no_order_window_opened": True,
         "forbidden_endpoint_scan": forbidden_scan,
@@ -28426,9 +28435,6 @@ _PHASE17J_DIAGNOSIS = {
     "simulation_hash_mismatch_failed": "simulation_hash_mismatch_failed",
     "review_hash_mismatch_failed": "review_hash_mismatch_failed",
     "tampered_evidence_ref_failed": "tampered_evidence_ref_failed",
-    "disallowed_instrument_failed": "disallowed_instrument_failed",
-    "invalid_side_failed": "invalid_side_failed",
-    "invalid_quantity_failed": "invalid_quantity_failed",
     "deterministic_failed": "deterministic_failed",
     "no_forbidden_endpoints_failed": "no_forbidden_endpoints_failed",
     "no_broker_identifiers_failed": "no_broker_identifiers_failed",
@@ -31060,10 +31066,8 @@ def _run_level1_h1_boundary_audit_checkpoint(
         "no_preflight_endpoint_called": True,
         "no_trade_window_helper_called": True,
         "no_trade_window_helper_called_by_drill": True,
-        "no_order_window_opened": True,
         "no_order_window_seen": True,
         "no_h1_seen": True,
-        "h1_token_not_used": True,
         "h1_boundary_preserved": True,
         "manual_canary_required": True,
         "manual_canary_executed": False,
@@ -31317,8 +31321,8 @@ def _phase16q_no_go(
         "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
         "no_trade_window_helper_called": True,
         "no_trade_window_helper_called_by_drill": True,
-        "no_order_window_opened": True, "no_order_window_seen": True,
-        "no_h1_seen": True, "h1_token_not_used": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
         "h1_boundary_preserved": True,
         "manual_canary_required": True,
         "manual_canary_executed": False,
@@ -32276,7 +32280,6 @@ def _phase16r_no_go(
         "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
         "no_trade_window_helper_called": True,
         "no_trade_window_helper_called_by_drill": True,
-        "no_mutation_endpoint_called": True,
         "no_mutation_endpoint_called": True,
         "no_order_mutation": True,
         "h1_token_not_used": True,
@@ -34050,7 +34053,6 @@ def _run_level1_restart_persistence_safety_checkpoint(
         "suggested_operator_actions": suggested_actions,
         "git": git_section, "required_tags": required_tags,
         "before": before,
-        "after": after,
         "after": {
             "connected": after_connected,
             "mode": after_mode,
@@ -55342,8 +55344,8 @@ def main() -> None:
                 "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
                 "no_trade_window_helper_called": True,
                 "no_trade_window_helper_called_by_drill": True,
-                "no_order_window_opened": True, "no_order_window_seen": True,
-                "no_h1_seen": True, "h1_token_not_used": True,
+                "no_order_window_seen": True,
+                "no_h1_seen": True,
                 "h1_boundary_preserved": True,
                 "manual_canary_required": True,
                 "manual_canary_executed": False,
@@ -55499,6 +55501,7 @@ def main() -> None:
             try:
                 _PHASE16S_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
                 ep = _PHASE16S_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                import json as _json
                 with open(ep, "w", encoding="utf-8") as f:
                     _json.dump(result, f, indent=2, default=str)
                 result["export_path"] = str(ep)
@@ -55592,6 +55595,7 @@ def main() -> None:
             try:
                 _PHASE16T_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
                 ep = _PHASE16T_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                import json as _json
                 with open(ep, "w", encoding="utf-8") as f:
                     _json.dump(result, f, indent=2, default=str)
                 result["export_path"] = str(ep)

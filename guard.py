@@ -5420,6 +5420,41 @@ def _compute_positions_from_events() -> dict[str, int]:
     return {s: q for s, q in net.items() if q > 0}
 
 
+def read_approval_records(path: str | Path | None = None) -> list[dict]:
+    """Read and parse all records from approval-records.jsonl.
+
+    Mirrors read_guard_events()'s pattern exactly. Malformed lines are
+    skipped rather than raising, matching every other reader of this file
+    in guard.py (see reconcile_approvals_on_startup(), the submitted-approval
+    scan below).
+
+    Returns list of record dicts in file order. Returns empty list if the
+    file does not exist.
+
+    Bug fix (2026-08-27, Fable code review): this function did not exist at
+    all -- _find_active_stop() called it anyway, immediately caught by its
+    own bare `except Exception: pass`, so the stop-breach detector's primary
+    lookup (approval records) silently always fell through to its secondary
+    lookup (order_submitted events) instead of ever actually running. No
+    open positions were affected while this went unnoticed (nothing to
+    breach-check), but it would have silently degraded stop-breach alerting
+    the first time it mattered.
+    """
+    log_path = Path(path) if path else APPROVAL_RECORDS_PATH
+    if not log_path.exists():
+        return []
+    records = []
+    for line in log_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return records
+
+
 def _find_active_stop(symbol: str) -> float | None:
     """Find the most recent stop_price for an active BUY position.
 
@@ -5435,10 +5470,19 @@ def _find_active_stop(symbol: str) -> float | None:
     try:
         records = read_approval_records()
         for rec in reversed(records):
+            if rec.get("status") != "approved":
+                continue
             proposal = rec.get("proposal", {})
             if proposal.get("symbol", "").upper() == sym:
                 if proposal.get("action", "").upper() == "BUY":
-                    sp = proposal.get("stop_price")
+                    # Bug fix (2026-08-27): stop_price lives under the
+                    # record's "validation" subset, not "proposal" --
+                    # create_approval_record()'s _ALLOWED_PROPOSAL_FIELDS
+                    # never includes stop_price, so proposal.get("stop_price")
+                    # was unconditionally None even once read_approval_records()
+                    # itself was fixed to exist.
+                    validation = rec.get("validation", {})
+                    sp = validation.get("stop_price")
                     if sp is not None:
                         return float(sp)
     except Exception:

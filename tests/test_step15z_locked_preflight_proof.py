@@ -107,6 +107,7 @@ BASE_PATCHES = lambda: [
 ]
 
 
+@pytest.mark.host
 class TestLockedPreflightProof:
 
     def _run(self, connected=True, safety=None, preflight=None, alerts=None,

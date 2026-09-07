@@ -864,6 +864,7 @@ class TestStep15NBackpressureStillPasses:
             assert active == 0
 
 
+@pytest.mark.host
 class TestBridgeTimeoutWrapping:
     """Verify bridge-side timeout wrapping for contract and bars endpoints.
 

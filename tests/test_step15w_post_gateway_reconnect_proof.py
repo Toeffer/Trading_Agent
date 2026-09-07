@@ -154,6 +154,7 @@ def _evidence_ok(ep: str):
 # Tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestPostGatewayReconnectProof:
 
     def _run(self, bridge_health=None, monitor_alerts=None,

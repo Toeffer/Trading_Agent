@@ -32,4 +32,11 @@ target-version = "py312"
 # Broadening this selection further (F401 unused imports, F841 unused
 # variables, F541 pointless f-strings -- all confirmed cosmetic, not
 # correctness-relevant) is also a follow-up, not part of this change.
-select = ["F821", "F823", "F601", "F402"]
+# F811 (redefinition of an unused name) added 2026-09-07 for production
+# files: Phase 19P's cleanup left them clean, and the CI gate now keeps them
+# that way. tests/ keeps its harmless repeated-local-reimport idiom for now
+# (per-file ignore below) — still the mechanical follow-up noted above.
+select = ["F821", "F823", "F601", "F402", "F811"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F811"]

@@ -122,6 +122,7 @@ class TestContextVarAuthorizationScope:
 # T2: H1 token behavior
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestH1TokenBehavior:
     """Verify H1 token verification behavior."""
 
@@ -212,6 +213,7 @@ class TestH1TokenBehavior:
 # T3: Canary timeout
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestCanaryTimeout:
     """Bounded timeout around canary-style tests."""
 

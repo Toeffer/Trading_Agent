@@ -178,6 +178,7 @@ class TestQualifyContractProbe:
         assert result["aborted_503"] is True
 
 
+@pytest.mark.host
 class TestContractQualificationDrill:
     """Integration tests for _run_contract_qualification_drill."""
 

@@ -2117,6 +2117,7 @@ ALLOWED_EVENT_TYPES = frozenset({
     "preflight_pass",
     "preflight_fail",
     "approval_timeout",
+    "approval_invalidated_restart",
     "user_approved",
     "user_denied",
     "halt_activated",
@@ -3055,50 +3056,44 @@ def _active_approvals_path() -> Path:
 
 
 def _load_active_approvals() -> dict[str, dict]:
-    """Reload active (pending/approved) approvals from disk.
+    """Invalidate every pending/approved-but-unsubmitted approval left on disk.
 
-    Primary source: active-approvals.json (snapshot written after every mutation).
-    Fallback: approval-records.jsonl (original records file).
+    Safety invariant #12 (CLAUDE.md §3, RUNBOOK §L9): on bridge restart, all
+    in-memory pending and approved-but-unsubmitted approvals are invalid.
+    Fresh preflight -> fresh approval, always.
 
-    Filters out expired, submitted, and denied records.
-    Called at startup to survive bridge restarts.
+    This function used to *restore* those records from active-approvals.json
+    (fallback: approval-records.jsonl) so they survived a restart. That
+    contradicted the invariant: an approval ruled up to 300 s before a
+    restart came back live in the new process and passed the submit
+    validators; only the kill switches stood between it and IBKR.
+
+    Now it does the opposite. Every pending/approved record that is not
+    already submitted is
+      - appended to approval-records.jsonl with status "expired",
+        ruled_by "system", expiry_reason "bridge_restart"
+      - logged as an approval_invalidated_restart guard event
+    and the active-approvals.json snapshot is reset to {}.  _active_approvals
+    always starts empty.  The function name is kept so the existing call
+    site in reconcile_approvals_on_startup() and test patches still work.
+
+    Runs inside h1_authorized_scope(): deterministic startup housekeeping
+    with no operator degrees of freedom (same reasoning as the preflight
+    calendar rollover, Phase 19L), not an order mutation.
     """
     global _active_approvals
     _active_approvals.clear()
-
     now_utc = datetime.now(timezone.utc)
-    snapshot_path = ACTIVE_APPROVALS_PATH
+    now_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # Primary: load from active-approvals.json snapshot
-    loaded = False
-    if snapshot_path.exists():
+    # Latest known record per approval_id. approval-records.jsonl is an
+    # append-only log (later line supersedes earlier); the snapshot is
+    # rewritten on every mutation, so it wins over the log.
+    candidates: dict[str, dict] = {}
+
+    records_path = APPROVAL_RECORDS_PATH
+    if records_path.exists():
         try:
-            snapshot_data = json.loads(snapshot_path.read_text())
-            if isinstance(snapshot_data, dict):
-                for aid, rec in list(snapshot_data.items()):
-                    # Filter expired
-                    expires_str = rec.get("expires_at_utc")
-                    if expires_str:
-                        try:
-                            expires = datetime.fromisoformat(
-                                _normalize_timestamp(expires_str)
-                            )
-                            if now_utc > expires:
-                                continue
-                        except (ValueError, TypeError):
-                            pass
-                    # Filter submitted
-                    if aid in _submitted_approvals:
-                        continue
-                    _active_approvals[aid] = rec
-                loaded = True
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    # Fallback: scan approval-records.jsonl
-    if not loaded:
-        records_path = APPROVAL_RECORDS_PATH
-        if records_path.exists():
             for line in records_path.read_text().splitlines():
                 line = line.strip()
                 if not line:
@@ -3107,32 +3102,69 @@ def _load_active_approvals() -> dict[str, dict]:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-
-                status = rec.get("status", "")
-                if status not in ("pending", "approved"):
+                if not isinstance(rec, dict):
                     continue
-
                 aid = rec.get("approval_id", "")
-                if not aid:
-                    continue
+                if aid:
+                    candidates[aid] = rec
+        except OSError:
+            pass
 
-                # Skip expired
-                expires_str = rec.get("expires_at_utc")
-                if expires_str:
-                    try:
-                        expires = datetime.fromisoformat(
-                            _normalize_timestamp(expires_str)
-                        )
-                        if now_utc > expires:
-                            continue
-                    except (ValueError, TypeError):
-                        pass
+    snapshot_path = ACTIVE_APPROVALS_PATH
+    if snapshot_path.exists():
+        try:
+            snapshot_data = json.loads(snapshot_path.read_text())
+            if isinstance(snapshot_data, dict):
+                for aid, rec in snapshot_data.items():
+                    if isinstance(rec, dict) and aid:
+                        candidates[aid] = rec
+        except (json.JSONDecodeError, OSError):
+            pass
 
-                # Skip already-submitted
-                if aid in _submitted_approvals:
-                    continue
+    invalidated: list[dict] = []
+    for aid, rec in candidates.items():
+        previous_status = rec.get("status", "")
+        if previous_status not in ("pending", "approved"):
+            continue
+        if aid in _submitted_approvals:
+            continue
+        was_live = True
+        expires_str = rec.get("expires_at_utc")
+        if expires_str:
+            try:
+                expires = datetime.fromisoformat(_normalize_timestamp(expires_str))
+                was_live = now_utc <= expires
+            except (ValueError, TypeError):
+                pass
+        rec = dict(rec)
+        rec["approval_id"] = aid
+        rec["previous_status"] = previous_status
+        rec["status"] = "expired"
+        rec["ruling_at_utc"] = now_str
+        rec["ruled_by"] = "system"
+        rec["expiry_reason"] = "bridge_restart"
+        rec["was_live_at_restart"] = was_live
+        invalidated.append(rec)
 
-                _active_approvals[aid] = rec
+    with h1_authorized_scope():
+        for rec in invalidated:
+            try:
+                _append_approval_record(rec)
+            except OSError:
+                pass
+            append_guard_event("approval_invalidated_restart", {
+                "approval_id": rec["approval_id"],
+                "symbol": (rec.get("proposal") or {}).get("symbol"),
+                "previous_status": rec["previous_status"],
+                "was_live_at_restart": rec["was_live_at_restart"],
+                "expires_at": rec.get("expires_at_utc"),
+            })
+        # Reset the snapshot so nothing on disk still reads as active.
+        if invalidated or snapshot_path.exists():
+            try:
+                _save_active_approvals()
+            except OSError:
+                pass
 
     return _active_approvals
 
@@ -3244,9 +3276,10 @@ def reconcile_approvals_on_startup() -> dict:
         except OSError:
             pass
 
-    # 4.b. Reload active approvals from disk (survives bridge restarts)
-    # Loads pending/approved non-expired, non-submitted, non-denied records
-    # into _active_approvals so that submit_order finds them after restart
+    # 4.b. Invariant #12: invalidate (never restore) pending/approved-but-
+    # unsubmitted approvals left on disk by the previous process. Records
+    # them as expired (expiry_reason=bridge_restart), logs an event, resets
+    # the snapshot. _active_approvals starts empty after every restart.
     _load_active_approvals()
 
     # 5. Scan guard-events.jsonl for order_unconfirmed events (stale/submitted-unacknowledged)
@@ -3851,7 +3884,21 @@ def submit_order(
                                 except (ValueError, TypeError):
                                     pass
                             if approval_error is None:
-                                record = rec_check
+                                # Invariant #12: a record that exists only on
+                                # disk was created before a bridge restart.
+                                # Never promote it to a submittable record,
+                                # even if it still reads "approved" and is
+                                # inside its 300 s window.
+                                approval_error = {
+                                    "submitted": False,
+                                    "error": (
+                                        f"Approval '{approval_id}' is not active in this "
+                                        f"bridge process (invalidated by bridge restart, "
+                                        f"safety invariant #12). Run a fresh preflight and "
+                                        f"obtain a fresh approval."
+                                    ),
+                                    "code": "NOT_FOUND",
+                                }
                         break
         except OSError:
             pass

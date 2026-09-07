@@ -10,7 +10,7 @@ from fastapi import Request
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Header
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 load_dotenv()
 
@@ -1553,6 +1553,15 @@ from monitor import health_summary, reconcile_snapshot, load_events, load_approv
 
 
 class PreflightRequest(BaseModel):
+    # Strict preflight (CLAUDE.md §5): unknown fields must be rejected, and
+    # guard._validate_preflight_request() is the single place that decides
+    # which fields exist. Pydantic's default extra="ignore" silently dropped
+    # unknown keys (e.g. "whatIf") before the guard ever saw them, so the
+    # request passed field validation instead of failing. Keep extras so
+    # the guard rejects them with the documented
+    # {"passed": false, "error": "Unknown request field ..."} response.
+    model_config = ConfigDict(extra="allow")
+
     symbol: str
     action: str = "BUY"
     totalQuantity: int
@@ -1713,8 +1722,9 @@ def _validate_approval_for_submit(approval_id: str) -> dict | None:
 
     # 1. Check in-memory
     record = _active_approvals.get(approval_id)
+    from_disk = False
 
-    # 2. If not in memory, scan approval-records.jsonl
+    # 2. If not in memory, scan approval-records.jsonl (for error codes only)
     if record is None:
         try:
             p = APPROVAL_RECORDS_PATH
@@ -1728,6 +1738,7 @@ def _validate_approval_for_submit(approval_id: str) -> dict | None:
                         continue
                     if rec_check.get("approval_id") == approval_id:
                         record = rec_check
+                        from_disk = True
                         break
         except OSError:
             pass
@@ -1779,6 +1790,22 @@ def _validate_approval_for_submit(approval_id: str) -> dict | None:
                 }
         except (ValueError, TypeError):
             pass
+
+    # Invariant #12 (CLAUDE.md §3.12, RUNBOOK §L9): an approval that is not
+    # in this process's memory was created before a bridge restart. It is
+    # invalid even if the on-disk record still reads "approved" and is inside
+    # its 300 s window. guard._load_active_approvals() no longer restores
+    # such records at startup; this is the matching check on the submit path.
+    if from_disk and status in ("pending", "approved"):
+        return {
+            "submitted": False,
+            "error": (
+                f"Approval '{approval_id}' is not active in this bridge process "
+                f"(invalidated by bridge restart, safety invariant #12). "
+                f"Run a fresh preflight and obtain a fresh approval."
+            ),
+            "code": "NOT_FOUND",
+        }
 
     # Valid: approved and not expired/submitted/denied
     if status != "approved":

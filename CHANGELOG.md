@@ -1158,6 +1158,81 @@ other Tier-1 change, same as Phase 19L.
 
 ---
 
+## 2026-09-07 — Repo review fixes: invariant #12 restart invalidation + strict preflight boundary
+
+Two deviations between the written safety rules and the code, found in a
+read-only repo review and verified live against a test client before fixing.
+
+### 1. Approvals survived a bridge restart (invariant #12 was false)
+
+`CLAUDE.md §3.12` and `RUNBOOK §L9` state that on bridge restart every
+in-memory pending and approved-but-unsubmitted approval is invalid and a
+fresh preflight → fresh approval is always required. The code did the
+opposite: `guard._load_active_approvals()` ran inside
+`reconcile_approvals_on_startup()` and *restored* those records from
+`active-approvals.json` (fallback `approval-records.jsonl`), filtering only
+expired and already-submitted ones. Both submit validators then accepted a
+record that existed only on disk: `bridge._validate_approval_for_submit()`
+returned "valid" for it, and `guard.submit_order()`'s disk fallback promoted
+an on-disk `approved` record to a submittable one. Reproduced: an approval
+written to disk before import came back live in the new process, passed the
+validator, and was stopped only by the kill switches.
+
+Fix (guard.py, bridge.py):
+- `guard._load_active_approvals()` now **invalidates instead of restoring**.
+  Every pending/approved, not-yet-submitted record found in the snapshot or
+  the records log is appended to `approval-records.jsonl` as `expired` with
+  `ruled_by=system`, `expiry_reason=bridge_restart`, `previous_status` and
+  `was_live_at_restart`; one `approval_invalidated_restart` guard event per
+  record (new entry in `ALLOWED_EVENT_TYPES`); snapshot reset to `{}`.
+  `_active_approvals` always starts empty. Runs inside `h1_authorized_scope()`
+  (deterministic startup housekeeping, same reasoning as the Phase 19L
+  rollover). Name kept so the call site and existing test patches still work.
+- `guard.submit_order()`: a record found only on disk with status `approved`
+  is no longer promoted; returns `NOT_FOUND` with an invariant-#12 message.
+  `EXPIRED` / `ALREADY_SUBMITTED` / denied codes are unchanged.
+- `bridge._validate_approval_for_submit()`: same rule — a record that is not
+  in this process's memory returns `NOT_FOUND` even if the on-disk copy reads
+  `approved` and is inside its 300 s window. `/order/approve` already used
+  memory only, so a pre-restart pending approval now 404s as documented.
+
+### 2. Strict preflight not enforced at the HTTP boundary
+
+`CLAUDE.md §5` says preflight is strict (unknown fields rejected).
+`guard._validate_preflight_request()` does reject them, but
+`bridge.PreflightRequest` used Pydantic's default `extra="ignore"`, so an
+unknown field (e.g. `whatIf`) was silently dropped before the guard saw it
+and the request went on to data retrieval. Fix: `model_config =
+ConfigDict(extra="allow")` on `PreflightRequest` so extras reach the guard
+and get the documented `{"passed": false, "error": "Unknown request field
+..."}` response. The guard stays the single place that decides which fields
+exist.
+
+### Tests
+
+`tests/test_invariant12_restart_invalidation.py` (15 tests), registered in
+`scripts/run-ci-portable`: startup invalidation (live records expired +
+logged + snapshot reset; submitted/denied/expired left alone; no-files
+no-op), `guard.submit_order()` refuses a disk-only approval before any kill
+switch and never calls the order provider, bridge source guards for the
+matching validator branch and the model config, guard-level unknown-field
+rejection, and a subprocess bridge probe (isolated `HOME`, no IBKR, skipped
+without fastapi) proving: nothing is live after start, snapshot reset,
+the on-disk copy is expired with `expiry_reason=bridge_restart`,
+validator/submit/approve all refuse the pre-restart approval even with a
+valid H1 token, `/order/preflight` rejects `whatIf`, and known fields still
+reach the gates.
+
+### Still open
+
+- Requires a bridge restart to take effect (`guard.py`/`bridge.py` are
+  loaded by the long-running service). On that restart the new code will,
+  by design, expire anything pending/approved on disk — expected to be a
+  no-op today.
+- Tier-1 files (`bridge.py`, `guard.py`) — held for explicit merge approval.
+
+---
+
 ## Verification Queue (resolve against the live system)
 
 0. ✅ **RESOLVED (H2): Risk-rails divergence.** Reading (A) confirmed — guard.py enforces

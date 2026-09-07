@@ -2551,6 +2551,17 @@ def run_preflight(
         gates.append({"gate": "loss_halts", "passed": ok, "reason": reason, "details": details})
         if not ok:
             all_pass = False
+        # Gate G — close-only position gate (invariant #9).
+        # Bug fix (2026-09-07): this gate was never wired. Since 63052ed
+        # (which added gate_close_only()) the branch appended a "close_only"
+        # entry that silently reused Gate E's (ok, reason, details), so
+        # gate_close_only() never ran. Gate E only checks the position while
+        # a loss halt is active, so with no halt a SELL for a symbol with no
+        # position, or larger than the position, passed preflight — the
+        # exact short-creation path invariant #9 exists to block. Found by
+        # tests/test_claude_md_consistency.py's "every gate function is
+        # wired into run_preflight()" assertion.
+        ok, reason, details = gate_close_only(symbol, proposed_shares, position_provider)
         gates.append({"gate": "close_only", "passed": ok, "reason": reason, "details": details})
         if not ok:
             all_pass = False

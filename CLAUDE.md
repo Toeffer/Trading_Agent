@@ -130,9 +130,10 @@ health checks, positions, contract lookup, quotes, bars, account data, sizing, a
 planning. Never assume order capability exists in MCP.
 
 Endpoint map (commands in RUNBOOK): read path `health/connect/positions/account`; market
-data `market/quote`, `market/bars`; order path `order/preflight|approve|submit`; five
-`GET /monitor/*` endpoints; `/readiness`, `/status`; `audit/bundle|verify|release`;
-`/order/dry-run` + scenarios + `/report`.
+data `market/quote`, `market/bars`; order path `order/preflight|approve|submit`; eight
+read-only `GET /monitor/*` endpoints plus one `POST /monitor/open-orders/reconcile`
+(writes a manual reconciliation record only — never guard state); `/readiness`,
+`/status`; `audit/bundle|verify|release`; `/order/dry-run` + scenarios + `/report`.
 
 **Gateway reality:** IB Gateway is not a permanently authenticated daemon; it may need
 manual login/2FA. If the Gateway is down or port 4002 is closed → stop trading logic and
@@ -160,11 +161,21 @@ YAML at enforcement time. Summary (reflecting current YAML):
 - Shares: `min( floor(max_notional / entry), floor(max_risk / stop_distance) )`.
 - FX: fetch EUR/USD from `ibkr_account` `ExchangeRate` on **every** preflight; never cache,
   never silently assume. State the FX assumption in every sizing output.
-- Preflight is strict (unknown fields rejected). Fields: `symbol, action, totalQuantity,
-  orderType, limitPrice, stopPrice, mode`. Actions: `BUY`, `SELL` (close-only).
-  Types: `MKT`, `LMT` (LMT validation-only at submit).
-- Gates: **A** allowlist · **B** notional · **C** risk · **D** trades/day · **E** loss
-  halts · **F** exposure · **G** close-only. SELL runs A, D, E, G (B/C/F irrelevant for a close).
+- Preflight is strict (unknown fields rejected at the guard; the bridge passes unknown
+  fields through so the guard sees them). Fields: `symbol, action, totalQuantity,
+  orderType, limitPrice, stopPrice, stopPercent, mode`, plus `proposal_path` (bridge-only:
+  path to the persisted proposal file Gate H validates). Actions: `BUY`, `SELL`
+  (close-only). Types: `MKT`, `LMT` (LMT validation-only; submit is always MKT).
+- Gates (`guard.py` function in backticks): **A** allowlist (`gate_allowlist`) ·
+  **B** notional (`gate_notional`) · **C** risk (`gate_risk`) · **D** trades/day
+  (`gate_trades_per_day`) · **E** loss halts (`gate_loss_halts`) · **F** exposure
+  (`gate_exposure`) · **G** close-only (`gate_close_only`) · **H** proposal discipline
+  (`gate_proposal_discipline`) · **I** sector concentration (`gate_sector_concentration`) ·
+  open-orders conflict (`gate_open_orders`).
+  Before the gates, preflight rejects: unknown fields, non-allowlisted symbols, US-domiciled
+  ETFs (BUY only), and an implausible or missing EUR/USD rate.
+  BUY runs A, H, B, C, D, E, F, I. SELL runs A, H, D, E (close-only exempt from an active
+  halt when the position is confirmed), G, open-orders (B/C/F/I irrelevant for a close).
 
 **Sizing output discipline:** never state final share counts unless account equity, price,
 ATR, stop distance, and FX are all available. Account fields (`NetLiquidation`,
@@ -260,33 +271,37 @@ by default.
 
 1. **No history here.** When a fact changes, the old version moves to `CHANGELOG.md` with
    a date — it never lingers as a stale sentence.
-2. **No mutable state outside §10.** §10 is regenerated from the live system, never
-   hand-edited.
+2. **No mutable state anywhere in this file.** §10 carries only claims the consistency
+   test can verify from the repo; live values (positions, counts, halts) are queried, never
+   written here.
 3. Safety invariants (§3) change only via a Chris-approved, reviewed, git-tagged edit.
-4. A consistency test (planned: test 139) should assert this file's claims — allowlist,
-   switch defaults, readiness flags — against the YAML, `.env`, and `GET /status` on
-   every test run.
+4. `tests/test_claude_md_consistency.py` asserts this file's repo-verifiable claims
+   (preflight fields, gate wiring, monitor endpoint counts, kill-switch defaults, approval
+   TTL, MKT-only submit, stop formula constants, rules version, and that §10 carries no
+   mutable state) on every CI run. Live checks against the YAML run only with the `live`
+   marker. Change the claim and the code together, or CI fails.
 
 ## 10. Current State Snapshot — GENERATED
 
-<!-- BEGIN GENERATED STATE — regenerate from `GET /status`; never hand-edit.
-     Seeded by hand 2026-06-10 during Phase H1; replace with generator output. -->
+<!-- BEGIN GENERATED STATE — limited to claims tests/test_claude_md_consistency.py
+     can verify from the repo. Mutable live values (positions, trade counts, halts,
+     live readiness) are deliberately NOT written here (§0): query `ibkr-status`,
+     `GET /status`, `GET /readiness`, `GET /positions`. -->
 
 ```text
-snapshot_utc: 2026-06-10 (Phase H2 — single source of truth)
+snapshot_source: repo — verified by tests/test_claude_md_consistency.py on every CI run
 mode: paper · account: DUQ542875 · client_id: 777
-switches: IBKR_ALLOW_ORDERS=false · rules.enforced=false · H1 token required
+switch defaults: IBKR_ALLOW_ORDERS=false · rules.enforced=false · H1 token required
           → /order/submit = ORDERS_BLOCKED or H1_TOKEN_REQUIRED
 /order: HTTP 403 (permanently blocked by design)
 /order/approve: requires X-H1-Token header (H1 enforced)
-/order/submit: requires X-H1-Token header (H1 enforced)
-positions: META 72 @ $596.28 avg (opened 2026-06-09)
-allowlist: from YAML only (Phase H2 — single source of truth)
-daily_trade_count: 0/2
-phase: H2 — single source of truth active
+/order/submit: requires X-H1-Token header (H1 enforced); order type always MKT
+approvals: 300 s TTL, no extension; all pending/approved invalidated on bridge restart (§3.12)
+rules: paper-trading-rules.yaml rules_version 1.3-draft; allowlist from YAML only (Phase H2)
 risk model: two-tier — guard hard ceiling (YAML 2%/30%) + Hermes advisory envelope (0.25%/25%)
-readiness: paper-order-ready YES · enforcement-ready YES · h1-enforced YES · h2-single-source YES · automation-ready NO · live-ready NO
-tests: H1.2 61/61, H2 in progress
+readiness (by design, not a live reading): paper-order-ready YES · enforcement-ready YES · h1-enforced YES · h2-single-source YES · automation-ready NO · live-ready NO
+live state: positions / daily_trade_count / halts → ibkr-status, GET /status, GET /positions
+tests: curated Level 1 suite (scripts/run-ci-portable) on every push; live/integration opt-in
 ```
 
 <!-- END GENERATED STATE -->

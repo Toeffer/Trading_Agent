@@ -448,7 +448,16 @@ def _run_startup_safety() -> dict:
            f"env={allow_orders_env} (expected false)")
 
     # 2. rules.enforced from YAML
-    rules_path = home / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
+    # Same path resolution as guard.RULES_PATH (IBKR_RULES_PATH override,
+    # ~/.openclaw default). This check used to hardcode the home path and
+    # ignore the override the guard honours, so the two loaders could read
+    # different files. guard is not imported here on purpose: importing it
+    # runs its own startup reconciliation, and this check must stay a
+    # standalone read.
+    rules_path = Path(os.environ.get(
+        "IBKR_RULES_PATH",
+        str(home / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"),
+    ))
     try:
         with open(rules_path) as f:
             rules = yaml.safe_load(f)
@@ -464,8 +473,11 @@ def _run_startup_safety() -> dict:
     except Exception as e:
         raise RuntimeError(f"FAIL_CLOSED: rules YAML unreadable: {e}")
 
-    # 3. guard-state.json readable
-    gs_path = home / ".openclaw" / "guard-state.json"
+    # 3. guard-state.json readable (same resolution as guard.GUARD_STATE_PATH)
+    gs_path = Path(os.environ.get(
+        "IBKR_GUARD_STATE_PATH",
+        str(home / ".openclaw" / "guard-state.json"),
+    ))
     gs_readable = False
     gs_content = None
     try:

@@ -1,0 +1,35 @@
+[project]
+name = "ibkr-openclaw-bridge"
+version = "0.0.0"
+description = "IBKR paper-trading bridge, risk guard, and read-only operator tooling for the OpenClaw/Werner runtime. See CLAUDE.md for safety invariants and RUNBOOK.md for operator procedures."
+requires-python = ">=3.12"
+readme = "README.md"
+
+# Runtime dependencies are pinned in requirements.txt (pip install -r
+# requirements.txt) rather than duplicated here, to avoid two sources of
+# truth for the same version pins.
+
+[tool.ruff]
+target-version = "py312"
+# This repo's f-string usage relies on PEP 701's relaxed grammar (nested
+# quotes, backslashes inside the expression part), which only parses under
+# Python 3.12+ -- see CHANGELOG.md's notes on the python3.11-vs-3.12
+# py_compile mismatch encountered repeatedly during development.
+
+[tool.ruff.lint]
+# The full default rule set is noisy on a codebase this size and wasn't
+# enforced from the start (see CHANGELOG.md's Fable-code-review entries).
+# Start the CI gate on the subset that caught real, previously-hidden bugs
+# this pass: undefined names (F821 -- two functions silently no-op'd
+# forever), use-before-import (F823 -- an UnboundLocalError-shaped bug
+# hitting a dozen+ call sites in one function), duplicate dict keys (F601 --
+# a value silently discarded), and a shadowed import (F402). F811
+# (redefinition) is not enabled yet: ~66 pre-existing instances in tests/
+# are a harmless repeated-local-reimport idiom (MagicMock/patch/tempfile
+# etc. re-imported inside individual test methods, already imported at
+# module scope) that would need a mechanical cleanup pass of its own before
+# this gate could go green on it -- tracked as a follow-up, not done here.
+# Broadening this selection further (F401 unused imports, F841 unused
+# variables, F541 pointless f-strings -- all confirmed cosmetic, not
+# correctness-relevant) is also a follow-up, not part of this change.
+select = ["F821", "F823", "F601", "F402"]

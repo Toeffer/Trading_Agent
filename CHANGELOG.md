@@ -1156,6 +1156,271 @@ other Tier-1 change, same as Phase 19L.
   bridge is a long-running process, not invoked fresh per call.
 - Tier-1 file — held for explicit merge approval rather than self-merged.
 
+## 2026-08-27 — Phase 19O: two undefined-name bugs found by an external
+code review (Fable), fixed (Tier 1 + Tier 2)
+
+Chris relayed a code-quality review from Fable (another model) rather than
+taking it on faith or dismissing it: "1580 total lines flagged... 598 bare
+`except Exception` blocks... two real bugs hidden by broad excepts."
+Independently re-verified every checkable claim against this exact
+checkout before writing anything — line counts, `ruff` issue counts (689
+via `--select F`, 356 unused imports, 11 duplicate dict keys — all exact),
+the `/market/quote` triple-registration, the missing `README`/`pyproject.toml`,
+the H1 token's plain `==` compare — all confirmed accurate. Then traced the
+two named "real bugs" to their actual callers before fixing anything, since
+"undefined name, caught by a bare except" says nothing on its own about
+whether the silent failure is dangerous or merely wasteful.
+
+**Bug 1 — `guard.py`'s `_find_active_stop()` called `read_approval_records()`,
+which did not exist anywhere in the codebase (Tier 1).** `_find_active_stop()`
+feeds **live stop-breach detection** — the function that checks open
+positions against their recorded stops and raises breach alerts. The
+NameError was immediately caught by the function's own
+`try: ... except Exception: pass`, so its primary lookup source
+(`approval-records.jsonl`) silently always fell through to its secondary
+source (`order_submitted` events) — not dead, but silently degraded, and
+no test or log ever surfaced it. No open positions exist right now, so
+nothing was actively missed, but this would have silently weakened
+stop-breach alerting the first time a position was actually open.
+
+A second, compounding bug in the same function, found while tracing the
+first: even with `read_approval_records()` defined, the stop-price lookup
+read `proposal.get("stop_price")` — but `create_approval_record()`'s
+`_ALLOWED_PROPOSAL_FIELDS` never includes `stop_price`; it's stored under
+the record's `"validation"` subset. Fixing only the missing function
+without this second fix would have left the lookup permanently returning
+`None` regardless — fixed both together.
+
+Also added: an explicit `status == "approved"` filter (the function's own
+docstring already promised "approved BUY proposals," but the pre-fix code
+never actually checked status — a pending or denied record's stop_price
+could have been returned as if it were live).
+
+**Fix:** added `read_approval_records()`, mirroring `read_guard_events()`'s
+exact pattern (JSONL, skip malformed lines, empty list if the file is
+missing) — matches every other reader of `approval-records.jsonl` already
+in `guard.py`. Fixed `_find_active_stop()`'s field lookup to read
+`validation.get("stop_price")` and added the `status == "approved"` filter
+its docstring already documented.
+
+**Bug 2 — `ibkr_operator.py`'s `_assess_kpi_hold_only_system_locked()` was
+called at all 7 of the Phase 17F-17L planning-only-checkpoint call sites
+and defined nowhere (Tier 2).** Every call site already wraps it in
+`try: ... except Exception: kpi_ok = False`, so this **fails safe** — it
+has been permanently forcing all 7 of these "execution scope NONE"
+checkpoints to report NO-GO, for the wrong reason, regardless of actual
+system state. Not a safety hole (never a false GO), but dishonest: a NO-GO
+that means "the code is broken" reads identically to one that means "the
+real gate failed."
+
+**Fix:** implemented it, mirroring `_assess_guard_state_cleanliness()` —
+its sibling helper, called the same way (`(now_utc)`) at the same 7 sites,
+already the established "single canonical helper" pattern for this
+checkpoint family. Calls `run_kpi()`, and returns
+`kpi_hold_only_system_locked: True` only when the live verdict is `HOLD`
+*and* every blocker's `"check"` is in `{"autonomy_level_zero",
+"system_locked"}` *and* `"system_locked"` specifically is among them (the
+condition the checkpoints are named for) — false on any unexpected
+blocker, any other verdict, or if `run_kpi()` itself raises.
+
+### Verification
+
+- `python3.12 -m py_compile guard.py ibkr_operator.py bridge.py
+  hermes_advisory.py strategy_v1_1_core.py strategy_v1_1_advisory.py` —
+  clean. `ibkr-operator hermes-proposal --help` — `_enforce_safety()`'s AST
+  check still passes.
+- New: `tests/test_phase19o_fable_review_undefined_names.py` (23) —
+  `read_approval_records()` against a real tmp-redirected
+  `approval-records.jsonl` (missing file, ordering, malformed-line
+  skipping, blank lines); `_find_active_stop()` end-to-end proving a
+  well-formed record is now actually found (the concrete proof the
+  NameError-hidden failure is gone), the `validation`-vs-`proposal` field
+  fix, the new `status == "approved"` filter, BUY-only, most-recent-wins,
+  and that the pre-existing order_submitted-events fallback still works
+  unchanged; `_assess_kpi_hold_only_system_locked()` against a mocked
+  `run_kpi()` across HOLD/GO/NO-GO verdicts, expected vs. unexpected
+  blockers, and a `run_kpi()` exception (fails safe, doesn't raise);
+  source regressions confirming both functions are actually defined and
+  that all 7 KPI call sites are untouched. Registered in
+  `scripts/run-ci-portable`. Full curated suite: 2563 passed (was 2540),
+  0 failures, 3150 subtests passed.
+- `guard.py`'s `read_approval_records()`/`_find_active_stop()` change is
+  Tier 1 — held for explicit merge approval. `ibkr_operator.py`'s
+  `_assess_kpi_hold_only_system_locked()` is Tier 2 — self-merge eligible
+  once CI is green, same distinction as every prior phase this session
+  that touched both files in one PR.
+
+### Still open (Fable's other findings, not fixed here — scoped out by Chris:
+"fix the bugs now," structural work deferred)
+
+- No `ruff --select F` gate in CI yet — the class of bug this phase fixed
+  can still hide again undetected. Recommended as the next, cheap step.
+- `ibkr_operator.py` at 56.7k lines / one file, `main()` alone ~4,940 lines,
+  598 bare `except Exception` blocks, 160 hardcoded home-directory paths —
+  unchanged. Structural (split into a package, route paths through one
+  config module) — deferred, larger scope, not started.
+- `/market/quote` registered 3× in `bridge.py` (dead duplicate handlers,
+  only the first is ever live) — cosmetic, not fixed.
+- No `README`, no `pyproject.toml` pinning Python 3.12 — not added.
+- H1 token hash compare uses `==`, not a constant-time compare
+  (`hmac.compare_digest`) — low real-world exploitability (local-only,
+  root-owned token file, not network-exposed), but a real hardening item —
+  not fixed here.
+- 120 test failures outside the curated set are environment failures
+  (hardcoded `/home/chris/...` paths, not logic failures) — unchanged.
+
+## 2026-09-04 — Phase 19P: resolve the rest of Fable's list where it's
+worth it (Tier 1 + Tier 2)
+
+Chris: "I want the list to be resolved, if it's beneficial for the project,
+before we go ahead." Went through Fable's remaining findings (Phase 19O
+only fixed the two named "real bugs"; everything else was left open) and
+triaged each: fix now if it's low-risk and genuinely correctness- or
+safety-relevant; explicitly defer, with reasoning, if it's large-scope or
+carries real regression risk disproportionate to the benefit of doing it
+under time pressure right before the first live paper-trading cycle.
+
+### More real bugs, found by extending the same ruff categories that
+caught Phase 19O's two (`F821`/`F823`/`F402`), not just the two Fable
+named by hand
+
+- **`ibkr_operator.py`'s `_run_post_gateway_reconnect_proof()`** wrote
+  `result["guard_state_blocker"] = True` in its diagnosis branch for a
+  guard-state hash mismatch during a reconnect proof -- but `result` isn't
+  built until several steps later in the function. Reaching this branch
+  (the scenario the flag exists to surface) raised `NameError` instead of
+  returning the "DO NOT PROCEED" result. Fixed with a plain flag variable,
+  folded into `result` once it's actually built.
+- **Two `_json.dump(...)` calls** in `main()`'s Phase 16S/16T re-export
+  dispatch blocks referenced `_json` with no local `import json as _json`
+  -- every one of `main()`'s other ~19 identical re-export blocks has this
+  import, these two didn't. Added it, matching the established per-branch
+  convention exactly (`main()` already treats `_json` as function-local
+  because of those other 19 imports, so a bare `json.dump` would have
+  worked too, but consistency with the rest of the function is safer).
+- **`monitor.py`'s `_run_self_test()`** had a redundant local
+  `import json` roughly 300 lines into a ~2300-line function that already
+  uses the module-level `json` a dozen+ times before that point --
+  `UnboundLocalError` on every one of those earlier calls whenever this
+  branch's code path was reached. `json` is already imported at module
+  level and never otherwise shadowed in this function; deleted the
+  redundant local import.
+- **`strategy_v1_1_core.py`** imported `dataclasses.field` and never used
+  it -- dead import, additionally shadowed by a `for field in
+  BAR_REQUIRED_FIELDS:` loop later in the file (ruff F402). Removed the
+  unused import; zero behavior change since nothing called `field(...)`.
+- **11 duplicate dict-key literals across `ibkr_operator.py`** (ruff
+  F601) — a later key in the same dict-literal silently overwrites an
+  earlier one. Ten were harmless redundant boilerplate (self-mapping
+  diagnosis-lookup entries and `True`-valued invariant flags duplicated
+  within the same dict, same value both times, safe to just drop the
+  redundant copy). One was a real dead-code case worth understanding
+  before touching: a Phase 16T result dict had `"after": after,` (a plain
+  variable reference) immediately followed by `"after": {<nested nine-key
+  dict>},` -- the first assignment was 100% discarded at runtime, always;
+  removed the dead line, the nested dict was already the actual value
+  being returned.
+- **5 redundant re-imports (ruff F811)** in `bridge.py`/`monitor.py` --
+  each shadowing a name already available from a module-level import,
+  zero behavior difference, pure noise. Removed. (~66 similar instances
+  exist in `tests/` -- see "Explicitly deferred" below.)
+
+### Confirmed dead code, removed
+
+- **`/market/quote` was registered three times in `bridge.py`**, each
+  copy's `class QuoteRequest`/`_safe_float`/`_ensure_worker_event_loop`/
+  route handler byte-identical to the others (diffed all three bodies to
+  confirm before touching anything). Starlette's router matches
+  registration order, so only the first ever received a request; copies 2
+  and 3 were pure dead weight. Removed both in full (including their own
+  redundant `class QuoteRequest`/`_safe_float`/`_ensure_worker_event_loop`
+  re-definitions and redundant `import math`/`asyncio`/`BaseModel`/`Stock`
+  blocks), keeping only the live first copy and its actually-original
+  supporting definitions higher up in the file. `/market/bars` (defined
+  once, correctly, right after) is untouched.
+
+### Hardening
+
+- **H1 approval-token check now uses `hmac.compare_digest()`** instead of
+  plain `==` (`bridge.py`). Low real-world exploitability as noted in the
+  Phase 19O entry (local-only process, root-owned token file, not a
+  network-facing endpoint an attacker can time precisely) but this is the
+  correct primitive for any secret comparison and costs nothing.
+
+### Infrastructure
+
+- **`ruff check .` added as a CI gate** (`.github/workflows/ci.yml`),
+  scoped via `pyproject.toml`'s `[tool.ruff.lint] select` to exactly the
+  four categories above (`F821`, `F823`, `F601`, `F402`) -- the same
+  classes of bug this phase and Phase 19O both found. Deliberately not
+  the full default rule set yet (see "Explicitly deferred").
+- **`pyproject.toml`** added: pins `requires-python = ">=3.12"` (this
+  codebase's f-strings rely on PEP 701 grammar that only parses on 3.12+
+  -- the recurring `python3.11 -m py_compile` failures noted throughout
+  this session's own tool use are exactly this), points to
+  `requirements.txt` for pinned deps rather than duplicating them.
+- **`README.md`** added: safety-posture summary, file/directory map,
+  how to run the tests and lint locally. Explicitly frames itself as a
+  map, not a source of truth -- defers to `CLAUDE.md §0`'s own precedence
+  rule (live system and `CLAUDE.md` win over any doc, this one included).
+
+### Verification
+
+- `python3.12 -m py_compile` on every production module (`bridge.py`,
+  `guard.py`, `monitor.py`, `ibkr_operator.py`, `hermes_advisory.py`,
+  `strategy_v1_1_core.py`, `strategy_v1_1_advisory.py`, `bundle_audit.py`,
+  `approval_ui.py`, `ibkr_status.py`, `model_routing.py`,
+  `openclaw_routing_adapter.py`, `dry_run_scenarios.py`) — clean.
+  `ibkr-operator hermes-proposal --help` — `_enforce_safety()`'s AST check
+  still passes.
+- `ruff check .` (the full repo, using the new `pyproject.toml` config) —
+  clean, 0 issues.
+- Full curated suite: **2563 passed** (unchanged from Phase 19O — no new
+  tests added this phase, only bug fixes and dead-code removal; no
+  regressions), 0 failures, 3150 subtests passed.
+- No `guard.py` change in this phase.
+
+### Tier breakdown
+
+- **Tier 1, held for explicit merge approval:** `bridge.py` (the
+  `/market/quote` dedup and the H1 constant-time compare), `monitor.py`
+  (the `_run_self_test()` fix and two redundant-import removals).
+- **Tier 2:** `ibkr_operator.py`, `strategy_v1_1_core.py`,
+  `tests/test_step15t_backpressure_drain_drill.py`, `pyproject.toml`,
+  `README.md`, `.github/workflows/ci.yml`.
+
+### Explicitly deferred (not beneficial to rush right before going live,
+or genuinely out of scope for this pass) — Chris's call to revisit later
+
+- **`ibkr_operator.py` at ~56.8k lines in one file, `main()` alone
+  ~4,940 lines.** Splitting it into a package is real, large-scope
+  restructuring work with meaningful regression risk in a safety-adjacent
+  CLI tool. Not attempted here.
+- **160 hardcoded home-directory paths / a shared path-config module,**
+  and the **120 test failures outside the curated set that are
+  environment failures, not logic failures** (same root cause — tests
+  and code both assume `/home/chris/agents/ibkr-bridge`). Coupled to the
+  file-split scope above; deferred together.
+- **598 bare `except Exception` blocks.** Explicitly NOT swept — most are
+  intentional fail-safe patterns (see every "fails safe" bug description
+  in this entry and Phase 19O's), and narrowing exception types file-wide
+  without individual review risks silently changing fail-safe behavior
+  rather than improving it. Needs case-by-case judgment, not a mechanical
+  pass.
+- **~66 F811 redefinition instances in `tests/`** (harmless repeated
+  local re-imports of `MagicMock`/`patch`/`datetime`/`timezone`/
+  `tempfile`, each already imported at module scope) — real but low-value
+  mechanical cleanup; not part of the CI gate's initial `select` list
+  (see "Infrastructure" above).
+- **F401 (357 unused imports), F841 (139 unused variables), F541 (103
+  pointless f-strings).** Confirmed cosmetic, not correctness-relevant —
+  triaged as genuinely lower priority than the four categories fixed and
+  gated in this phase.
+- **67 test files that grep source as strings, 66 that shell out via
+  subprocess.** Real test-suite brittleness/slowness (it's why the
+  curated suite takes 18-20+ minutes), but a test-quality concern, not a
+  shipped-code risk — lowest urgency of everything on the list.
+
 ---
 
 ## 2026-09-07 — Repo review fixes: invariant #12 restart invalidation + strict preflight boundary

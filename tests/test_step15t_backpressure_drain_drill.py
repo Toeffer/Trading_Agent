@@ -1,6 +1,7 @@
 """Tests for Step 15T: Backpressure drain drill."""
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 import pytest
@@ -272,7 +273,6 @@ class TestHelpFastPath:
     CWD = "/home/chris/agents/ibkr-bridge"
 
     def _help(self, command: str, timeout: int = 5) -> "subprocess.CompletedProcess":
-        import subprocess
         return subprocess.run(
             [self.PYTHON, self.SCRIPT, command, "--help"],
             capture_output=True, text=True, cwd=self.CWD, timeout=timeout,

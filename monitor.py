@@ -3252,7 +3252,6 @@ def _run_self_test(silent: bool = False) -> dict:
                         "callable" if c17_ok else "MISSING"))
 
         # D7: ProtectedFileError class exists
-        from bundle_audit import ProtectedPathError
         c18_ok = issubclass(ProtectedPathError, Exception)
         results.append(("D7: ProtectedPathError exception class exists", c18_ok,
                         "subclass of Exception" if c18_ok else "MISSING"))
@@ -3264,7 +3263,18 @@ def _run_self_test(silent: bool = False) -> dict:
             capture_output=True, text=True, timeout=15,
         )
         if proc.returncode == 0:
-            import json
+            # Bug fix (2026-09-04, Fable code review / ruff F823): this
+            # redundant local `import json` made `json` a function-local
+            # name throughout all of _run_self_test() -- Python treats a
+            # name as local to a function if it's assigned/imported
+            # anywhere in that function's body, even before the import
+            # line textually executes. Every earlier `json.loads(...)`/
+            # `json.dumps(...)` call in this ~2300-line function (there are
+            # over a dozen, starting near its very first lines) raised
+            # UnboundLocalError the moment this branch's code path was
+            # ever reached first. `json` is already imported at module
+            # level (see top of file) and never shadowed elsewhere in this
+            # function -- removing this redundant local import is the fix.
             try:
                 jd = json.loads(proc.stdout)
                 c19_ok = isinstance(jd, dict) and jd.get("mode") == "read-only"
@@ -4148,8 +4158,6 @@ def append_manual_reconciliation(record: dict) -> dict:
     Returns:
         The complete record dict including verified_at_utc and status.
     """
-    from guard import append_guard_event
-
     record["verified_at_utc"] = datetime.now(timezone.utc).isoformat()
     record["status"] = "manual_terminal"
 
@@ -4195,8 +4203,6 @@ def append_heartbeat_alert(endpoint_failures: list[str], total_endpoints: int) -
         event couldn't be appended. Never raises -- a broken alert path
         must never take the heartbeat check itself down with it.
     """
-    from guard import append_guard_event
-
     try:
         append_guard_event("monitor_alert", {
             "alert_type": "heartbeat_endpoint_failure",

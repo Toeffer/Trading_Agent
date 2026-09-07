@@ -7831,6 +7831,14 @@ def _run_post_gateway_reconnect_proof(
     severity = "HOLD"
     operator_action_required = False
     suggested_operator_actions: list[str] = []
+    # Bug fix (2026-09-04, Fable code review / ruff F821): this branch used
+    # to write `result["guard_state_blocker"] = True` here, but `result`
+    # isn't built until step 11 below -- reaching this branch (a guard-state
+    # hash mismatch during a reconnect proof, i.e. exactly the scenario
+    # this flag exists to surface) raised NameError instead of returning
+    # the "DO NOT PROCEED" result. Set a plain flag here instead and fold
+    # it into `result` once it actually exists.
+    guard_state_blocker = False
 
     # Check active monitor alerts
     live_alerts = monitor_alerts_after.get("live", []) if monitor_alerts_after else []
@@ -7893,7 +7901,7 @@ def _run_post_gateway_reconnect_proof(
                 "Run: ibkr-operator guard-state-reconcile --json",
                 "Run: ibkr-operator doctor --json",
             ]
-            result["guard_state_blocker"] = True
+            guard_state_blocker = True
         else:
             diagnosis = "post_connect_evidence_ok"
             severity = "OK"
@@ -8013,6 +8021,7 @@ def _run_post_gateway_reconnect_proof(
         "severity": severity,
         "operator_action_required": operator_action_required,
         "suggested_operator_actions": suggested_operator_actions,
+        "guard_state_blocker": guard_state_blocker,
         "no_broker_mutation": True,
         "no_order_window_opened": True,
         "forbidden_endpoint_scan": forbidden_scan,
@@ -14640,6 +14649,82 @@ def _assess_guard_state_cleanliness(now_utc: "datetime") -> dict:
         "halt_source": halt_source,
         "guard_hash": guard_hash,
         "guard_section": guard_section,
+    }
+
+
+def _assess_kpi_hold_only_system_locked(now_utc: "datetime") -> dict:
+    """Confirm the live KPI verdict is HOLD for only the expected reasons.
+
+    SINGLE canonical helper for all Phase 17 planning-only checkpoints
+    (17F-17L), mirroring _assess_guard_state_cleanliness()'s pattern and
+    calling convention above. Each of those checkpoints must confirm the
+    system is sitting in its normal, expected pre-live-trading state
+    -- KPI verdict HOLD, blocked only by autonomy_level_zero and/or
+    system_locked -- before proceeding; any *other* blocking reason means
+    something unexpected is going on and the checkpoint should not treat
+    it as a routine HOLD.
+
+    Bug fix (2026-08-27, Fable code review): this function did not exist
+    at all. Every one of its 7 call sites already wrapped it in
+    `try: ... except Exception: kpi_ok = False`, so calling an undefined
+    name raised NameError, was silently caught, and every one of these
+    checkpoints has been permanently returning NO-GO on this specific
+    check regardless of actual system state -- fails safe (never a false
+    GO), but for the wrong reason, and hides whatever the real answer is.
+
+    now_utc: accepted for signature parity with _assess_guard_state_cleanliness
+        (its sibling helper, called the same way at each of these sites) --
+        this assessment doesn't otherwise depend on wall-clock time; the
+        live system's actual current state comes from run_kpi() itself.
+
+    Returns a dict with:
+      - kpi_hold_only_system_locked: bool -- True only when verdict=="HOLD"
+        and every blocker's "check" is one of {"autonomy_level_zero",
+        "system_locked"}, with "system_locked" specifically present
+        (the condition these checkpoints are named for).
+      - kpi_verdict:            str | None -- the raw run_kpi() verdict
+      - kpi_blocker_checks:     list[str]  -- every blocker "check" name seen
+      - kpi_unexpected_blockers: list[str] -- blocker checks outside the
+        allowed set, if any (why kpi_hold_only_system_locked came back False)
+      - kpi_section:            dict -- ready-to-embed section for the output
+    """
+    _KPI_HOLD_ONLY_ALLOWED_CHECKS = frozenset({"autonomy_level_zero", "system_locked"})
+
+    verdict = None
+    blocker_checks: set[str] = set()
+    unexpected: set[str] = set()
+    error = None
+
+    try:
+        kpi_result = run_kpi()
+        verdict = kpi_result.get("verdict")
+        blockers = kpi_result.get("blockers", []) or []
+        blocker_checks = {b.get("check") for b in blockers if isinstance(b, dict) and b.get("check")}
+        unexpected = blocker_checks - _KPI_HOLD_ONLY_ALLOWED_CHECKS
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+
+    kpi_hold_only_system_locked = (
+        error is None
+        and verdict == "HOLD"
+        and "system_locked" in blocker_checks
+        and not unexpected
+    )
+
+    kpi_section = {
+        "verdict": verdict,
+        "blocker_checks": sorted(blocker_checks),
+        "unexpected_blockers": sorted(unexpected),
+        "kpi_hold_only_system_locked": kpi_hold_only_system_locked,
+        "error": error,
+    }
+
+    return {
+        "kpi_hold_only_system_locked": kpi_hold_only_system_locked,
+        "kpi_verdict": verdict,
+        "kpi_blocker_checks": sorted(blocker_checks),
+        "kpi_unexpected_blockers": sorted(unexpected),
+        "kpi_section": kpi_section,
     }
 
 
@@ -28350,9 +28435,6 @@ _PHASE17J_DIAGNOSIS = {
     "simulation_hash_mismatch_failed": "simulation_hash_mismatch_failed",
     "review_hash_mismatch_failed": "review_hash_mismatch_failed",
     "tampered_evidence_ref_failed": "tampered_evidence_ref_failed",
-    "disallowed_instrument_failed": "disallowed_instrument_failed",
-    "invalid_side_failed": "invalid_side_failed",
-    "invalid_quantity_failed": "invalid_quantity_failed",
     "deterministic_failed": "deterministic_failed",
     "no_forbidden_endpoints_failed": "no_forbidden_endpoints_failed",
     "no_broker_identifiers_failed": "no_broker_identifiers_failed",
@@ -30984,10 +31066,8 @@ def _run_level1_h1_boundary_audit_checkpoint(
         "no_preflight_endpoint_called": True,
         "no_trade_window_helper_called": True,
         "no_trade_window_helper_called_by_drill": True,
-        "no_order_window_opened": True,
         "no_order_window_seen": True,
         "no_h1_seen": True,
-        "h1_token_not_used": True,
         "h1_boundary_preserved": True,
         "manual_canary_required": True,
         "manual_canary_executed": False,
@@ -31241,8 +31321,8 @@ def _phase16q_no_go(
         "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
         "no_trade_window_helper_called": True,
         "no_trade_window_helper_called_by_drill": True,
-        "no_order_window_opened": True, "no_order_window_seen": True,
-        "no_h1_seen": True, "h1_token_not_used": True,
+        "no_order_window_seen": True,
+        "no_h1_seen": True,
         "h1_boundary_preserved": True,
         "manual_canary_required": True,
         "manual_canary_executed": False,
@@ -32200,7 +32280,6 @@ def _phase16r_no_go(
         "no_approval_endpoint_called": True, "no_submit_endpoint_called": True,
         "no_trade_window_helper_called": True,
         "no_trade_window_helper_called_by_drill": True,
-        "no_mutation_endpoint_called": True,
         "no_mutation_endpoint_called": True,
         "no_order_mutation": True,
         "h1_token_not_used": True,
@@ -33974,7 +34053,6 @@ def _run_level1_restart_persistence_safety_checkpoint(
         "suggested_operator_actions": suggested_actions,
         "git": git_section, "required_tags": required_tags,
         "before": before,
-        "after": after,
         "after": {
             "connected": after_connected,
             "mode": after_mode,
@@ -55266,8 +55344,8 @@ def main() -> None:
                 "no_order_endpoint_called": True, "no_preflight_endpoint_called": True,
                 "no_trade_window_helper_called": True,
                 "no_trade_window_helper_called_by_drill": True,
-                "no_order_window_opened": True, "no_order_window_seen": True,
-                "no_h1_seen": True, "h1_token_not_used": True,
+                "no_order_window_seen": True,
+                "no_h1_seen": True,
                 "h1_boundary_preserved": True,
                 "manual_canary_required": True,
                 "manual_canary_executed": False,
@@ -55423,6 +55501,7 @@ def main() -> None:
             try:
                 _PHASE16S_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
                 ep = _PHASE16S_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                import json as _json
                 with open(ep, "w", encoding="utf-8") as f:
                     _json.dump(result, f, indent=2, default=str)
                 result["export_path"] = str(ep)
@@ -55516,6 +55595,7 @@ def main() -> None:
             try:
                 _PHASE16T_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
                 ep = _PHASE16T_EXPORT_DIR / f"{result.get('checkpoint_id', 'error')}.json"
+                import json as _json
                 with open(ep, "w", encoding="utf-8") as f:
                     _json.dump(result, f, indent=2, default=str)
                 result["export_path"] = str(ep)

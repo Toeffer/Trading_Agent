@@ -54,6 +54,7 @@ TESTS=(
   tests/test_phase19o_fable_review_undefined_names.py
   tests/test_claude_md_consistency.py
   tests/test_gate_g_close_only_wiring.py
+  tests/test_approval_lookup_single_source.py
 )
 
 echo "==> Portable CI"

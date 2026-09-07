@@ -84,6 +84,7 @@ def _evidence_ok(ep_path: str):
 # Tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestConnectedEndpointEvidenceDrill:
 
     def _run(self, connected=True, alerts=None, fail_endpoints=None, **kw):

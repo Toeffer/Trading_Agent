@@ -1078,6 +1078,7 @@ class TestH1BoundaryViolations:
 # T5: Edge cases
 # ===========================================================================
 
+@pytest.mark.host
 class TestEdgeCases:
     def test_demo_candidates_zero(self, clean_git_metadata, clean_worktree,
                                    origin_aligned, all_tags_present, bridge_health_ok,

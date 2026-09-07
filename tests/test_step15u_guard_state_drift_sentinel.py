@@ -77,6 +77,7 @@ def _base_patches(gs_dir=None):
 # Tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestGuardStateDriftSentinel:
     """Verify guard-state drift detection and mutation monitoring."""
 

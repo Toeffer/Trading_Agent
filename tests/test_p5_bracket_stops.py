@@ -106,6 +106,7 @@ def _make_quote_provider():
 # ============================================================================
 
 @pytest.mark.usefixtures("_disable_h1_startup")
+@pytest.mark.host
 class TestBuyWithoutStopFailsClosed:
     """T1: BUY entry must have a stop; missing/invalid fails closed."""
 
@@ -178,6 +179,7 @@ class TestBuyWithoutStopFailsClosed:
 # ============================================================================
 
 @pytest.mark.usefixtures("_disable_h1_startup")
+@pytest.mark.host
 class TestStopAboveOrEqualEntryFails:
     """T2: Stop must be strictly below entry price."""
 
@@ -274,6 +276,7 @@ class TestMismatchedStopQuantityFails:
 # ============================================================================
 
 @pytest.mark.usefixtures("_disable_h1_startup")
+@pytest.mark.host
 class TestValidBuyBracketConstruction:
     """T4: Valid BUY produces bracket evidence."""
 
@@ -425,6 +428,7 @@ class TestTransmitFlagsAndLinkage:
 # ============================================================================
 
 @pytest.mark.usefixtures("_disable_h1_startup")
+@pytest.mark.host
 class TestSellCloseOnlyNoBracket:
     """T6: SELL close-only must not require bracket stop."""
 
@@ -491,6 +495,7 @@ class TestOrder403:
 # T8 — H1 approve/submit still enforced
 # ============================================================================
 
+@pytest.mark.host
 class TestH1EnforcementIntact:
     """T8: H1 token enforcement remains for approve and submit.
 
@@ -698,6 +703,7 @@ class TestNoTokenLeakage:
 # ============================================================================
 
 @pytest.mark.usefixtures("_disable_h1_startup")
+@pytest.mark.host
 class TestKillSwitchDryRun:
     """T12: Dry-run/preflight validates bracket requirements without broker mutation."""
 
@@ -765,6 +771,7 @@ class TestKillSwitchDryRun:
 # ============================================================================
 
 @pytest.mark.usefixtures("_disable_h1_startup")
+@pytest.mark.host
 class TestFailClosedParentCancelled:
     """T13: If stop order fails, parent is cancelled (never left live)."""
 
@@ -903,6 +910,7 @@ class TestBracketConcurrencySafety:
 # ============================================================================
 
 @pytest.mark.usefixtures("_disable_h1_startup")
+@pytest.mark.host
 class TestNoRegression:
     """P5 changes must not break existing validation flows."""
 

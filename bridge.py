@@ -1723,120 +1723,20 @@ def _load_rules_safe() -> tuple[bool, dict]:
 
 
 def _validate_approval_for_submit(approval_id: str) -> dict | None:
-    """Validate an approval exists and is ready to submit.
+    """Validate an approval is ready to submit; None means proceed to the kill switches.
 
-    Checks memory and approval-records.jsonl for the approval.
-    Returns a result dict with error code if validation fails,
-    or None if the approval is valid for submission.
+    Thin wrapper over guard.validate_approval_for_submit() — the single
+    source of truth shared with guard.submit_order(). Until 2026-09-07 this
+    function carried its own copy of the lookup (a first-match scan of the
+    append-only records log plus its own expiry/status ladder), which is how
+    the bridge and the guard drifted apart on invariant #12.
 
-    Must be called BEFORE kill switch checks so that expired/
-    submitted/denied approvals return proper codes even when
-    switches are off.
+    Must be called BEFORE kill switch checks so that expired/submitted/
+    denied approvals return proper codes even when switches are off.
     """
-    # Try bridge's in-memory active approvals
-    # Bridge imports guard.approve_approval which populates
-    # _active_approvals, but we also need direct record lookup
-    from guard import _active_approvals, is_approval_submitted, APPROVAL_RECORDS_PATH
-    import json
-    from datetime import datetime, timezone
-    from guard import _normalize_timestamp
-
-    # 1. Check in-memory
-    record = _active_approvals.get(approval_id)
-    from_disk = False
-
-    # 2. If not in memory, scan approval-records.jsonl (for error codes only)
-    if record is None:
-        try:
-            p = APPROVAL_RECORDS_PATH
-            if p.exists():
-                for line in p.read_text().splitlines():
-                    if not line.strip():
-                        continue
-                    try:
-                        rec_check = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if rec_check.get("approval_id") == approval_id:
-                        record = rec_check
-                        from_disk = True
-                        break
-        except OSError:
-            pass
-
-    if record is None:
-        return {
-            "submitted": False,
-            "error": f"No active approval found for '{approval_id}'",
-            "code": "NOT_FOUND",
-        }
-
-    status = record.get("status", "")
-
-    # Check already-submitted
-    if is_approval_submitted(approval_id):
-        return {
-            "submitted": False,
-            "error": f"Approval '{approval_id}' has already been submitted",
-            "code": "ALREADY_SUBMITTED",
-        }
-
-    # Check denied
-    if status == "denied":
-        return {
-            "submitted": False,
-            "error": f"Approval '{approval_id}' was denied",
-            "code": "NOT_FOUND",
-        }
-
-    # Check expired or past expiry
-    if status in ("expired",):
-        return {
-            "submitted": False,
-            "error": f"Approval '{approval_id}' is expired",
-            "code": "EXPIRED",
-        }
-
-    expires_str = record.get("expires_at_utc")
-    if expires_str:
-        try:
-            expires = datetime.fromisoformat(
-                _normalize_timestamp(expires_str)
-            )
-            if datetime.now(timezone.utc) > expires:
-                return {
-                    "submitted": False,
-                    "error": f"Approval expired at {expires_str}",
-                    "code": "EXPIRED",
-                }
-        except (ValueError, TypeError):
-            pass
-
-    # Invariant #12 (CLAUDE.md §3.12, RUNBOOK §L9): an approval that is not
-    # in this process's memory was created before a bridge restart. It is
-    # invalid even if the on-disk record still reads "approved" and is inside
-    # its 300 s window. guard._load_active_approvals() no longer restores
-    # such records at startup; this is the matching check on the submit path.
-    if from_disk and status in ("pending", "approved"):
-        return {
-            "submitted": False,
-            "error": (
-                f"Approval '{approval_id}' is not active in this bridge process "
-                f"(invalidated by bridge restart, safety invariant #12). "
-                f"Run a fresh preflight and obtain a fresh approval."
-            ),
-            "code": "NOT_FOUND",
-        }
-
-    # Valid: approved and not expired/submitted/denied
-    if status != "approved":
-        return {
-            "submitted": False,
-            "error": f"Approval '{approval_id}' status is '{status}', expected 'approved'",
-            "code": "NOT_APPROVED",
-        }
-
-    return None
+    from guard import validate_approval_for_submit
+    _record, error = validate_approval_for_submit(approval_id)
+    return error
 
 
 @app.post("/order/submit")

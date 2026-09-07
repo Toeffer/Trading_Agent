@@ -128,6 +128,7 @@ class TestPhase16XConstants:
 # ===========================================================================
 
 
+@pytest.mark.host
 class TestOSBoundaryHelpers:
 
     def test_env_file_protection_returns_structured(self):
@@ -308,6 +309,7 @@ class TestPhase16XNoGo:
 # ===========================================================================
 
 
+@pytest.mark.host
 class TestH1Isolation:
 
     def test_h1_token_file_not_read(self):

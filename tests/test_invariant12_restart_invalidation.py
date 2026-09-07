@@ -182,9 +182,12 @@ class TestSubmitRefusesDiskOnlyApproval:
 
     def test_bridge_validator_has_matching_check(self):
         # bridge._validate_approval_for_submit runs before guard.submit_order;
-        # it must not promote a disk-only record either.
-        assert "from_disk = True" in BRIDGE_SOURCE
-        assert 'if from_disk and status in ("pending", "approved"):' in BRIDGE_SOURCE
+        # both now delegate to guard.validate_approval_for_submit(), whose
+        # ladder refuses any record that is not live in this process.
+        start = BRIDGE_SOURCE.index("def _validate_approval_for_submit(")
+        body = BRIDGE_SOURCE[start:BRIDGE_SOURCE.index('@app.post("/order/submit")', start)]
+        assert "validate_approval_for_submit(approval_id)" in body
+        assert 'if source != "memory":' in GUARD_SOURCE
 
 
 # ── Strict preflight at the HTTP boundary ──────────────────────────────────

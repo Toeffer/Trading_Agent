@@ -92,6 +92,7 @@ class TestSyntheticFixtures:
 # ===========================================================================
 
 
+@pytest.mark.host
 class TestPhase16YConstants:
 
     def test_diagnosis_dict_has_ready(self):

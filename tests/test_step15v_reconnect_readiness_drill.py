@@ -132,6 +132,7 @@ def _mock_socket(reachable=True, error=None):
 # Tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestReconnectReadinessDrill:
 
     def _run(self, bridge_health=_health, bridge_readiness=_readiness,

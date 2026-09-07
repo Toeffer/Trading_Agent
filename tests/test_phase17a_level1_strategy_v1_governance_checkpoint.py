@@ -88,6 +88,7 @@ class TestSyntheticFixtures17A:
 # ===========================================================================
 
 
+@pytest.mark.host
 class TestPhase17AConstants:
 
     def test_diagnosis_dict_has_ready(self):
@@ -132,6 +133,7 @@ class TestPhase17AConstants:
 # ===========================================================================
 
 
+@pytest.mark.host
 class TestStrategyDocVerification:
 
     def test_strategy_doc_present_returns_structured(self):

@@ -212,6 +212,7 @@ class TestJsonStructure:
 # T5: Verdict rules — locked baseline → HOLD/NO-GO, never CLEAN
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestVerdictLockedBaseline:
     """Verify locked safe baseline (current state) returns HOLD or NO-GO,
     never CLEAN or GO."""
@@ -418,6 +419,7 @@ class TestNoGoBlocker:
 # T7: Mocked clean evidence → CLEAN verdict
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestMockedCleanEvidence:
     """Unit-test that mocked clean evidence produces CLEAN verdict."""
 

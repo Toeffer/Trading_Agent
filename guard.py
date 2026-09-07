@@ -3758,6 +3758,93 @@ def poll_order_status(
 # --- Submit Orchestrator (Phase 2D Step 5) ---
 
 
+def find_approval_record(approval_id: str) -> tuple[dict | None, str]:
+    """Locate an approval record. Returns (record, source), source one of
+    "memory" | "disk" | "none".
+
+    This process's _active_approvals is authoritative. The disk fallback
+    reads approval-records.jsonl — an append-only log where a later line for
+    the same approval_id supersedes an earlier one — so the LAST match wins.
+    (The two previous copies of this scan, in bridge.py and submit_order(),
+    each stopped at the first match, i.e. the original "pending" creation
+    line, even after a ruling or a restart invalidation had been appended.)
+    Disk-only records exist for error reporting; they are never submittable
+    (invariant #12 — see validate_approval_for_submit()).
+    """
+    rec = _active_approvals.get(approval_id)
+    if rec is not None:
+        return rec, "memory"
+    found = None
+    try:
+        p = APPROVAL_RECORDS_PATH
+        if p.exists():
+            for line in p.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    cand = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(cand, dict) and cand.get("approval_id") == approval_id:
+                    found = cand
+    except OSError:
+        pass
+    return (found, "disk") if found is not None else (None, "none")
+
+
+def validate_approval_for_submit(approval_id: str) -> tuple[dict | None, dict | None]:
+    """Single source of truth for "may this approval be submitted right now?"
+
+    Returns (record, None) when the approval is approved, unexpired,
+    unsubmitted and live in this process; otherwise (None, error) where
+    error is the {"submitted": False, "error": ..., "code": ...} dict the
+    submit path returns verbatim.
+
+    Runs BEFORE the kill switches so ALREADY_SUBMITTED / EXPIRED / NOT_FOUND
+    report accurately even while orders are blocked. Used by
+    bridge._validate_approval_for_submit() and guard.submit_order(); until
+    2026-09-07 each carried its own copy of this ladder, which is how the two
+    drifted apart on invariant #12.
+    """
+    def _err(code: str, msg: str) -> tuple[None, dict]:
+        return None, {"submitted": False, "error": msg, "code": code}
+
+    record, source = find_approval_record(approval_id)
+    if record is None:
+        return _err("NOT_FOUND", f"No active approval found for '{approval_id}'")
+    status = record.get("status", "")
+    if is_approval_submitted(approval_id):
+        return _err("ALREADY_SUBMITTED", f"Approval '{approval_id}' has already been submitted")
+    if status == "denied":
+        return _err("NOT_FOUND", f"Approval '{approval_id}' was denied")
+    if status == "expired":
+        return _err("EXPIRED", f"Approval '{approval_id}' is expired")
+    expires_str = record.get("expires_at_utc")
+    if expires_str:
+        try:
+            expires = datetime.fromisoformat(_normalize_timestamp(expires_str))
+            if datetime.now(timezone.utc) > expires:
+                return _err("EXPIRED", f"Approval expired at {expires_str}")
+        except (ValueError, TypeError):
+            pass
+    if source != "memory":
+        # Invariant #12 (CLAUDE.md §3.12, RUNBOOK §L9): a record that is not in
+        # this process's memory was created before a bridge restart. It is
+        # invalid even if the on-disk copy still reads "approved" and is
+        # inside its 300 s window. _load_active_approvals() expires such
+        # records at startup; this is the matching check on the submit path.
+        return _err(
+            "NOT_FOUND",
+            f"Approval '{approval_id}' is not active in this bridge process "
+            f"(invalidated by bridge restart, safety invariant #12). "
+            f"Run a fresh preflight and obtain a fresh approval.",
+        )
+    if status != "approved":
+        return _err("NOT_APPROVED", f"Approval '{approval_id}' status is '{status}', expected 'approved'")
+    return record, None
+
+
 def submit_order(
     approval_id: str,
     order_provider=None,
@@ -3797,132 +3884,11 @@ def submit_order(
     """
     import time as time_module
 
-    # 1. Look up approval record first (before kill switch checks)
-    # This ensures expired/submitted/denied approvals return proper
-    # error codes even when kill switches are off.
-    record = None
-    approval_error = None
-
-    # Try _active_approvals first (both pending and approved)
-    from_in_memory = _active_approvals.get(approval_id)
-
-    if from_in_memory is not None:
-        status = from_in_memory.get("status", "")
-
-        # Check already-submitted via the persisted set
-        if is_approval_submitted(approval_id):
-            approval_error = {
-                "submitted": False,
-                "error": f"Approval '{approval_id}' has already been submitted",
-                "code": "ALREADY_SUBMITTED",
-            }
-        elif status == "denied":
-            approval_error = {
-                "submitted": False,
-                "error": f"Approval '{approval_id}' was denied",
-                "code": "NOT_FOUND",
-            }
-        elif status == "expired":
-            approval_error = {
-                "submitted": False,
-                "error": f"Approval '{approval_id}' is expired",
-                "code": "EXPIRED",
-            }
-        elif status == "approved":
-            # Check expiry
-            expires_str = from_in_memory.get("expires_at_utc")
-            if expires_str:
-                try:
-                    expires = datetime.fromisoformat(
-                        _normalize_timestamp(expires_str)
-                    )
-                    if datetime.now(timezone.utc) > expires:
-                        approval_error = {
-                            "submitted": False,
-                            "error": f"Approval expired at {expires_str}",
-                            "code": "EXPIRED",
-                        }
-                except (ValueError, TypeError):
-                    pass
-            if approval_error is None:
-                record = from_in_memory
-        # status == "pending" — not yet approved, will be caught below
-    else:
-        # Not in memory at all — scan approval-records.jsonl for direct lookup
-        try:
-            records_path = APPROVAL_RECORDS_PATH
-            if records_path.exists():
-                for line in records_path.read_text().splitlines():
-                    if not line.strip():
-                        continue
-                    try:
-                        rec_check = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if rec_check.get("approval_id") == approval_id:
-                        rec_status = rec_check.get("status", "")
-                        if is_approval_submitted(approval_id):
-                            approval_error = {
-                                "submitted": False,
-                                "error": f"Approval '{approval_id}' already submitted",
-                                "code": "ALREADY_SUBMITTED",
-                            }
-                        elif rec_status == "denied":
-                            approval_error = {
-                                "submitted": False,
-                                "error": f"Approval '{approval_id}' was denied",
-                                "code": "NOT_FOUND",
-                            }
-                        elif rec_status == "expired":
-                            approval_error = {
-                                "submitted": False,
-                                "error": f"Approval '{approval_id}' is expired",
-                                "code": "EXPIRED",
-                            }
-                        elif rec_status == "approved":
-                            expires_str = rec_check.get("expires_at_utc")
-                            if expires_str:
-                                try:
-                                    expires = datetime.fromisoformat(
-                                        _normalize_timestamp(expires_str)
-                                    )
-                                    if datetime.now(timezone.utc) > expires:
-                                        approval_error = {
-                                            "submitted": False,
-                                            "error": f"Approval expired at {expires_str}",
-                                            "code": "EXPIRED",
-                                        }
-                                except (ValueError, TypeError):
-                                    pass
-                            if approval_error is None:
-                                # Invariant #12: a record that exists only on
-                                # disk was created before a bridge restart.
-                                # Never promote it to a submittable record,
-                                # even if it still reads "approved" and is
-                                # inside its 300 s window.
-                                approval_error = {
-                                    "submitted": False,
-                                    "error": (
-                                        f"Approval '{approval_id}' is not active in this "
-                                        f"bridge process (invalidated by bridge restart, "
-                                        f"safety invariant #12). Run a fresh preflight and "
-                                        f"obtain a fresh approval."
-                                    ),
-                                    "code": "NOT_FOUND",
-                                }
-                        break
-        except OSError:
-            pass
-
+    # 1. Look up approval record first (before kill switch checks) via the
+    #    single lookup shared with bridge._validate_approval_for_submit().
+    record, approval_error = validate_approval_for_submit(approval_id)
     if approval_error is not None:
         return approval_error
-
-    if record is None:
-        return {
-            "submitted": False,
-            "error": f"No active approval found for '{approval_id}'",
-            "code": "NOT_FOUND",
-        }
 
     # 2. Kill switch checks (after approval validation, so expired/submitted
     #    approvals return their specific codes even when switches are off)

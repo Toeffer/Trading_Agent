@@ -70,6 +70,7 @@ BASE_PATCHES = lambda: [
 # Tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestBackpressureDrainDrill:
 
     def _run(self, bp, cooldown, observe=1, poll=1, probes=False, urlopen=None):
@@ -265,6 +266,7 @@ class TestBackpressureDrainDrill:
 # Step 15T/15U Extension: CLI --help Fast-Path Tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestHelpFastPath:
     """Verify CLI --help is parse-only — no heavy init, no side effects."""
 

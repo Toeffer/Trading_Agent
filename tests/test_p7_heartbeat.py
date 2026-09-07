@@ -110,10 +110,12 @@ def whitelist():
 
 # ── 1. Heartbeat subcommand exists ───────────────────────────────────────
 
+@pytest.mark.host
 def test_operator_file_exists():
     assert OPERATOR.exists(), f"{OPERATOR} not found"
 
 
+@pytest.mark.host
 def test_heartbeat_help():
     result = subprocess.run(
         [sys.executable, str(OPERATOR), "heartbeat", "--help"],
@@ -123,6 +125,7 @@ def test_heartbeat_help():
     assert "heartbeat" in result.stdout.lower()
 
 
+@pytest.mark.host
 def test_py_compile():
     import py_compile
     try:
@@ -178,6 +181,7 @@ class TestH1TokenSource:
 
 # ── 5. Systemd service and timer ─────────────────────────────────────────
 
+@pytest.mark.host
 class TestSystemdUnits:
 
     def test_service_exists(self):

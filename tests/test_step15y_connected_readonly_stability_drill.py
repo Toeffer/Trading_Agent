@@ -74,6 +74,7 @@ def _evidence_ok(ep_path):
     }.get(ep_path, {"ok": True})
 
 
+@pytest.mark.host
 class TestConnectedReadonlyStabilityDrill:
 
     def _run(self, connected=True, alerts=None, samples=2, interval=1, **kw):

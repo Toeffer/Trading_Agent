@@ -574,6 +574,7 @@ class TestKPINoGoCascade:
 # T10: Clean environment → READY_DRYRUN
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestCleanReadyDryrun:
     """When all checks pass, verdict must be READY_DRYRUN."""
 
@@ -608,6 +609,7 @@ class TestCleanReadyDryrun:
 # T11: Symbol validation
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestSymbolValidation:
     """Gate H symbol allowlist enforcement."""
 
@@ -709,6 +711,7 @@ class TestInvalidInput:
 # T15: KPI HOLD → candidate HOLD (not NO-GO)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestKPIHoldCascadeHold:
     """KPI HOLD must cascade candidate to HOLD, not NO-GO."""
 
@@ -766,6 +769,7 @@ class TestKPIHoldCascadeHold:
 # T16: Rehearsal HOLD → candidate HOLD (not NO-GO)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestRehearsalHoldCascadeHold:
     """Rehearsal HOLD must cascade candidate to HOLD, not NO-GO."""
 
@@ -821,6 +825,7 @@ class TestRehearsalHoldCascadeHold:
 # T17: Dependency timeout → explicit evidence, not fake bridge-unreachable
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestDependencyTimeout:
     """Dependency timeouts must produce explicit evidence, not fake bridge state."""
 
@@ -1061,6 +1066,7 @@ class TestBridgeSafetyFlagsNoFabrication:
 # T20: Integration acceptance — safe disconnected state → HOLD (not NO-GO)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestIntegrationSafeDisconnectedHOLD:
     """Full integration test: safe disconnected state must produce HOLD, not NO-GO.
 
@@ -1316,6 +1322,7 @@ class TestStep15DMarketData:
 # Step 15E: Connected read-only market-data validation
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestStep15EStaleMarketData:
     """Step 15E: Stale market data must produce HOLD, never READY."""
 
@@ -1356,6 +1363,7 @@ class TestStep15EStaleMarketData:
         assert "market_data_stale" in checks, f"Expected market_data_stale blocker, got {checks}"
 
 
+@pytest.mark.host
 class TestStep15EMissingBidAsk:
     """Step 15E: Missing bid/ask/last must produce HOLD."""
 
@@ -1467,6 +1475,7 @@ class TestStep15EMissingFxAccount:
         assert result["account_evidence"]["fx_available"] is False
 
 
+@pytest.mark.host
 class TestStep15EAutonomyAndCleanCycles:
     """Step 15E: Autonomy level 0 and zero clean cycles must produce HOLD."""
 
@@ -1656,6 +1665,7 @@ class TestStep15GCrossCurrency:
         assert ae["notional_base_currency"] == 131.16
 
 
+@pytest.mark.host
 class TestStep15GMissingFx:
     """Step 15G: Missing FX evidence must produce HOLD with fx_missing blocker."""
 
@@ -1747,6 +1757,7 @@ class TestStep15GFxExportFields:
         assert "notional_eur" in eb  # backward compat
 
 
+@pytest.mark.host
 class TestStep15GFxStale:
     """Step 15G: Stale FX evidence must produce HOLD with fx_stale."""
 
@@ -1772,6 +1783,7 @@ class TestStep15GFxStale:
         assert result["verdict"] == "HOLD"
 
 
+@pytest.mark.host
 class TestStep15GFxInvalid:
     """Step 15G: Invalid FX rate (zero or negative) must produce HOLD."""
 
@@ -1860,6 +1872,7 @@ class TestStep15HRuntimeQuieting:
             assert fb not in bp_block, f"BP block has forbidden: {fb}"
 
 
+@pytest.mark.host
 class TestStep15HBackpressureTiers:
     """Step 15H: Backpressure tier priorities."""
 
@@ -1912,6 +1925,7 @@ class TestStep15HNoBreakage:
 # Step 15I — Clean-cycle ledger / evidence cadence
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 class TestStep15ICleanCycleLedger:
     """Step 15I: clean-cycle JSONL ledger and evidence-cycle command."""
 

@@ -98,6 +98,7 @@ class TestSyntheticFixtures16Z:
 # ===========================================================================
 
 
+@pytest.mark.host
 class TestPhase16ZConstants:
 
     def test_diagnosis_dict_has_ready(self):
@@ -361,6 +362,7 @@ class TestPhase16ZReadOnlyInvariants:
 # ===========================================================================
 
 
+@pytest.mark.host
 class TestRealWorkflowFile:
 
     def test_ci_yml_exists(self):

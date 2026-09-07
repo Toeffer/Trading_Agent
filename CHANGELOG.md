@@ -1579,6 +1579,54 @@ imported for this (importing it runs its own startup reconciliation).
 
 ---
 
+## 2026-09-07 — Repo review follow-up 2: one approval lookup, wider lint gate, host-only tests skip off-host
+
+The last three items from the post-merge review list.
+
+### 1. Approval lookup is one function, and the log is read correctly
+
+`bridge._validate_approval_for_submit()` and `guard.submit_order()` each
+carried their own copy of "find the approval record, decide whether it may
+be submitted": a scan of `approval-records.jsonl` plus an expiry/status
+ladder. Two copies is how the bridge and the guard drifted apart on
+invariant #12 in the first place. Both scans also stopped at the *first*
+matching line of an append-only log, i.e. the original "pending" creation
+line, even after a ruling or a restart invalidation had been appended after
+it — so a denied or restart-expired approval was reported by its stale
+first line.
+
+Now `guard.find_approval_record()` (memory first; on disk the LAST matching
+line wins) and `guard.validate_approval_for_submit()` (the one ladder:
+NOT_FOUND → ALREADY_SUBMITTED → denied → EXPIRED → past-expiry →
+disk-only/invariant #12 → NOT_APPROVED → submittable). The bridge function
+is a thin wrapper; `submit_order()` calls the same function. Behavioural
+delta beyond last-line-wins: an in-memory *pending* approval submitted
+directly now returns `NOT_APPROVED` from the guard path too (it returned a
+generic `NOT_FOUND` there and `NOT_APPROVED` from the bridge before).
+Tests: `tests/test_approval_lookup_single_source.py` (15).
+
+### 2. Ruff gate now includes F811 for production files
+
+Phase 19P's cleanup left `bridge.py`/`monitor.py`/`guard.py` free of
+redefinitions; the CI gate now keeps them that way (`select` gains `F811`).
+`tests/*` keeps its harmless repeated-local-reimport idiom via a per-file
+ignore — still the mechanical follow-up Phase 19P noted.
+
+### 3. Host-only tests skip cleanly off the host
+
+The 62 test files outside the curated CI set produced 120 failures on any
+machine without the production layout (`~/.openclaw` rules, `~/agents/
+ibkr-bridge`, user systemd units, host-speed timing) — environment
+failures, not logic failures, as Phase 19P recorded. New `host` marker in
+`tests/conftest.py`: auto-skipped when that layout is absent, runs
+unchanged on the host, forceable with `-m host` or `IBKR_HOST_TESTS=1`.
+Applied at class/function level to exactly the 120 failing tests' owners
+(19 files; the other ~1,300 tests in those files still run anywhere). Plain
+`pytest tests/` is now green on a fresh clone. This does not change the
+curated CI set.
+
+---
+
 ## Verification Queue (resolve against the live system)
 
 0. ✅ **RESOLVED (H2): Risk-rails divergence.** Reading (A) confirmed — guard.py enforces

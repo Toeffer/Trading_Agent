@@ -1498,6 +1498,87 @@ reach the gates.
 
 ---
 
+## 2026-09-07 — Repo review follow-up: CLAUDE.md consistency test + startup path resolution
+
+Three items from the post-merge review, done together because they share one
+theme: the gap between what `CLAUDE.md` says and what the code does — plus a
+safety-gate bug the new consistency test surfaced while being written.
+
+### 1. CLAUDE.md refreshed against the code
+
+- §4 endpoint map: "five `GET /monitor/*` endpoints" → the actual eight
+  read-only GETs plus the one writing POST (`/monitor/open-orders/reconcile`,
+  manual reconciliation records only; never guard state).
+- §5 preflight fields: added `stopPercent` (P5) and `proposal_path` (P3),
+  both accepted for months but never listed.
+- §5 gates: the summary stopped at Gate G. Added **H** proposal discipline
+  and **I** sector concentration, the pre-gate structural checks (US-ETF
+  block, FX plausibility) and the open-orders check, and corrected the
+  per-side gate lists to what `run_preflight()` actually runs.
+- §10 snapshot: the June seed still showed the META position, a
+  daily-trade count and "H2 in progress". Mutable live values are no longer
+  written into this file at all (§0 says never trust it for them); the
+  block now carries only claims the consistency test can verify from the
+  repo, plus pointers to the live commands for the rest.
+
+### 2. Consistency test (the "test 139" §9 has promised since June)
+
+`tests/test_claude_md_consistency.py`, registered in `scripts/run-ci-portable`.
+Parses `CLAUDE.md` and asserts, from repo contents only (no `~/.openclaw`,
+no bridge, no IBKR): the §5 field list equals `guard.ALLOWED_REQUEST_FIELDS`
+plus the bridge-only `proposal_path`; the §5 actions/order types equal the
+guard's; every gate function wired in `run_preflight()` is named in §5 and
+vice versa; the §4 monitor endpoint counts equal the bridge's route
+decorators; the §3 kill-switch defaults (`IBKR_ALLOW_ORDERS` default false,
+`/order` → 403, approve/submit require `X-H1-Token`, 300 s approval TTL, MKT
+hardcoded at submit) match the source; §5 risk caps (5% / 2% / 30% / 2 per
+day / −1% / −3%) match `guard`'s constants and the YAML default documented
+there; and §10 makes no mutable-state claim (no `positions:` /
+`daily_trade_count:` lines). A separate `@pytest.mark.live` case checks the
+live YAML's `rules_version` and allowlist mode when `~/.openclaw` exists —
+skipped in CI by the existing marker policy.
+
+### 3. Gate G (close-only SELL, invariant #9) was never wired — fixed
+
+Found by the new consistency test's "every gate function is wired into
+`run_preflight()`" assertion, then confirmed by reading the SELL branch and
+`git log -S`: `gate_close_only()` was added in 63052ed and no call to it
+was ever added. The SELL branch appended a `"close_only"` gate entry that
+silently reused Gate E's `(ok, reason, details)`. Gate E only inspects the
+position while a loss halt is active (P2b exemption path), so with no halt
+active — the normal case — a SELL for a symbol with no position, or larger
+than the position, passed preflight with `close_only: passed`. Submit-time
+revalidation skips SELL checks (no entry price to compare) and
+`_internal_place_order()` places a plain SELL, so preflight was the only
+place a short could have been stopped. Remaining defences were Gate A
+(allowlist), Gate H (the proposal must name a side and quantity) and
+Chris's manual approval — none of them deterministic position checks.
+
+Correction to the 2026-09-07 review report: it listed "SELL close-only
+(Gate G): confirmed" after reading `gate_close_only()`'s body, not its call
+site. That verification was incomplete; this entry corrects the record.
+
+Fix: the SELL branch now calls `gate_close_only(symbol, proposed_shares,
+position_provider)` and records its own verdict. Tests:
+`tests/test_gate_g_close_only_wiring.py` (7) — SELL with no position, with a
+position in another symbol only, and larger than the position all fail
+Gate G (`would_open_short` flagged); SELL within the position passes Gate G;
+the `close_only` entry is no longer a copy of Gate E's; source guards that
+the call exists and precedes the entry. Registered in `scripts/run-ci-portable`.
+
+Requires a bridge restart to take effect.
+
+### 4. Bridge startup safety check uses the shared path resolution
+
+`bridge._run_startup_safety()` hardcoded `~/.openclaw/risk-rules/
+paper-trading-rules.yaml` and `~/.openclaw/guard-state.json` while
+`guard.py` honours `IBKR_RULES_PATH` / `IBKR_GUARD_STATE_PATH`. Two loaders
+for one file that could read different files. Now resolves both through
+the same env vars with the same defaults. `guard` is deliberately not
+imported for this (importing it runs its own startup reconciliation).
+
+---
+
 ## Verification Queue (resolve against the live system)
 
 0. ✅ **RESOLVED (H2): Risk-rails divergence.** Reading (A) confirmed — guard.py enforces

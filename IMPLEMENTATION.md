@@ -24,17 +24,17 @@ The first candidate commit is `ad69f28381c4d897384c7f6de157389db1b0c757`.
 
 | Stage | Implemented locally | Remaining gate or work |
 | --- | --- | --- |
-| 1. Test baseline | Isolated branch; Python 3.12.10 toolchain; discovered portable tests; Linux/Windows CI configuration; UTF-8 and LF handling; behavioral regressions | Final complete portable rerun and actual Linux/Windows CI results |
-| 2. Approval binding | Immutable order snapshot; proposal binding and price constraints; durable pending creation; H1 authorization; complete approval UI | Final contract review and complete validation |
+| 1. Test baseline | Isolated branch; Python 3.12.10 toolchain; discovered portable tests; Linux/Windows CI configuration; UTF-8 and LF handling; behavioral regressions | Passing Linux/Windows runs recorded below; require green checks on the current PR commit |
+| 2. Approval binding | Immutable order snapshot; proposal binding and price constraints; durable pending creation; H1 authorization; complete approval UI | PR review; current-commit contract validation is part of CI |
 | 3. Durable execution | SQLite schema 3, unique intents, reservations, account evidence revisions, identity-based fill accounting, holdings anchors, outbox and legacy quarantine | Real stopped-service migration and broker reconciliation; final concurrency/crash review |
 | 4. Risk and broker outcomes | Shared account risk evaluator; explicit valuations and FX; close-only SELL; staged BUY parent with protective child; separate broker evidence | Schema 3 accounting repairs and regressions implemented; complete CI and validate with the real paper gateway |
 | 5. Runtime boundaries | One bounded broker loop; explicit startup/settings; token helper; separate systemd identities and firewall templates; host-check tooling | Install and verify actual Linux ownership, permissions, gateway restrictions and release/configuration identity |
 | 6. Refactor | Package boundaries; thin original entry points; shared CLI registry and command groups; extracted checkpoint harnesses; strict types on new boundaries | Legacy preflight delegates to the application; 601 CLI helpers extracted; one-time transformation scripts removed; complete regression verification |
-| 7. Release and evaluation | Migration/rollback instructions; deterministic snapshot export/replay; preregistration preparation; acceptance-evidence validator | Review, commit, CI, release tag, host verification, human paper BUY/stop/SELL exercise, reconciliation and relock |
+| 7. Release and evaluation | Migration/rollback instructions; deterministic snapshot export/replay; preregistration preparation; acceptance-evidence validator | PR review and release tag, current-commit CI, host verification, human paper BUY/stop/SELL exercise, reconciliation and relock |
 
-## Verification evidence
+## Validation history (per-commit results)
 
-- Latest complete discovered portable run: **3,756 passed, 8 failed, 2 skipped,
+- Earlier complete discovered portable run: **3,756 passed, 8 failed, 2 skipped,
   390 deselected**, with **3,150 subtests passed**. The eight failures were
   assertions tied to the earlier implementation; their fixes require a new
   complete run before the suite can be described as passing.
@@ -45,9 +45,9 @@ The first candidate commit is `ad69f28381c4d897384c7f6de157389db1b0c757`.
 - Strict mypy: **42 source files checked successfully**, with explicit exclusions
   for retained legacy modules. Repository Ruff check passed.
 - Compared **25 historical artifact files** with baseline Git bytes: unchanged.
-- Complete candidate portable run and GitHub Linux/Windows CI are pending.
-  Intermediate CLI extraction failures remain in the local logs; targeted fixes
-  and the complete rerun must pass before the candidate is accepted.
+- Complete Linux/Windows results are recorded below. The draft PR checks show
+  the result for its current commit. Intermediate CLI extraction failures remain
+  in local logs as history; they have not been relabeled as passing evidence.
 - Additional review repairs: read-only tools refuse schema migration; SQLite
   upgrades back up the old schema first. Cold CI type checks now explicitly
   exclude historical root imports outside the typed execution boundaries.
@@ -117,3 +117,25 @@ an installed checkout before reading repository source; it now always runs.
 The installed user-service comparison is explicitly marked `host`, so discovering
 an installed production unit cannot activate it during portable testing. This
 accounts for the prior two skips; host checks require `--run-host`.
+
+
+## Candidate handoff
+
+Implementation and focused validation are complete; all review-discovered
+accounting defects have behavioral regressions. Complete portable suites run on
+both operating systems for every candidate commit. The PR remains a draft for
+review; no review approval or release tag is implied by passing CI.
+
+The two prior portable skips were resolved explicitly: the repository heartbeat
+assertion now executes, and the installed-service comparison requires host opt-in.
+Their focused rerun passed **44 tests, with 43 operational tests deselected and
+no skips**. The full runner now excludes **391 explicitly classified operational
+tests**. Original audit logs and all 25 historical artifact bytes remain intact.
+
+Remaining operational work requires the designated Linux host/SSH alias and
+approved paper-account identity: stopped-service backup/migration, broker
+reconciliation, actual ownership and gateway checks, then the human paper
+BUY/confirmed stop/explicit stop cancellation/separately approved close-only SELL
+exercise. Capture real evidence and relock before recording deployed acceptance.
+The replay example and release/configuration-pinned preregistration generator are
+ready; operator expectations and acceptance evidence remain intentionally empty.

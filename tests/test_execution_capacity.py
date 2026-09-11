@@ -36,7 +36,7 @@ def test_open_protective_sell_prevents_double_selling(service):
     application, broker = service
     broker.snapshot_value = replace(broker.snapshot_value,
         positions=(Position("AAPL", 5, Decimal(500), "TECH"),),
-        open_orders=(OpenOrder("AAPL", "SELL", 5, Decimal(475), "exec_old:stop", False),))
+        open_orders=(OpenOrder("AAPL", "SELL", 5, Decimal(475), "manual-protective-stop", False),))
     result = application.preflight({"symbol": "AAPL", "action": "SELL", "totalQuantity": 5},
                                    proposal={"symbol": "AAPL", "side": "SELL", "quantity": 5})
     assert result["passed"] is False

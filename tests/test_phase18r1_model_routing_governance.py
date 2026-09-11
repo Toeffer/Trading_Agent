@@ -797,11 +797,11 @@ class TestDeterminism:
         hashes = [d["deterministic_decision_hash"] for d in decisions]
         assert len(set(hashes)) == 1
 
-    def test_cwd_independent(self):
+    def test_cwd_independent(self, tmp_path):
         import os as _os
         original_cwd = _os.getcwd()
         try:
-            _os.chdir("/tmp")
+            _os.chdir(str(tmp_path))
             req = _make_request("HERMES", "ROUTINE_RESEARCH")
             d1 = _decide(req)
             _os.chdir(original_cwd)
@@ -810,11 +810,11 @@ class TestDeterminism:
         finally:
             _os.chdir(original_cwd)
 
-    def test_empty_home_independent(self):
+    def test_empty_home_independent(self, tmp_path):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         d_base = _decide(req)
         env = dict(os.environ)
-        env["HOME"] = "/tmp/nonexistent-home"
+        env["HOME"] = str(tmp_path / 'nonexistent-home')
         req_json = json.dumps(req)
         result = subprocess.run(
             [sys.executable, "-c",
@@ -1002,18 +1002,18 @@ class TestCliCheckpoint:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestCliDecision:
-    def test_reads_json_file(self):
+    def test_reads_json_file(self, tmp_path):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
-        path = "/tmp/test_routing_cli.json"
+        path = str(tmp_path / 'test_routing_cli.json')
         with open(path, "w", encoding="utf-8") as f:
             json.dump(req, f)
         rc, result = _run_decision_cli(path)
         assert rc == 0
         assert result["routing_state"] == "DEFAULT_ROUTE"
 
-    def test_reads_stdin(self):
+    def test_reads_stdin(self, tmp_path):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
-        path = "/tmp/test_routing_stdin.json"
+        path = str(tmp_path / 'test_routing_stdin.json')
         with open(path, "w", encoding="utf-8") as f:
             json.dump(req, f)
         result = subprocess.run(
@@ -1026,28 +1026,28 @@ class TestCliDecision:
         d = json.loads(result.stdout)
         assert d["routing_state"] == "DEFAULT_ROUTE"
 
-    def test_default_route_exit_zero(self):
+    def test_default_route_exit_zero(self, tmp_path):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
-        path = "/tmp/test_routing_exit0.json"
+        path = str(tmp_path / 'test_routing_exit0.json')
         with open(path, "w", encoding="utf-8") as f:
             json.dump(req, f)
         rc, _ = _run_decision_cli(path)
         assert rc == 0
 
-    def test_escalated_route_exit_zero(self):
+    def test_escalated_route_exit_zero(self, tmp_path):
         req = _make_request("HERMES", "PHASE_ARCHITECTURE")
-        path = "/tmp/test_routing_esc.json"
+        path = str(tmp_path / 'test_routing_esc.json')
         with open(path, "w", encoding="utf-8") as f:
             json.dump(req, f)
         rc, result = _run_decision_cli(path)
         assert rc == 0
         assert result["routing_state"] == "ESCALATED_ROUTE"
 
-    def test_hold_structured_json(self):
+    def test_hold_structured_json(self, tmp_path):
         hs = {"safety_boundary_violation_detected": True}
         hs.update({f: False for f in HARD_STOP_FLAGS if f != "safety_boundary_violation_detected"})
         req = _make_request("HERMES", "ROUTINE_RESEARCH", hard_stops=hs)
-        path = "/tmp/test_routing_hold_cli.json"
+        path = str(tmp_path / 'test_routing_hold_cli.json')
         with open(path, "w", encoding="utf-8") as f:
             json.dump(req, f)
         rc, result = _run_decision_cli(path)
@@ -1056,16 +1056,16 @@ class TestCliDecision:
         assert result["selected_model_id"] is None
         assert result["manual_review_required"] is True
 
-    def test_missing_file(self):
-        rc, result = _run_decision_cli("/tmp/nonexistent_routing_file.json")
+    def test_missing_file(self, tmp_path):
+        rc, result = _run_decision_cli(str(tmp_path / 'nonexistent_routing_file.json'))
         assert rc != 0
 
-    def test_no_files_written(self):
+    def test_no_files_written(self, tmp_path):
         mtimes = {}
         for path in MODEL_ROUTING_DIR.glob("*"):
             mtimes[str(path)] = path.stat().st_mtime
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
-        path = "/tmp/test_routing_nowrite.json"
+        path = str(tmp_path / 'test_routing_nowrite.json')
         with open(path, "w", encoding="utf-8") as f:
             json.dump(req, f)
         _run_decision_cli(path)

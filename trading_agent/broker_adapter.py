@@ -213,6 +213,7 @@ class IBKRBroker:
                         trade.order.orderRef or None,
                         not bool(trade.order.parentId)
                         and not bool(trade.orderStatus.filled),
+                        trade.contract.conId,
                     )
                 )
             executions = await ib.reqExecutionsAsync()

@@ -71,7 +71,7 @@ def test_paper_exercise_sequence_through_real_guard_and_adapter(tmp_path, monkey
         assert len(client.orders) == 2
         market.snapshot_value = replace(market.snapshot_value,
             positions=(Position("AAPL", 1, Decimal(100), "TECH"),),
-            open_orders=(OpenOrder("AAPL", "SELL", 1, Decimal(95), bought["execution_id"] + ":stop", False),))
+            open_orders=(OpenOrder("AAPL", "SELL", 1, Decimal(95), bought["execution_id"] + ":stop", False, 123),))
         request = {"symbol": "AAPL", "action": "SELL", "totalQuantity": 1}
         proposal = {"symbol": "AAPL", "side": "SELL", "quantity": 1}
         assert application.preflight(request, proposal=proposal)["code"] == "CLOSE_ONLY_EXCEEDED"

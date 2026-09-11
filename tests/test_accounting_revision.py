@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from trading_agent.domain import AccountFill, BrokerResult, ExecutionState, Position, utcnow
+from trading_agent.domain import AccountFill, BrokerResult, ExecutionState, OpenOrder, Position, utcnow
 from trading_agent.persistence import StateConflict
 from test_execution_application import service, approve
 from test_execution_durability import reserved
@@ -103,3 +103,21 @@ def test_v2_upgrade_preserves_fills_and_requires_reconciliation(tmp_path):
         assert tuple(db.execute("SELECT * FROM fills").fetchone()) == original
     assert upgraded.execution(eid)["execution_state"] == "unknown"
     assert upgraded.execution(eid)["retry_allowed"] is False
+
+
+@pytest.mark.parametrize("remaining,contract_id,allowed", [(4, 123, False), (3, 124, False), (3, 123, True)])
+def test_open_order_remaining_must_match_verified_fills(service, remaining, contract_id, allowed):
+    app, broker = service
+    aid = approve(app)
+    broker.result = BrokerResult(ExecutionState.PARTIAL, protection_state="confirmed", filled_quantity=2,
+                                fills=(("partial", 2, Decimal(100), utcnow()),))
+    execution = app.submit(aid, authorized=True)
+    broker.snapshot_value = replace(broker.snapshot_value,
+        positions=(Position("AAPL", 2, Decimal(200), "TECH"),),
+        open_orders=(OpenOrder("AAPL", "BUY", remaining, Decimal(100 * remaining), execution["execution_id"], False, contract_id),))
+    result = app.preflight({"symbol": "AAPL", "totalQuantity": 1, "stopPrice": 95},
+                           proposal={"symbol": "AAPL", "side": "BUY", "quantity": 1})
+    if allowed:
+        assert result["passed"], result
+    else:
+        assert result["code"] == "OPEN_ORDER_EVIDENCE_MISMATCH", result

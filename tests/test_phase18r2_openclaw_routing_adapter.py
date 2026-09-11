@@ -619,27 +619,27 @@ class TestDeterminism:
         hashes = [r["deterministic_adapter_hash"] for r in results]
         assert len(set(hashes)) == 1
 
-    def test_cwd_does_not_affect_hermes(self):
+    def test_cwd_does_not_affect_hermes(self, tmp_path):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         decision = _decide_logical(req)
         a1 = _resolve_shadow(req, decision)
         import os as _os
         old_cwd = _os.getcwd()
         try:
-            _os.chdir("/tmp")
+            _os.chdir(str(tmp_path))
             a2 = _resolve_shadow(req, decision)
         finally:
             _os.chdir(old_cwd)
         assert a1["deterministic_adapter_hash"] == a2["deterministic_adapter_hash"]
 
-    def test_empty_home_does_not_affect(self):
+    def test_empty_home_does_not_affect(self, tmp_path):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         decision = _decide_logical(req)
         a1 = _resolve_shadow(req, decision)
 
         # Write inputs to temp files, call adapter via subprocess
-        rp = "/tmp/test_det_req.json"
-        dp = "/tmp/test_det_dec.json"
+        rp = str(tmp_path / 'test_det_req.json')
+        dp = str(tmp_path / 'test_det_dec.json')
         with open(rp, "w", encoding="utf-8") as f: json.dump(req, f)
         with open(dp, "w", encoding="utf-8") as f: json.dump(decision, f)
 
@@ -654,13 +654,13 @@ class TestDeterminism:
         a2 = json.loads(result.stdout)
         assert a1["deterministic_adapter_hash"] == a2["deterministic_adapter_hash"]
 
-    def test_environment_variables_do_not_affect(self):
+    def test_environment_variables_do_not_affect(self, tmp_path):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         decision = _decide_logical(req)
         a1 = _resolve_shadow(req, decision)
 
-        rp = "/tmp/test_det_env_req.json"
-        dp = "/tmp/test_det_env_dec.json"
+        rp = str(tmp_path / 'test_det_env_req.json')
+        dp = str(tmp_path / 'test_det_env_dec.json')
         with open(rp, "w", encoding="utf-8") as f: json.dump(req, f)
         with open(dp, "w", encoding="utf-8") as f: json.dump(decision, f)
 
@@ -995,11 +995,11 @@ class TestRuntimeInvocationAuthorized:
 
 
 class TestCliAdapterDecision:
-    def test_bound_gpt55_resolves(self):
+    def test_bound_gpt55_resolves(self, tmp_path):
         """Only directly observed, bound models resolve."""
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         decision = _decide_logical(req)
-        p1, p2 = "/tmp/test_r2_req.json", "/tmp/test_r2_dec.json"
+        p1, p2 = str(tmp_path / 'test_r2_req.json'), str(tmp_path / 'test_r2_dec.json')
         with open(p1, "w", encoding="utf-8") as f: json.dump(req, f)
         with open(p2, "w", encoding="utf-8") as f: json.dump(decision, f)
         rc, result = _run_adapter_decision(p1, p2)
@@ -1008,11 +1008,11 @@ class TestCliAdapterDecision:
         assert result["selected_transport"] == "CODEX"
         assert result["selected_runtime_alias"] == "gpt-5.5"
 
-    def test_bound_deepseekv4pro_resolves_in_cli(self):
+    def test_bound_deepseekv4pro_resolves_in_cli(self, tmp_path):
         """deepseek-v4-pro (BOUND) resolves via opencode-go in CLI."""
         req = _make_request("OC", "ROUTINE_IMPLEMENTATION")
         decision = _decide_logical(req)
-        p1, p2 = "/tmp/test_r2_ds_req.json", "/tmp/test_r2_ds_dec.json"
+        p1, p2 = str(tmp_path / 'test_r2_ds_req.json'), str(tmp_path / 'test_r2_ds_dec.json')
         with open(p1, "w", encoding="utf-8") as f: json.dump(req, f)
         with open(p2, "w", encoding="utf-8") as f: json.dump(decision, f)
         rc, result = _run_adapter_decision(p1, p2)
@@ -1021,7 +1021,7 @@ class TestCliAdapterDecision:
         assert result["selected_transport"] == "OPENCODE"
         assert result["selected_runtime_alias"] == "opencode-go/deepseek-v4-pro"
 
-    def test_retired_oc_escalation_holds_in_cli(self):
+    def test_retired_oc_escalation_holds_in_cli(self, tmp_path):
         """OC_ESCALATION (kimi-k3) is retired. Phase 18R1 still logically
         proposes it for REPEATED_CI_RECOVERY — the CLI must HOLD with a
         nonzero exit and a null logical_model_id (fails validation before
@@ -1029,7 +1029,7 @@ class TestCliAdapterDecision:
         req = _make_request("OC", "REPEATED_CI_RECOVERY")
         decision = _decide_logical(req)
         assert decision["selected_model_id"] == "kimi-k3"
-        p1, p2 = "/tmp/test_r2_req_u.json", "/tmp/test_r2_dec_u.json"
+        p1, p2 = str(tmp_path / 'test_r2_req_u.json'), str(tmp_path / 'test_r2_dec_u.json')
         with open(p1, "w", encoding="utf-8") as f: json.dump(req, f)
         with open(p2, "w", encoding="utf-8") as f: json.dump(decision, f)
         rc, result = _run_adapter_decision(p1, p2)
@@ -1038,12 +1038,12 @@ class TestCliAdapterDecision:
         assert result["selected_runtime_alias"] is None
         assert result["logical_model_id"] is None
 
-    def test_hold_structured_json_nonzero(self):
+    def test_hold_structured_json_nonzero(self, tmp_path):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         decision = _decide_logical(req)
         decision["advisory_only"] = False
-        p1 = "/tmp/test_r2_hold_req.json"
-        p2 = "/tmp/test_r2_hold_dec.json"
+        p1 = str(tmp_path / 'test_r2_hold_req.json')
+        p2 = str(tmp_path / 'test_r2_hold_dec.json')
         with open(p1, "w", encoding="utf-8") as f: json.dump(req, f)
         with open(p2, "w", encoding="utf-8") as f: json.dump(decision, f)
         rc, result = _run_adapter_decision(p1, p2)

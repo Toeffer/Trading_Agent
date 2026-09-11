@@ -1237,23 +1237,20 @@ class TestDeterminismAndStability:
                 f"Run {i} labels differ"
 
     def test_evidence_hash_excludes_timestamps(self):
-        """Evidence hash must not be affected by timestamp or checkpoint_id."""
+        """Vary the clock explicitly, independent of machine speed."""
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import patch
+        from ibkr_operator import _run_level1_mstr_btc_research_proposal_governance_checkpoint
+
         results = []
-        for _ in range(5):
-            r = subprocess.run(
-                [sys.executable, str(OPERATOR), "phase18a", "--json"],
-                capture_output=True, text=True, timeout=30,
-            encoding="utf-8")
-            results.append(json.loads(r.stdout))
-        # All timestamps and IDs differ, but evidence hash must be identical
-        timestamps = [r["timestamp"] for r in results]
-        ids = [r["checkpoint_id"] for r in results]
-        hashes = [r["deterministic_evidence_hash"] for r in results]
-        # Timestamps should differ
-        assert len(set(timestamps)) == len(timestamps) or len(set(timestamps)) > 1, \
-            "Timestamps should differ between runs"
-        # But hashes must be identical
-        assert len(set(hashes)) == 1, "Evidence hashes differ despite identical semantic input"
+        base = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        for offset in range(5):
+            with patch("datetime.datetime") as clock:
+                clock.now.return_value = base + timedelta(days=offset)
+                results.append(_run_level1_mstr_btc_research_proposal_governance_checkpoint())
+        assert len({r["timestamp"] for r in results}) == 5
+        assert len({r["checkpoint_id"] for r in results}) == 5
+        assert len({r["deterministic_evidence_hash"] for r in results}) == 1
 
 
 # ── Acceptance: builders do not mutate inputs ───────────────────────────────

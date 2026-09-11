@@ -198,6 +198,7 @@ class OpenOrder:
     value_base: Decimal
     execution_ref: str | None = None
     counts_as_pending_trade: bool = True
+    contract_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

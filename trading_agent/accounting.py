@@ -112,6 +112,37 @@ def reconcile_snapshot(
             store._event(db, "account_fill", payload)
             known[event.broker_execution_id] = payload
 
+        references: set[str] = set()
+        for order in snapshot.open_orders:
+            reference = order.execution_ref or ""
+            if not reference.startswith("exec_"):
+                continue
+            if reference in references:
+                raise StateConflict("OPEN_ORDER_EVIDENCE_MISMATCH")
+            references.add(reference)
+            eid = reference.removesuffix(":stop")
+            row = db.execute(
+                "SELECT e.filled_quantity,a.plan FROM executions e JOIN approvals a USING(approval_id) WHERE e.account=? AND e.execution_id=?",
+                (account, eid),
+            ).fetchone()
+            if row is None:
+                raise StateConflict("UNKNOWN_EXECUTION_REFERENCE")
+            plan = json.loads(row["plan"])
+            child = reference.endswith(":stop")
+            filled = sum(
+                v["quantity"]
+                for v in known.values()
+                if v["order_key"] == eid
+                and v["role"] == ("stop" if child else "parent")
+            )
+            if (
+                order.symbol != plan["symbol"]
+                or order.side != ("SELL" if child else plan["side"])
+                or order.remaining != plan["quantity"] - filled
+                or order.contract_id != plan["contract_id"]
+            ):
+                raise StateConflict("OPEN_ORDER_EVIDENCE_MISMATCH")
+
         positions = {p.symbol: p.quantity for p in snapshot.positions if p.quantity}
         if len(positions) != sum(bool(p.quantity) for p in snapshot.positions):
             raise StateConflict("DUPLICATE_POSITION_IDENTITY")

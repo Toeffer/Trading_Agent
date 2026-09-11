@@ -75,3 +75,24 @@ Orders remain disabled until all execution repairs pass together.
 Latest follow-up regressions: **22 passed** (read-only tools, pre-upgrade backup,
 accounting and executable mutation checks). Cold type checking passes locally;
 the initial CI type failure is addressed in the follow-up candidate.
+
+
+## Clean-run follow-up
+
+The diagnostic local run completed with **3,783 passed, 12 failed, 2 skipped,
+390 deselected and 3,150 subtests passed**. All twelve failures were historical
+source checks already repaired and separately verified; the run started before
+those fixes and is not final-candidate evidence.
+
+CI for `917fb8a020f3cfc488205d6f2b1048b83831164d` passed compilation, lint and
+cold strict typing on both operating systems. Its complete suites found two
+Linux fixture failures and fifteen Windows fixture failures: missing temporary
+paths, a missing backup source fixture, and an assumption about wall-clock
+resolution. Explicit temporary paths, source setup and a controlled clock now
+pass **28 focused checks** without excluding any tests.
+
+The account snapshot now checks application open-order contract identity and
+remaining quantity against the immutable plan and verified fills before risk
+reservation. A failing behavioral reproduction preceded the repair; **23 focused
+accounting, capacity, broker-snapshot and round-trip tests pass** afterward.
+The next commit requires fresh complete Linux and Windows CI before tagging.

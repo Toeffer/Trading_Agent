@@ -535,15 +535,17 @@ class TestStaleAlertRepair:
         assert "" in ids
         assert "aprv_real_uuid" not in ids
 
-    def test_stale_orphan_repaired(self):
+    def test_stale_orphan_repaired(self, tmp_path):
         """Live repair clears stale orphans, keeps real approvals."""
         from unittest.mock import patch
         from ibkr_operator import _repair_stale_alerts
 
+        (tmp_path / "submitted-approvals.json").write_text("[]", encoding="utf-8")
         submitted = {"test-bracket-1", "test-double-abc", "", "aprv_real"}
         events = [{"approval_id": "aprv_real", "event_type": "order_submitted"}]
 
-        with patch("monitor.load_submitted_approvals", return_value=submitted), \
+        with patch("ibkr_operator.OPENCLAW_DIR", tmp_path), \
+             patch("monitor.load_submitted_approvals", return_value=submitted), \
              patch("monitor.load_events", return_value=events), \
              patch("ibkr_operator._atomic_write_json") as mock_write, \
              patch("shutil.copy2") as mock_backup, \

@@ -145,7 +145,7 @@ def test_05_listener_count():
     result = subprocess.run(
         ["ss", "-tlnp", "sport", "=", ":8790"],
         capture_output=True, text=True, timeout=5,
-    )
+    encoding="utf-8")
     listeners = [l for l in result.stdout.splitlines() if "LISTEN" in l.upper()]
     assert len(listeners) >= 1, f"Expected >= 1 listener on :8790, got {len(listeners)}"
     print(f"  ✓ listeners on :8790: {len(listeners)}")

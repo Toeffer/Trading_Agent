@@ -359,10 +359,10 @@ def _build_mocks(before_health=None,
     # Guard state
     tmp_openclaw = Path(tempfile.mkdtemp())
     if guard_state_content is not None:
-        (tmp_openclaw / "guard-state.json").write_text(guard_state_content)
+        (tmp_openclaw / "guard-state.json").write_text(guard_state_content, encoding="utf-8", newline="\n")
     else:
         (tmp_openclaw / "guard-state.json").write_text(
-            json.dumps({"trade_date": _TODAY_STR, "daily_trade_count": 0, "daily_halt_active": False}))
+            json.dumps({"trade_date": _TODAY_STR, "daily_trade_count": 0, "daily_halt_active": False}), encoding="utf-8", newline="\n")
     patches.append(patch("ibkr_operator.OPENCLAW_DIR", tmp_openclaw))
 
     # Clean cycles ledger
@@ -373,7 +373,7 @@ def _build_mocks(before_health=None,
     for i in range(clean_cycles_count):
         lines.append(json.dumps({"timestamp": f"2026-06-{25-i}T12:00:00Z",
                                  "clean": True, "evidence_hash": f"hash{i}"}))
-    ledger_path.write_text("\n".join(lines) + "\n")
+    ledger_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
     # Export dir
     tmp_export = Path(tempfile.mkdtemp())
@@ -417,28 +417,28 @@ class TestCommandExists:
         import subprocess
         r = subprocess.run([sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
                            "level1-restart-persistence-safety-checkpoint", "--help"],
-                          capture_output=True, text=True, timeout=10)
+                          capture_output=True, text=True, timeout=10, encoding="utf-8")
         assert r.returncode == 0
 
     def test_alias_phase16t_works(self):
         import subprocess
         r = subprocess.run([sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
                            "phase16t-restart-persistence-safety-checkpoint", "--help"],
-                          capture_output=True, text=True, timeout=10)
+                          capture_output=True, text=True, timeout=10, encoding="utf-8")
         assert r.returncode == 0
 
     def test_alias_level1_restart_safety_works(self):
         import subprocess
         r = subprocess.run([sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
                            "level1-restart-safety-checkpoint", "--help"],
-                          capture_output=True, text=True, timeout=10)
+                          capture_output=True, text=True, timeout=10, encoding="utf-8")
         assert r.returncode == 0
 
     def test_alias_restart_persistence_safety_works(self):
         import subprocess
         r = subprocess.run([sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
                            "restart-persistence-safety-checkpoint", "--help"],
-                          capture_output=True, text=True, timeout=10)
+                          capture_output=True, text=True, timeout=10, encoding="utf-8")
         assert r.returncode == 0
 
 

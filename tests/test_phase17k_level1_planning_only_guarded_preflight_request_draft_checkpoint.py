@@ -509,7 +509,7 @@ print("OK")
 """],
                 capture_output=True, text=True, timeout=30,
                 env=env,
-            )
+            encoding="utf-8")
             assert "OK" in cp.stdout, f"stderr: {cp.stderr}"
 
 
@@ -522,7 +522,7 @@ class TestPhase17KCLI:
             [sys.executable, str(OPERATOR),
              "level1-guarded-preflight-request-draft-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_alias_phase17k_works(self):
@@ -530,7 +530,7 @@ class TestPhase17KCLI:
             [sys.executable, str(OPERATOR),
              "phase17k-guarded-preflight-request-draft-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_alias_preflight_request_draft_works(self):
@@ -538,7 +538,7 @@ class TestPhase17KCLI:
             [sys.executable, str(OPERATOR),
              "preflight-request-draft-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_json_output_valid(self):
@@ -546,7 +546,7 @@ class TestPhase17KCLI:
             [sys.executable, str(OPERATOR),
              "level1-guarded-preflight-request-draft-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -558,7 +558,7 @@ class TestPhase17KCLI:
             [sys.executable, str(OPERATOR),
              "level1-guarded-preflight-request-draft-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required = [
             "checkpoint_id", "timestamp", "diagnosis", "severity",

@@ -1,5 +1,17 @@
 # IBKR OpenClaw Bridge
 
+The durable-execution remediation is a release candidate. See
+[implementation status](IMPLEMENTATION.md) and the
+[migration and paper-release procedure](docs/REMEDIATION_RELEASE.md) for its
+current interfaces and deployment gates. SQLite is execution authority;
+JSON/JSONL files are compatibility exports. Passing local tests does not
+establish a verified deployment or completed paper acceptance.
+
+Development uses Python 3.12.10 and `requirements-dev.txt`. Run
+`python scripts/run_ci.py` for discovered offline tests. Integration, host,
+live-connection and acceptance checks require their corresponding explicit
+`--run-integration`, `--run-host`, `--run-live` or `--run-acceptance` flag.
+
 A FastAPI bridge, deterministic risk guard, and read-only operator CLI for **manual-approval,
 paper-trading-only** stock/ETF order cycles against Interactive Brokers, built for the
 OpenClaw/Werner runtime. Not a general-purpose trading framework — the safety architecture

@@ -12,6 +12,9 @@ a plain SELL, so preflight was the only place this could be caught.
 Level 1 / portable: guard.py only, providers injected, no IBKR, no ~/.openclaw.
 """
 
+from historical.preflight import run_preflight as historical_preflight
+from source_helpers import implementation_source
+
 import re
 import sys
 from pathlib import Path
@@ -24,7 +27,7 @@ sys.path.insert(0, str(REPO))
 
 import guard  # noqa: E402
 
-GUARD_SOURCE = (REPO / "guard.py").read_text()
+GUARD_SOURCE = implementation_source('guard.py')
 
 
 def _full_rules():
@@ -67,7 +70,7 @@ def _sell(qty, positions, tmp_path):
          patch("guard.GUARD_EVENTS_PATH", tmp_path / "guard-events.jsonl"), \
          patch("guard.APPROVAL_RECORDS_PATH", tmp_path / "approval-records.jsonl"), \
          patch("guard.ACTIVE_APPROVALS_PATH", tmp_path / "active-approvals.json"):
-        result = guard.run_preflight(
+        result = historical_preflight(
             {"symbol": "AAPL", "action": "SELL", "totalQuantity": qty, "orderType": "MKT"},
             account_provider=_account,
             quote_provider=_quote,

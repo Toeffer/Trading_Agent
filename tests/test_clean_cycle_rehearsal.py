@@ -474,7 +474,7 @@ class TestExport:
         assert export_path.suffix == ".json"
 
         # Verify content is valid JSON and matches result
-        exported = json.loads(export_path.read_text())
+        exported = json.loads(export_path.read_text(encoding="utf-8"))
         assert exported["verdict"] == result["verdict"]
         assert exported["timestamp"] == result["timestamp"]
 
@@ -504,7 +504,7 @@ class TestNoBrokerMutation:
 
     def test_no_place_order_in_test_file(self):
         """Test file must not contain broker mutation calls."""
-        src = Path(__file__).read_text()
+        src = Path(__file__).read_text(encoding="utf-8")
         forbidden = ["placeOrder", "cancelOrder", "_internal_place_order"]
         for f in forbidden:
             count = src.count(f)

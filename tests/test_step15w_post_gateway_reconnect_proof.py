@@ -167,7 +167,7 @@ class TestPostGatewayReconnectProof:
         from pathlib import Path
         from contextlib import ExitStack
 
-        ed = Path("/tmp/pgp-test")
+        ed = (Path(__import__("tempfile").gettempdir()) / 'pgp-test')
         ed.mkdir(parents=True, exist_ok=True)
 
         sock = _mock_socket(*socket_patch) if isinstance(socket_patch, tuple) else socket_patch
@@ -311,7 +311,7 @@ class TestPostGatewayReconnectProof:
     def test_bridge_unreachable(self):
         from contextlib import ExitStack
 
-        ed = Path("/tmp/pgp-test-bu")
+        ed = (Path(__import__("tempfile").gettempdir()) / 'pgp-test-bu')
         ed.mkdir(parents=True, exist_ok=True)
         sock = _mock_socket(reachable=False, error="refused")
 
@@ -345,7 +345,7 @@ class TestPostGatewayReconnectProof:
         from pathlib import Path
         from contextlib import ExitStack
 
-        ed = Path("/tmp/pgp-test-deg")
+        ed = (Path(__import__("tempfile").gettempdir()) / 'pgp-test-deg')
         ed.mkdir(parents=True, exist_ok=True)
         sock = _mock_socket(reachable=True)
 
@@ -381,7 +381,7 @@ class TestPostGatewayReconnectProof:
         from pathlib import Path
         from contextlib import ExitStack
 
-        ed = Path("/tmp/pgp-test-malert")
+        ed = (Path(__import__("tempfile").gettempdir()) / 'pgp-test-malert')
         ed.mkdir(parents=True, exist_ok=True)
         sock = _mock_socket(reachable=True)
 
@@ -571,7 +571,7 @@ class TestPostGatewayReconnectProof:
                 [".venv/bin/python", "ibkr_operator.py", cmd, "--help"],
                 capture_output=True, text=True,
                 cwd="/home/chris/agents/ibkr-bridge", timeout=10,
-            )
+            encoding="utf-8")
             assert cp.returncode == 0, f"{cmd} --help failed"
             assert "--host" in cp.stdout, f"{cmd} missing --host flag"
 
@@ -582,7 +582,7 @@ class TestPostGatewayReconnectProof:
                 [".venv/bin/python", "ibkr_operator.py", cmd, "--help"],
                 capture_output=True, text=True,
                 cwd="/home/chris/agents/ibkr-bridge", timeout=5,
-            )
+            encoding="utf-8")
             assert cp.returncode == 0
 
     # --- Additional acceptance tests ---

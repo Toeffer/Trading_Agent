@@ -22,6 +22,8 @@ pytest markers:
   integration — live heartbeat invocation (skipped by default)
 """
 
+from source_helpers import implementation_source
+
 import json
 import subprocess
 import sys
@@ -68,7 +70,7 @@ def _read_heartbeat_src() -> str:
     """Extract _run_heartbeat() source text from ibkr_operator.py."""
     if not OPERATOR.exists():
         return ""
-    with open(OPERATOR) as f:
+    with open(OPERATOR, encoding="utf-8") as f:
         lines = f.readlines()
     in_func = False
     src_lines = []
@@ -120,7 +122,7 @@ def test_heartbeat_help():
     result = subprocess.run(
         [sys.executable, str(OPERATOR), "heartbeat", "--help"],
         capture_output=True, text=True, timeout=10,
-    )
+    encoding="utf-8")
     assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
     assert "heartbeat" in result.stdout.lower()
 
@@ -194,42 +196,42 @@ class TestSystemdUnits:
         result = subprocess.run(
             ["systemctl", "--user", "is-enabled", "ibkr-heartbeat.timer"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.stdout.strip() == "enabled", \
             f"Timer not enabled: {result.stdout.strip()}"
 
     def test_service_execstart(self):
-        svc = SERVICE_FILE.read_text()
+        svc = SERVICE_FILE.read_text(encoding="utf-8")
         assert "ExecStart" in svc
 
     def test_service_json_quiet_flags(self):
-        svc = SERVICE_FILE.read_text()
+        svc = SERVICE_FILE.read_text(encoding="utf-8")
         assert "--json" in svc and "--quiet" in svc
 
     def test_service_protect_system(self):
-        svc = SERVICE_FILE.read_text()
+        svc = SERVICE_FILE.read_text(encoding="utf-8")
         assert "ProtectSystem=strict" in svc
 
     def test_service_no_new_privs(self):
-        svc = SERVICE_FILE.read_text()
+        svc = SERVICE_FILE.read_text(encoding="utf-8")
         assert "NoNewPrivileges=true" in svc
 
     def test_service_no_restart_always(self):
-        svc = SERVICE_FILE.read_text()
+        svc = SERVICE_FILE.read_text(encoding="utf-8")
         assert "Restart=always" not in svc
 
     def test_service_no_exec_mutation(self):
-        svc = SERVICE_FILE.read_text()
+        svc = SERVICE_FILE.read_text(encoding="utf-8")
         assert "ExecStartPre" not in svc
         assert "ExecStartPost" not in svc
 
     @pytest.mark.parametrize("ep", FORBIDDEN_ENDPOINTS)
     def test_service_free_of_forbidden(self, ep):
-        svc = SERVICE_FILE.read_text()
+        svc = SERVICE_FILE.read_text(encoding="utf-8")
         assert ep not in svc, f"Forbidden '{ep}' in service file"
 
     def test_service_allow_orders_false(self):
-        svc = SERVICE_FILE.read_text()
+        svc = SERVICE_FILE.read_text(encoding="utf-8")
         ok = "ALLOW_ORDERS=false" in svc or "allow_orders" in svc.lower()
         assert ok, "Service missing ALLOW_ORDERS=false reference"
 
@@ -237,7 +239,7 @@ class TestSystemdUnits:
 # ── 6. Freeze integrity ──────────────────────────────────────────────────
 
 def test_freeze_includes_heartbeat():
-    op_text = OPERATOR.read_text() if OPERATOR.exists() else ""
+    op_text = implementation_source('ibkr_operator.py') if OPERATOR.exists() else ""
     if "non_mutating_subcommands" not in op_text:
         pytest.skip("non_mutating_subcommands not in operator source")
     start = op_text.index("non_mutating_subcommands")
@@ -266,7 +268,7 @@ class TestHeartbeatIntegration:
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "heartbeat", "--json", "--quiet"],
             capture_output=True, text=True, timeout=120,
-        )
+        encoding="utf-8")
         elapsed = time.monotonic() - start
         try:
             artifact = json.loads(result.stdout)
@@ -310,7 +312,7 @@ class TestHeartbeatIntegration:
         assert HEARTBEAT_DIR.exists()
         artifacts = sorted(HEARTBEAT_DIR.glob("heartbeat-*.json"))
         assert len(artifacts) >= 1, "No heartbeat artifacts on disk"
-        with open(artifacts[-1]) as f:
+        with open(artifacts[-1], encoding="utf-8") as f:
             data = json.load(f)
         assert "timestamp" in data
         assert "ok" in data

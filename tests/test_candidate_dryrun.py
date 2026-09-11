@@ -15,6 +15,8 @@ Verifies:
 All tests are read-only. No broker mutation, no H1 token.
 """
 
+from source_helpers import implementation_source
+
 import json
 import sys
 from pathlib import Path
@@ -663,7 +665,7 @@ class TestExport:
         assert export_path.exists(), f"Export file not found: {export_path}"
         assert export_path.suffix == ".json"
 
-        exported = json.loads(export_path.read_text())
+        exported = json.loads(export_path.read_text(encoding="utf-8"))
         assert exported["verdict"] == result["verdict"]
 
 
@@ -676,7 +678,7 @@ class TestNoBrokerMutation:
 
     def test_no_place_order_in_test_file(self):
         """Test file must not contain broker mutation calls (outside self-test)."""
-        src = Path(__file__).read_text()
+        src = Path(__file__).read_text(encoding="utf-8")
         forbidden = ["placeOrder", "cancelOrder", "_internal_place_order"]
         for f in forbidden:
             # Count occurrences — exactly 1 is allowed (the self-test assertion line)
@@ -1851,12 +1853,12 @@ class TestStep15HRuntimeQuieting:
     """Step 15H: Debug flag gates verbose MEM/REQ logging."""
 
     def test_debug_flag_gated_in_bridge_source(self):
-        bridge_src = (BRIDGE_DIR / "bridge.py").read_text()
+        bridge_src = implementation_source('bridge.py')
         assert "IBKR_BRIDGE_DEBUG" in bridge_src
         assert "if _IBKR_BRIDGE_DEBUG:" in bridge_src
 
     def test_no_mem_or_req_in_default_path(self):
-        bridge_src = (BRIDGE_DIR / "bridge.py").read_text()
+        bridge_src = implementation_source('bridge.py')
         debug_start = bridge_src.find("if _IBKR_BRIDGE_DEBUG:")
         debug_end = bridge_src.find("# /OOM_TRACE_MIN")
         assert debug_start >= 0 and debug_end > debug_start
@@ -1864,7 +1866,7 @@ class TestStep15HRuntimeQuieting:
         assert "_M.warning" in debug_block
 
     def test_no_forbidden_in_backpressure(self):
-        bridge_src = (BRIDGE_DIR / "bridge.py").read_text()
+        bridge_src = implementation_source('bridge.py')
         bp_start = bridge_src.find("# OOM_BACKPRESSURE_HARD")
         bp_end = bridge_src.find("# /OOM_BACKPRESSURE_HARD")
         bp_block = bridge_src[bp_start:bp_end]
@@ -2251,7 +2253,7 @@ class TestStep15ICleanCycleLedger:
              }), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
              patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
-             patch("ibkr_operator.export_candidate_dryrun", return_value=Path("/tmp/fake.json")):
+             patch("ibkr_operator.export_candidate_dryrun", return_value=(Path(__import__("tempfile").gettempdir()) / 'fake.json')):
             result = _run_evidence_cycle("AAPL", "BUY", record=False)
 
         required_fields = [
@@ -2281,7 +2283,7 @@ class TestStep15ICleanCycleLedger:
              }), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
              patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
-             patch("ibkr_operator.export_candidate_dryrun", return_value=Path("/tmp/fake.json")):
+             patch("ibkr_operator.export_candidate_dryrun", return_value=(Path(__import__("tempfile").gettempdir()) / 'fake.json')):
             result = _run_evidence_cycle("AAPL", "BUY", record=False)
 
         assert result["recorded"] is False
@@ -2302,12 +2304,12 @@ class TestStep15ICleanCycleLedger:
              }), \
              patch("ibkr_operator._scan_forbidden_endpoints", return_value={"ok": True, "violations": []}), \
              patch("ibkr_operator._collect_lightweight_evidence", return_value=_make_lightweight_clean()), \
-             patch("ibkr_operator.export_candidate_dryrun", return_value=Path("/tmp/fake.json")):
+             patch("ibkr_operator.export_candidate_dryrun", return_value=(Path(__import__("tempfile").gettempdir()) / 'fake.json')):
             result = _run_evidence_cycle("AAPL", "BUY", record=True)
 
         assert result["recorded"] is True
         assert ledger_path.exists()
-        lines = ledger_path.read_text().strip().split("\n")
+        lines = ledger_path.read_text(encoding="utf-8").strip().split("\n")
         assert len(lines) == 1
         import json as _json
         entry = _json.loads(lines[0])
@@ -2320,7 +2322,7 @@ class TestStep15ICleanCycleLedger:
         """Evidence cycle code must not contain order endpoint calls."""
         from pathlib import Path as _Path
         src = _Path(__file__).resolve().parent.parent / "ibkr_operator.py"
-        content = src.read_text()
+        content = src.read_text(encoding="utf-8")
         # Check the evidence cycle function area
         start = content.find("def _run_evidence_cycle")
         end = content.find("\ndef ", start + 1) if start > -1 else -1
@@ -2342,7 +2344,7 @@ class TestStep15ICleanCycleLedger:
         """Evidence cycle code must not read H1 tokens."""
         from pathlib import Path as _Path
         src = _Path(__file__).resolve().parent.parent / "ibkr_operator.py"
-        content = src.read_text()
+        content = src.read_text(encoding="utf-8")
         start = content.find("def _run_evidence_cycle")
         end = content.find("\ndef ", start + 1) if start > -1 else -1
         func_body = content[start:end] if start > -1 else content

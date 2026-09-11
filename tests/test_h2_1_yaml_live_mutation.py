@@ -57,8 +57,8 @@ def main():
     check(guard_path.exists(), f"guard.py exists: {guard_path}")
 
     # Save original YAML
-    original_yaml = yaml_path.read_text()
-    original_backup = yaml_path.read_text()  # double-safe
+    original_yaml = yaml_path.read_text(encoding="utf-8")
+    original_backup = yaml_path.read_text(encoding="utf-8")  # double-safe
 
     # ── Step 1: Read current allowlist from YAML ───────────────────────
     print("\n── Step 1: Current YAML Allowlist ──")
@@ -82,7 +82,7 @@ def main():
 
     # ── Step 3: No hardcoded ALLOWED_SYMBOLS ───────────────────────────
     print("\n── Step 3: No Hardcoded ALLOWED_SYMBOLS ──")
-    guard_content = guard_path.read_text()
+    guard_content = guard_path.read_text(encoding="utf-8")
     check("ALLOWED_SYMBOLS" not in guard_content,
           "ALLOWED_SYMBOLS not present in guard.py source")
 
@@ -108,11 +108,11 @@ def main():
         modified_rules["symbol_allowlist"]["allow"].append(test_symbol)
 
         # Write modified YAML
-        with open(yaml_path, "w") as f:
+        with open(yaml_path, "w", encoding="utf-8") as f:
             yaml_lib.dump(modified_rules, f, default_flow_style=False, sort_keys=False)
 
         # Re-verify contents were written
-        written_rules = yaml_lib.safe_load(yaml_path.read_text())
+        written_rules = yaml_lib.safe_load(yaml_path.read_text(encoding="utf-8"))
         written_allowlist = written_rules.get("symbol_allowlist", {}).get("allow", [])
         check(test_symbol in written_allowlist,
               f"H2TEST successfully added to YAML: {written_allowlist}")
@@ -134,8 +134,8 @@ def main():
     finally:
         # ── Step 6: Restore original YAML ─────────────────────────────
         print("\n── Step 6: Restore Original YAML ──")
-        yaml_path.write_text(original_yaml)
-        restored_rules = yaml_lib.safe_load(yaml_path.read_text())
+        yaml_path.write_text(original_yaml, encoding="utf-8", newline="\n")
+        restored_rules = yaml_lib.safe_load(yaml_path.read_text(encoding="utf-8"))
         restored_allowlist = restored_rules.get("symbol_allowlist", {}).get("allow", [])
         check(test_symbol not in restored_allowlist,
               f"H2TEST removed from YAML: {restored_allowlist}")

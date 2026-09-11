@@ -53,7 +53,7 @@ class TestHeartbeatAgeAgainstThreshold:
     def _write_artifact(self, heartbeat_dir: Path, age_seconds: float):
         heartbeat_dir.mkdir(parents=True, exist_ok=True)
         p = heartbeat_dir / "heartbeat-20260817T060000Z.json"
-        p.write_text("{}")
+        p.write_text("{}", encoding="utf-8", newline="\n")
         import os, time
         stale_mtime = time.time() - age_seconds
         os.utime(p, (stale_mtime, stale_mtime))
@@ -180,20 +180,20 @@ class TestSystemdUnitsTrackedInRepo:
         assert self.TIMER.exists()
 
     def test_timer_interval_is_15_minutes(self):
-        text = self.TIMER.read_text()
+        text = self.TIMER.read_text(encoding="utf-8")
         assert "OnCalendar=*:0/15" in text
 
     def test_timer_has_jitter_and_persistence(self):
-        text = self.TIMER.read_text()
+        text = self.TIMER.read_text(encoding="utf-8")
         assert "RandomizedDelaySec=30" in text
         assert "Persistent=true" in text
 
     def test_service_uses_json_quiet_flags(self):
-        text = self.SERVICE.read_text()
+        text = self.SERVICE.read_text(encoding="utf-8")
         assert "--json" in text and "--quiet" in text
 
     def test_service_is_read_only_hardened(self):
-        text = self.SERVICE.read_text()
+        text = self.SERVICE.read_text(encoding="utf-8")
         assert "ProtectSystem=strict" in text
         assert "NoNewPrivileges=true" in text
         assert "Restart=always" not in text
@@ -202,5 +202,5 @@ class TestSystemdUnitsTrackedInRepo:
 
     @pytest.mark.parametrize("ep", ["/connect", "/order/approve", "/order/submit", "/order/preflight"])
     def test_service_free_of_forbidden_endpoints(self, ep):
-        text = self.SERVICE.read_text()
+        text = self.SERVICE.read_text(encoding="utf-8")
         assert ep not in text

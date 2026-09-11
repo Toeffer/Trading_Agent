@@ -10,6 +10,8 @@ Validates:
 These are static code/artifact tests — no live bridge required.
 """
 
+from source_helpers import implementation_source
+
 import os
 import re
 import pytest
@@ -36,7 +38,7 @@ def test_systemd_unit_exists_in_repo():
 def test_unit_binds_localhost_only():
     """Service must bind to 127.0.0.1, never 0.0.0.0."""
     unit_path = REPO / "systemd" / "ibkr-bridge.service"
-    content = unit_path.read_text()
+    content = unit_path.read_text(encoding="utf-8")
 
     # Must contain 127.0.0.1 binding
     assert "127.0.0.1" in content, "ExecStart must bind to 127.0.0.1"
@@ -55,7 +57,7 @@ def test_unit_binds_localhost_only():
 def test_unit_no_h1_token_reference():
     """Service unit must not reference /etc/ibkr-bridge/h1_token in non-comment context."""
     unit_path = REPO / "systemd" / "ibkr-bridge.service"
-    content = unit_path.read_text()
+    content = unit_path.read_text(encoding="utf-8")
 
     # Check non-comment lines only
     non_comment_lines = [
@@ -97,7 +99,7 @@ RECOMMENDED_HARDENING = [
 def test_unit_has_required_hardening():
     """Service unit must contain required systemd hardening directives."""
     unit_path = REPO / "systemd" / "ibkr-bridge.service"
-    content = unit_path.read_text()
+    content = unit_path.read_text(encoding="utf-8")
 
     for directive in REQUIRED_HARDENING:
         assert directive in content, (
@@ -108,7 +110,7 @@ def test_unit_has_required_hardening():
 def test_unit_has_recommended_hardening():
     """Service unit should contain recommended additional hardening."""
     unit_path = REPO / "systemd" / "ibkr-bridge.service"
-    content = unit_path.read_text()
+    content = unit_path.read_text(encoding="utf-8")
 
     found = [d for d in RECOMMENDED_HARDENING if d in content]
     assert len(found) >= 1, (
@@ -123,7 +125,7 @@ def test_unit_has_recommended_hardening():
 def test_unit_no_shell_wrapper():
     """ExecStart must call python3 directly, no shell script or bash -c wrapper."""
     unit_path = REPO / "systemd" / "ibkr-bridge.service"
-    content = unit_path.read_text()
+    content = unit_path.read_text(encoding="utf-8")
 
     # Extract ExecStart line
     exec_start = None
@@ -161,7 +163,7 @@ def test_relock_uses_systemctl():
     if script is None:
         pytest.skip("ibkr-trade-window script not found")
 
-    content = script.read_text()
+    content = script.read_text(encoding="utf-8")
 
     # Extract relock function body using line-based approach
     lines = content.splitlines()
@@ -213,7 +215,7 @@ def test_relock_still_sets_safety_flags():
     if script is None:
         pytest.skip("ibkr-trade-window script not found")
 
-    content = script.read_text()
+    content = script.read_text(encoding="utf-8")
 
     assert "IBKR_ALLOW_ORDERS=false" in content, (
         "relock must set IBKR_ALLOW_ORDERS=false"
@@ -237,7 +239,7 @@ FORBIDDEN_ENDPOINTS = [
 def test_no_forbidden_endpoints_in_service():
     """ibkr-bridge.service must not reference forbidden endpoints in non-comment lines."""
     unit_path = REPO / "systemd" / "ibkr-bridge.service"
-    content = unit_path.read_text()
+    content = unit_path.read_text(encoding="utf-8")
 
     # Check non-comment lines only (comments documenting absence are fine)
     non_comment_lines = [
@@ -258,7 +260,7 @@ def test_no_forbidden_endpoints_in_relock():
     if script is None:
         pytest.skip("ibkr-trade-window script not found")
 
-    content = script.read_text()
+    content = script.read_text(encoding="utf-8")
 
     for ep in FORBIDDEN_ENDPOINTS:
         count = content.count(ep)
@@ -274,7 +276,7 @@ def test_no_forbidden_endpoints_in_relock():
 def test_forbidden_endpoints_in_heartbeat_allowlist():
     """Heartbeat whitelist must not contain forbidden endpoints."""
     operator = REPO / "ibkr_operator.py"
-    content = operator.read_text()
+    content = implementation_source("ibkr_operator.py")
 
     # Extract _HEARTBEAT_ENDPOINTS list
     hb_match = re.search(
@@ -298,7 +300,7 @@ def test_forbidden_endpoints_in_heartbeat_allowlist():
 def test_heartbeat_denylist_contains_forbidden_endpoints():
     """_FORBIDDEN_HEARTBEAT_SUBSTRINGS must block all forbidden endpoints."""
     operator = REPO / "ibkr_operator.py"
-    content = operator.read_text()
+    content = implementation_source("ibkr_operator.py")
 
     deny_match = re.search(
         r'_FORBIDDEN_HEARTBEAT_SUBSTRINGS\s*=\s*\[(.*?)\]',
@@ -321,7 +323,7 @@ def test_heartbeat_denylist_contains_forbidden_endpoints():
 def test_doctor_has_process_checks():
     """run_doctor() must include K13-K16 process boundary checks."""
     operator = REPO / "ibkr_operator.py"
-    content = operator.read_text()
+    content = implementation_source("ibkr_operator.py")
 
     required_checks = [
         "bridge_listener_localhost",
@@ -343,7 +345,7 @@ def test_doctor_has_process_checks():
 def test_unit_user_chris():
     """Service must run as User=chris."""
     unit_path = REPO / "systemd" / "ibkr-bridge.service"
-    content = unit_path.read_text()
+    content = unit_path.read_text(encoding="utf-8")
 
     # System unit specifies User=chris
     # User unit inherits from systemd --user but we still check
@@ -369,8 +371,8 @@ def test_repo_unit_matches_user_service():
     if user_unit.is_symlink() and os.readlink(str(user_unit)) == "/dev/null":
         pytest.skip("User-level systemd service is masked — system service is authoritative")
 
-    repo_content = repo_unit.read_text()
-    user_content = user_unit.read_text()
+    repo_content = repo_unit.read_text(encoding="utf-8")
+    user_content = user_unit.read_text(encoding="utf-8")
 
     # Both must have hardening directives
     # NoNewPrivileges replaced by CapabilityBoundingSet + AmbientCapabilities

@@ -255,7 +255,7 @@ def main() -> int:
         check("Saved file exists", saved.exists())
 
         # Read back and validate
-        with open(saved, "r") as f:
+        with open(saved, "r", encoding="utf-8") as f:
             reloaded = json.load(f)
         check("Reloaded is dict", isinstance(reloaded, dict))
         check("proposal_id is set", reloaded.get("proposal_id") == "test-p3-001")
@@ -390,7 +390,7 @@ def main() -> int:
         saved = save_proposal_file(p, proposal_id="test-p3-exit-001")
         check("save_proposal_file EXIT returns Path", isinstance(saved, Path))
         check("EXIT file exists", saved.exists())
-        with open(saved, "r") as f:
+        with open(saved, "r", encoding="utf-8") as f:
             reloaded = json.load(f)
         check("EXIT reloaded side=SELL", reloaded.get("side") == "SELL")
         check("EXIT reloaded symbol=META", reloaded.get("symbol") == "META")
@@ -446,7 +446,7 @@ def main() -> int:
 
 
     # ── 15. Integration: run_preflight accepts proposal_path ──────────────────
-    from guard import run_preflight
+    from historical.preflight import run_preflight
     import inspect
 
     # Verify run_preflight signature includes proposal_path

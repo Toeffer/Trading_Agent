@@ -608,7 +608,7 @@ print("OK")
 """],
                 capture_output=True, text=True, timeout=30,
                 env=env,
-            )
+            encoding="utf-8")
             assert "OK" in cp.stdout, f"stderr: {cp.stderr}"
 
 
@@ -621,7 +621,7 @@ class TestPhase17LCLI:
             [sys.executable, str(OPERATOR),
              "level1-phase17-chain-closure-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_alias_phase17l_works(self):
@@ -629,7 +629,7 @@ class TestPhase17LCLI:
             [sys.executable, str(OPERATOR),
              "phase17l-chain-closure-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_alias_phase17_chain_closure_works(self):
@@ -637,7 +637,7 @@ class TestPhase17LCLI:
             [sys.executable, str(OPERATOR),
              "phase17-chain-closure", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_json_output_valid(self):
@@ -645,7 +645,7 @@ class TestPhase17LCLI:
             [sys.executable, str(OPERATOR),
              "level1-phase17-chain-closure-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -657,7 +657,7 @@ class TestPhase17LCLI:
             [sys.executable, str(OPERATOR),
              "level1-phase17-chain-closure-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required = [
             "checkpoint_id", "timestamp", "diagnosis", "severity",

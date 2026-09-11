@@ -8,6 +8,8 @@ PRIIPs/KID is law, not policy. No configuration error, omission, or
 malformation may weaken the H4.1 block.
 """
 
+from source_helpers import implementation_source
+
 import sys
 from pathlib import Path
 
@@ -177,7 +179,7 @@ class TestH2Accounting:
         assert guard._load_us_etf_blocklist({}) == guard._US_ETF_REGULATORY_BASELINE
 
     def test_loader_documents_the_floor_rationale(self):
-        source = (REPO / "guard.py").read_text()
+        source = implementation_source('guard.py')
         idx = source.find("_US_ETF_REGULATORY_BASELINE")
         assert idx != -1
         header = source[max(0, idx - 1400):idx]
@@ -186,7 +188,7 @@ class TestH2Accounting:
 
     def test_blocklist_not_in_required_keys(self):
         """Optional by design: a missing key must not stop the bridge starting."""
-        source = (REPO / "guard.py").read_text()
+        source = implementation_source('guard.py')
         start = source.find("required_keys = [")
         block = source[start:start + 600]
         assert "us_etf_blocklist" not in block

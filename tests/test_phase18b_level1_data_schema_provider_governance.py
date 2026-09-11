@@ -5,6 +5,8 @@ Schema (37 fields), 10 Provider Roles, 23 Quality Scenarios, Governance Manifest
 (deterministic_governance_hash), CLI Registration, and CI invariants.
 """
 
+from source_helpers import implementation_source
+
 import hashlib
 import json
 import os
@@ -105,7 +107,7 @@ CREDENTIAL_FORBIDDEN = ["api_key", "apikey", "api_secret", "passwor", "secret_ke
 
 def _load_manifest() -> dict:
     assert PHASE18B_MANIFEST.exists()
-    with open(PHASE18B_MANIFEST) as f:
+    with open(PHASE18B_MANIFEST, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -115,12 +117,12 @@ def _sha256_file(path: Path) -> str:
 
 def _load_json(path: Path) -> dict:
     assert path.exists()
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def _compute_deterministic_governance_hash(manifest_path: Path) -> str:
-    with open(manifest_path) as f:
+    with open(manifest_path, encoding="utf-8") as f:
         m = json.load(f)
     no_hash = {k: v for k, v in m.items() if k != "deterministic_governance_hash"}
     return hashlib.sha256(json.dumps(no_hash, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -132,7 +134,7 @@ def _run_operator_cli(command: str) -> dict:
         [sys.executable, str(OPERATOR), command, "--json"],
         capture_output=True, text=True, timeout=60,
         cwd=str(REPO),
-    )
+    encoding="utf-8")
     assert result.returncode == 0, f"CLI '{command}' failed (exit {result.returncode}): {result.stderr}"
     return json.loads(result.stdout)
 
@@ -154,7 +156,7 @@ class TestDocumentExistence:
 
     def test_strategy_v1(self):
         sv1 = REPO / "docs" / "strategy_v1.md"
-        assert sv1.exists() and "Strategy v1" in sv1.read_text()
+        assert sv1.exists() and "Strategy v1" in sv1.read_text(encoding="utf-8")
 
     def test_18a_intact(self):
         for p in [PROPOSALS_DIR / "MSTR_BTC_RESEARCH_PROPOSAL_v0_1.md",
@@ -664,21 +666,21 @@ class TestOperatorCliRegistration:
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "--help"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         assert "level1-data-schema-provider-governance-checkpoint" in result.stdout
 
     def test_help_lists_phase18b_alias(self):
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "--help"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         assert "phase18b" in result.stdout
 
     def test_help_lists_data_schema_alias(self):
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "--help"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         assert "data-schema-provider-governance" in result.stdout
 
     def test_cli_does_not_mutate_files(self):
@@ -752,7 +754,7 @@ class TestPrinciples:
 class TestCiInvariants:
     def test_no_code_enables_orders(self):
         """Phase 18B did not add or modify order-enablement code."""
-        operator_text = OPERATOR.read_text()
+        operator_text = implementation_source('ibkr_operator.py')
         # IBKR_ALLOW_ORDERS should not appear as enabled in the operator
         if "IBKR_ALLOW_ORDERS" in operator_text:
             idx = operator_text.lower().find("ibkr_allow_orders")
@@ -762,7 +764,7 @@ class TestCiInvariants:
     def test_no_rules_enforcement_enabled(self):
         """Phase 18B did not enable trading rules."""
         if (REPO / "paper-trading-rules.yaml").exists():
-            rules_text = (REPO / "paper-trading-rules.yaml").read_text().lower()
+            rules_text = (REPO / "paper-trading-rules.yaml").read_text(encoding="utf-8").lower()
             # Verify no MSTR/SPY/QQQ execution rule was added
             for symbol in ["mstr", "spy", "qqq"]:
                 assert symbol not in rules_text or "enabled: false" in rules_text or "allow: false" in rules_text
@@ -771,7 +773,7 @@ class TestCiInvariants:
         """Phase 18B did not introduce runtime configuration."""
         new_files = [f for f in GOVERNANCE_DIR.glob("*.json")]
         for f in new_files:
-            content = f.read_text().lower()
+            content = f.read_text(encoding="utf-8").lower()
             assert "runtime" not in content or "storage_runtime_scope" in content
 
     def test_bridge_exists(self):

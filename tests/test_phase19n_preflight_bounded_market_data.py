@@ -7,11 +7,11 @@ access-log line at all (uvicorn only logs after the handler returns, so
 this proved the handler was blocked mid-flight, not that the request never
 arrived). Root cause, traced against this exact checkout:
 
-  bridge.py's order_preflight() wired guard.run_preflight()'s
+  bridge.py's order_preflight() wired historical_preflight()'s
   quote_provider/bars_provider to the *unbounded* _internal_fetch_quote /
   _internal_fetch_bars. Both call ib.qualifyContracts(), a synchronous IBKR
   round-trip with no deadline -- against a stalled/slow Gateway this blocks
-  forever. guard.run_preflight()'s except clause around the fetch only
+  forever. historical_preflight()'s except clause around the fetch only
   catches (RuntimeError, ValueError, FileNotFoundError); a blocked ib call
   raises nothing, so nothing was ever available to catch. Preflight hung
   before any gate ever ran, with no exception and no log line.
@@ -46,6 +46,9 @@ This file has two tiers:
     require fastapi, skipped in default CI.
 """
 
+from historical.preflight import run_preflight as historical_preflight
+from source_helpers import implementation_source
+
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -56,10 +59,10 @@ BRIDGE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BRIDGE_DIR))
 
 import guard  # noqa: E402
-from guard import run_preflight  # noqa: E402
+from historical.preflight import run_preflight  # noqa: E402
 
 
-BRIDGE_SOURCE = (BRIDGE_DIR / "bridge.py").read_text()
+BRIDGE_SOURCE = implementation_source('bridge.py')
 
 
 # ---------------------------------------------------------------------------
@@ -117,12 +120,12 @@ class TestBoundedProvidersAreWiredIn:
         passthrough."""
         idx = BRIDGE_SOURCE.index("def _internal_fetch_bars_safe(")
         snippet = BRIDGE_SOURCE[idx: idx + 2500]
-        assert "ThreadPoolExecutor" in snippet
+        assert "app.state.diagnostic_workers" in snippet
         assert "future.result(timeout=timeout)" in snippet
         assert "concurrent.futures.TimeoutError" in snippet
         assert "raise RuntimeError" in snippet
         assert "market_data_timeout" in snippet
-        assert "executor.shutdown(wait=False)" in snippet
+        assert "executor.shutdown(wait=False)" not in snippet
 
     def test_bars_fetch_still_decrements_leaked_thread_counter(self):
         """Symmetric with _internal_fetch_quote: a bars fetch that

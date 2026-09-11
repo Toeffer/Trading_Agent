@@ -388,8 +388,8 @@ class TestAutonomyStatusSessionAware:
              patch("ibkr_operator.open"), \
              patch("ibkr_operator.os.getenv", return_value="false"), \
              patch("ibkr_operator._AUTONOMY_STATUS_EXPORT_DIR",
-                   Path("/tmp/autonomy-status")), \
-             patch("ibkr_operator.OPENCLAW_DIR", Path("/tmp/openclaw")):
+                   (Path(__import__("tempfile").gettempdir()) / 'autonomy-status')), \
+             patch("ibkr_operator.OPENCLAW_DIR", (Path(__import__("tempfile").gettempdir()) / 'openclaw')):
             return _run_autonomy_status(refresh_evidence=True)
 
     def test_pre_market_timeout_is_hold(self):
@@ -521,8 +521,8 @@ class TestJsonStdoutPurity:
              patch("ibkr_operator.open"), \
              patch("ibkr_operator.os.getenv", return_value="false"), \
              patch("ibkr_operator._AUTONOMY_STATUS_EXPORT_DIR",
-                   Path("/tmp/autonomy-status")), \
-             patch("ibkr_operator.OPENCLAW_DIR", Path("/tmp/openclaw")):
+                   (Path(__import__("tempfile").gettempdir()) / 'autonomy-status')), \
+             patch("ibkr_operator.OPENCLAW_DIR", (Path(__import__("tempfile").gettempdir()) / 'openclaw')):
             return _run_autonomy_status(refresh_evidence=True)
 
     def test_json_round_trips(self):

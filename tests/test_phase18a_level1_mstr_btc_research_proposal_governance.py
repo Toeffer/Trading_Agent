@@ -32,7 +32,7 @@ MANIFEST_PATH = PROPOSALS_DIR / "mstr_btc_research_v0_1.manifest.json"
 def _load_manifest():
     """Load and validate the manifest JSON."""
     assert MANIFEST_PATH.exists(), f"Manifest not found at {MANIFEST_PATH}"
-    with open(MANIFEST_PATH, "r") as f:
+    with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -61,7 +61,7 @@ class TestDocumentExistence:
         """Verify docs/strategy_v1.md still exists and was not overwritten."""
         strategy_v1 = REPO / "docs" / "strategy_v1.md"
         assert strategy_v1.exists(), "docs/strategy_v1.md missing — must not be removed"
-        content = strategy_v1.read_text()
+        content = strategy_v1.read_text(encoding="utf-8")
         # Must still contain the canonical strategy markers
         assert "Strategy v1" in content
         assert "v1.0.0" in content
@@ -499,7 +499,7 @@ class TestOutputLabels:
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "phase18a", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         labels = data.get("output_labels", [])
         required = [
@@ -647,7 +647,7 @@ class TestNoForbiddenAccess:
 class TestProposalDocumentContent:
 
     def test_proposal_doc_contains_required_sections(self):
-        content = PROPOSAL_DOC.read_text()
+        content = PROPOSAL_DOC.read_text(encoding="utf-8")
         required_sections = [
             "Proposal Identity",
             "Governance States",
@@ -661,23 +661,23 @@ class TestProposalDocumentContent:
             assert section in content, f"Missing section in proposal doc: {section}"
 
     def test_proposal_doc_has_status_proposed(self):
-        content = PROPOSAL_DOC.read_text()
+        content = PROPOSAL_DOC.read_text(encoding="utf-8")
         assert "PROPOSED" in content
 
     def test_proposal_doc_has_s0_readiness(self):
-        content = PROPOSAL_DOC.read_text()
+        content = PROPOSAL_DOC.read_text(encoding="utf-8")
         assert "S0" in content
 
     def test_proposal_doc_has_execution_scope_none(self):
-        content = PROPOSAL_DOC.read_text()
+        content = PROPOSAL_DOC.read_text(encoding="utf-8")
         assert "NONE" in content
 
     def test_proposal_doc_references_strategy_v1(self):
-        content = PROPOSAL_DOC.read_text()
+        content = PROPOSAL_DOC.read_text(encoding="utf-8")
         assert "strategy_v1.md" in content or "Strategy v1" in content
 
     def test_data_requirements_doc_has_required_sections(self):
-        content = DATA_REQ_DOC.read_text()
+        content = DATA_REQ_DOC.read_text(encoding="utf-8")
         required_sections = [
             "Track A",
             "Track B",
@@ -688,16 +688,16 @@ class TestProposalDocumentContent:
             assert section in content, f"Missing section in data requirements doc: {section}"
 
     def test_data_requirements_doc_has_s0_readiness(self):
-        content = DATA_REQ_DOC.read_text()
+        content = DATA_REQ_DOC.read_text(encoding="utf-8")
         assert "S0" in content
 
     def test_data_requirements_doc_mstr_btc_referenced(self):
-        content = DATA_REQ_DOC.read_text()
+        content = DATA_REQ_DOC.read_text(encoding="utf-8")
         assert "MSTR" in content
         assert "BTC" in content
 
     def test_data_requirements_doc_spy_qqq_referenced(self):
-        content = DATA_REQ_DOC.read_text()
+        content = DATA_REQ_DOC.read_text(encoding="utf-8")
         assert "SPY" in content
         assert "QQQ" in content
 
@@ -891,7 +891,7 @@ print("OK")
 """],
                 capture_output=True, text=True, timeout=15,
                 env=env,
-            )
+            encoding="utf-8")
             assert "OK" in cp.stdout, f"stderr: {cp.stderr}"
 
 
@@ -902,7 +902,7 @@ class TestNoStrategyFileMutation:
     def test_strategy_v1_not_modified_by_phase18a(self):
         """Phase 18A must not modify docs/strategy_v1.md."""
         strategy_v1 = REPO / "docs" / "strategy_v1.md"
-        content = strategy_v1.read_text()
+        content = strategy_v1.read_text(encoding="utf-8")
         # Key invariant markers from Strategy v1
         assert "Strategy v1" in content
         assert "Advisory-Only" in content or "advisory-only" in content.lower()
@@ -914,7 +914,7 @@ class TestNoStrategyFileMutation:
     def test_strategy_md_not_modified_by_phase18a(self):
         """Phase 18A must not modify docs/STRATEGY.md."""
         strategy_md = REPO / "docs" / "STRATEGY.md"
-        content = strategy_md.read_text()
+        content = strategy_md.read_text(encoding="utf-8")
         # Key markers
         assert "IBKR Paper-Trading Strategy" in content or "paper-trading" in content.lower()
         assert "mstr_btc_research_v0_1" not in content.lower()
@@ -923,7 +923,7 @@ class TestNoStrategyFileMutation:
         """Phase 18A must not touch any YAML rules files."""
         yaml_paths = list(REPO.glob("**/*.yaml")) + list(REPO.glob("**/*.yml"))
         for yp in yaml_paths:
-            content = yp.read_text()
+            content = yp.read_text(encoding="utf-8")
             assert "MSTR" not in content, f"MSTR found in {yp}"
             assert "mstr_btc_research" not in content.lower(), \
                 f"mstr_btc_research found in {yp}"
@@ -939,21 +939,21 @@ class TestCLICommand:
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "phase18a", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_alias_phase18a_works(self):
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "phase18a", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0
 
     def test_alias_mstr_btc_research_proposal_works(self):
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "mstr-btc-research-proposal", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0
 
     def test_canonical_command_works(self):
@@ -961,14 +961,14 @@ class TestCLICommand:
             [sys.executable, str(OPERATOR),
              "level1-mstr-btc-research-proposal-governance-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0
 
     def test_json_output_valid(self):
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "phase18a", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -979,7 +979,7 @@ class TestCLICommand:
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "phase18a", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         assert data.get("diagnosis") == "phase18a_research_proposal_governance_ok"
 
@@ -987,7 +987,7 @@ class TestCLICommand:
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "phase18a", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required = [
             "checkpoint_id", "timestamp", "diagnosis", "severity",
@@ -1010,11 +1010,11 @@ class TestCLICommand:
         result1 = subprocess.run(
             [sys.executable, str(OPERATOR), "phase18a", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         result2 = subprocess.run(
             [sys.executable, str(OPERATOR), "phase18a", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         # Strip timestamps and IDs for comparison
         data1 = json.loads(result1.stdout)
         data2 = json.loads(result2.stdout)
@@ -1090,7 +1090,7 @@ class TestSelfCompileCheck:
         result = subprocess.run(
             [sys.executable, "-m", "py_compile", str(Path(__file__).resolve())],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"Test file compile failed: {result.stderr}"
 
 
@@ -1100,7 +1100,7 @@ class TestManifestWellFormedness:
 
     def test_manifest_has_no_trailing_commas(self):
         """Re-parse manifest to confirm it's valid JSON (no trailing commas)."""
-        raw = MANIFEST_PATH.read_text()
+        raw = MANIFEST_PATH.read_text(encoding="utf-8")
         try:
             json.loads(raw)
         except json.JSONDecodeError as e:
@@ -1150,7 +1150,7 @@ class TestFailClosedComprehensive:
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "phase18a", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         payload = json.dumps(data, sort_keys=True).lower()
         forbidden = ["permId", "order_id", "orderId", "approval_id", "approvalId",
@@ -1182,7 +1182,7 @@ class TestFailClosedComprehensive:
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "phase18a", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         payload = json.dumps(data, sort_keys=True).lower()
         forbidden = ["data_collector", "api_client", "scheduled_job", "database",
@@ -1203,7 +1203,7 @@ class TestDeterminismAndStability:
             r = subprocess.run(
                 [sys.executable, str(OPERATOR), "phase18a", "--json"],
                 capture_output=True, text=True, timeout=30,
-            )
+            encoding="utf-8")
             results.append(json.loads(r.stdout))
         hashes = [r["deterministic_evidence_hash"] for r in results]
         first = hashes[0]
@@ -1216,7 +1216,7 @@ class TestDeterminismAndStability:
             r = subprocess.run(
                 [sys.executable, str(OPERATOR), "phase18a", "--json"],
                 capture_output=True, text=True, timeout=30,
-            )
+            encoding="utf-8")
             results.append(json.loads(r.stdout))
         for i, r in enumerate(results):
             assert r["diagnosis"] == "phase18a_research_proposal_governance_ok", \
@@ -1229,7 +1229,7 @@ class TestDeterminismAndStability:
             r = subprocess.run(
                 [sys.executable, str(OPERATOR), "phase18a", "--json"],
                 capture_output=True, text=True, timeout=30,
-            )
+            encoding="utf-8")
             results.append(json.loads(r.stdout))
         first_labels = results[0]["output_labels"]
         for i, r in enumerate(results):
@@ -1243,7 +1243,7 @@ class TestDeterminismAndStability:
             r = subprocess.run(
                 [sys.executable, str(OPERATOR), "phase18a", "--json"],
                 capture_output=True, text=True, timeout=30,
-            )
+            encoding="utf-8")
             results.append(json.loads(r.stdout))
         # All timestamps and IDs differ, but evidence hash must be identical
         timestamps = [r["timestamp"] for r in results]
@@ -1308,7 +1308,7 @@ class TestLevel1NonExecutablePreserved:
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "phase18a", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         assert data.get("current_level") == 1
         assert data.get("autonomy_level") == 1
@@ -1317,7 +1317,7 @@ class TestLevel1NonExecutablePreserved:
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "phase18a", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         assert data.get("execution_authorized_now") is False
         assert data.get("order_enablement_allowed_now") is False
@@ -1327,7 +1327,7 @@ class TestLevel1NonExecutablePreserved:
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "phase18a", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         assert data.get("no_broker_mutation") is True
         assert data.get("no_order_endpoint_called") is True
@@ -1339,7 +1339,7 @@ class TestLevel1NonExecutablePreserved:
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "phase18a", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required_fields = [
             "command", "checkpoint_version", "proposal_id", "proposal_status",
@@ -1364,14 +1364,14 @@ class TestPhase17ClosureUntouched:
         """Phase 17L test file exists and does not reference Phase 18A."""
         p17l = REPO / "tests" / "test_phase17l_level1_strategy_chain_closure_checkpoint.py"
         assert p17l.exists()
-        content = p17l.read_text()
+        content = p17l.read_text(encoding="utf-8")
         assert "phase18a" not in content.lower()
         assert "mstr_btc" not in content.lower()
 
     def test_strategy_v1_still_valid(self):
         """docs/strategy_v1.md still passes its own governance checks."""
         sv1 = REPO / "docs" / "strategy_v1.md"
-        content = sv1.read_text()
+        content = sv1.read_text(encoding="utf-8")
         assert "Strategy v1" in content
         assert "v1.0.0" in content
         assert "Advisory-Only" in content
@@ -1379,12 +1379,12 @@ class TestPhase17ClosureUntouched:
     def test_strategy_md_still_valid(self):
         """docs/STRATEGY.md still passes its own content checks."""
         smd = REPO / "docs" / "STRATEGY.md"
-        content = smd.read_text()
+        content = smd.read_text(encoding="utf-8")
         assert "IBKR Paper-Trading Strategy" in content or "paper-trading" in content.lower()
 
     def test_no_mstr_btc_in_strategy_files(self):
         """Neither strategy doc contains MSTR/BTC proposal references."""
         for path in [REPO / "docs" / "strategy_v1.md", REPO / "docs" / "STRATEGY.md"]:
-            content = path.read_text().lower()
+            content = path.read_text(encoding="utf-8").lower()
             assert "mstr_btc_research_v0_1" not in content, f"{path.name} contains proposal ref"
             assert "phase 18a" not in content, f"{path.name} contains Phase 18A ref"

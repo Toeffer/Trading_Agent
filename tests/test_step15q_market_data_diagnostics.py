@@ -107,7 +107,7 @@ class TestCommandExists:
                 [sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
                  alias, "--help"],
                 capture_output=True, text=True, timeout=15,
-            )
+            encoding="utf-8")
             assert r.returncode == 0, f"{alias} --help failed: {r.stderr}"
 
 
@@ -136,7 +136,7 @@ class TestJsonStdoutPure:
                    side_effect=mock_urlopen), \
              patch("ibkr_operator.time.sleep"), \
              patch("ibkr_operator._MD_DIAGNOSTICS_EXPORT_DIR",
-                   Path("/tmp/md-diag")), \
+                   (Path(__import__("tempfile").gettempdir()) / 'md-diag')), \
              patch("ibkr_operator.os.fsync"):
             result = _run_market_data_diagnostics(symbol="AAPL")
 
@@ -180,7 +180,7 @@ class TestExportWritten:
         assert ep is not None
         export_file = Path(ep)
         assert export_file.exists()
-        exported = json.loads(export_file.read_text())
+        exported = json.loads(export_file.read_text(encoding="utf-8"))
         assert exported["diagnosis"] == "delayed_data_available"
 
 
@@ -209,7 +209,7 @@ class TestContractQualification:
                    side_effect=mock_urlopen), \
              patch("ibkr_operator.time.sleep"), \
              patch("ibkr_operator._MD_DIAGNOSTICS_EXPORT_DIR",
-                   Path("/tmp/md-diag")), \
+                   (Path(__import__("tempfile").gettempdir()) / 'md-diag')), \
              patch("ibkr_operator.os.fsync"):
             result = _run_market_data_diagnostics(symbol="AAPL")
 
@@ -235,7 +235,7 @@ class TestContractQualification:
                    side_effect=mock_urlopen), \
              patch("ibkr_operator.time.sleep"), \
              patch("ibkr_operator._MD_DIAGNOSTICS_EXPORT_DIR",
-                   Path("/tmp/md-diag")), \
+                   (Path(__import__("tempfile").gettempdir()) / 'md-diag')), \
              patch("ibkr_operator.os.fsync"):
             result = _run_market_data_diagnostics(symbol="ZZZZ")
 
@@ -268,7 +268,7 @@ class TestDiagnosisClassifications:
                    side_effect=mock_urlopen), \
              patch("ibkr_operator.time.sleep"), \
              patch("ibkr_operator._MD_DIAGNOSTICS_EXPORT_DIR",
-                   Path("/tmp/md-diag")), \
+                   (Path(__import__("tempfile").gettempdir()) / 'md-diag')), \
              patch("ibkr_operator.os.fsync"):
             result = _run_market_data_diagnostics(symbol="AAPL")
 
@@ -295,7 +295,7 @@ class TestDiagnosisClassifications:
                    side_effect=mock_urlopen), \
              patch("ibkr_operator.time.sleep"), \
              patch("ibkr_operator._MD_DIAGNOSTICS_EXPORT_DIR",
-                   Path("/tmp/md-diag")), \
+                   (Path(__import__("tempfile").gettempdir()) / 'md-diag')), \
              patch("ibkr_operator.os.fsync"):
             result = _run_market_data_diagnostics(symbol="AAPL")
 
@@ -323,7 +323,7 @@ class TestDiagnosisClassifications:
                    side_effect=mock_urlopen), \
              patch("ibkr_operator.time.sleep"), \
              patch("ibkr_operator._MD_DIAGNOSTICS_EXPORT_DIR",
-                   Path("/tmp/md-diag")), \
+                   (Path(__import__("tempfile").gettempdir()) / 'md-diag')), \
              patch("ibkr_operator.os.fsync"):
             result = _run_market_data_diagnostics(symbol="AAPL")
 
@@ -346,7 +346,7 @@ class TestDiagnosisClassifications:
                    side_effect=_raise_urlerror), \
              patch("ibkr_operator.time.sleep"), \
              patch("ibkr_operator._MD_DIAGNOSTICS_EXPORT_DIR",
-                   Path("/tmp/md-diag")), \
+                   (Path(__import__("tempfile").gettempdir()) / 'md-diag')), \
              patch("ibkr_operator.os.fsync"):
             result = _run_market_data_diagnostics(symbol="AAPL")
 
@@ -393,7 +393,7 @@ class TestRequiredFields:
                    side_effect=mock_urlopen), \
              patch("ibkr_operator.time.sleep"), \
              patch("ibkr_operator._MD_DIAGNOSTICS_EXPORT_DIR",
-                   Path("/tmp/md-diag")), \
+                   (Path(__import__("tempfile").gettempdir()) / 'md-diag')), \
              patch("ibkr_operator.os.fsync"):
             result = _run_market_data_diagnostics(symbol="AAPL")
 
@@ -583,7 +583,7 @@ class TestDiagnosticsBackpressureCleanup:
         })
 
         from pathlib import Path
-        export_dir = Path("/tmp/md-diag-test-503")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-diag-test-503')
         export_dir.mkdir(parents=True, exist_ok=True)
         # Clean cooldown file
         (export_dir / ".last-run").unlink(missing_ok=True)
@@ -618,7 +618,7 @@ class TestDiagnosticsBackpressureCleanup:
             raise TimeoutError("simulated timeout")
 
         from pathlib import Path
-        export_dir = Path("/tmp/md-diag-test-timeout")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-diag-test-timeout')
         export_dir.mkdir(parents=True, exist_ok=True)
         (export_dir / ".last-run").unlink(missing_ok=True)
 
@@ -665,7 +665,7 @@ class TestDiagnosticsBackpressureCleanup:
             return _MockResponse(404, b"{}")
 
         from pathlib import Path
-        export_dir = Path("/tmp/md-diag-test-exception")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-diag-test-exception')
         export_dir.mkdir(parents=True, exist_ok=True)
         (export_dir / ".last-run").unlink(missing_ok=True)
 
@@ -753,7 +753,7 @@ class TestDiagnosticsBackpressureCleanup:
         })
 
         from pathlib import Path
-        export_dir = Path("/tmp/md-diag-test-bp-fields")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-diag-test-bp-fields')
         export_dir.mkdir(parents=True, exist_ok=True)
         (export_dir / ".last-run").unlink(missing_ok=True)
 

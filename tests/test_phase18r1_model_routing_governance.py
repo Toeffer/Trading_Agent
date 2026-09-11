@@ -101,7 +101,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _load_json(path: Path) -> dict:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -142,7 +142,7 @@ def _run_cli(command: str):
         [sys.executable, str(OPERATOR), command, "--json"],
         capture_output=True, text=True, timeout=60,
         cwd=str(REPO),
-    )
+    encoding="utf-8")
     assert result.returncode == 0, f"CLI '{command}' failed: {result.stderr}"
     return json.loads(result.stdout)
 
@@ -154,7 +154,7 @@ def _run_decision_cli(input_file: str):
          "--input-file", input_file, "--json"],
         capture_output=True, text=True, timeout=60,
         cwd=str(REPO),
-    )
+    encoding="utf-8")
     return result.returncode, json.loads(result.stdout)
 
 
@@ -186,7 +186,7 @@ class TestJsonValidity:
         if path.suffix == ".json":
             assert isinstance(_load_json(path), dict)
         else:
-            assert isinstance(path.read_text(), str)
+            assert isinstance(path.read_text(encoding="utf-8"), str)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -255,16 +255,16 @@ class TestModelCatalog:
             assert m["human_final_authority_required"] is True
 
     def test_no_pricing_in_catalog(self):
-        text = CATALOG.read_text().lower()
+        text = CATALOG.read_text(encoding="utf-8").lower()
         assert "pricing" not in text or "pricing_frozen" in text
 
     def test_no_api_keys_in_catalog(self):
-        text = CATALOG.read_text().lower()
+        text = CATALOG.read_text(encoding="utf-8").lower()
         for fb in ["api_key", "apikey", "api_secret", "bearer_token", "access_token"]:
             assert fb not in text, f"Found forbidden: {fb}"
 
     def test_no_provider_urls(self):
-        text = CATALOG.read_text().lower()
+        text = CATALOG.read_text(encoding="utf-8").lower()
         assert "https://" not in text and "http://" not in text
 
 
@@ -818,12 +818,13 @@ class TestDeterminism:
         req_json = json.dumps(req)
         result = subprocess.run(
             [sys.executable, "-c",
-             f"import sys; sys.path.insert(0, '{REPO}'); "
+             f"import sys; sys.path.insert(0, {str(REPO)!r}); "
              f"from model_routing import decide_model_route; "
              f"import json; print(json.dumps(decide_model_route(json.loads('''{req_json}'''))))"],
             capture_output=True, text=True, env=env, timeout=30,
             cwd=str(REPO),
-        )
+        encoding="utf-8")
+        assert result.returncode == 0, result.stderr
         d_env = json.loads(result.stdout)
         assert d_env["deterministic_decision_hash"] == d_base["deterministic_decision_hash"]
 
@@ -835,12 +836,13 @@ class TestDeterminism:
                if k not in ("RANDOM", "SEED", "PYTHONHASHSEED", "PYTHONSTARTUP")}
         result = subprocess.run(
             [sys.executable, "-c",
-             f"import sys; sys.path.insert(0, '{REPO}'); "
+             f"import sys; sys.path.insert(0, {str(REPO)!r}); "
              f"from model_routing import decide_model_route; "
              f"import json; print(json.dumps(decide_model_route(json.loads('''{req_json}'''))))"],
             capture_output=True, text=True, env=env, timeout=30,
             cwd=str(REPO),
-        )
+        encoding="utf-8")
+        assert result.returncode == 0, result.stderr
         d_env = json.loads(result.stdout)
         assert d_env["deterministic_decision_hash"] == d_base["deterministic_decision_hash"]
 
@@ -851,14 +853,14 @@ class TestDeterminism:
 
 class TestPurity:
     def test_no_network_imports(self):
-        source = MODEL_ROUTING_PY.read_text()
+        source = MODEL_ROUTING_PY.read_text(encoding="utf-8")
         forbidden = ["urllib", "httpx", "requests", "socket", "http.client",
                       "aiohttp", "websocket", "sseclient"]
         for name in forbidden:
             assert name not in source, f"Network import found: {name}"
 
     def test_no_subprocess_imports(self):
-        source = MODEL_ROUTING_PY.read_text()
+        source = MODEL_ROUTING_PY.read_text(encoding="utf-8")
         # Check for actual subprocess calls/imports (not just word mentions)
         assert "import subprocess" not in source
         assert "from subprocess" not in source
@@ -866,7 +868,7 @@ class TestPurity:
         assert "os.popen(" not in source
 
     def test_no_file_writes(self):
-        source = MODEL_ROUTING_PY.read_text()
+        source = MODEL_ROUTING_PY.read_text(encoding="utf-8")
         # Policy/catalog loading is read-only, decision is pure
         write_patterns = [".write(", "open(", ".save(", ".dump("]
         # open() is used for reading catalog/policy in lazy load but not for writing
@@ -876,15 +878,15 @@ class TestPurity:
             assert 'w' not in line or 'rb' in line or 'r' in line, f"Potential write in: {line}"
 
     def test_no_bridge_import(self):
-        source = MODEL_ROUTING_PY.read_text()
+        source = MODEL_ROUTING_PY.read_text(encoding="utf-8")
         assert "import bridge" not in source and "from bridge" not in source
 
     def test_no_guard_import(self):
-        source = MODEL_ROUTING_PY.read_text()
+        source = MODEL_ROUTING_PY.read_text(encoding="utf-8")
         assert "import guard" not in source and "from guard" not in source
 
     def test_no_provider_sdk(self):
-        source = MODEL_ROUTING_PY.read_text()
+        source = MODEL_ROUTING_PY.read_text(encoding="utf-8")
         # Check for actual SDK imports (not just model IDs in strings)
         forbidden_imports = ["import openai", "from openai",
                               "import anthropic", "from anthropic",
@@ -895,27 +897,27 @@ class TestPurity:
             assert fb not in source, f"Provider SDK import found: {fb}"
 
     def test_no_api_tokens(self):
-        source = MODEL_ROUTING_PY.read_text().lower()
+        source = MODEL_ROUTING_PY.read_text(encoding="utf-8").lower()
         forbidden = ["api_key", "apikey", "bearer_token", "access_token", "secret"]
         for fb in forbidden:
             assert fb not in source, f"Forbidden token string: {fb}"
 
     def test_no_runtime_config_mutation(self):
-        source = MODEL_ROUTING_PY.read_text()
+        source = MODEL_ROUTING_PY.read_text(encoding="utf-8")
         # Should not modify any runtime config files
         assert "bridge.py" not in source
         assert "guard.py" not in source
         assert ".env" not in source
 
     def test_no_h1_access(self):
-        source = MODEL_ROUTING_PY.read_text()
+        source = MODEL_ROUTING_PY.read_text(encoding="utf-8")
         # "h1" appears in hard-stop flag names (h1_access_requested) — that's governance, not access
         # Check that no actual H1 module/API access exists
         assert "import h1" not in source.lower()
         assert "from h1" not in source.lower()
 
     def test_no_order_preflight_approve(self):
-        source = MODEL_ROUTING_PY.read_text().lower()
+        source = MODEL_ROUTING_PY.read_text(encoding="utf-8").lower()
         forbidden = ["order", "preflight", "approve", "submit", "execution", "trade"]
         # These may appear in auth flag names which is OK
         # But should not appear as function calls
@@ -959,28 +961,28 @@ class TestCliCheckpoint:
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "--help"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         assert "level1-model-routing-governance-checkpoint" in result.stdout
 
     def test_phase18r1_help(self):
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "--help"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         assert "phase18r1" in result.stdout
 
     def test_model_routing_governance_help(self):
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "--help"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         assert "model-routing-governance" in result.stdout
 
     def test_model_routing_decision_help(self):
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "--help"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         assert "model-routing-decision" in result.stdout
 
     def test_no_file_writes(self):
@@ -1003,7 +1005,7 @@ class TestCliDecision:
     def test_reads_json_file(self):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         path = "/tmp/test_routing_cli.json"
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(req, f)
         rc, result = _run_decision_cli(path)
         assert rc == 0
@@ -1012,14 +1014,14 @@ class TestCliDecision:
     def test_reads_stdin(self):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         path = "/tmp/test_routing_stdin.json"
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(req, f)
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "model-routing-decision",
              "--input-file", "-", "--json"],
             input=json.dumps(req), capture_output=True, text=True, timeout=30,
             cwd=str(REPO),
-        )
+        encoding="utf-8")
         assert result.returncode == 0
         d = json.loads(result.stdout)
         assert d["routing_state"] == "DEFAULT_ROUTE"
@@ -1027,7 +1029,7 @@ class TestCliDecision:
     def test_default_route_exit_zero(self):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         path = "/tmp/test_routing_exit0.json"
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(req, f)
         rc, _ = _run_decision_cli(path)
         assert rc == 0
@@ -1035,7 +1037,7 @@ class TestCliDecision:
     def test_escalated_route_exit_zero(self):
         req = _make_request("HERMES", "PHASE_ARCHITECTURE")
         path = "/tmp/test_routing_esc.json"
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(req, f)
         rc, result = _run_decision_cli(path)
         assert rc == 0
@@ -1046,7 +1048,7 @@ class TestCliDecision:
         hs.update({f: False for f in HARD_STOP_FLAGS if f != "safety_boundary_violation_detected"})
         req = _make_request("HERMES", "ROUTINE_RESEARCH", hard_stops=hs)
         path = "/tmp/test_routing_hold_cli.json"
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(req, f)
         rc, result = _run_decision_cli(path)
         assert rc != 0  # HOLD exits nonzero
@@ -1064,7 +1066,7 @@ class TestCliDecision:
             mtimes[str(path)] = path.stat().st_mtime
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         path = "/tmp/test_routing_nowrite.json"
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(req, f)
         _run_decision_cli(path)
         for rpath in MODEL_ROUTING_DIR.glob("*"):
@@ -1097,7 +1099,7 @@ class TestRepositorySafety:
         git_tracked = subprocess.run(
             ["git", "ls-files", "--error-unmatch", ".env"],
             capture_output=True, text=True, cwd=str(REPO),
-        )
+        encoding="utf-8")
         assert git_tracked.returncode != 0, ".env is tracked by git"
 
     def test_no_allowlist_change(self):
@@ -1110,7 +1112,7 @@ class TestRepositorySafety:
 
     def test_no_runtime_config(self):
         for f in MODEL_ROUTING_DIR.glob("*.json"):
-            content = f.read_text().lower()
+            content = f.read_text(encoding="utf-8").lower()
             if "runtime" in content:
                 assert "storage_runtime_scope" in content or "runtime_invocation_authorized" in content, \
                     f"Runtime config in {f.name}"
@@ -1120,7 +1122,7 @@ class TestRepositorySafety:
         if github_dir.exists():
             workflows = list(github_dir.glob("**/*.yml")) + list(github_dir.glob("**/*.yaml"))
             for wf in workflows:
-                wf_text = wf.read_text()
+                wf_text = wf.read_text(encoding="utf-8")
                 assert "model-routing" not in wf_text, f"Workflow {wf.name} contains model-routing"
 
 

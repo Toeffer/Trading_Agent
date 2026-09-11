@@ -23,6 +23,9 @@ Covers:
   - A flat (qty=0) position reported by IBKR doesn't occupy a sector slot.
 """
 
+from historical.preflight import run_preflight as historical_preflight
+from source_helpers import implementation_source
+
 import inspect
 import sys
 from pathlib import Path
@@ -37,7 +40,7 @@ sys.path.insert(0, str(REPO))
 import guard  # noqa: E402
 import strategy_v1_1_core as core  # noqa: E402
 
-GUARD_SOURCE = (REPO / "guard.py").read_text()
+GUARD_SOURCE = implementation_source('guard.py') + '\n' + (Path(__file__).parent / 'historical/preflight.py').read_text(encoding='utf-8')
 
 SECTOR_MAP = {
     "AAPL": "INFORMATION_TECHNOLOGY",
@@ -177,7 +180,7 @@ class TestSellExemption:
 class TestLoadRulesSectorValidation:
     def _write(self, tmp_path, rules):
         p = tmp_path / "rules.yaml"
-        p.write_text(yaml.dump(rules))
+        p.write_text(yaml.dump(rules), encoding="utf-8", newline="\n")
         return p
 
     def test_missing_symbol_sectors_raises(self, tmp_path):
@@ -240,7 +243,7 @@ class TestRunPreflightIntegration:
     def test_second_same_sector_position_rejected(self, mock_load_rules, mock_state):
         mock_load_rules.return_value = _full_rules()
         mock_state.return_value = guard.default_guard_state()
-        result = guard.run_preflight(
+        result = historical_preflight(
             {"symbol": "MSFT", "action": "BUY", "totalQuantity": 1, "orderType": "MKT"},
             account_provider=_account,
             quote_provider=_quote,
@@ -257,7 +260,7 @@ class TestRunPreflightIntegration:
     def test_first_position_in_sector_allowed(self, mock_load_rules, mock_state):
         mock_load_rules.return_value = _full_rules()
         mock_state.return_value = guard.default_guard_state()
-        result = guard.run_preflight(
+        result = historical_preflight(
             {"symbol": "AAPL", "action": "BUY", "totalQuantity": 1, "orderType": "MKT"},
             account_provider=_account,
             quote_provider=_quote,
@@ -273,7 +276,7 @@ class TestRunPreflightIntegration:
     def test_different_sector_allowed_despite_existing_position(self, mock_load_rules, mock_state):
         mock_load_rules.return_value = _full_rules()
         mock_state.return_value = guard.default_guard_state()
-        result = guard.run_preflight(
+        result = historical_preflight(
             {"symbol": "NVDA", "action": "BUY", "totalQuantity": 1, "orderType": "MKT"},
             account_provider=_account,
             quote_provider=_quote,
@@ -296,7 +299,7 @@ class TestRunPreflightIntegration:
         def _raising_position_provider():
             raise RuntimeError("IBKR disconnected")
 
-        result = guard.run_preflight(
+        result = historical_preflight(
             {"symbol": "AAPL", "action": "BUY", "totalQuantity": 1, "orderType": "MKT"},
             account_provider=_account,
             quote_provider=_quote,
@@ -313,7 +316,7 @@ class TestRunPreflightIntegration:
     def test_no_position_provider_fails_closed(self, mock_load_rules, mock_state):
         mock_load_rules.return_value = _full_rules()
         mock_state.return_value = guard.default_guard_state()
-        result = guard.run_preflight(
+        result = historical_preflight(
             {"symbol": "AAPL", "action": "BUY", "totalQuantity": 1, "orderType": "MKT"},
             account_provider=_account,
             quote_provider=_quote,
@@ -329,7 +332,7 @@ class TestRunPreflightIntegration:
     def test_non_list_position_provider_return_fails_closed(self, mock_load_rules, mock_state):
         mock_load_rules.return_value = _full_rules()
         mock_state.return_value = guard.default_guard_state()
-        result = guard.run_preflight(
+        result = historical_preflight(
             {"symbol": "AAPL", "action": "BUY", "totalQuantity": 1, "orderType": "MKT"},
             account_provider=_account,
             quote_provider=_quote,

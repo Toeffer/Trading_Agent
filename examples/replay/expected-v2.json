@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "input_hash": "dc7f20e77e2d23055fc2d1ba4eb4abea155f37aa5a5cd59e3a1e7a85fb7458e0",
+  "release": "0000000000000000000000000000000000000000",
+  "decision": {
+    "allowed": true,
+    "code": "PASSED"
+  },
+  "missing_inputs": [],
+  "operational_failures": [],
+  "transaction_costs": "1.00",
+  "slippage": {
+    "currency": "USD",
+    "per_share": "0.05",
+    "quantity": "1"
+  }
+}

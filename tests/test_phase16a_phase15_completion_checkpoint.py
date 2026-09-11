@@ -20,6 +20,8 @@ Coverage:
   - No mutation except export artifact
 """
 
+from source_helpers import implementation_source
+
 import hashlib
 import json
 import os
@@ -508,7 +510,7 @@ def _build_clean_mocks(
     # 4. Guard state — create a temp openclaw dir with guard-state.json
     tmp_openclaw = Path(tempfile.mkdtemp())
     if guard_state_content is not None:
-        (tmp_openclaw / "guard-state.json").write_text(guard_state_content)
+        (tmp_openclaw / "guard-state.json").write_text(guard_state_content, encoding="utf-8", newline="\n")
     patches.append(patch("ibkr_operator.OPENCLAW_DIR", tmp_openclaw))
     # Also patch the _PHASE16A_EXPORT_DIR so export writes go to temp
     tmp_export = Path(tempfile.mkdtemp())
@@ -573,7 +575,7 @@ class TestCommandExists:
             [sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
              "phase15-completion-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert r.returncode == 0, f"help failed: {r.stderr}"
 
     @pytest.mark.parametrize("alias", [
@@ -587,7 +589,7 @@ class TestCommandExists:
             [sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
              alias, "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert r.returncode == 0, f"{alias} --help failed: {r.stderr}"
 
     def test_function_importable(self):
@@ -1426,7 +1428,7 @@ class TestExportWritten:
             assert result["export_path"] is not None
             assert os.path.exists(result["export_path"])
             # File contains valid JSON matching the result
-            with open(result["export_path"]) as f:
+            with open(result["export_path"], encoding="utf-8") as f:
                 on_disk = json.load(f)
             assert on_disk["checkpoint_id"] == result["checkpoint_id"]
             assert on_disk["diagnosis"] == result["diagnosis"]
@@ -1452,7 +1454,7 @@ class TestNoOrderEndpointCalls:
     def test_no_forbidden_endpoints_in_checkpoint_function(self):
         """AST scan: no forbidden endpoint strings in checkpoint function."""
         import ast
-        source = (BRIDGE_DIR / "ibkr_operator.py").read_text()
+        source = implementation_source('ibkr_operator.py')
         tree = ast.parse(source)
 
         # Find the checkpoint function
@@ -1538,7 +1540,7 @@ class TestNoH1Token:
                   and references in comments/docstrings.
         """
         import ast
-        source = (BRIDGE_DIR / "ibkr_operator.py").read_text()
+        source = implementation_source('ibkr_operator.py')
         tree = ast.parse(source)
 
         # Patterns that indicate an actual H1 token read/usage

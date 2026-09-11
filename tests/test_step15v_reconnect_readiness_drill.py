@@ -144,7 +144,7 @@ class TestReconnectReadinessDrill:
         from pathlib import Path
         from contextlib import ExitStack
 
-        ed = Path("/tmp/rrd-test")
+        ed = (Path(__import__("tempfile").gettempdir()) / 'rrd-test')
         ed.mkdir(parents=True, exist_ok=True)
 
         sock = _mock_socket(*socket_patch) if isinstance(socket_patch, tuple) else socket_patch
@@ -245,7 +245,7 @@ class TestReconnectReadinessDrill:
         from unittest.mock import patch as ptch
         from contextlib import ExitStack
 
-        ed = Path("/tmp/rrd-test-bu")
+        ed = (Path(__import__("tempfile").gettempdir()) / 'rrd-test-bu')
         ed.mkdir(parents=True, exist_ok=True)
 
         sock = _mock_socket(reachable=False, error="refused")
@@ -444,7 +444,7 @@ class TestReconnectReadinessDrill:
                 [".venv/bin/python", "ibkr_operator.py", cmd, "--help"],
                 capture_output=True, text=True,
                 cwd="/home/chris/agents/ibkr-bridge", timeout=10,
-            )
+            encoding="utf-8")
             assert cp.returncode == 0, f"{cmd} --help failed"
             assert "--host" in cp.stdout, f"{cmd} missing --host flag"
 
@@ -456,7 +456,7 @@ class TestReconnectReadinessDrill:
                 [".venv/bin/python", "ibkr_operator.py", cmd, "--help"],
                 capture_output=True, text=True,
                 cwd="/home/chris/agents/ibkr-bridge", timeout=5,
-            )
+            encoding="utf-8")
             assert cp.returncode == 0
 
     def test_help_does_not_call_bridge(self):
@@ -466,7 +466,7 @@ class TestReconnectReadinessDrill:
             [".venv/bin/python", "ibkr_operator.py", "reconnect-readiness-drill", "--help"],
             capture_output=True, text=True, cwd="/home/chris/agents/ibkr-bridge", timeout=2,
             env={**os.environ, "IBKR_BRIDGE_URL": "http://127.0.0.1:1"},
-        )
+        encoding="utf-8")
         assert cp.returncode == 0
 
     # --- Additional acceptance tests ---

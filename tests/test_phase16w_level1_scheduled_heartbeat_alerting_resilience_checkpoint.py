@@ -138,7 +138,7 @@ class TestPhase16WCLI:
             [sys.executable, str(OPERATOR),
              "level1-scheduled-heartbeat-alerting-resilience-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
         assert "heartbeat" in result.stdout.lower()
 
@@ -148,7 +148,7 @@ class TestPhase16WCLI:
             [sys.executable, str(OPERATOR),
              "level1-scheduled-heartbeat-alerting-resilience-checkpoint", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -162,7 +162,7 @@ class TestPhase16WCLI:
             [sys.executable, str(OPERATOR),
              "level1-heartbeat-alerting-resilience", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -175,7 +175,7 @@ class TestPhase16WCLI:
             [sys.executable, str(OPERATOR),
              "scheduled-heartbeat-alerting-resilience-checkpoint", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -188,7 +188,7 @@ class TestPhase16WCLI:
             [sys.executable, str(OPERATOR),
              "level1-scheduled-heartbeat-alerting-resilience-checkpoint", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required_fields = [
             "diagnosis", "severity", "git",

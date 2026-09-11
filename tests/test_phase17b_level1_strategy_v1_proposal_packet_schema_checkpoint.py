@@ -135,7 +135,7 @@ class TestProposalPacketDocs:
         assert _PROPOSAL_PACKET_SCHEMA_PATH.exists(), f"Missing: {_PROPOSAL_PACKET_SCHEMA_PATH}"
 
     def test_schema_json_is_valid_json(self):
-        content = _PROPOSAL_PACKET_SCHEMA_PATH.read_text()
+        content = _PROPOSAL_PACKET_SCHEMA_PATH.read_text(encoding="utf-8")
         schema = json.loads(content)
         assert "required" in schema
         assert "properties" in schema
@@ -149,22 +149,22 @@ class TestProposalPacketDocs:
         assert "evidence_hash" in req
 
     def test_doc_md_references_schema(self):
-        content = _PROPOSAL_PACKET_DOC_PATH.read_text()
+        content = _PROPOSAL_PACKET_DOC_PATH.read_text(encoding="utf-8")
         assert "schema.json" in content or "JSON Schema" in content
 
     def test_doc_md_has_required_fields_table(self):
-        content = _PROPOSAL_PACKET_DOC_PATH.read_text()
+        content = _PROPOSAL_PACKET_DOC_PATH.read_text(encoding="utf-8")
         required_terms = ["proposal_id", "strategy_version", "symbol", "signal_thesis",
                           "data_quality", "rejection_reasons", "evidence_hash"]
         for term in required_terms:
             assert term in content, f"Missing term in doc: {term}"
 
     def test_doc_md_has_advisory_boundary(self):
-        content = _PROPOSAL_PACKET_DOC_PATH.read_text()
+        content = _PROPOSAL_PACKET_DOC_PATH.read_text(encoding="utf-8")
         assert "advisory-only" in content.lower() or "Advisory-Only" in content
 
     def test_doc_md_has_broker_execution_boundary(self):
-        content = _PROPOSAL_PACKET_DOC_PATH.read_text()
+        content = _PROPOSAL_PACKET_DOC_PATH.read_text(encoding="utf-8")
         assert "broker execution" in content.lower() or "Broker Execution" in content
 
 
@@ -175,7 +175,7 @@ class TestPhase17BCLI:
             [sys.executable, str(OPERATOR),
              "level1-strategy-v1-proposal-packet-schema-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_json_output_valid(self):
@@ -183,7 +183,7 @@ class TestPhase17BCLI:
             [sys.executable, str(OPERATOR),
              "level1-strategy-v1-proposal-packet-schema-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -195,7 +195,7 @@ class TestPhase17BCLI:
             [sys.executable, str(OPERATOR),
              "level1-strategy-v1-proposal-packet-schema-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required = [
             "diagnosis", "severity", "git",

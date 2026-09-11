@@ -115,7 +115,7 @@ class TestLockedPreflightProof:
         from ibkr_operator import _run_locked_preflight_proof
         from contextlib import ExitStack
 
-        ed = Path("/tmp/lpp-test")
+        ed = (Path(__import__("tempfile").gettempdir()) / 'lpp-test')
         ed.mkdir(parents=True, exist_ok=True)
 
         s = safety if safety is not None else _safety()
@@ -294,7 +294,7 @@ class TestLockedPreflightProof:
                 [".venv/bin/python", "ibkr_operator.py", cmd, "--help"],
                 capture_output=True, text=True,
                 cwd="/home/chris/agents/ibkr-bridge", timeout=10,
-            )
+            encoding="utf-8")
             assert cp.returncode == 0, f"{cmd} --help failed"
             assert "--symbol" in cp.stdout, f"{cmd} missing --symbol"
 
@@ -307,7 +307,7 @@ class TestLockedPreflightProof:
                 [".venv/bin/python", "ibkr_operator.py", cmd, "--help"],
                 capture_output=True, text=True,
                 cwd="/home/chris/agents/ibkr-bridge", timeout=5,
-            )
+            encoding="utf-8")
             assert cp.returncode == 0
 
     # --- Monitor alerts active ---

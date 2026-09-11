@@ -54,7 +54,7 @@ def main():
 
     # ── Load all events ────────────────────────────────────────────────
     events = []
-    with open(events_path) as f:
+    with open(events_path, encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 events.append(json.loads(line))
@@ -136,7 +136,7 @@ def main():
 
     # ── H3-G1: Gate D blocks at max_trades ─────────────────────────────
     print("\n── H3-G1: Gate D Semantics ──")
-    guard_content = guard_path.read_text()
+    guard_content = guard_path.read_text(encoding="utf-8")
 
     check("gate_trades_per_day" in guard_content,
           "Gate D function exists in guard.py")

@@ -24,6 +24,12 @@ account prefix or aggregate count cannot establish that history. An upgrade
 from schema 1 or 2 retains historical fills and quarantines existing executions
 for H1 broker reconciliation. Missing evidence remains unresolved.
 
+For an existing SQLite database, stop execution and run
+`python -m trading_agent state upgrade --database DATABASE --backup NEW_BACKUP`.
+The backup is taken before the schema changes. Snapshot export and acceptance
+reports open the database read-only and refuse an older schema; they cannot
+silently perform this upgrade.
+
 `POST /order/account/reconcile` accepts only `{"symbol":"AAPL"}` and requires
 H1. It fetches broker evidence through the account's bounded owner loop and
 cannot accept caller-supplied fills, counts or recovery orders. The privileged

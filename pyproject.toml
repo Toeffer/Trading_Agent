@@ -63,3 +63,9 @@ select = ["F821", "F823", "F601", "F402", "F811"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["F811"]
+
+# Historical root modules reached from compatibility code are outside the
+# typed execution boundaries. New trading_agent modules remain strictly checked.
+[[tool.mypy.overrides]]
+module = ["dry_run_scenarios", "guard", "monitor", "strategy_v1_1_core"]
+follow_imports = "skip"

@@ -28,6 +28,7 @@ class StateConflict(ValueError):
 class ExecutionStore:
     def __init__(self, path: Path):
         self.path = path
+        self.readonly = False
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
@@ -126,12 +127,41 @@ class ExecutionStore:
                 db.rollback()
                 raise
 
+    @classmethod
+    def open_readonly(cls, path: Path) -> "ExecutionStore":
+        store = cls.__new__(cls)
+        store.path, store.readonly = path, True
+        with store.connection() as db:
+            if db.execute("PRAGMA user_version").fetchone()[0] != 3:
+                raise StateConflict("MIGRATION_REQUIRED")
+        return store
+
+    @staticmethod
+    def backup_existing(source: Path, destination: Path) -> None:
+        if not source.is_file() or destination.exists():
+            raise ValueError("Existing source and new backup path required")
+        destination.touch(exist_ok=False)
+        destination.chmod(0o600)
+        with sqlite3.connect(
+            source.resolve().as_uri() + "?mode=ro", uri=True
+        ) as original:
+            with sqlite3.connect(destination) as backup:
+                original.backup(backup)
+
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
-        db = sqlite3.connect(self.path, timeout=8, isolation_level=None)
+        db = sqlite3.connect(
+            self.path.resolve().as_uri() + "?mode=ro"
+            if self.readonly
+            else str(self.path),
+            uri=self.readonly,
+            timeout=8,
+            isolation_level=None,
+        )
         db.row_factory = sqlite3.Row
         try:
-            db.execute("PRAGMA journal_mode=WAL")
+            if not self.readonly:
+                db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=FULL")
             db.execute("PRAGMA foreign_keys=ON")
             yield db
@@ -140,6 +170,8 @@ class ExecutionStore:
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
+        if self.readonly:
+            raise StateConflict("READ_ONLY_STORE")
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             try:

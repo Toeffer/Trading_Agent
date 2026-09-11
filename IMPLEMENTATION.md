@@ -19,6 +19,9 @@ The implementation is a release candidate on the remediation branch.
 No release has been tagged and no deployment or broker order has been performed.
 Implementation below does not imply that the corresponding release gate passed.
 
+Draft PR: https://github.com/Toeffer/Trading_Agent/pull/24 (base `master`).
+The first candidate commit is `ad69f28381c4d897384c7f6de157389db1b0c757`.
+
 | Stage | Implemented locally | Remaining gate or work |
 | --- | --- | --- |
 | 1. Test baseline | Isolated branch; Python 3.12.10 toolchain; discovered portable tests; Linux/Windows CI configuration; UTF-8 and LF handling; behavioral regressions | Final complete portable rerun and actual Linux/Windows CI results |
@@ -39,12 +42,17 @@ Implementation below does not imply that the corresponding release gate passed.
   the eight prior failures: **205 passed, 1 skipped, 1 deselected**.
 - Latest execution, persistence, HTTP, runtime, migration, replay and historical
   preflight contract verification: **103 passed, 3 deselected**.
-- Strict mypy: **41 source files checked successfully**, with explicit exclusions
+- Strict mypy: **42 source files checked successfully**, with explicit exclusions
   for retained legacy modules. Repository Ruff check passed.
 - Compared **25 historical artifact files** with baseline Git bytes: unchanged.
 - Complete candidate portable run and GitHub Linux/Windows CI are pending.
   Intermediate CLI extraction failures remain in the local logs; targeted fixes
   and the complete rerun must pass before the candidate is accepted.
+- Additional review repairs: read-only tools refuse schema migration; SQLite
+  upgrades back up the old schema first. Cold CI type checks now explicitly
+  exclude historical root imports outside the typed execution boundaries.
+- CLI compatibility rerun: **99 passed, 48 deselected**. Historical source-check
+  repairs and executable mutation-detection negative controls: **16 passed**.
 - Local fake-broker round-trip tests exercise BUY, protective-stop evidence,
   explicit cancellation evidence and separately approved close-only SELL.
   They are not evidence of actual paper acceptance.
@@ -63,3 +71,7 @@ All local broker tests use fakes or blocked network connections. Deployment,
 credentials, host state and human paper acceptance must be verified separately;
 local passing tests will never be reported as evidence of deployed readiness.
 Orders remain disabled until all execution repairs pass together.
+
+Latest follow-up regressions: **22 passed** (read-only tools, pre-upgrade backup,
+accounting and executable mutation checks). Cold type checking passes locally;
+the initial CI type failure is addressed in the follow-up candidate.

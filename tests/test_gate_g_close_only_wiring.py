@@ -27,7 +27,7 @@ sys.path.insert(0, str(REPO))
 
 import guard  # noqa: E402
 
-GUARD_SOURCE = implementation_source('guard.py')
+GUARD_SOURCE = implementation_source('guard.py', historical=True)
 
 
 def _full_rules():
@@ -125,7 +125,7 @@ class TestGateGBlocksShorts:
         assert "existing_qty" in gate["details"]
 
 
-class TestGateGIsWiredInSource:
+class TestHistoricalGateGIsWiredInSource:
     def test_run_preflight_calls_gate_close_only(self):
         start = GUARD_SOURCE.index("\ndef run_preflight(")
         end = GUARD_SOURCE.index("\ndef ", start + 1)

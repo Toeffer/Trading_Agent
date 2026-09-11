@@ -28,7 +28,7 @@ import guard  # noqa: E402
 
 CLAUDE_MD = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
 BRIDGE_SOURCE = implementation_source('bridge.py')
-GUARD_SOURCE = implementation_source('guard.py')
+GUARD_SOURCE = implementation_source('guard.py', historical=True)
 
 _WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
           "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
@@ -84,7 +84,7 @@ class TestPreflightContract:
 # ── §5 gate wiring ─────────────────────────────────────────────────────────
 
 
-class TestGateWiring:
+class TestHistoricalGateWiring:
     documented = set(re.findall(r"`(gate_[a-z_]+)`", _section("5.")))
     defined = set(re.findall(r"^def (gate_[a-z_]+)\(", GUARD_SOURCE, re.M))
     wired = set(re.findall(r"\b(gate_[a-z_]+)\(", _function_source(GUARD_SOURCE, "run_preflight")))

@@ -404,8 +404,9 @@ def _synthetic_fixture_read_only_invariant_16x() -> dict:
     from trading_agent.cli.operator_governance_helpers import _run_level1_os_boundary_h1_isolation_checkpoint
     import inspect
     h1_patterns = ["h1_token", "H1_TOKEN", "X-H1-Token", "/etc/ibkr-bridge/h1_token", "sudo", "ibkr-trade-window", "/connect", "/order"]
-    current_src = inspect.getsource(_run_level1_os_boundary_h1_isolation_checkpoint) if "_run_level1_os_boundary_h1_isolation_checkpoint" in dir() else ""
-    mutations_found = [p for p in h1_patterns if p in current_src]
+    current_src = inspect.getsource(_run_level1_os_boundary_h1_isolation_checkpoint)
+    from trading_agent.cli.operator_audit import readonly_findings
+    mutations_found = readonly_findings(current_src)
     source_clean = len(mutations_found) == 0
     passed = source_clean
     return {"passed": passed, "case": "read_only_invariant", "source_clean": source_clean, "mutations_found_in_source": mutations_found, "h1_patterns_checked": h1_patterns}
@@ -542,8 +543,9 @@ def _synthetic_fixture_read_only_invariant_16y() -> dict:
     import inspect
     mutation_patterns = ["h1_token", "H1_TOKEN", "X-H1-Token", "/etc/ibkr-bridge/h1_token",
                         "sudo", "ibkr-trade-window", "/connect", "/order"]
-    current_src = inspect.getsource(_run_level1_portable_tests_ci_readiness_checkpoint) if "_run_level1_portable_tests_ci_readiness_checkpoint" in dir() else ""
-    mutations_found = [p for p in mutation_patterns if p in current_src]
+    current_src = inspect.getsource(_run_level1_portable_tests_ci_readiness_checkpoint)
+    from trading_agent.cli.operator_audit import readonly_findings
+    mutations_found = readonly_findings(current_src)
     source_clean = len(mutations_found) == 0
     passed = source_clean
     return {"passed": passed, "case": "read_only_invariant", "source_clean": source_clean, "mutations_found_in_source": mutations_found, "mutation_patterns_checked": mutation_patterns}
@@ -688,8 +690,9 @@ def _synthetic_fixture_read_only_invariant_16z() -> dict:
     import inspect
     mutation_patterns = ["h1_token", "H1_TOKEN", "X-H1-Token", "/etc/ibkr-bridge/h1_token",
                         "sudo", "ibkr-trade-window", "/connect", "/order"]
-    current_src = inspect.getsource(_run_level1_fresh_clone_ci_workflow_checkpoint) if "_run_level1_fresh_clone_ci_workflow_checkpoint" in dir() else ""
-    mutations_found = [p for p in mutation_patterns if p in current_src]
+    current_src = inspect.getsource(_run_level1_fresh_clone_ci_workflow_checkpoint)
+    from trading_agent.cli.operator_audit import readonly_findings
+    mutations_found = readonly_findings(current_src)
     source_clean = len(mutations_found) == 0
     passed = source_clean
     return {"passed": passed, "case": "read_only_invariant_16z", "source_clean": source_clean, "mutations_found_in_source": mutations_found, "mutation_patterns_checked": mutation_patterns}
@@ -784,8 +787,9 @@ def _synthetic_fixture_read_only_invariant_17a() -> dict:
     import inspect
     mutation_patterns = ["h1_token", "H1_TOKEN", "X-H1-Token", "/etc/ibkr-bridge/h1_token",
                         "sudo", "ibkr-trade-window", "/connect", "/order"]
-    current_src = inspect.getsource(_run_level1_strategy_v1_governance_checkpoint) if "_run_level1_strategy_v1_governance_checkpoint" in dir() else ""
-    mutations_found = [p for p in mutation_patterns if p in current_src]
+    current_src = inspect.getsource(_run_level1_strategy_v1_governance_checkpoint)
+    from trading_agent.cli.operator_audit import readonly_findings
+    mutations_found = readonly_findings(current_src)
     source_clean = len(mutations_found) == 0
     passed = source_clean
     return {"passed": passed, "case": "read_only_invariant_17a", "source_clean": source_clean, "mutations_found_in_source": mutations_found, "mutation_patterns_checked": mutation_patterns}
@@ -1074,8 +1078,9 @@ def _synthetic_fixture_read_only_invariant_17b() -> dict:
     import inspect
     mutation_patterns = ["h1_token", "H1_TOKEN", "X-H1-Token", "/etc/ibkr-bridge/h1_token",
                         "sudo", "ibkr-trade-window", "/connect", "/order"]
-    current_src = inspect.getsource(_run_level1_strategy_v1_proposal_packet_schema_checkpoint) if "_run_level1_strategy_v1_proposal_packet_schema_checkpoint" in dir() else ""
-    mutations_found = [p for p in mutation_patterns if p in current_src]
+    current_src = inspect.getsource(_run_level1_strategy_v1_proposal_packet_schema_checkpoint)
+    from trading_agent.cli.operator_audit import readonly_findings
+    mutations_found = readonly_findings(current_src)
     source_clean = len(mutations_found) == 0
     passed = source_clean
     return {"passed": passed, "case": "read_only_invariant_17b", "source_clean": source_clean, "mutations_found_in_source": mutations_found, "mutation_patterns_checked": mutation_patterns}
@@ -1223,8 +1228,9 @@ def _synthetic_fixture_read_only_invariant_17c() -> dict:
     mutation_patterns = ["h1_token", "H1_TOKEN", "X-H1-Token", "/etc/ibkr-bridge/h1_token",
                         "sudo", "ibkr-trade-window", "/connect", "/order",
                         "/order/preflight", "/order/approve", "/order/submit"]
-    current_src = inspect.getsource(_run_level1_strategy_v1_dry_run_proposal_generation_checkpoint) if "_run_level1_strategy_v1_dry_run_proposal_generation_checkpoint" in dir() else ""
-    mutations_found = [p for p in mutation_patterns if p in current_src]
+    current_src = inspect.getsource(_run_level1_strategy_v1_dry_run_proposal_generation_checkpoint)
+    from trading_agent.cli.operator_audit import readonly_findings
+    mutations_found = readonly_findings(current_src)
     source_clean = len(mutations_found) == 0
     passed = source_clean
     return {"passed": passed, "case": "read_only_invariant_17c", "source_clean": source_clean, "mutations_found_in_source": mutations_found, "mutation_patterns_checked": mutation_patterns}
@@ -1372,7 +1378,8 @@ def _synthetic_fixture_read_only_invariant_17d() -> dict:
                         "sudo", "ibkr-trade-window", "/connect", "/order",
                         "/order/preflight", "/order/approve", "/order/submit"]
     current_src = inspect.getsource(_review_proposal_dossier)
-    mutations_found = [p for p in mutation_patterns if p in current_src]
+    from trading_agent.cli.operator_audit import readonly_findings
+    mutations_found = readonly_findings(current_src)
     source_clean = len(mutations_found) == 0
     passed = source_clean
     return {
@@ -1629,7 +1636,8 @@ def _synthetic_fixture_read_only_invariant_17e() -> dict:
                         "sudo", "ibkr-trade-window", "/connect", "/order",
                         "/order/preflight", "/order/approve", "/order/submit"]
     current_src = inspect.getsource(_create_decision_record)
-    mutations_found = [p for p in mutation_patterns if p in current_src]
+    from trading_agent.cli.operator_audit import readonly_findings
+    mutations_found = readonly_findings(current_src)
     source_clean = len(mutations_found) == 0
     passed = source_clean
     return {
@@ -1898,7 +1906,8 @@ def _synthetic_fixture_read_only_invariant_17f() -> dict:
                         "sudo", "ibkr-trade-window", "/connect", "/order",
                         "/order/preflight", "/order/approve", "/order/submit"]
     current_src = inspect.getsource(_create_order_plan_draft)
-    mutations_found = [p for p in mutation_patterns if p in current_src]
+    from trading_agent.cli.operator_audit import readonly_findings
+    mutations_found = readonly_findings(current_src)
     source_clean = len(mutations_found) == 0
     passed = source_clean
     return {

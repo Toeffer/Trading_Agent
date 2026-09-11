@@ -35,5 +35,7 @@ def acceptance_report(args: argparse.Namespace) -> dict[str, Any]:
     if not args.database.is_file():
         raise ValueError("Existing execution database required")
     return evidence_report(
-        ExecutionStore(args.database), args.buy_execution, args.sell_execution
+        ExecutionStore.open_readonly(args.database),
+        args.buy_execution,
+        args.sell_execution,
     )

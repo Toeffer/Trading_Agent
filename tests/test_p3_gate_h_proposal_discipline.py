@@ -446,7 +446,7 @@ def main() -> int:
 
 
     # ── 15. Integration: run_preflight accepts proposal_path ──────────────────
-    from historical.preflight import run_preflight
+    from guard import run_preflight
     import inspect
 
     # Verify run_preflight signature includes proposal_path

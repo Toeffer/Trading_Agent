@@ -22,8 +22,14 @@ def migrate(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("Backup must be a new directory")
         shutil.copytree(args.source, args.backup)
         args.backup.chmod(0o700)
+        existed = args.database.is_file()
+        if existed:
+            ExecutionStore.backup_existing(
+                args.database, args.backup / "pre-migration.sqlite3"
+            )
         store = ExecutionStore(args.database)
-        store.backup(args.backup / "pre-migration.sqlite3")
+        if not existed:
+            store.backup(args.backup / "pre-migration.sqlite3")
         return migrate_legacy(args.source, store, args.account)
     finally:
         lock.close()
@@ -40,6 +46,12 @@ def configure(sub: argparse._SubParsersAction[Any]) -> None:
     command.add_argument("--database", type=Path, required=True)
     command.add_argument("--account", required=True)
     command.set_defaults(handler=migrate)
+    upgrade = group.add_parser(
+        "upgrade", help="Back up and upgrade existing SQLite while execution is stopped"
+    )
+    upgrade.add_argument("--database", type=Path, required=True)
+    upgrade.add_argument("--backup", type=Path, required=True)
+    upgrade.set_defaults(handler=upgrade_database)
     snapshots = group.add_parser(
         "export-snapshots",
         help="Export timestamped risk inputs for deterministic replay",
@@ -52,8 +64,24 @@ def configure(sub: argparse._SubParsersAction[Any]) -> None:
 def export_snapshots(args: argparse.Namespace) -> dict[str, Any]:
     if not args.database.is_file() or args.output.exists():
         raise ValueError("Existing database and new output path required")
-    snapshots = ExecutionStore(args.database).decision_snapshots()
+    snapshots = ExecutionStore.open_readonly(args.database).decision_snapshots()
     with args.output.open("x", encoding="utf-8", newline="\n") as stream:
         for snapshot in snapshots:
             stream.write(canonical(snapshot) + "\n")
     return {"snapshots": len(snapshots), "output": str(args.output)}
+
+
+def upgrade_database(args: argparse.Namespace) -> dict[str, Any]:
+    lock = ServiceLock(args.database.parent / "service.lock")
+    lock.acquire()
+    try:
+        ExecutionStore.backup_existing(args.database, args.backup)
+        ExecutionStore(args.database)
+        return {
+            "schema_version": 3,
+            "backup": str(args.backup),
+            "reconciliation_required": True,
+            "order_switches_changed": False,
+        }
+    finally:
+        lock.close()

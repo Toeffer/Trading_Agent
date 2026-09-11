@@ -96,3 +96,18 @@ remaining quantity against the immutable plan and verified fills before risk
 reservation. A failing behavioral reproduction preceded the repair; **23 focused
 accounting, capacity, broker-snapshot and round-trip tests pass** afterward.
 The next commit requires fresh complete Linux and Windows CI before tagging.
+
+CI run [34588494267](https://github.com/Toeffer/Trading_Agent/actions/runs/34588494267)
+passed on Linux and Windows for commit
+`4d6a438348ed9120dea41538ce7fa2808d7610eb`: **3,805 passed, 2 skipped,
+390 deselected and 3,150 subtests passed** on each platform. Compilation,
+repository lint and cold strict type checking also passed. Both jobs retained
+their test artifacts. This supersedes the earlier failing validation results;
+those results remain historical evidence.
+
+Final review found that empty or reused labels on external open orders could
+collapse daily-capacity reservations. Three failing adapter regressions preceded
+the repair: external orders now use broker permanent identities, and unavailable
+or duplicate identities block the snapshot. **26 focused tests pass** after this
+repair. Fresh CI against the follow-up commit remains required. No PR review,
+host verification or human paper acceptance has been recorded yet.

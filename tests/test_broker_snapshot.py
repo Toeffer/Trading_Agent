@@ -92,8 +92,29 @@ def test_missing_or_invalid_fx_fails_closed(broker, rate):
 def test_pending_submit_with_default_zero_remaining_still_reserves_shares(broker):
     adapter, client = broker
     client.orders = [NS(contract=client.contract,
-        order=NS(account="PAPER_TEST", action="SELL", totalQuantity=3, orderType="STP", auxPrice=95, orderRef="pending", parentId=42),
+        order=NS(account="PAPER_TEST", action="SELL", totalQuantity=3, orderType="STP", auxPrice=95, orderRef="pending", parentId=42, permId=903),
         orderStatus=NS(status="PendingSubmit", remaining=0, filled=0))]
     snapshot = adapter.snapshot("AAPL")
     assert snapshot.open_orders[0].remaining == 3
     assert snapshot.open_orders[0].counts_as_pending_trade is False
+
+
+@pytest.mark.parametrize("label", ["", "shared-manual-label"])
+def test_external_open_orders_keep_distinct_broker_identities(broker, label):
+    adapter, client = broker
+    client.orders = [NS(contract=client.contract,
+        order=NS(account="PAPER_TEST", action="BUY", totalQuantity=1, orderType="LMT",
+                 lmtPrice=100, orderRef=label, parentId=0, permId=identity),
+        orderStatus=NS(status="Submitted", remaining=1, filled=0)) for identity in (901, 902)]
+    snapshot = adapter.snapshot("AAPL")
+    assert {order.execution_ref for order in snapshot.open_orders} == {"perm:901", "perm:902"}
+
+
+def test_external_open_order_without_durable_identity_blocks_snapshot(broker):
+    adapter, client = broker
+    client.orders = [NS(contract=client.contract,
+        order=NS(account="PAPER_TEST", action="BUY", totalQuantity=1, orderType="LMT",
+                 lmtPrice=100, orderRef="manual", parentId=0, permId=0),
+        orderStatus=NS(status="Submitted", remaining=1, filled=0))]
+    with pytest.raises(ValueError, match="OPEN_ORDER_IDENTITY_UNAVAILABLE"):
+        adapter.snapshot("AAPL")

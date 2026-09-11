@@ -177,6 +177,7 @@ class IBKRBroker:
             finally:
                 ib.cancelTickByTickData(contract, "BidAsk")
             orders = []
+            external_order_ids: set[int] = set()
             for trade in ib.openTrades():
                 if trade.order.account != self.settings.account:
                     continue
@@ -204,13 +205,22 @@ class IBKRBroker:
                 )
                 if rate is None or price <= 0:
                     raise ValueError("OPEN_ORDER_VALUATION_UNAVAILABLE")
+                reference = trade.order.orderRef or ""
+                if not reference.startswith("exec_"):
+                    identity = trade.order.permId
+                    if not identity or identity <= 0:
+                        raise ValueError("OPEN_ORDER_IDENTITY_UNAVAILABLE")
+                    if identity in external_order_ids:
+                        raise ValueError("DUPLICATE_OPEN_ORDER_IDENTITY")
+                    external_order_ids.add(identity)
+                    reference = f"perm:{identity}"
                 orders.append(
                     OpenOrder(
                         trade.contract.symbol,
                         trade.order.action,
                         int(remaining),
                         remaining * price * rate,
-                        trade.order.orderRef or None,
+                        reference,
                         not bool(trade.order.parentId)
                         and not bool(trade.orderStatus.filled),
                         trade.contract.conId,

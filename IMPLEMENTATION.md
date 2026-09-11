@@ -111,3 +111,9 @@ the repair: external orders now use broker permanent identities, and unavailable
 or duplicate identities block the snapshot. **26 focused tests pass** after this
 repair. Fresh CI against the follow-up commit remains required. No PR review,
 host verification or human paper acceptance has been recorded yet.
+
+Skip audit: the historical heartbeat freeze assertion incorrectly depended on
+an installed checkout before reading repository source; it now always runs.
+The installed user-service comparison is explicitly marked `host`, so discovering
+an installed production unit cannot activate it during portable testing. This
+accounts for the prior two skips; host checks require `--run-host`.

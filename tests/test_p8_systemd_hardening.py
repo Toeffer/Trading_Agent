@@ -359,6 +359,7 @@ def test_unit_user_chris():
 # 12. systemd unit file in repo matches installed user service
 # ---------------------------------------------------------------------------
 
+@pytest.mark.host
 def test_repo_unit_matches_user_service():
     """Repo systemd unit should be consistent with installed user service."""
     repo_unit = REPO / "systemd" / "ibkr-bridge.service"

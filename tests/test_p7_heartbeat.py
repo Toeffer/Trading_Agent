@@ -239,9 +239,8 @@ class TestSystemdUnits:
 # ── 6. Freeze integrity ──────────────────────────────────────────────────
 
 def test_freeze_includes_heartbeat():
-    op_text = implementation_source('ibkr_operator.py') if OPERATOR.exists() else ""
-    if "non_mutating_subcommands" not in op_text:
-        pytest.skip("non_mutating_subcommands not in operator source")
+    op_text = implementation_source('ibkr_operator.py')
+    assert "non_mutating_subcommands" in op_text
     start = op_text.index("non_mutating_subcommands")
     end = op_text.index("]", start)
     assert "heartbeat" in op_text[start:end], \

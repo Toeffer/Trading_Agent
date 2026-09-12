@@ -20,6 +20,7 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m compileall -q trading_agent bridge.py guard.py ibkr_operator.py
       - run: python -m ruff check .
+      - run: python -m ruff check --select F401,F841 trading_agent/operations.py trading_agent/recovery.py trading_agent/evaluation_evidence.py trading_agent/cli/operator_registry.py trading_agent/cli/operator_options.py trading_agent/cli/operator_output.py
       - run: python -m mypy --no-incremental trading_agent
       - run: python scripts/run_ci.py
       - uses: actions/upload-artifact@v4

@@ -1,6 +1,9 @@
-from trading_agent.cli.operator_legacy import (VALID_STATES)
+from __future__ import annotations
+import argparse
+from typing import Any
+from trading_agent.cli.operator_common import VALID_STATES
 
-def configure(sub):
+def configure(sub: argparse._SubParsersAction[Any]) -> None:
     cp = sub.add_parser("checklist", help="Run operator daily checklist")
     cp.add_argument("state", nargs="?", default=None,
                     help=f"Workflow state: {', '.join(sorted(VALID_STATES))}")

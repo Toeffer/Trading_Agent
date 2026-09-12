@@ -1,4 +1,5 @@
-from trading_agent.cli.operator_legacy import (_PHASE18A_DIAGNOSIS, _PHASE18A_EXPORT_DIR, _PHASE18B_DIAGNOSIS, _PHASE18R1_DIAGNOSIS, _PHASE18R2_DIAGNOSIS, _phase18a_no_go, _phase18b_no_go, _phase18r1_no_go, _phase18r2_no_go, _run_level1_data_schema_provider_governance_checkpoint, _run_level1_model_routing_governance_checkpoint, _run_level1_mstr_btc_research_proposal_governance_checkpoint, _run_level1_openclaw_routing_adapter_checkpoint, _run_model_routing_activation_plan, _run_model_routing_adapter_decision, _run_model_routing_decision, datetime, json, sys, timezone)
+from trading_agent.cli.operator_common import (_PHASE18A_DIAGNOSIS, _PHASE18A_EXPORT_DIR, _PHASE18B_DIAGNOSIS, _PHASE18R1_DIAGNOSIS, _PHASE18R2_DIAGNOSIS, datetime, json, sys, timezone)
+from trading_agent.cli.operator_research_helpers import (_phase18a_no_go, _phase18b_no_go, _phase18r1_no_go, _phase18r2_no_go, _run_level1_data_schema_provider_governance_checkpoint, _run_level1_model_routing_governance_checkpoint, _run_level1_mstr_btc_research_proposal_governance_checkpoint, _run_level1_openclaw_routing_adapter_checkpoint, _run_model_routing_activation_plan, _run_model_routing_adapter_decision, _run_model_routing_decision)
 
 def command_64(args, parser):
     try:

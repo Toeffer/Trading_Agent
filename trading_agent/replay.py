@@ -68,9 +68,9 @@ def replay(record: dict[str, Any]) -> dict[str, Any]:
     missing = sorted(required - record.keys())
     if missing:
         return {**result, "missing_inputs": missing}
-    if record["schema_version"] not in (1, 2):
+    if record["schema_version"] not in (1, 2, 3):
         raise ValueError("UNSUPPORTED_REPLAY_VERSION")
-    if record["schema_version"] == 2:
+    if record["schema_version"] in (2, 3):
         absent = sorted(
             {"evidence_revision", "verified_fills", "accounting_coverage"}
             - record["portfolio"].keys()
@@ -90,6 +90,21 @@ def replay(record: dict[str, Any]) -> dict[str, Any]:
         result["decision"] = {"allowed": False, "code": str(exc)}
     except (KeyError, TypeError, ValueError):
         result["missing_inputs"] = ["invalid_or_incomplete_decision_snapshot"]
+        return result
+    if record["schema_version"] == 3:
+        from trading_agent.evaluation_evidence import evaluate_evidence
+
+        result["schema_version"] = 2
+        recorded = record.get("recorded_decision")
+        result["decision_matches_recorded"] = (
+            recorded == result["decision"] if isinstance(recorded, dict) else None
+        )
+        result["recorded_decision"] = recorded
+        result["execution_state"] = record.get("execution_state")
+        result["protection_state"] = record.get("protection_state")
+        if recorded is None:
+            result["missing_inputs"].append("recorded_decision")
+        result.update(evaluate_evidence(record, plan))
         return result
     if "transaction_costs" in record:
         result["transaction_costs"] = str(money(record["transaction_costs"]))

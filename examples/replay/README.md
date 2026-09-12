@@ -15,3 +15,11 @@ draft with `python -m trading_agent evaluation preregister --release COMMIT_SHA
 --configuration-hash CONFIG_SHA256`. Both identities must come from the verified
 release. The operator supplies expectations, study dates and acceptance evidence;
 the generator deliberately leaves those fields empty.
+
+
+The version 3 example adds identified fills, a recorded decision and separately
+identified commission evidence:
+`python -m trading_agent evaluation replay examples/replay/synthetic-v3.jsonl`.
+Compare with `expected-v3.json`. Its costs and broker identities are synthetic,
+and its zero release hash is a fixture marker. Historical version 2 files remain
+unchanged. See `docs/OPERATIONS_AND_EVALUATION.md` for actual evidence requirements.

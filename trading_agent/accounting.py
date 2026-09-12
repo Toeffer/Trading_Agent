@@ -242,6 +242,16 @@ def reconcile_snapshot(
                 ),
             ),
         )
+        if authorized_reconciliation:
+            store._event(
+                db,
+                "account_reconciliation",
+                {
+                    "account": account,
+                    "evidence_revision": revision(db, account),
+                    "observed_at": snapshot.observed_at,
+                },
+            )
         return replace(
             snapshot, evidence_revision=revision(db, account), daily_trade_count=count
         )

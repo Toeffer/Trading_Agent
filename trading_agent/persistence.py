@@ -532,7 +532,12 @@ class ExecutionStore:
             self._event(
                 db,
                 "broker_reconciliation" if reconciled else "broker_result",
-                {"execution_id": eid, **result.to_dict()},
+                {
+                    "execution_id": eid,
+                    **result.to_dict(),
+                    "recorded_execution_state": state,
+                    "recorded_protection_state": protection,
+                },
             )
 
     def _broker_event(
@@ -956,6 +961,7 @@ class ExecutionStore:
 
     def decision_snapshots(self) -> list[dict[str, Any]]:
         with self.connection() as db:
+            db.execute("BEGIN")
             snapshots = []
             for row in db.execute(
                 "SELECT sequence,event,payload FROM outbox WHERE event IN ('approval_pending','execution_reserved') ORDER BY sequence"
@@ -963,6 +969,49 @@ class ExecutionStore:
                 payload = json.loads(row["payload"])
                 snapshot = payload.get("decision_snapshot")
                 if snapshot is not None:
+                    if snapshot.get("schema_version") == 3:
+                        execution = db.execute(
+                            "SELECT execution_id,execution_state,protection_state FROM executions WHERE approval_id=?",
+                            (payload["approval_id"],),
+                        ).fetchone()
+                        if execution is not None:
+                            plan = ApprovedOrderPlan.from_dict(snapshot["plan"])
+                            snapshot["execution_id"] = execution["execution_id"]
+                            snapshot["execution_state"] = execution["execution_state"]
+                            snapshot["protection_state"] = execution["protection_state"]
+                            snapshot["execution_evidence_observed_at"] = (
+                                utcnow().isoformat()
+                            )
+                            snapshot["operational_failures"] = [
+                                name
+                                for name, present in (
+                                    (
+                                        "execution_unknown",
+                                        execution["execution_state"] == "unknown",
+                                    ),
+                                    (
+                                        "protection_unknown",
+                                        execution["protection_state"] == "unknown",
+                                    ),
+                                )
+                                if present
+                            ]
+
+                            snapshot["realized_fills"] = [
+                                {
+                                    "broker_execution_id": f["broker_execution_id"],
+                                    "account": plan.account,
+                                    "contract_id": plan.contract_id,
+                                    "side": plan.side,
+                                    "quantity": f["quantity"],
+                                    "price": f["price"],
+                                    "executed_at": f["observed_at"],
+                                }
+                                for f in db.execute(
+                                    "SELECT * FROM fills WHERE execution_id=? ORDER BY observed_at,broker_execution_id",
+                                    (execution["execution_id"],),
+                                )
+                            ]
                     snapshots.append(
                         {
                             **snapshot,

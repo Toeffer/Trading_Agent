@@ -1,0 +1,36 @@
+{
+  "results": [
+    {
+      "commission_provenance": "synthetic-example-only",
+      "commission_statement_verification": "requires_operator_verification",
+      "cost_coverage_complete": true,
+      "costs_by_currency": {
+        "USD": "1.00"
+      },
+      "decision": {
+        "allowed": true,
+        "code": "PASSED"
+      },
+      "decision_matches_recorded": true,
+      "evidence_issues": [],
+      "execution_state": "filled",
+      "fill_count": 1,
+      "input_hash": "b701bc3e36c92f7c4babe23d08f7f1632ec963b48296554dd26c820af98b64a7",
+      "missing_inputs": [],
+      "operational_failures": [],
+      "protection_state": "confirmed",
+      "recorded_decision": {
+        "allowed": true,
+        "code": "PASSED"
+      },
+      "release": "0000000000000000000000000000000000000000",
+      "schema_version": 2,
+      "slippage": {
+        "currency": "USD",
+        "per_share": "0.05",
+        "quantity": "1"
+      },
+      "transaction_costs": null
+    }
+  ]
+}

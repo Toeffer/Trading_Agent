@@ -189,12 +189,29 @@ def install(app: FastAPI) -> None:
 
             if not value.owner.run(identity, timeout=2):
                 blockers.append("PAPER_ACCOUNT_NOT_CONNECTED")
-        except (RuntimeError, TimeoutError):
-            blockers.append("PAPER_ACCOUNT_NOT_CONNECTED")
+        except (RuntimeError, TimeoutError) as exc:
+            blockers.append(
+                "BROKER_QUEUE_FULL"
+                if str(exc) == "BROKER_QUEUE_FULL"
+                else "BROKER_STATUS_UNAVAILABLE"
+            )
         if value.broker.event_failure:
             blockers.append("BROKER_EVENT_REVIEW_REQUIRED")
+        from dataclasses import asdict
+        from trading_agent.operations import observe, operator_actions
+
+        operations = observe(value.store, value.settings.account)
+        queue = value.owner.diagnostics()
+        alerts = list(blockers)
+        if queue["saturated"]:
+            alerts.append("BROKER_QUEUE_FULL")
+        if value.export_failure or (operations.oldest_export_age_seconds or 0) > 30:
+            alerts.append("EXPORT_BACKLOG")
         return {
             **value.settings.public_identity(),
+            "operations": asdict(operations),
+            "broker_queue": queue,
+            "operator_actions": operator_actions(alerts),
             "rules_hash": content_hash(rules),
             "blockers": blockers,
             "service_ready_for_preflight": not blockers,

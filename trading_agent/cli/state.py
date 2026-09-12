@@ -52,6 +52,13 @@ def configure(sub: argparse._SubParsersAction[Any]) -> None:
     upgrade.add_argument("--database", type=Path, required=True)
     upgrade.add_argument("--backup", type=Path, required=True)
     upgrade.set_defaults(handler=upgrade_database)
+    rehearsal = group.add_parser(
+        "rehearse-upgrade",
+        help="Rehearse on a new disposable database copy; never restore production state",
+    )
+    rehearsal.add_argument("--source", type=Path, required=True)
+    rehearsal.add_argument("--workspace", type=Path, required=True)
+    rehearsal.set_defaults(handler=rehearse_upgrade)
     snapshots = group.add_parser(
         "export-snapshots",
         help="Export timestamped risk inputs for deterministic replay",
@@ -85,3 +92,9 @@ def upgrade_database(args: argparse.Namespace) -> dict[str, Any]:
         }
     finally:
         lock.close()
+
+
+def rehearse_upgrade(args: argparse.Namespace) -> dict[str, Any]:
+    from trading_agent.recovery import rehearse
+
+    return rehearse(args.source, args.workspace)

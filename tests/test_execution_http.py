@@ -25,7 +25,7 @@ def client(tmp_path):
     broker.event_failure = False
     session = SimpleNamespace(isConnected=lambda: True, managedAccounts=lambda: ["PAPER_TEST"])
     app.state.runtime = SimpleNamespace(settings=settings, service=service, store=store,
-        owner=SimpleNamespace(run=lambda operation, **kwargs: asyncio.run(operation(session))),
+        owner=SimpleNamespace(run=lambda operation, **kwargs: asyncio.run(operation(session)), diagnostics=lambda: {"capacity": 32, "in_flight": 0, "available": 32, "saturated": False, "running": True}),
         broker=broker, load_rules=lambda: RULES, export_failure=False,
         proposal=lambda path: {"symbol": "AAPL", "side": "BUY", "quantity": 5})
     install(app)

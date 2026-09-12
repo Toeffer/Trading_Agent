@@ -1,8 +1,7 @@
 """Extracted operator helpers; historical behavior and command contracts retained."""
 from __future__ import annotations
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from typing import Any
+from typing import Any
+from datetime import datetime, timezone
 
 
 def _color_verdict(v: str) -> str:
@@ -31,7 +30,7 @@ def _color_block_status(s: str) -> str:
 
 
 def _bool_icon(val: Any) -> str:
-    from trading_agent.cli.operator_common import Any, GREEN, RED, RESET, YELLOW
+    from trading_agent.cli.operator_common import GREEN, RED, RESET, YELLOW
     if val is True:
         return f"{GREEN}\u2713{RESET}"
     if val is False:
@@ -39,8 +38,8 @@ def _bool_icon(val: Any) -> str:
     return f"{YELLOW}?{RESET}"
 
 
-def _value_color(val: Any, ok_vals=(True, "up", "paper", "10/10", "true")) -> str:
-    from trading_agent.cli.operator_common import Any, GREEN, RED, RESET
+def _value_color(val: Any, ok_vals: tuple[object, ...]=(True, "up", "paper", "10/10", "true")) -> str:
+    from trading_agent.cli.operator_common import GREEN, RED, RESET
     s = str(val) if val is not None else "\u2014"
     if val in ok_vals:
         return f"{GREEN}{s}{RESET}"
@@ -49,9 +48,9 @@ def _value_color(val: Any, ok_vals=(True, "up", "paper", "10/10", "true")) -> st
     return s
 
 
-def print_checklist(result: dict, explain: bool = False) -> None:
+def print_checklist(result: dict[str, Any], explain: bool = False) -> None:
     """Print checklist result as human-readable table."""
-    from trading_agent.cli.operator_common import BOLD, CYAN, GREEN, RESET, YELLOW, datetime, timezone
+    from trading_agent.cli.operator_common import BOLD, CYAN, GREEN, RESET, YELLOW
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     state_label = result["state"].replace("-", " ").title()
     auto_tag = " (auto-detected)" if result["auto_detected"] else ""
@@ -146,7 +145,7 @@ def print_checklist(result: dict, explain: bool = False) -> None:
     print(f"  Read-only. No trading. No order automation.")
 
 
-def print_daily_report(report: dict) -> None:
+def print_daily_report(report: dict[str, Any]) -> None:
     """Print the daily report in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, CYAN, GREEN, RESET, YELLOW
     ts = report["timestamp_utc"]
@@ -304,7 +303,7 @@ def print_daily_report(report: dict) -> None:
     print(f"  {report['advisory']}")
 
 
-def print_doctor(result: dict) -> None:
+def print_doctor(result: dict[str, Any]) -> None:
     """Print doctor results in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW
     ts = result.get("timestamp_utc", "?")
@@ -333,7 +332,7 @@ def print_doctor(result: dict) -> None:
         print(f"{YELLOW}  Some checks failed. Review above for details.{RESET}")
 
 
-def print_freeze(result: dict) -> None:
+def print_freeze(result: dict[str, Any]) -> None:
     """Print release freeze snapshot in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET
     ts = result.get("timestamp_utc", "?")
@@ -414,7 +413,7 @@ def print_freeze(result: dict) -> None:
     print(f"  {BOLD}Overall:{RESET} {verdict_color}{verdict}{RESET}")
 
 
-def print_export(export: dict) -> None:
+def print_export(export: dict[str, Any]) -> None:
     """Print evidence export in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, CYAN, RESET, YELLOW
     eid = export.get("export_id", "?")
@@ -519,7 +518,7 @@ def print_export(export: dict) -> None:
     print(f"  {export['advisory']}")
 
 
-def _print_maintenance(result: dict) -> None:
+def _print_maintenance(result: dict[str, Any]) -> None:
     """Pretty-print maintenance report or prune result."""
     mode = result.get("mode", "read-only")
     print(f"Mode: {mode}")
@@ -651,7 +650,7 @@ def _print_maintenance(result: dict) -> None:
     print("Run with --prune-exports --keep-exports N to prune exports.")
 
 
-def print_kpi(result: dict) -> None:
+def print_kpi(result: dict[str, Any]) -> None:
     """Print human-readable KPI dashboard."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW
     v = result["verdict"]
@@ -760,7 +759,7 @@ def print_kpi(result: dict) -> None:
     print()
 
 
-def print_repair_evidence(evidence: dict) -> None:
+def print_repair_evidence(evidence: dict[str, Any]) -> None:
     """Print human-readable repair evidence."""
     BOLD = "\033[1m"
     GREEN = "\033[92m"
@@ -798,7 +797,7 @@ def print_repair_evidence(evidence: dict) -> None:
             print(f"    - [{ae['alert_type']}] {ae['action']}")
 
 
-def _print_guard_state_reconcile(result: dict) -> None:
+def _print_guard_state_reconcile(result: dict[str, Any]) -> None:
     """Print guard-state reconciliation result in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW
     mode = result.get("mode", "dry_run")
@@ -873,7 +872,7 @@ def _print_guard_state_reconcile(result: dict) -> None:
     print(f"  {BOLD}══════════════════════════════════════════════════{RESET}")
 
 
-def _print_position_drift_reconcile(result: dict) -> None:
+def _print_position_drift_reconcile(result: dict[str, Any]) -> None:
     """Print position-drift reconciliation result in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW
     mode = result.get("mode", "dry_run")
@@ -931,7 +930,7 @@ def _print_position_drift_reconcile(result: dict) -> None:
     print(f"  {BOLD}══════════════════════════════════════════════════{RESET}")
 
 
-def _print_prereg_pin_verify(result: dict) -> None:
+def _print_prereg_pin_verify(result: dict[str, Any]) -> None:
     """Print pre-registration pin verification result in human-readable form."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET
     print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
@@ -970,7 +969,7 @@ def _print_prereg_pin_verify(result: dict) -> None:
     print(f"  {BOLD}══════════════════════════════════════════════════{RESET}")
 
 
-def print_cycle_rehearsal(result: dict) -> None:
+def print_cycle_rehearsal(result: dict[str, Any]) -> None:
     """Print cycle rehearsal result in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET
     verdict = result["verdict"]
@@ -1008,7 +1007,7 @@ def print_cycle_rehearsal(result: dict) -> None:
             print(f"    [{sev_color}{b['severity']}{RESET}] {b['check']}: {b['detail']}")
 
 
-def _print_market_data_diagnostics(result: dict) -> None:
+def _print_market_data_diagnostics(result: dict[str, Any]) -> None:
     """Print market data diagnostics in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET
     diag = result.get("diagnosis", "unknown")
@@ -1092,7 +1091,7 @@ def _print_market_data_diagnostics(result: dict) -> None:
     print(f"  {BOLD}══════════════════════════════════════════════════{RESET}")
 
 
-def print_candidate_dryrun(result: dict) -> None:
+def print_candidate_dryrun(result: dict[str, Any]) -> None:
     """Print candidate dry-run result in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET
     verdict = result.get("verdict", "ERROR")
@@ -1169,7 +1168,7 @@ def print_candidate_dryrun(result: dict) -> None:
     print()
 
 
-def _print_evidence_cycle(result: dict) -> None:
+def _print_evidence_cycle(result: dict[str, Any]) -> None:
     """Print evidence cycle result in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET
     clean = result.get("clean", False)
@@ -1208,7 +1207,7 @@ def _print_evidence_cycle(result: dict) -> None:
     print()
 
 
-def _print_hermes_result(result: dict) -> None:
+def _print_hermes_result(result: dict[str, Any]) -> None:
     """Print Hermes proposal result in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, RESET
     if not result.get("ok"):
@@ -1278,18 +1277,15 @@ def _print_hermes_result(result: dict) -> None:
     print(f"{BOLD}Advisory only. No order enabled or submitted. No state mutated.{RESET}")
 
 
-def print_autonomy_status(result: dict) -> None:
+def print_autonomy_status(result: dict[str, Any]) -> None:
     """Print autonomy status in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _CLEAN_CYCLES_REQUIRED, _CLEAN_CYCLES_WINDOW_DAYS
     rec = result.get("recommendation", "HOLD")
     if rec == "READY_FOR_MANUAL_REVIEW":
-        rec_color = GREEN
         rec_text = f"{GREEN}READY_FOR_MANUAL_REVIEW{RESET}"
     elif rec == "NO_GO":
-        rec_color = RED
         rec_text = f"{RED}NO_GO{RESET}"
     else:
-        rec_color = RESET
         rec_text = f"{RESET}HOLD{RESET}"
 
     print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
@@ -1361,18 +1357,15 @@ def print_autonomy_status(result: dict) -> None:
     print()
 
 
-def _print_promotion_plan(result: dict) -> None:
+def _print_promotion_plan(result: dict[str, Any]) -> None:
     """Print autonomy promotion plan in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET
     ps = result.get("plan_status", "HOLD")
     if ps == "READY_FOR_MANUAL_DECISION":
-        ps_color = GREEN
         ps_text = f"{GREEN}READY_FOR_MANUAL_DECISION{RESET}"
     elif ps == "NO_GO":
-        ps_color = RED
         ps_text = f"{RED}NO_GO{RESET}"
     else:
-        ps_color = RESET
         ps_text = f"{RESET}HOLD{RESET}"
 
     print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
@@ -1467,18 +1460,15 @@ def _print_promotion_plan(result: dict) -> None:
     print(f"  {BOLD}══════════════════════════════════════════════════{RESET}")
 
 
-def print_autonomy_review(result: dict) -> None:
+def print_autonomy_review(result: dict[str, Any]) -> None:
     """Print autonomy review package in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _CLEAN_CYCLES_REQUIRED
     rs = result.get("review_status", "HOLD")
     if rs == "READY_FOR_OPERATOR_REVIEW":
-        rs_color = GREEN
         rs_text = f"{GREEN}READY_FOR_OPERATOR_REVIEW{RESET}"
     elif rs == "NO_GO":
-        rs_color = RED
         rs_text = f"{RED}NO_GO{RESET}"
     else:
-        rs_color = RESET
         rs_text = f"{RESET}HOLD{RESET}"
 
     print(f"{BOLD}══════════════════════════════════════════════════{RESET}")
@@ -1558,7 +1548,7 @@ def print_autonomy_review(result: dict) -> None:
     print()
 
 
-def _print_phase15_completion_checkpoint(result: dict) -> None:
+def _print_phase15_completion_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase-15 completion checkpoint in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -1676,7 +1666,6 @@ def _print_phase15_completion_checkpoint(result: dict) -> None:
 
     # Policy
     pol = result.get("policy_summary", {})
-    pol_color = GREEN if (pol.get("hermes_policy_exists") and pol.get("execution_path_ok")) else RED
     print(f"  {BOLD}Policy{RESET}")
     print(f"    Hermes policy:   {_bool_str(pol.get('hermes_policy_exists'))}")
     print(f"    Exec path OK:    {_bool_str(pol.get('execution_path_ok'))}")
@@ -1715,7 +1704,7 @@ def _print_phase15_completion_checkpoint(result: dict) -> None:
     print()
 
 
-def _print_manual_level1_promotion_review(result: dict) -> None:
+def _print_manual_level1_promotion_review(result: dict[str, Any]) -> None:
     """Print Phase 16B review in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16B_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -1876,7 +1865,7 @@ def _print_manual_level1_promotion_review(result: dict) -> None:
     print()
 
 
-def _print_level1_promotion_dry_run_gate(result: dict) -> None:
+def _print_level1_promotion_dry_run_gate(result: dict[str, Any]) -> None:
     """Print Phase 16C dry-run gate in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16C_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -2033,7 +2022,7 @@ def _print_level1_promotion_dry_run_gate(result: dict) -> None:
     print()
 
 
-def _print_level1_apply_gate(result: dict) -> None:
+def _print_level1_apply_gate(result: dict[str, Any]) -> None:
     """Print Phase 16D apply gate in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -2167,7 +2156,7 @@ def _print_level1_apply_gate(result: dict) -> None:
     print()
 
 
-def _print_level1_post_promotion_stability_drill(result: dict) -> None:
+def _print_level1_post_promotion_stability_drill(result: dict[str, Any]) -> None:
     """Print Phase 16E stability drill in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16E_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -2252,7 +2241,7 @@ def _print_level1_post_promotion_stability_drill(result: dict) -> None:
     print()
 
 
-def _print_level1_evidence_normalization_check(result: dict) -> None:
+def _print_level1_evidence_normalization_check(result: dict[str, Any]) -> None:
     """Print Phase 16F evidence normalization check in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16F_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -2337,7 +2326,7 @@ def _print_level1_evidence_normalization_check(result: dict) -> None:
     print()
 
 
-def _print_level1_proposal_workflow_drill(result: dict) -> None:
+def _print_level1_proposal_workflow_drill(result: dict[str, Any]) -> None:
     """Print Phase 16G proposal workflow drill in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16G_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -2445,7 +2434,7 @@ def _print_level1_proposal_workflow_drill(result: dict) -> None:
     print()
 
 
-def _print_level1_human_review_package_drill(result: dict) -> None:
+def _print_level1_human_review_package_drill(result: dict[str, Any]) -> None:
     """Print Phase 16H human review package drill in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16H_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -2561,7 +2550,7 @@ def _print_level1_human_review_package_drill(result: dict) -> None:
     print()
 
 
-def _print_level1_review_decision_drill(result: dict) -> None:
+def _print_level1_review_decision_drill(result: dict[str, Any]) -> None:
     """Print Phase 16I review decision drill in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16I_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -2695,7 +2684,7 @@ def _print_level1_review_decision_drill(result: dict) -> None:
     print()
 
 
-def _print_level1_order_plan_draft_drill(result: dict) -> None:
+def _print_level1_order_plan_draft_drill(result: dict[str, Any]) -> None:
     """Print Phase 16J order-plan draft drill in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16J_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -2827,7 +2816,7 @@ def _print_level1_order_plan_draft_drill(result: dict) -> None:
     print()
 
 
-def _print_level1_preflight_simulation_dossier(result: dict) -> None:
+def _print_level1_preflight_simulation_dossier(result: dict[str, Any]) -> None:
     """Print Phase 16K preflight simulation dossier in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16K_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -2941,7 +2930,7 @@ def _print_level1_preflight_simulation_dossier(result: dict) -> None:
     print()
 
 
-def _print_level1_human_approval_packet_drill(result: dict) -> None:
+def _print_level1_human_approval_packet_drill(result: dict[str, Any]) -> None:
     """Print Phase 16L human approval packet drill in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16L_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -3056,7 +3045,7 @@ def _print_level1_human_approval_packet_drill(result: dict) -> None:
     print()
 
 
-def _print_level1_execution_readiness_packet_drill(result: dict) -> None:
+def _print_level1_execution_readiness_packet_drill(result: dict[str, Any]) -> None:
     """Print Phase 16M execution-readiness packet drill in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16M_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -3184,7 +3173,7 @@ def _print_level1_execution_readiness_packet_drill(result: dict) -> None:
     print()
 
 
-def _print_level1_readiness_chain_integrity_checkpoint(result: dict) -> None:
+def _print_level1_readiness_chain_integrity_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 16N chain integrity checkpoint in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16N_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -3329,7 +3318,7 @@ def _print_level1_readiness_chain_integrity_checkpoint(result: dict) -> None:
     print()
 
 
-def _print_level1_order_window_canary_negative_control_drill(result: dict) -> None:
+def _print_level1_order_window_canary_negative_control_drill(result: dict[str, Any]) -> None:
     """Print Phase 16P order-window canary drill in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16P_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -3457,7 +3446,7 @@ def _print_level1_order_window_canary_negative_control_drill(result: dict) -> No
     print()
 
 
-def _print_level1_h1_boundary_audit_checkpoint(result: dict) -> None:
+def _print_level1_h1_boundary_audit_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 16Q H1 boundary audit in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16Q_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -3578,7 +3567,7 @@ def _print_level1_h1_boundary_audit_checkpoint(result: dict) -> None:
     print()
 
 
-def _print_level1_broker_mutation_firewall_audit_checkpoint(result: dict) -> None:
+def _print_level1_broker_mutation_firewall_audit_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 16R broker-mutation firewall audit checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16R_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -3669,7 +3658,7 @@ def _print_level1_broker_mutation_firewall_audit_checkpoint(result: dict) -> Non
     print()
 
 
-def _print_level1_end_to_end_safety_invariant_checkpoint(result: dict) -> None:
+def _print_level1_end_to_end_safety_invariant_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 16S end-to-end safety invariant checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16S_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -3763,7 +3752,7 @@ def _print_level1_end_to_end_safety_invariant_checkpoint(result: dict) -> None:
     print()
 
 
-def _print_level1_restart_persistence_safety_checkpoint(result: dict) -> None:
+def _print_level1_restart_persistence_safety_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 16T restart-persistence safety checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE16T_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -3873,7 +3862,7 @@ def _print_level1_restart_persistence_safety_checkpoint(result: dict) -> None:
     print()
 
 
-def _print_level1_startup_autoconnect_resilience_checkpoint(result: dict) -> None:
+def _print_level1_startup_autoconnect_resilience_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 16U startup auto-connect resilience checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE16U_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -3961,7 +3950,7 @@ def _print_level1_startup_autoconnect_resilience_checkpoint(result: dict) -> Non
     print()
 
 
-def _print_level1_guard_state_rollover_resilience_checkpoint(result: dict) -> None:
+def _print_level1_guard_state_rollover_resilience_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 16V guard-state rollover resilience checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE16V_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -4057,7 +4046,7 @@ def _print_level1_guard_state_rollover_resilience_checkpoint(result: dict) -> No
     print()
 
 
-def _print_level1_scheduled_heartbeat_alerting_resilience_checkpoint(result: dict) -> None:
+def _print_level1_scheduled_heartbeat_alerting_resilience_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 16W scheduled heartbeat & alerting resilience checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE16W_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -4145,7 +4134,7 @@ def _print_level1_scheduled_heartbeat_alerting_resilience_checkpoint(result: dic
     print()
 
 
-def _print_level1_os_boundary_h1_isolation_checkpoint(result: dict) -> None:
+def _print_level1_os_boundary_h1_isolation_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 16X OS boundary & H1 isolation checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE16X_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -4235,7 +4224,7 @@ def _print_level1_os_boundary_h1_isolation_checkpoint(result: dict) -> None:
     print()
 
 
-def _print_level1_portable_tests_ci_readiness_checkpoint(result: dict) -> None:
+def _print_level1_portable_tests_ci_readiness_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 16Y portable tests & CI readiness checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE16Y_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -4326,7 +4315,7 @@ def _print_level1_portable_tests_ci_readiness_checkpoint(result: dict) -> None:
     print()
 
 
-def _print_level1_fresh_clone_ci_workflow_checkpoint(result: dict) -> None:
+def _print_level1_fresh_clone_ci_workflow_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 16Z fresh-clone CI workflow checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE16Z_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -4399,7 +4388,7 @@ def _print_level1_fresh_clone_ci_workflow_checkpoint(result: dict) -> None:
     print()
 
 
-def _print_level1_strategy_v1_governance_checkpoint(result: dict) -> None:
+def _print_level1_strategy_v1_governance_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 17A strategy v1 governance checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE17A_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -4475,7 +4464,7 @@ def _print_level1_strategy_v1_governance_checkpoint(result: dict) -> None:
     print()
 
 
-def _print_level1_strategy_v1_proposal_packet_schema_checkpoint(result: dict) -> None:
+def _print_level1_strategy_v1_proposal_packet_schema_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 17B proposal packet schema checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE17B_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -4552,7 +4541,7 @@ def _print_level1_strategy_v1_proposal_packet_schema_checkpoint(result: dict) ->
     print()
 
 
-def _print_level1_strategy_v1_dry_run_proposal_generation_checkpoint(result: dict) -> None:
+def _print_level1_strategy_v1_dry_run_proposal_generation_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 17C dry-run proposal generation checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE17C_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -4637,7 +4626,7 @@ def _print_level1_strategy_v1_dry_run_proposal_generation_checkpoint(result: dic
     print()
 
 
-def _print_level1_proposal_review_rejection_dossier_checkpoint(result: dict) -> None:
+def _print_level1_proposal_review_rejection_dossier_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 17D proposal review dossier checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE17D_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -4723,7 +4712,7 @@ def _print_level1_proposal_review_rejection_dossier_checkpoint(result: dict) -> 
     print()
 
 
-def _print_level1_human_review_decision_record_checkpoint(result: dict) -> None:
+def _print_level1_human_review_decision_record_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 17E human review decision record checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE17E_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -4808,7 +4797,7 @@ def _print_level1_human_review_decision_record_checkpoint(result: dict) -> None:
     print()
 
 
-def _print_level1_planning_only_order_plan_draft_checkpoint(result: dict) -> None:
+def _print_level1_planning_only_order_plan_draft_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 17F planning-only order-plan draft checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE17F_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -4896,7 +4885,7 @@ def _print_level1_planning_only_order_plan_draft_checkpoint(result: dict) -> Non
     print()
 
 
-def _print_level1_planning_only_preflight_simulation_dossier_checkpoint(result: dict) -> None:
+def _print_level1_planning_only_preflight_simulation_dossier_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 17G planning-only preflight simulation dossier checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE17G_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -4974,7 +4963,7 @@ def _print_level1_planning_only_preflight_simulation_dossier_checkpoint(result: 
     print()
 
 
-def _print_level1_human_simulation_review_decision_record_checkpoint(result: dict) -> None:
+def _print_level1_human_simulation_review_decision_record_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 17H human simulation review decision record checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE17H_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -5062,7 +5051,7 @@ def _print_level1_human_simulation_review_decision_record_checkpoint(result: dic
     print()
 
 
-def _print_level1_planning_only_candidate_package_checkpoint(result: dict) -> None:
+def _print_level1_planning_only_candidate_package_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 17I planning-only candidate package checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE17I_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -5143,7 +5132,7 @@ def _print_level1_planning_only_candidate_package_checkpoint(result: dict) -> No
     print()
 
 
-def _print_level1_execution_gate_negative_control_drill(result: dict) -> None:
+def _print_level1_execution_gate_negative_control_drill(result: dict[str, Any]) -> None:
     """Print Phase 16O negative-control drill in human-readable format."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, YELLOW, _PHASE16O_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -5254,7 +5243,7 @@ def _print_level1_execution_gate_negative_control_drill(result: dict) -> None:
     print()
 
 
-def _print_level1_human_candidate_package_review_decision_record_checkpoint(result: dict) -> None:
+def _print_level1_human_candidate_package_review_decision_record_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 17J human candidate-package review decision checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE17J_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -5352,7 +5341,7 @@ def _print_level1_human_candidate_package_review_decision_record_checkpoint(resu
     print()
 
 
-def _print_level1_guarded_preflight_request_draft_checkpoint(result: dict) -> None:
+def _print_level1_guarded_preflight_request_draft_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 17K guarded preflight request draft checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE17K_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str
@@ -5437,7 +5426,7 @@ def _print_level1_guarded_preflight_request_draft_checkpoint(result: dict) -> No
     print()
 
 
-def _print_level1_phase17_chain_closure_checkpoint(result: dict) -> None:
+def _print_level1_phase17_chain_closure_checkpoint(result: dict[str, Any]) -> None:
     """Print Phase 17L chain closure checkpoint."""
     from trading_agent.cli.operator_common import BOLD, GREEN, RED, RESET, _PHASE17L_DIAGNOSIS
     from trading_agent.cli.operator_workflow_helpers import _bool_str

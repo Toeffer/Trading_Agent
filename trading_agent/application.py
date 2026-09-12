@@ -212,7 +212,8 @@ class ExecutionService:
                 result["limitPrice"] = str(money(request["limitPrice"]))
                 return result
             evidence = {
-                "schema_version": 2,
+                "schema_version": 3,
+                "recorded_decision": {"allowed": True, "code": "PASSED"},
                 "release": self.release,
                 "decision_at": now,
                 "plan": plan.to_dict(),
@@ -301,7 +302,8 @@ class ExecutionService:
                         raise RiskRejected("STOP_DRIFT")
 
                 evidence = {
-                    "schema_version": 2,
+                    "schema_version": 3,
+                    "recorded_decision": {"allowed": True, "code": "PASSED"},
                     "release": self.release,
                     "plan": plan.to_dict(),
                     "portfolio": asdict(snapshot),

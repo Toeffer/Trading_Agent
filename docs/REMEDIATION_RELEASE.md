@@ -37,9 +37,11 @@ helper exposes it as `reconcile-account AAPL`. An imported daily count is
 reconciled only when verified order identities account for that count exactly.
 The original aggregate is retained in the outbox; no order switch is enabled.
 
-New decision snapshots use version 2 and include evidence revision, verified
-fills and coverage. Version 1 records remain readable; missing evidence is
-reported explicitly instead of being fabricated during replay.
+New decision snapshots use version 3 and include the recorded risk decision,
+evidence revision, verified fills and coverage. Versions 1 and 2 remain readable
+and unchanged. Missing evidence is reported explicitly instead of being fabricated.
+Operational metrics, disposable migration rehearsals and version 3 cost/fill
+validation are described in `docs/OPERATIONS_AND_EVALUATION.md`.
 
 ## Installation and ownership
 

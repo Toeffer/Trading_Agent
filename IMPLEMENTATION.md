@@ -139,3 +139,29 @@ BUY/confirmed stop/explicit stop cancellation/separately approved close-only SEL
 exercise. Capture real evidence and relock before recording deployed acceptance.
 The replay example and release/configuration-pinned preregistration generator are
 ready; operator expectations and acceptance evidence remain intentionally empty.
+
+
+## Operational/evaluation follow-up, 2026-09-12
+
+Added account-scoped operational metrics and manual guidance, actual-task queue
+capacity accounting, a disposable migration rehearsal command, and version 3
+replay decision/fill/commission validation. Historical replay records remain
+unchanged. Workflow, governance and research command groups import concrete
+implementations; three shared CLI modules moved out of mypy exemptions. Broader
+lint applies to those shared boundaries and the new modules.
+
+The initial queue-cancellation regression failed before its repair. Focused
+monitoring/broker/HTTP checks passed (21 tests), and migration/evaluation/durability
+checks passed (27 tests). Final current-commit CI is recorded in PR #24; these
+focused results alone do not establish deployed acceptance. Host/SSH alias and
+approved paper-account identity remain required for deployment and the human
+paper exercise. See `docs/OPERATIONS_AND_EVALUATION.md` for commands and evidence
+interpretation. Retained legacy dictionary shapes and helper exemptions remain
+an incremental maintenance area rather than a claim of fully typed legacy code.
+
+
+Follow-up focused validation: **251 CLI/governance/research tests passed** and
+**49 operational/evaluation/KPI tests passed**. Cold strict mypy passes across
+**45 package files**; repository lint and the expanded shared-boundary lint pass.
+The version 3 synthetic example reproduces its expected decision, identified fill,
+slippage and currency-separated cost output without contacting a broker.

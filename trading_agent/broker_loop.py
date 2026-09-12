@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from concurrent.futures import TimeoutError as FutureTimeout
+from concurrent.futures import Future, InvalidStateError, TimeoutError as FutureTimeout
 import threading
 from typing import Any, TypeVar
 
@@ -11,6 +11,11 @@ T = TypeVar("T")
 
 class BrokerLoop:
     def __init__(self, factory: Callable[[], Any], capacity: int = 32):
+        if capacity < 1:
+            raise ValueError("Broker capacity must be positive")
+        self.capacity = capacity
+        self._usage = 0
+        self._usage_lock = threading.Lock()
         self.factory = factory
         self._slots = threading.BoundedSemaphore(capacity)
         self._ready = threading.Event()
@@ -68,23 +73,75 @@ class BrokerLoop:
         if not self._slots.acquire(blocking=False):
             raise RuntimeError("BROKER_QUEUE_FULL")
 
+        with self._usage_lock:
+            self._usage += 1
+        future: Future[T] = Future()
+
+        def release_slot() -> None:
+            with self._usage_lock:
+                self._usage -= 1
+            self._slots.release()
+
         async def invoke() -> T:
             assert self._command_lock is not None
             async with self._command_lock:
+                if future.cancelled():
+                    raise asyncio.CancelledError()
                 return await operation(self.client)
 
+        def schedule() -> None:
+            assert self._loop is not None
+            task = self._loop.create_task(invoke())
+
+            def completed(done: asyncio.Task[T]) -> None:
+                release_slot()
+                try:
+                    result = done.result()
+                except asyncio.CancelledError:
+                    future.cancel()
+                except BaseException as exc:
+                    try:
+                        future.set_exception(exc)
+                    except InvalidStateError:
+                        pass
+                else:
+                    try:
+                        future.set_result(result)
+                    except InvalidStateError:
+                        pass
+
+            def cancelled(done: Future[T]) -> None:
+                if (
+                    done.cancelled()
+                    and self._loop is not None
+                    and not self._loop.is_closed()
+                ):
+                    self._loop.call_soon_threadsafe(task.cancel)
+
+            task.add_done_callback(completed)
+            future.add_done_callback(cancelled)
+
         try:
-            future = asyncio.run_coroutine_threadsafe(invoke(), self._loop)
+            self._loop.call_soon_threadsafe(schedule)
         except BaseException:
-            self._slots.release()
+            release_slot()
             raise
-        future.add_done_callback(lambda _: self._slots.release())
         try:
             return future.result(timeout=timeout)
         except FutureTimeout:
             if cancel_on_timeout:
                 future.cancel()
             raise TimeoutError("BROKER_DEADLINE_EXCEEDED") from None
+
+    def diagnostics(self) -> dict[str, int | bool]:
+        with self._usage_lock:
+            return {
+                "capacity": self.capacity,
+                "in_flight": self._usage,
+                "available": self.capacity - self._usage,
+                "saturated": self._usage >= self.capacity,
+                "running": bool(self._thread and self._thread.is_alive()),
+            }
 
     def close(self) -> None:
         if self._loop is not None and not self._loop.is_closed():

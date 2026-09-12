@@ -77,7 +77,7 @@ class TestBackpressureDrainDrill:
         from ibkr_operator import _run_backpressure_drain_drill
         from pathlib import Path
         from contextlib import ExitStack
-        ed = Path("/tmp/bp-test")
+        ed = (Path(__import__("tempfile").gettempdir()) / 'bp-test')
         ed.mkdir(parents=True, exist_ok=True)
         uo = urlopen or _mock_urlopen()
         with ExitStack() as stack:
@@ -157,7 +157,7 @@ class TestBackpressureDrainDrill:
         from ibkr_operator import _run_backpressure_drain_drill
         from pathlib import Path
         from contextlib import ExitStack
-        ed = Path("/tmp/bp-guard")
+        ed = (Path(__import__("tempfile").gettempdir()) / 'bp-guard')
         ed.mkdir(parents=True, exist_ok=True)
         with ExitStack() as stack:
             for p in BASE_PATCHES():
@@ -226,7 +226,7 @@ class TestBackpressureDrainDrill:
         from ibkr_operator import _run_backpressure_drain_drill
         from pathlib import Path
         from contextlib import ExitStack
-        ed = Path("/tmp/bp-clamp")
+        ed = (Path(__import__("tempfile").gettempdir()) / 'bp-clamp')
         ed.mkdir(parents=True, exist_ok=True)
         with ExitStack() as stack:
             for p in BASE_PATCHES():
@@ -257,7 +257,7 @@ class TestBackpressureDrainDrill:
         import subprocess
         cp = subprocess.run(
             [".venv/bin/python", "ibkr_operator.py", "backpressure-drain-drill", "--help"],
-            capture_output=True, text=True, cwd="/home/chris/agents/ibkr-bridge", timeout=10)
+            capture_output=True, text=True, cwd="/home/chris/agents/ibkr-bridge", timeout=10, encoding="utf-8")
         assert cp.returncode == 0
         assert "--observe-seconds" in cp.stdout
 
@@ -278,7 +278,7 @@ class TestHelpFastPath:
         return subprocess.run(
             [self.PYTHON, self.SCRIPT, command, "--help"],
             capture_output=True, text=True, cwd=self.CWD, timeout=timeout,
-        )
+        encoding="utf-8")
 
     # --- Speed: each alias --help exits quickly ---
 
@@ -323,7 +323,7 @@ class TestHelpFastPath:
                 [self.PYTHON, self.SCRIPT, "backpressure-drain-drill", "--help"],
                 capture_output=True, text=True, cwd=self.CWD, timeout=5,
                 env=env,
-            )
+            encoding="utf-8")
             assert cp.returncode == 0
 
             # No exports dir should have been created
@@ -342,7 +342,7 @@ class TestHelpFastPath:
                 [self.PYTHON, self.SCRIPT, "guard-state-drift-sentinel", "--help"],
                 capture_output=True, text=True, cwd=self.CWD, timeout=5,
                 env=env,
-            )
+            encoding="utf-8")
             assert cp.returncode == 0
 
             # No guard-state file should exist
@@ -361,7 +361,7 @@ class TestHelpFastPath:
                 [self.PYTHON, self.SCRIPT, "backpressure-drain-drill", "--help"],
                 capture_output=True, text=True, cwd=self.CWD, timeout=5,
                 env=env,
-            )
+            encoding="utf-8")
             assert cp.returncode == 0
 
             openclaw = Path(td) / ".openclaw"
@@ -380,7 +380,7 @@ class TestHelpFastPath:
             [self.PYTHON, self.SCRIPT, "backpressure-drain-drill", "--help"],
             capture_output=True, text=True, cwd=self.CWD, timeout=2,
             env={**__import__('os').environ, "IBKR_BRIDGE_URL": "http://127.0.0.1:1"},
-        )
+        encoding="utf-8")
         assert cp.returncode == 0
 
     def test_all_15u_aliases_help_fast(self):

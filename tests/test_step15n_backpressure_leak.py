@@ -4,6 +4,8 @@ All tests are read-only. No broker mutation, no order endpoints,
 no H1 token usage.
 """
 
+from source_helpers import implementation_source
+
 import json
 import sys
 import time
@@ -463,7 +465,7 @@ class TestExistingTestsStillPass:
     def test_bridge_syntax_valid(self):
         """Bridge.py is syntactically valid (no import needed)."""
         import ast
-        source = (BRIDGE_DIR / "bridge.py").read_text()
+        source = implementation_source('bridge.py')
         try:
             ast.parse(source)
         except SyntaxError as e:
@@ -471,7 +473,7 @@ class TestExistingTestsStillPass:
 
     def test_backpressure_constants_in_source(self):
         """Backpressure fix constants are present in bridge.py source."""
-        source = (BRIDGE_DIR / "bridge.py").read_text()
+        source = implementation_source('bridge.py')
         assert "_BP_TOTAL_ACCEPTED" in source
         assert "_BP_TOTAL_REJECTED" in source
         assert "if _BP_ACTIVE > 0:" in source or "_BP_ACTIVE -= 1" in source

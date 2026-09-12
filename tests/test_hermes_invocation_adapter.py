@@ -74,7 +74,7 @@ def main():
     check(policy_path.exists(), "hermes-advisory-guard-policy.md exists")
 
     if operator_path.exists():
-        op = operator_path.read_text()
+        op = operator_path.read_text(encoding="utf-8")
         check("hermes-proposal" in op, "ibkr-operator has hermes-proposal subcommand")
         check("_run_hermes_canary" in op, "ibkr-operator has _run_hermes_canary")
         check("_run_hermes_proposal" in op, "ibkr-operator has _run_hermes_proposal")
@@ -85,7 +85,7 @@ def main():
         result = subprocess.run(
             ["ibkr-operator", "hermes-proposal", "--canary", "--json"],
             capture_output=True, text=True, timeout=90,
-        )
+        encoding="utf-8")
         canary = json.loads(result.stdout)
         check(canary.get("ok"), "Canary returned ok=true")
         check("HERMES_CANARY_OK" in canary.get("raw_response", ""),
@@ -106,7 +106,7 @@ def main():
     else:
         # Check evidence structure from the adapter code
         if operator_path.exists():
-            op = operator_path.read_text()
+            op = operator_path.read_text(encoding="utf-8")
             for field in required_evidence_fields:
                 check(field in op, f"Evidence field coded: {field}")
 
@@ -118,7 +118,7 @@ def main():
         "IBKR_ALLOW_ORDERS=true", "enforced=true",
     ]
     if adapter_path.exists():
-        code = adapter_path.read_text()
+        code = adapter_path.read_text(encoding="utf-8")
         # The adapter should DETECT these as forbidden, not actually contain executable calls
         for pat in forbidden:
             if pat in code:
@@ -132,7 +132,7 @@ def main():
         check(True, "Forbidden patterns detected (no executable calls)")
 
     if operator_path.exists():
-        op = operator_path.read_text()
+        op = operator_path.read_text(encoding="utf-8")
         # Check ibkr-operator hermes-proposal doesn't call order endpoints
         order_calls = ["/order", "placeOrder", "/order/submit", "/order/approve"]
         suspicious = []
@@ -156,7 +156,7 @@ def main():
         "save_guard_state", "initialize_guard_state",
     ]
     if adapter_path.exists():
-        code = adapter_path.read_text()
+        code = adapter_path.read_text(encoding="utf-8")
         for pat in mutation_patterns:
             if pat in code:
                 # Check it's in a forbidden detection list, not executable
@@ -169,7 +169,7 @@ def main():
     # ---- H6: Werner proposals cannot be labeled Hermes-advised ----
     print("\n\U0001f3af H6: Attribution Integrity")
     if operator_path.exists():
-        op = operator_path.read_text()
+        op = operator_path.read_text(encoding="utf-8")
         # Check that _run_hermes_proposal sets source=Hermes only when invoked
         # Check that _run_hermes_proposal sets source to Hermes on success
         # The expression is: "final_proposal_source": "Hermes" if proposal else "unknown"
@@ -190,7 +190,7 @@ def main():
     # ---- H7: Hermes failure = source unknown ----
     print("\n\u2753 H7: Failure Handling")
     if operator_path.exists():
-        op = operator_path.read_text()
+        op = operator_path.read_text(encoding="utf-8")
         check('"final_proposal_source": "unknown"' in op,
               "Failure produces source=unknown")
         check('"hermes_invoked": False' in op,
@@ -208,20 +208,20 @@ def main():
 
     # P6a: resolved_model field is coded in both adapter and operator
     if adapter_path.exists():
-        code = adapter_path.read_text()
+        code = adapter_path.read_text(encoding="utf-8")
         check('"resolved_model"' in code,
               "hermes_advisory.py codes resolved_model in evidence blocks")
         check(code.count('"resolved_model"') >= 4,
               f"resolved_model appears in >= 4 evidence blocks (found {code.count(chr(34) + 'resolved_model' + chr(34))})")
 
     if operator_path.exists():
-        op = operator_path.read_text()
+        op = operator_path.read_text(encoding="utf-8")
         check('"resolved_model"' in op,
               "ibkr_operator.py codes resolved_model in evidence blocks")
 
     # P6b: resolved_model values never match Werner family
     if adapter_path.exists():
-        code = adapter_path.read_text()
+        code = adapter_path.read_text(encoding="utf-8")
         import re
         resolved_vals = re.findall(r'"resolved_model":\s*"([^"]+)"', code)
         null_vals = re.findall(r'"resolved_model":\s*(null|None)', code)
@@ -233,7 +233,7 @@ def main():
                       f"resolved_model '{val}' not Werner-family (not {fam})")
 
     if operator_path.exists():
-        op = operator_path.read_text()
+        op = operator_path.read_text(encoding="utf-8")
         resolved_vals = re.findall(r'"resolved_model":\s*"([^"]+)"', op)
         null_vals = re.findall(r'"resolved_model":\s*(null|None)', op)
         check(len(resolved_vals) + len(null_vals) >= 1,

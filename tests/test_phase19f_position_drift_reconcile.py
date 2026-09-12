@@ -119,7 +119,7 @@ _AAPL_UNCONFIRMED_EVENT = [
 def _write_approval_records(path, records: dict):
     """Write a minimal approval-records.jsonl: {approval_id: status}."""
     lines = [json.dumps({"approval_id": aid, "status": status}) for aid, status in records.items()]
-    path.write_text("\n".join(lines) + ("\n" if lines else ""))
+    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8", newline="\n")
 
 
 def _base_patches(tmp_path, drift, health, open_orders, events=None, approval_records=None):
@@ -166,7 +166,7 @@ class TestCommandExists:
             r = subprocess.run(
                 [sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"), alias, "--help"],
                 capture_output=True, text=True, timeout=15,
-            )
+            encoding="utf-8")
             assert r.returncode == 0, f"{alias} --help failed: {r.stderr}"
 
 
@@ -387,7 +387,7 @@ class TestApplyWritesReconciliation:
         assert result["repair_applied"] is True
         assert recon_path.exists()
 
-        data = json.loads(recon_path.read_text())
+        data = json.loads(recon_path.read_text(encoding="utf-8"))
         assert len(data["reconciliations"]) == 1
         rec = data["reconciliations"][0]
         assert rec["symbol"] == "AAPL"
@@ -419,7 +419,7 @@ class TestApplyWritesReconciliation:
                 "reason": "live_ibkr_ground_truth_reconciliation",
                 "note": "Does not assert the associated unconfirmed order(s) filled.",
             }],
-        }))
+        }), encoding="utf-8", newline="\n")
 
         with patch("monitor.load_events", side_effect=_make_load_events_side_effect(_AAPL_UNCONFIRMED_EVENT)), \
              patch("monitor.POSITION_RECONCILIATIONS_PATH", recon_path):
@@ -449,7 +449,7 @@ class TestApplyWritesReconciliation:
 
     def test_corrupt_reconciliations_file_fails_open_to_empty(self, tmp_path):
         recon_path = tmp_path / "corrupt.json"
-        recon_path.write_text("{not valid json")
+        recon_path.write_text("{not valid json", encoding="utf-8", newline="\n")
         with patch("monitor.load_events", return_value=[]), \
              patch("monitor.POSITION_RECONCILIATIONS_PATH", recon_path):
             from monitor import position_drift_check

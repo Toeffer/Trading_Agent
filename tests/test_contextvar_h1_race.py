@@ -13,6 +13,8 @@ Test categories:
   T5: Integration (authorization cannot leak between operations)
 """
 
+from source_helpers import implementation_source
+
 import sys
 import time
 import hashlib
@@ -165,13 +167,13 @@ class TestH1TokenBehavior:
         if not token_hash:
             env_path = Path.home() / "agents" / "ibkr-bridge" / ".env"
             if env_path.exists():
-                for line in env_path.read_text().splitlines():
+                for line in env_path.read_text(encoding="utf-8").splitlines():
                     if line.startswith("H1_APPROVAL_TOKEN_HASH="):
                         token_hash = line.split("=", 1)[1].strip()
                         break
 
         for path in [bridge_path, guard_path, operator_path]:
-            content = path.read_text()
+            content = path.read_text(encoding="utf-8")
             # No raw token anywhere (32+ hex chars that match the hash)
             # The hash itself may appear in comments, but no raw token
             for line in content.splitlines():
@@ -297,7 +299,7 @@ class TestRefactoredContextManager:
     def test_bridge_uses_context_manager(self):
         """T4.2: bridge.py uses h1_authorized_scope, not raw authorize/deauthorize."""
         bridge_path = Path(__file__).resolve().parent.parent / "bridge.py"
-        content = bridge_path.read_text()
+        content = implementation_source("bridge.py")
 
         # Must import h1_authorized_scope
         assert "h1_authorized_scope" in content, (
@@ -312,7 +314,7 @@ class TestRefactoredContextManager:
     def test_bridge_no_raw_authorize_deauthorize(self):
         """T4.3: bridge.py must not use raw h1_authorize/h1_deauthorize calls."""
         bridge_path = Path(__file__).resolve().parent.parent / "bridge.py"
-        content = bridge_path.read_text()
+        content = implementation_source("bridge.py")
 
         # Check for raw h1_authorize() call (not in import or comment)
         lines = content.splitlines()
@@ -349,7 +351,7 @@ class TestRefactoredContextManager:
     def test_no_mutable_global_bool_for_h1(self):
         """T4.5: No mutable global bool used for H1 authorization."""
         guard_path = Path(__file__).resolve().parent.parent / "guard.py"
-        content = guard_path.read_text()
+        content = guard_path.read_text(encoding="utf-8")
 
         # Check non-comment lines only
         non_comment_lines = [
@@ -547,7 +549,7 @@ class TestProductionGuardInvariants:
     def test_ibkr_operator_does_not_import_context_manager(self):
         """T6.4: ibkr-operator does not import h1_authorized_scope."""
         op_path = Path(__file__).resolve().parent.parent / "ibkr_operator.py"
-        content = op_path.read_text()
+        content = op_path.read_text(encoding="utf-8")
         assert "h1_authorized_scope" not in content, (
             "ibkr-operator must not import h1_authorized_scope"
         )

@@ -39,7 +39,7 @@ class TestGitRuntimeSafetyPin:
         raw = subprocess.run(
             ["git", "log", "-1", "--format=%H", "--"] + _PREREG_RUNTIME_SAFETY_PATHS,
             cwd=str(BRIDGE_DIR), capture_output=True, text=True,
-        ).stdout.strip()
+        encoding="utf-8").stdout.strip()
         assert sha == raw
         assert len(sha) == 40
 
@@ -56,8 +56,8 @@ class TestGitRuntimeSafetyPin:
         subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
         subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
-        (tmp_path / "guard.py").write_text("# runtime safety file\n")
-        (tmp_path / "docs.md").write_text("# docs\n")
+        (tmp_path / "guard.py").write_text("# runtime safety file\n", encoding="utf-8", newline="\n")
+        (tmp_path / "docs.md").write_text("# docs\n", encoding="utf-8", newline="\n")
         subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
 
@@ -65,7 +65,7 @@ class TestGitRuntimeSafetyPin:
         with patch("ibkr_operator._PREREG_RUNTIME_SAFETY_PATHS", ["guard.py"]):
             sha_before, _ = _prereg_runtime_safety_git_pin(tmp_path)
 
-        (tmp_path / "docs.md").write_text("# docs, updated\n")
+        (tmp_path / "docs.md").write_text("# docs, updated\n", encoding="utf-8", newline="\n")
         subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "docs only"], cwd=tmp_path, check=True)
 
@@ -83,14 +83,14 @@ class TestNormalizedYamlPin:
 
     def test_zero_enforced_fields_fails_closed(self, tmp_path):
         p = tmp_path / "rules.yaml"
-        p.write_text("allowlist:\n  - AAPL\n")
+        p.write_text("allowlist:\n  - AAPL\n", encoding="utf-8", newline="\n")
         pin, err = _prereg_normalized_yaml_pin(p)
         assert pin is None
         assert "found 0" in err
 
     def test_two_enforced_fields_fails_closed(self, tmp_path):
         p = tmp_path / "rules.yaml"
-        p.write_text("enforced: true\nnested:\n  enforced: false\n")
+        p.write_text("enforced: true\nnested:\n  enforced: false\n", encoding="utf-8", newline="\n")
         pin, err = _prereg_normalized_yaml_pin(p)
         assert pin is None
         assert "found 2" in err
@@ -99,10 +99,10 @@ class TestNormalizedYamlPin:
         """The documented false -> true -> false trade-window cycle must
         not change the pin."""
         p = tmp_path / "rules.yaml"
-        p.write_text("allowlist:\n  - AAPL\nenforced: false\nmax_trades: 2\n")
+        p.write_text("allowlist:\n  - AAPL\nenforced: false\nmax_trades: 2\n", encoding="utf-8", newline="\n")
         pin_false, err1 = _prereg_normalized_yaml_pin(p)
 
-        p.write_text("allowlist:\n  - AAPL\nenforced: true\nmax_trades: 2\n")
+        p.write_text("allowlist:\n  - AAPL\nenforced: true\nmax_trades: 2\n", encoding="utf-8", newline="\n")
         pin_true, err2 = _prereg_normalized_yaml_pin(p)
 
         assert err1 is None and err2 is None
@@ -112,17 +112,17 @@ class TestNormalizedYamlPin:
         """Only the enforced flip is excluded -- everything else still
         moves the pin, exactly as the run-voiding rule requires."""
         p = tmp_path / "rules.yaml"
-        p.write_text("allowlist:\n  - AAPL\nenforced: false\nmax_trades: 2\n")
+        p.write_text("allowlist:\n  - AAPL\nenforced: false\nmax_trades: 2\n", encoding="utf-8", newline="\n")
         pin_before, _ = _prereg_normalized_yaml_pin(p)
 
-        p.write_text("allowlist:\n  - AAPL\n  - MSFT\nenforced: false\nmax_trades: 2\n")
+        p.write_text("allowlist:\n  - AAPL\n  - MSFT\nenforced: false\nmax_trades: 2\n", encoding="utf-8", newline="\n")
         pin_after, _ = _prereg_normalized_yaml_pin(p)
 
         assert pin_before != pin_after
 
     def test_matches_manual_sha256_of_the_normalized_text(self, tmp_path):
         p = tmp_path / "rules.yaml"
-        p.write_text("a: 1\nenforced: true\nb: 2\n")
+        p.write_text("a: 1\nenforced: true\nb: 2\n", encoding="utf-8", newline="\n")
         pin, err = _prereg_normalized_yaml_pin(p)
         assert err is None
         expected = hashlib.sha256(b"a: 1\nenforced: false\nb: 2\n").hexdigest()
@@ -157,7 +157,7 @@ class TestParseRecordedPins:
 class TestRunPreregPinVerify:
     def test_no_doc_just_reports_live_pins(self, tmp_path):
         yaml_path = tmp_path / "rules.yaml"
-        yaml_path.write_text("enforced: false\n")
+        yaml_path.write_text("enforced: false\n", encoding="utf-8", newline="\n")
         with patch("ibkr_operator.BRIDGE_DIR", BRIDGE_DIR), \
              patch("ibkr_operator._prereg_rules_path", return_value=yaml_path):
             result = _run_prereg_pin_verify(doc_path=None)
@@ -178,7 +178,7 @@ class TestRunPreregPinVerify:
 
     def test_doc_with_matching_pins_passes(self, tmp_path):
         yaml_path = tmp_path / "rules.yaml"
-        yaml_path.write_text("enforced: false\n")
+        yaml_path.write_text("enforced: false\n", encoding="utf-8", newline="\n")
 
         with patch("ibkr_operator.BRIDGE_DIR", BRIDGE_DIR), \
              patch("ibkr_operator._prereg_rules_path", return_value=yaml_path):
@@ -189,7 +189,7 @@ class TestRunPreregPinVerify:
             f"| Git runtime-safety pin | `{live['live']['git_runtime_safety_pin']}` |\n"
             f"| paper-trading-rules.yaml normalized configuration SHA-256 | "
             f"`{live['live']['yaml_normalized_sha256']}` |\n"
-        )
+        , encoding="utf-8", newline="\n")
 
         with patch("ibkr_operator.BRIDGE_DIR", BRIDGE_DIR), \
              patch("ibkr_operator._prereg_rules_path", return_value=yaml_path):
@@ -203,14 +203,14 @@ class TestRunPreregPinVerify:
         """Regression for the actual pr-2026-08-v2 incident: a pin that
         goes stale must be caught, not silently waved through."""
         yaml_path = tmp_path / "rules.yaml"
-        yaml_path.write_text("enforced: false\n")
+        yaml_path.write_text("enforced: false\n", encoding="utf-8", newline="\n")
 
         doc_path = tmp_path / "pr-test-preregistration.md"
         doc_path.write_text(
             "| Git runtime-safety pin | `0000000000000000000000000000000000000000` |\n"
             "| paper-trading-rules.yaml normalized configuration SHA-256 | "
             "`0000000000000000000000000000000000000000000000000000000000000000` |\n"
-        )
+        , encoding="utf-8", newline="\n")
 
         with patch("ibkr_operator.BRIDGE_DIR", BRIDGE_DIR), \
              patch("ibkr_operator._prereg_rules_path", return_value=yaml_path):
@@ -222,7 +222,7 @@ class TestRunPreregPinVerify:
 
     def test_missing_document_fails_with_a_clear_reason(self, tmp_path):
         yaml_path = tmp_path / "rules.yaml"
-        yaml_path.write_text("enforced: false\n")
+        yaml_path.write_text("enforced: false\n", encoding="utf-8", newline="\n")
         with patch("ibkr_operator.BRIDGE_DIR", BRIDGE_DIR), \
              patch("ibkr_operator._prereg_rules_path", return_value=yaml_path):
             result = _run_prereg_pin_verify(doc_path=str(tmp_path / "nope.md"))
@@ -236,7 +236,7 @@ class TestCliRegistration:
             r = subprocess.run(
                 [sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"), alias, "--help"],
                 capture_output=True, text=True, timeout=15,
-            )
+            encoding="utf-8")
             assert r.returncode == 0, f"{alias} --help failed: {r.stderr}"
 
     def test_json_output_is_valid_json(self, tmp_path):
@@ -247,7 +247,7 @@ class TestCliRegistration:
         r = subprocess.run(
             [sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"), "preregistration-pin-verify", "--json"],
             capture_output=True, text=True, timeout=15, env=full_env,
-        )
+        encoding="utf-8")
         data = json.loads(r.stdout)
         assert "live" in data
         assert data["pass"] is False  # the redirected YAML path doesn't exist

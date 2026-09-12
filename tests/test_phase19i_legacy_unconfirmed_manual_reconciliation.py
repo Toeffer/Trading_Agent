@@ -32,11 +32,11 @@ import guard  # noqa: E402
 
 
 def _write_events(path, events):
-    path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8", newline="\n")
 
 
 def _write_manual_reconciliations(path, records):
-    path.write_text("\n".join(json.dumps(r) for r in records) + ("\n" if records else ""))
+    path.write_text("\n".join(json.dumps(r) for r in records) + ("\n" if records else ""), encoding="utf-8", newline="\n")
 
 
 _LEGACY_AAPL_SELL_EVENT = {

@@ -187,7 +187,7 @@ class TestContractQualificationDrill:
         from ibkr_operator import _run_contract_qualification_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/cq-drill-default")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'cq-drill-default')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         call_count = [0]
@@ -234,7 +234,7 @@ class TestContractQualificationDrill:
         from ibkr_operator import _run_contract_qualification_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/cq-drill-mpe")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'cq-drill-mpe')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         call_count = [0]
@@ -285,7 +285,7 @@ class TestContractQualificationDrill:
         from ibkr_operator import _run_contract_qualification_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/cq-drill-notfound")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'cq-drill-notfound')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -322,7 +322,7 @@ class TestContractQualificationDrill:
         from ibkr_operator import _run_contract_qualification_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/cq-drill-ambiguous")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'cq-drill-ambiguous')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         call_count = [0]
@@ -365,7 +365,7 @@ class TestContractQualificationDrill:
         from ibkr_operator import _run_contract_qualification_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/cq-drill-503")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'cq-drill-503')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -402,7 +402,7 @@ class TestContractQualificationDrill:
         from ibkr_operator import _run_contract_qualification_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/cq-drill-disc")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'cq-drill-disc')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -437,7 +437,7 @@ class TestContractQualificationDrill:
         from ibkr_operator import _run_contract_qualification_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/cq-drill-json")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'cq-drill-json')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         call_count = [0]
@@ -483,7 +483,7 @@ class TestContractQualificationDrill:
         from ibkr_operator import _run_contract_qualification_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/cq-drill-safety")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'cq-drill-safety')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         safety = {"env_IBKR_ALLOW_ORDERS": "false",
@@ -531,7 +531,7 @@ class TestContractQualificationDrill:
         cp = subprocess.run(
             [".venv/bin/python", "ibkr_operator.py", "cq-drill", "--help"],
             capture_output=True, text=True, cwd="/home/chris/agents/ibkr-bridge",
-            timeout=10)
+            timeout=10, encoding="utf-8")
         assert cp.returncode == 0
         # The alias shows the subcommand name, not the parent
         assert "--symbol" in cp.stdout
@@ -542,7 +542,7 @@ class TestContractQualificationDrill:
         cp = subprocess.run(
             [".venv/bin/python", "ibkr_operator.py", "contract-diagnostics", "--help"],
             capture_output=True, text=True, cwd="/home/chris/agents/ibkr-bridge",
-            timeout=10)
+            timeout=10, encoding="utf-8")
         assert cp.returncode == 0
         assert "--symbol" in cp.stdout
 
@@ -551,7 +551,7 @@ class TestContractQualificationDrill:
         from ibkr_operator import _run_contract_qualification_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/cq-drill-alt-ex")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'cq-drill-alt-ex')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         call_count = [0]
@@ -599,7 +599,7 @@ class TestContractQualificationDrill:
         from pathlib import Path
         import urllib.error
 
-        export_dir = Path("/tmp/cq-drill-url-err")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'cq-drill-url-err')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         def raise_url_err(req, *args, **kwargs):
@@ -637,7 +637,7 @@ class TestContractQualificationDrill:
         from ibkr_operator import _run_contract_qualification_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/cq-drill-export")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'cq-drill-export')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         call_count = [0]
@@ -677,7 +677,7 @@ class TestContractQualificationDrill:
         assert export_path.startswith(str(export_dir))
         assert Path(export_path).exists()
         # Verify file contains valid JSON
-        written = json.loads(Path(export_path).read_text())
+        written = json.loads(Path(export_path).read_text(encoding="utf-8"))
         assert written["root_cause"] == "qualified_with_default_contract"
 
     def test_repeated_drills_no_backpressure_leak(self):
@@ -685,7 +685,7 @@ class TestContractQualificationDrill:
         from ibkr_operator import _run_contract_qualification_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/cq-drill-repeat")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'cq-drill-repeat')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         for i in range(3):
@@ -736,7 +736,7 @@ class TestContractQualificationDrill:
         from ibkr_operator import _run_contract_qualification_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/cq-drill-forbidden")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'cq-drill-forbidden')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         call_count = [0]

@@ -24,6 +24,8 @@ clause's fallback value forever.
    reason, permanently, regardless of actual system state.
 """
 
+from source_helpers import implementation_source
+
 import json
 import sys
 from datetime import datetime, timezone
@@ -42,8 +44,8 @@ import ibkr_operator  # noqa: E402
 from ibkr_operator import _assess_kpi_hold_only_system_locked  # noqa: E402
 
 
-GUARD_SOURCE = (BRIDGE_DIR / "guard.py").read_text()
-OPERATOR_SOURCE = (BRIDGE_DIR / "ibkr_operator.py").read_text()
+GUARD_SOURCE = implementation_source('guard.py')
+OPERATOR_SOURCE = implementation_source('ibkr_operator.py')
 
 
 def _approval_record(symbol="AAPL", action="BUY", status="approved", stop_price=180.0):
@@ -69,7 +71,7 @@ class TestReadApprovalRecords:
         p = tmp_path / "approval-records.jsonl"
         rec1 = _approval_record(symbol="AAPL")
         rec2 = _approval_record(symbol="MSFT")
-        p.write_text(json.dumps(rec1) + "\n" + json.dumps(rec2) + "\n")
+        p.write_text(json.dumps(rec1) + "\n" + json.dumps(rec2) + "\n", encoding="utf-8", newline="\n")
 
         records = read_approval_records(p)
 
@@ -80,7 +82,7 @@ class TestReadApprovalRecords:
     def test_malformed_line_skipped_not_raised(self, tmp_path):
         p = tmp_path / "approval-records.jsonl"
         good = _approval_record()
-        p.write_text("{not valid json\n" + json.dumps(good) + "\n")
+        p.write_text("{not valid json\n" + json.dumps(good) + "\n", encoding="utf-8", newline="\n")
 
         records = read_approval_records(p)
 
@@ -89,7 +91,7 @@ class TestReadApprovalRecords:
 
     def test_blank_lines_skipped(self, tmp_path):
         p = tmp_path / "approval-records.jsonl"
-        p.write_text("\n" + json.dumps(_approval_record()) + "\n\n")
+        p.write_text("\n" + json.dumps(_approval_record()) + "\n\n", encoding="utf-8", newline="\n")
 
         assert len(read_approval_records(p)) == 1
 
@@ -108,7 +110,7 @@ class TestFindActiveStopReadsApprovalRecords:
         p = tmp_path / "approval-records.jsonl"
         p.write_text(json.dumps(_approval_record(
             symbol="AAPL", action="BUY", status="approved", stop_price=185.5,
-        )) + "\n")
+        )) + "\n", encoding="utf-8", newline="\n")
 
         with patch.object(guard, "APPROVAL_RECORDS_PATH", p):
             stop = _find_active_stop("AAPL")
@@ -122,7 +124,7 @@ class TestFindActiveStopReadsApprovalRecords:
         disk. Prove that no longer happens: a real, well-formed record on
         disk is now actually found."""
         p = tmp_path / "approval-records.jsonl"
-        p.write_text(json.dumps(_approval_record(stop_price=199.99)) + "\n")
+        p.write_text(json.dumps(_approval_record(stop_price=199.99)) + "\n", encoding="utf-8", newline="\n")
 
         with patch.object(guard, "APPROVAL_RECORDS_PATH", p):
             stop = _find_active_stop("AAPL")
@@ -135,7 +137,7 @@ class TestFindActiveStopReadsApprovalRecords:
 
     def test_only_approved_status_considered(self, tmp_path):
         p = tmp_path / "approval-records.jsonl"
-        p.write_text(json.dumps(_approval_record(status="pending", stop_price=150.0)) + "\n")
+        p.write_text(json.dumps(_approval_record(status="pending", stop_price=150.0)) + "\n", encoding="utf-8", newline="\n")
 
         with patch.object(guard, "APPROVAL_RECORDS_PATH", p):
             stop = _find_active_stop("AAPL")
@@ -144,7 +146,7 @@ class TestFindActiveStopReadsApprovalRecords:
 
     def test_only_buy_action_considered(self, tmp_path):
         p = tmp_path / "approval-records.jsonl"
-        p.write_text(json.dumps(_approval_record(action="SELL", stop_price=150.0)) + "\n")
+        p.write_text(json.dumps(_approval_record(action="SELL", stop_price=150.0)) + "\n", encoding="utf-8", newline="\n")
 
         with patch.object(guard, "APPROVAL_RECORDS_PATH", p):
             stop = _find_active_stop("AAPL")
@@ -155,7 +157,7 @@ class TestFindActiveStopReadsApprovalRecords:
         p = tmp_path / "approval-records.jsonl"
         older = _approval_record(stop_price=100.0)
         newer = _approval_record(stop_price=222.0)
-        p.write_text(json.dumps(older) + "\n" + json.dumps(newer) + "\n")
+        p.write_text(json.dumps(older) + "\n" + json.dumps(newer) + "\n", encoding="utf-8", newline="\n")
 
         with patch.object(guard, "APPROVAL_RECORDS_PATH", p):
             stop = _find_active_stop("AAPL")
@@ -166,7 +168,7 @@ class TestFindActiveStopReadsApprovalRecords:
         """Pre-existing fallback behavior (source 2 in the docstring) must
         still work when the approval-records lookup finds nothing."""
         p = tmp_path / "approval-records.jsonl"
-        p.write_text("")  # empty -- no records
+        p.write_text("", encoding="utf-8", newline="\n")  # empty -- no records
 
         fake_events = [{
             "event_type": "order_submitted", "symbol": "AAPL", "action": "BUY",

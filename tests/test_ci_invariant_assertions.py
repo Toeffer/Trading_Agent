@@ -15,6 +15,9 @@ based checks that enforce structural safety rules.
   T8  bridge.py h1_authorized_scope used, no raw h1_authorize/h1_deauthorize
 """
 
+from source_helpers import implementation_source
+import pytest
+
 import re
 from pathlib import Path
 
@@ -37,7 +40,7 @@ class TestOrder403Invariant:
 
     def test_order_endpoint_exists_and_returns_403(self):
         """bridge.py /order handler must raise HTTPException with 403."""
-        source = BRIDGE_PATH.read_text()
+        source = implementation_source('bridge.py')
         assert "@app.post(\"/order\")" in source, "/order route must exist"
         # The handler must contain HTTPException with status 403
         order_block = source[
@@ -53,7 +56,7 @@ class TestOrder403Invariant:
 
     def test_no_alternative_order_route(self):
         """No other functional /order route exists besides the 403 handler."""
-        source = BRIDGE_PATH.read_text()
+        source = implementation_source('bridge.py')
         # Count @app.post("/order") occurrences
         routes = re.findall(r'@app\.(?:post|get)\("(/order[^"]*)"', source)
         order_routes = [r for r in routes if r == "/order"]
@@ -70,7 +73,7 @@ class TestH1TokenEnforcement:
 
     def test_approve_checks_h1_before_mutation(self):
         """order_approve verifies H1 token before h1_authorized_scope."""
-        source = BRIDGE_PATH.read_text()
+        source = implementation_source('bridge.py')
         approve_start = source.index("def order_approve")
         approve_end = source.index("class SubmitRequest")
         approve_body = source[approve_start:approve_end]
@@ -82,7 +85,7 @@ class TestH1TokenEnforcement:
 
     def test_submit_checks_h1_before_mutation(self):
         """order_submit verifies H1 token before h1_authorized_scope."""
-        source = BRIDGE_PATH.read_text()
+        source = implementation_source('bridge.py')
         submit_start = source.index("def order_submit")
         submit_end = source.index("# --- Read-only market data endpoints ---")
         submit_body = source[submit_start:submit_end]
@@ -94,7 +97,7 @@ class TestH1TokenEnforcement:
 
     def test_bridge_uses_context_manager_not_raw_pair(self):
         """bridge.py uses h1_authorized_scope, never raw h1_authorize/h1_deauthorize."""
-        source = BRIDGE_PATH.read_text()
+        source = implementation_source('bridge.py')
         assert "h1_authorized_scope" in source
         # Raw calls (outside guard.py) must not exist in bridge.py
         # Remove comments for clean check
@@ -130,53 +133,22 @@ class TestH1TokenEnforcement:
 # ============================================================================
 
 class TestP5DefenseInvariant:
-    """T4: P5 simple path must reject BUY without protective stop."""
+    """Executable BUY plans cannot cross a boundary without a valid stop."""
 
-    def test_bracket_stop_required_code_exists(self):
-        """BRACKET_STOP_REQUIRED error code exists in bridge.py."""
-        source = BRIDGE_PATH.read_text()
-        assert "BRACKET_STOP_REQUIRED" in source, \
-            "BRACKET_STOP_REQUIRED must exist for P5 defense-in-depth"
+    @pytest.mark.parametrize("stop", [None, "0", "100", "101", "NaN"])
+    def test_invalid_stop_rejected_before_adapter(self, stop):
+        from test_execution_regressions import plan
+        from trading_agent.domain import ApprovedOrderPlan
+        values = plan().to_dict()
+        values["stop_price"] = stop
+        with pytest.raises(ValueError):
+            ApprovedOrderPlan.from_dict(values)
 
-    def test_simple_path_rejects_buy_before_place_order(self):
-        """Simple path checks for BUY and returns BRACKET_STOP_REQUIRED before ib.placeOrder."""
-        source = BRIDGE_PATH.read_text()
-        simple_start = source.index("# ---- Simple Path")
-        simple_end = source.index("def _internal_order_status")
-        simple_body = source[simple_start:simple_end]
+    def test_legacy_order_provider_cannot_transmit(self):
+        import bridge
+        with pytest.raises(RuntimeError, match="LEGACY_ORDER_PROVIDER_DISABLED"):
+            bridge._internal_place_order({"symbol": "AAPL", "action": "BUY"})
 
-        # BRACKET_STOP_REQUIRED must appear before any ib.placeOrder in simple path
-        req_pos = simple_body.index("BRACKET_STOP_REQUIRED")
-        place_pos = simple_body.index("ib.placeOrder")
-        assert req_pos < place_pos, \
-            "BRACKET_STOP_REQUIRED check must happen BEFORE ib.placeOrder in simple path"
-
-    def test_simple_path_buy_action_check(self):
-        """Simple path explicitly checks action.upper() == 'BUY'."""
-        source = BRIDGE_PATH.read_text()
-        simple_start = source.index("# ---- Simple Path")
-        simple_end = source.index("def _internal_order_status")
-        simple_body = source[simple_start:simple_end]
-        assert 'action.upper() == "BUY"' in simple_body or "action.upper() == 'BUY'" in simple_body, \
-            "Simple path must check action for BUY before placing order"
-
-    def test_validate_bracket_stop_in_guard(self):
-        """validate_bracket_stop function exists in guard.py."""
-        source = GUARD_PATH.read_text()
-        assert "def validate_bracket_stop" in source, \
-            "validate_bracket_stop must exist in guard.py"
-
-    def test_validate_bracket_stop_called_in_submit_order(self):
-        """submit_order calls validate_bracket_stop before calling provider."""
-        source = GUARD_PATH.read_text()
-        submit_start = source.index("def submit_order")
-        submit_end = source.index("# --- Config Loading ---")
-        submit_body = source[submit_start:submit_end]
-
-        bracket_check_pos = submit_body.index("validate_bracket_stop")
-        provider_call_pos = submit_body.rindex("order_provider(record)")
-        assert bracket_check_pos < provider_call_pos, \
-            "validate_bracket_stop must be called BEFORE order_provider in submit_order"
 
 
 # ============================================================================
@@ -200,7 +172,7 @@ class TestKillSwitchInvariants:
                 if "__pycache__" in str(fp):
                     continue
                 try:
-                    for i, line in enumerate(fp.read_text().splitlines(), 1):
+                    for i, line in enumerate(fp.read_text(encoding="utf-8").splitlines(), 1):
                         if pattern not in line:
                             continue
                         stripped = line.strip()
@@ -289,7 +261,7 @@ class TestNoRawTokenReads:
         # ibkr_operator.py is the operator CLI — it references the token
         # file path for documentation and the H1 canary check. Exclude it.
         for path in [BRIDGE_PATH, GUARD_PATH]:
-            source = path.read_text()
+            source = path.read_text(encoding="utf-8")
             assert "/etc/ibkr-bridge/h1_token" not in source, \
                 f"{path.name} must not contain /etc/ibkr-bridge/h1_token file path"
 
@@ -297,7 +269,7 @@ class TestNoRawTokenReads:
         """CI workflows never reference a raw h1_token file path."""
         if WORKFLOWS_DIR.exists():
             for fp in WORKFLOWS_DIR.glob("*.yml"):
-                source = fp.read_text()
+                source = fp.read_text(encoding="utf-8")
                 assert "/etc/ibkr-bridge/h1_token" not in source, \
                     f"{fp.name} must not reference raw h1_token file"
 
@@ -305,12 +277,12 @@ class TestNoRawTokenReads:
         """Scripts (except ibkr-trade-window) never reference h1_token file."""
         # ibkr-trade-window IS the H1 authorization boundary — it must
         # read the token file. All other scripts must not reference it.
-        ALLOWED_SCRIPTS = {"ibkr-trade-window"}
+        ALLOWED_SCRIPTS = {"ibkr-trade-window", "h1_client.py"}
         if SCRIPTS_DIR.exists():
             for fp in SCRIPTS_DIR.glob("*"):
                 if fp.name in ALLOWED_SCRIPTS:
                     continue
                 if fp.is_file() and fp.suffix not in (".pyc", ".pyo"):
-                    source = fp.read_text()
+                    source = fp.read_text(encoding="utf-8")
                     assert "/etc/ibkr-bridge/h1_token" not in source, \
                         f"{fp.name} must not reference raw h1_token file"

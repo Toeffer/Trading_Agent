@@ -313,7 +313,7 @@ class TestPhase17CCLI:
             [sys.executable, str(OPERATOR),
              "level1-strategy-v1-dry-run-proposal-generation-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_json_output_valid(self):
@@ -321,7 +321,7 @@ class TestPhase17CCLI:
             [sys.executable, str(OPERATOR),
              "level1-strategy-v1-dry-run-proposal-generation-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -333,7 +333,7 @@ class TestPhase17CCLI:
             [sys.executable, str(OPERATOR),
              "level1-strategy-v1-dry-run-proposal-generation-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required = [
             "diagnosis", "severity", "git",
@@ -362,7 +362,7 @@ class TestPhase17CCLI:
             [sys.executable, str(OPERATOR),
              "phase17c-strategy-v1-dry-run-proposal-generation-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0
 
     def test_cli_alias_dry_run_works(self):
@@ -370,7 +370,7 @@ class TestPhase17CCLI:
             [sys.executable, str(OPERATOR),
              "dry-run-proposal-generation-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0
 
     def test_deterministic_diagnosis_on_repeat_run(self):
@@ -379,13 +379,13 @@ class TestPhase17CCLI:
             [sys.executable, str(OPERATOR),
              "level1-strategy-v1-dry-run-proposal-generation-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data1 = json.loads(result1.stdout)
         result2 = subprocess.run(
             [sys.executable, str(OPERATOR),
              "level1-strategy-v1-dry-run-proposal-generation-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data2 = json.loads(result2.stdout)
         # Diagnosis should match (both runs should produce the same verdict)
         assert data1["diagnosis"] == data2["diagnosis"], \
@@ -396,7 +396,7 @@ class TestPhase17CCLI:
             [sys.executable, str(OPERATOR),
              "level1-strategy-v1-dry-run-proposal-generation-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         # canonical_proposal is populated when diagnosis is OK; skip if NO_GO
         if data.get("diagnosis") == _PHASE17C_DIAGNOSIS["ready"]:

@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest==9.0.3
+pytest-timeout==2.4.0
+ruff==0.15.6
+mypy==1.19.1

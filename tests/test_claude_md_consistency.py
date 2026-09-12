@@ -12,6 +12,8 @@ Every assertion here names the CLAUDE.md section it reads and the code it
 compares against, so a failure says which side to change.
 """
 
+from source_helpers import implementation_source
+
 import os
 import re
 import sys
@@ -25,8 +27,8 @@ sys.path.insert(0, str(REPO))
 import guard  # noqa: E402
 
 CLAUDE_MD = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
-BRIDGE_SOURCE = (REPO / "bridge.py").read_text(encoding="utf-8")
-GUARD_SOURCE = (REPO / "guard.py").read_text(encoding="utf-8")
+BRIDGE_SOURCE = implementation_source('bridge.py')
+GUARD_SOURCE = implementation_source('guard.py', historical=True)
 
 _WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
           "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
@@ -82,7 +84,7 @@ class TestPreflightContract:
 # ── §5 gate wiring ─────────────────────────────────────────────────────────
 
 
-class TestGateWiring:
+class TestHistoricalGateWiring:
     documented = set(re.findall(r"`(gate_[a-z_]+)`", _section("5.")))
     defined = set(re.findall(r"^def (gate_[a-z_]+)\(", GUARD_SOURCE, re.M))
     wired = set(re.findall(r"\b(gate_[a-z_]+)\(", _function_source(GUARD_SOURCE, "run_preflight")))
@@ -159,10 +161,12 @@ class TestSafetyInvariantsClaims:
         assert "300 s TTL" in _section("10.")
 
     def test_submit_is_mkt_only(self):
-        place = _function_source(BRIDGE_SOURCE, "_internal_place_order")
-        assigned = set(re.findall(r'\.orderType = "([A-Z]+)"', place))
-        assert assigned <= {"MKT", "STP"}, assigned   # STP = protective child stop only
-        assert "MKT" in assigned
+        from trading_agent.domain import ApprovedOrderPlan
+        from test_execution_regressions import plan
+        import pytest
+        for order_type in ("LMT", "STP", "MOC"):
+            with pytest.raises(ValueError, match="MKT"):
+                ApprovedOrderPlan.from_dict({**plan().to_dict(), "order_type": order_type})
         assert "always MKT" in _section("5.")
 
     def test_restart_invalidation_claim_is_implemented(self):
@@ -215,7 +219,7 @@ def test_live_rules_yaml_matches_claims():
     ))
     if not path.exists():
         pytest.skip(f"no live rules file at {path}")
-    rules = yaml.safe_load(path.read_text())
+    rules = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert rules.get("rules_version") == guard.EXPECTED_VERSION
     assert rules.get("symbol_allowlist", {}).get("mode") == "explicit_list"
     assert rules.get("enforced") is False, "CLAUDE.md §3.2: enforced must sit at false between cycles"

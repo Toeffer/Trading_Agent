@@ -147,82 +147,82 @@ class TestStrategyDocVerification:
 
     def test_strategy_doc_has_version(self):
         """Strategy doc declares version v1.0.0."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "v1.0.0" in content or "strategy-v1-" in content, "Strategy doc missing version"
 
     def test_strategy_doc_has_advisory_boundary(self):
         """Strategy doc declares advisory-only boundary."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "Advisory-Only" in content or "advisory-only" in content.lower(), "Missing advisory boundary"
 
     def test_strategy_doc_has_risk_envelope(self):
         """Strategy doc has risk envelope section."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "Risk Envelope" in content or "risk envelope" in content.lower(), "Missing risk envelope"
 
     def test_strategy_doc_has_no_trade_rules(self):
         """Strategy doc has no-trade conditions."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "No-Trade" in content or "no-trade" in content.lower(), "Missing no-trade rules"
 
     def test_strategy_doc_has_allowed_instruments(self):
         """Strategy doc has allowed instruments section."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "Allowed Instruments" in content or "allowed instrument" in content.lower(), "Missing allowed instruments"
 
     def test_strategy_doc_has_excluded_instruments(self):
         """Strategy doc has excluded instruments section."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "Excluded Instruments" in content or "excluded instrument" in content.lower(), "Missing excluded instruments"
 
     def test_strategy_doc_has_signal_inputs(self):
         """Strategy doc has signal inputs section."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "Signal Inputs" in content or "signal" in content.lower(), "Missing signal inputs"
 
     def test_strategy_doc_has_data_quality(self):
         """Strategy doc has data quality requirements."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "Data Quality" in content or "data quality" in content.lower(), "Missing data quality rules"
 
     def test_strategy_doc_has_sizing_rule(self):
         """Strategy doc has position sizing rule."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "Sizing" in content and "Position" in content, "Missing sizing rule"
 
     def test_strategy_doc_has_daily_trade_limit(self):
         """Strategy doc has daily trade limit."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "Daily" in content and ("trade" in content.lower() or "Trades" in content), "Missing daily trade limit"
 
     def test_strategy_doc_has_daily_loss_limit(self):
         """Strategy doc has daily loss limit."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "loss halt" in content.lower() or "Daily Loss" in content or "daily loss" in content.lower(), "Missing daily loss limit"
 
     def test_strategy_doc_has_stop_exit_policy(self):
         """Strategy doc has stop/exit policy."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "Stop" in content and ("Exit" in content or "exit" in content.lower()), "Missing stop/exit policy"
 
     def test_strategy_doc_has_bracket_requirement(self):
         """Strategy doc has broker-side bracket requirement."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "Broker-Side Bracket" in content or "broker-side" in content.lower() or "bracket" in content.lower(), "Missing bracket requirement"
 
     def test_strategy_doc_has_review_checklist(self):
         """Strategy doc has review checklist."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "Review Checklist" in content or "review checklist" in content.lower(), "Missing review checklist"
 
     def test_strategy_doc_has_anti_overfit(self):
         """Strategy doc has anti-overfit checklist."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "Anti-Overfit" in content or "anti-overfit" in content.lower(), "Missing anti-overfit checklist"
 
     def test_strategy_doc_has_broker_execution_boundary(self):
         """Strategy doc declares broker execution boundary."""
-        content = _STRATEGY_V1_PATH.read_text()
+        content = _STRATEGY_V1_PATH.read_text(encoding="utf-8")
         assert "Broker Execution" in content or "broker execution" in content.lower() or "only path" in content.lower(), "Missing broker execution boundary"
 
 
@@ -238,7 +238,7 @@ class TestPhase17ACLI:
             [sys.executable, str(OPERATOR),
              "level1-strategy-v1-governance-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
         assert "strategy" in result.stdout.lower() or "governance" in result.stdout.lower()
 
@@ -248,7 +248,7 @@ class TestPhase17ACLI:
             [sys.executable, str(OPERATOR),
              "level1-strategy-v1-governance-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -262,7 +262,7 @@ class TestPhase17ACLI:
             [sys.executable, str(OPERATOR),
              "phase17a-strategy-v1-governance-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -275,7 +275,7 @@ class TestPhase17ACLI:
             [sys.executable, str(OPERATOR),
              "strategy-v1-governance-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -288,7 +288,7 @@ class TestPhase17ACLI:
             [sys.executable, str(OPERATOR),
              "level1-strategy-v1-governance-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required_fields = [
             "diagnosis", "severity", "git",

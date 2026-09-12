@@ -185,7 +185,7 @@ class TestPhase16YCLI:
             [sys.executable, str(OPERATOR),
              "level1-portable-tests-ci-readiness-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
         assert "portable" in result.stdout.lower() or "ci" in result.stdout.lower()
 
@@ -195,7 +195,7 @@ class TestPhase16YCLI:
             [sys.executable, str(OPERATOR),
              "level1-portable-tests-ci-readiness-checkpoint", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -209,7 +209,7 @@ class TestPhase16YCLI:
             [sys.executable, str(OPERATOR),
              "phase16y-portable-tests-ci-readiness-checkpoint", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -222,7 +222,7 @@ class TestPhase16YCLI:
             [sys.executable, str(OPERATOR),
              "level1-portable-tests-ci-readiness", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -235,7 +235,7 @@ class TestPhase16YCLI:
             [sys.executable, str(OPERATOR),
              "portable-tests-ci-readiness-checkpoint", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -248,7 +248,7 @@ class TestPhase16YCLI:
             [sys.executable, str(OPERATOR),
              "level1-portable-tests-ci-readiness-checkpoint", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required_fields = [
             "diagnosis", "severity", "git",

@@ -163,7 +163,7 @@ class TestLedgerParsing:
     def test_latest_clean_cycle_empty_file(self, tmp_ledger_dir):
         """Empty ledger returns None."""
         tmp_ledger_dir.parent.mkdir(parents=True, exist_ok=True)
-        tmp_ledger_dir.write_text("")
+        tmp_ledger_dir.write_text("", encoding="utf-8", newline="\n")
         latest = _latest_clean_cycle_timestamp(tmp_ledger_dir)
         assert latest is None
 
@@ -306,7 +306,7 @@ class TestAutonomyStatus:
                 "fx_staleness_seconds": 0,
             },
         }
-        cand_path.write_text(json.dumps(cand_data))
+        cand_path.write_text(json.dumps(cand_data), encoding="utf-8", newline="\n")
         return candidate_dir
 
     # --- Test: insufficient clean cycles → HOLD ---
@@ -612,9 +612,9 @@ class TestAutonomyStatus:
         # Verify no write occurred to AUTONOMY_CRITERIA.md
         autonomy_doc = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
         if autonomy_doc.exists():
-            original = autonomy_doc.read_text()
+            original = autonomy_doc.read_text(encoding="utf-8")
             # After the test, the file should be unchanged
-            assert autonomy_doc.read_text() == original, \
+            assert autonomy_doc.read_text(encoding="utf-8") == original, \
                 "AUTONOMY_CRITERIA.md was modified — mutation detected"
 
     # --- Test: required output fields ---
@@ -1087,7 +1087,7 @@ with patch("ibkr_operator._CLEAN_CYCLE_LEDGER", ledger_path), \
         result = subprocess.run(
             [sys.executable, "-c", script, str(tmp_path), str(BRIDGE_DIR)],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
 
         # stdout must be parseable JSON
         stdout_text = result.stdout.strip()
@@ -1266,7 +1266,7 @@ for b in blockers:
         result = subprocess.run(
             [sys.executable, "-c", script, str(BRIDGE_DIR)],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
 
         lines = result.stdout.strip().splitlines()
         # First line is clean flag
@@ -1306,7 +1306,7 @@ for b in blockers:
             "verdict": "READY_DRYRUN",
             "market_data": {"market_data_available": True, "stale": False},
             "account_evidence": {"fx_available": True, "fx_required": False, "fx_staleness_seconds": 0},
-        }))
+        }), encoding="utf-8", newline="\n")
 
         lw = {
             "bridge": {"reachable": True, "connected": True, "mode": "paper", "allow_orders": False, "read_only": True},

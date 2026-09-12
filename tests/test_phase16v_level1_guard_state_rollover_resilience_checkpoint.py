@@ -92,7 +92,7 @@ class TestSyntheticReconcileHelper:
             "daily_trade_count": 0,
             "trade_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             "daily_halt_active": False,
-        }))
+        }), encoding="utf-8", newline="\n")
         result = _synthetic_guard_state_reconcile_for_path(gp)
         assert result["repair_applied"] is False
         assert result["no_broker_mutation"] is True
@@ -105,7 +105,7 @@ class TestSyntheticReconcileHelper:
         gp.write_text(json.dumps({
             "daily_trade_count": 0,
             "trade_date": yesterday,
-        }))
+        }), encoding="utf-8", newline="\n")
         result = _synthetic_guard_state_reconcile_for_path(
             gp, canonical_date_override=today,
         )
@@ -119,7 +119,7 @@ class TestSyntheticReconcileHelper:
         gp.write_text(json.dumps({
             "daily_trade_count": 5,
             "trade_date": today,
-        }))
+        }), encoding="utf-8", newline="\n")
         result = _synthetic_guard_state_reconcile_for_path(
             gp, canonical_date_override=today,
         )
@@ -135,7 +135,7 @@ class TestSyntheticReconcileHelper:
         gp.write_text(json.dumps({
             "daily_trade_count": 0,
             "trade_date": yesterday,
-        }))
+        }), encoding="utf-8", newline="\n")
         result = _synthetic_guard_state_reconcile_for_path(
             gp, canonical_date_override=today,
             live_order_override=3,
@@ -194,7 +194,7 @@ class TestCommandExists:
         r = subprocess.run(
             [sys.executable, "ibkr_operator.py", "level1-guard-state-rollover-resilience-checkpoint", "--help"],
             capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
-        )
+        encoding="utf-8")
         assert r.returncode == 0, f"stderr: {r.stderr}"
         assert "level1-guard-state-rollover-resilience-checkpoint" in r.stdout
         assert "Phase 16V" in r.stdout or "guard-state" in r.stdout
@@ -203,21 +203,21 @@ class TestCommandExists:
         r = subprocess.run(
             [sys.executable, "ibkr_operator.py", "phase16v-guard-state-rollover-resilience-checkpoint", "--help"],
             capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
-        )
+        encoding="utf-8")
         assert r.returncode == 0
 
     def test_alias_level1_guard_state_rollover_resilience_works(self):
         r = subprocess.run(
             [sys.executable, "ibkr_operator.py", "level1-guard-state-rollover-resilience", "--help"],
             capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
-        )
+        encoding="utf-8")
         assert r.returncode == 0
 
     def test_alias_guard_state_rollover_resilience_works(self):
         r = subprocess.run(
             [sys.executable, "ibkr_operator.py", "guard-state-rollover-resilience-checkpoint", "--help"],
             capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent),
-        )
+        encoding="utf-8")
         assert r.returncode == 0
 
 
@@ -236,7 +236,7 @@ class TestNonMutation:
              "level1-guard-state-rollover-resilience-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
             cwd=str(Path(__file__).resolve().parent.parent),
-        )
+        encoding="utf-8")
         # May exit 0 or 1 depending on worktree state
         try:
             d = json.loads(r.stdout)

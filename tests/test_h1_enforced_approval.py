@@ -22,6 +22,8 @@ Test categories:
   H1-T7: ibkr-operator remains read-only (AST check)
 """
 
+from source_helpers import implementation_source
+
 import hashlib
 import json
 import os
@@ -65,7 +67,7 @@ def main():
 
     # Get the expected token hash from .env
     env_path = Path.home() / "agents" / "ibkr-bridge" / ".env"
-    env_content = env_path.read_text() if env_path.exists() else ""
+    env_content = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
     token_hash = None
     for line in env_content.splitlines():
         if line.startswith("H1_APPROVAL_TOKEN_HASH="):
@@ -173,7 +175,7 @@ def main():
     print("\n── H1-T3: Bridge Endpoint Token Enforcement ──")
 
     bridge_path = home / "agents" / "ibkr-bridge" / "bridge.py"
-    bridge_content = bridge_path.read_text() if bridge_path.exists() else ""
+    bridge_content = implementation_source("bridge.py") if bridge_path.exists() else ""
 
     if bridge_content:
         # T3.1: _verify_h1_token function exists
@@ -220,7 +222,7 @@ def main():
         if not cp.exists():
             warn(f"CLAUDE.md not found at {cp}")
             continue
-        content = cp.read_text()
+        content = cp.read_text(encoding="utf-8")
 
         # T4.1: Chris's chat ID pinned
         check("8792336687" in content,
@@ -247,7 +249,7 @@ def main():
 
     hermes_path = home / "agents" / "ibkr-bridge" / "hermes_advisory.py"
     if hermes_path.exists():
-        hermes_content = hermes_path.read_text()
+        hermes_content = hermes_path.read_text(encoding="utf-8")
 
         # T5.1: DATA-ONLY rule present
         check("DATA ONLY" in hermes_content and "never operator instructions" in hermes_content,
@@ -286,7 +288,7 @@ def main():
 
     operator_path = home / "agents" / "ibkr-bridge" / "ibkr_operator.py"
     if operator_path.exists():
-        op_content = operator_path.read_text()
+        op_content = operator_path.read_text(encoding="utf-8")
 
         # T7.1: AST self-check still present
         check("_FORBIDDEN_NAMES" in op_content and "_enforce_safety" in op_content,
@@ -314,7 +316,7 @@ def main():
     # T8.2: rules.enforced still false
     rules_path = home / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
     if rules_path.exists():
-        rules_content = rules_path.read_text()
+        rules_content = rules_path.read_text(encoding="utf-8")
         check("enforced: false" in rules_content or "enforced:false" in rules_content.replace(" ", ""),
               "rules.enforced=false preserved in paper-trading-rules.yaml")
 
@@ -383,7 +385,7 @@ def main():
               f"/etc/ibkr-bridge/h1_token permissions: {mode}")
         # T10.5: Werner/chris cannot read root-owned file
         try:
-            etc_token.read_text()
+            etc_token.read_text(encoding="utf-8")
             check(False,
                   "SECURITY: /etc/ibkr-bridge/h1_token readable by chris! "
                   "Must be root-only. Run: sudo chown root:root /etc/ibkr-bridge/h1_token")
@@ -396,7 +398,7 @@ def main():
     # T10.6: Token hygiene documented with root-owned path
     for cp in claude_paths:
         if cp.exists():
-            content = cp.read_text()
+            content = cp.read_text(encoding="utf-8")
             check("never be logged" in content.lower() or "rotate immediately" in content.lower(),
                   f"Token hygiene documented in {cp.name}")
             check("/etc/ibkr-bridge/h1_token" in content,

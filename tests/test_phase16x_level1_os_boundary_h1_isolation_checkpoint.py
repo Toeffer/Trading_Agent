@@ -42,6 +42,7 @@ OPERATOR = REPO / "ibkr_operator.py"
 class TestSyntheticFixtures:
     """All seven synthetic fixtures must pass without touching real artifacts."""
 
+    @pytest.mark.host
     def test_synthetic_env_write_denied(self):
         c = _synthetic_fixture_env_write_denied()
         assert c["passed"], f"Env write denied failed: {c}"
@@ -49,18 +50,21 @@ class TestSyntheticFixtures:
         assert c["world_writable"] is False
         assert c["group_writable"] is False
 
+    @pytest.mark.host
     def test_synthetic_rules_write_denied(self):
         c = _synthetic_fixture_rules_write_denied()
         assert c["passed"], f"Rules write denied failed: {c}"
         assert c["owner_only"] is True
         assert c["world_writable"] is False
 
+    @pytest.mark.host
     def test_synthetic_guard_state_write_denied(self):
         c = _synthetic_fixture_guard_state_write_denied()
         assert c["passed"], f"Guard-state write denied failed: {c}"
         assert c["owner_only"] is True
         assert c["world_writable"] is False
 
+    @pytest.mark.host
     def test_synthetic_h1_file_mode(self):
         c = _synthetic_fixture_h1_file_mode()
         assert c["passed"], f"H1 file mode failed: {c}"
@@ -158,6 +162,7 @@ class TestOSBoundaryHelpers:
         assert "h1_hash_in_env" in c
         assert "raw_h1_in_env" in c
 
+    @pytest.mark.host
     def test_non_owner_write_denied(self):
         c = _verify_non_owner_write_denied()
         assert c["non_owner_write_denied"] is True
@@ -181,7 +186,7 @@ class TestPhase16XCLI:
             [sys.executable, str(OPERATOR),
              "level1-os-boundary-h1-isolation-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
         assert "os-boundary" in result.stdout.lower() or "isolation" in result.stdout.lower()
 
@@ -190,7 +195,7 @@ class TestPhase16XCLI:
             [sys.executable, str(OPERATOR),
              "level1-os-boundary-h1-isolation-checkpoint", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -203,7 +208,7 @@ class TestPhase16XCLI:
             [sys.executable, str(OPERATOR),
              "phase16x-os-boundary-h1-isolation-checkpoint", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -215,7 +220,7 @@ class TestPhase16XCLI:
             [sys.executable, str(OPERATOR),
              "level1-os-boundary-h1-isolation", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -227,7 +232,7 @@ class TestPhase16XCLI:
             [sys.executable, str(OPERATOR),
              "os-boundary-h1-isolation-checkpoint", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -239,7 +244,7 @@ class TestPhase16XCLI:
             [sys.executable, str(OPERATOR),
              "level1-os-boundary-h1-isolation-checkpoint", "--json"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required_fields = [
             "diagnosis", "severity", "git",

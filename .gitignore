@@ -25,3 +25,6 @@ ibkr_mcp_server.py
 bridge.py.broken.*
 # local backups
 *.backup
+.test-tmp/
+.test-results/
+.mypy_cache/

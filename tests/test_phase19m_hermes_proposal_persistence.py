@@ -32,6 +32,8 @@ passes guard.gate_proposal_discipline() (Gate H) for a BUY proposal --
 the concrete thing that was impossible before this fix.
 """
 
+from source_helpers import implementation_source
+
 import json
 import sys
 from pathlib import Path
@@ -129,7 +131,7 @@ class TestSharedTemplateNotPrivateCopy:
     template. Guard against it silently coming back."""
 
     def _function_source(self) -> str:
-        src = Path(BRIDGE_DIR / "ibkr_operator.py").read_text()
+        src = implementation_source('ibkr_operator.py')
         idx = src.index("def _run_hermes_proposal(")
         end = src.index("\ndef ", idx + 10)
         return src[idx:end]
@@ -169,7 +171,7 @@ class TestPersistenceOnValidResponse:
         assert saved.exists()
         assert saved.parent == isolated_proposals_dir
 
-        on_disk = json.loads(saved.read_text())
+        on_disk = json.loads(saved.read_text(encoding="utf-8"))
         assert on_disk["symbol"] == "AAPL"
         assert on_disk["side"] == "BUY"
         assert isinstance(on_disk.get("position_sizing"), dict)

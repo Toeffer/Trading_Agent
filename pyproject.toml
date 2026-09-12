@@ -11,6 +11,29 @@ readme = "README.md"
 
 [tool.ruff]
 target-version = "py312"
+exclude = [".venv", ".test-tmp", ".test-results"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = [
+  "unit: isolated unit behavior",
+  "portable: offline and independent of production host configuration",
+  "integration: explicit external integration",
+  "live: requires a connected broker",
+  "host: requires the Linux deployment host",
+  "acceptance: human-initiated paper acceptance",
+  "slow: slower deterministic checks",
+]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["trading_agent"]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["trading_agent.legacy_guard", "trading_agent.http_compat", "trading_agent.cli.operator_legacy", "trading_agent.cli.operator_workflow", "trading_agent.cli.operator_phase16", "trading_agent.cli.operator_phase17", "trading_agent.cli.operator_research", "trading_agent.cli.operator_common", "trading_agent.cli.operator_fixtures", "trading_agent.cli.operator_workflow_helpers", "trading_agent.cli.operator_governance_helpers", "trading_agent.cli.operator_research_helpers"]
+ignore_errors = true
 # This repo's f-string usage relies on PEP 701's relaxed grammar (nested
 # quotes, backslashes inside the expression part), which only parses under
 # Python 3.12+ -- see CHANGELOG.md's notes on the python3.11-vs-3.12
@@ -40,3 +63,9 @@ select = ["F821", "F823", "F601", "F402", "F811"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["F811"]
+
+# Historical root modules reached from compatibility code are outside the
+# typed execution boundaries. New trading_agent modules remain strictly checked.
+[[tool.mypy.overrides]]
+module = ["dry_run_scenarios", "guard", "monitor", "strategy_v1_1_core"]
+follow_imports = "skip"

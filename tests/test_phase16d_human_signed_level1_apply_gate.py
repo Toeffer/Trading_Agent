@@ -26,6 +26,8 @@ Coverage:
   - no mutation except autonomy file + export
 """
 
+from source_helpers import implementation_source
+
 import json
 import os
 import subprocess
@@ -301,7 +303,7 @@ Current setting: **0 (current)**
 
 Level 0: full manual
 Level 1: advisory only
-""")
+""", encoding="utf-8", newline="\n")
     return tmp
 
 
@@ -406,7 +408,7 @@ def _build_mocks(
     patches.append(patch("subprocess.run", side_effect=_mock_subprocess_output(sub_outputs)))
     tmp_openclaw = Path(tempfile.mkdtemp())
     if guard_state_content is not None:
-        (tmp_openclaw / "guard-state.json").write_text(guard_state_content)
+        (tmp_openclaw / "guard-state.json").write_text(guard_state_content, encoding="utf-8", newline="\n")
     patches.append(patch("ibkr_operator.OPENCLAW_DIR", tmp_openclaw))
     tmp_export = Path(tempfile.mkdtemp())
     patches.append(patch("ibkr_operator._PHASE16D_EXPORT_DIR", tmp_export))
@@ -451,7 +453,7 @@ class TestCommandExists:
             [sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
              "level1-apply-gate", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert r.returncode == 0, f"help failed: {r.stderr}"
 
     @pytest.mark.parametrize("alias", [
@@ -464,7 +466,7 @@ class TestCommandExists:
             [sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
              alias, "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert r.returncode == 0, f"{alias} --help failed: {r.stderr}"
 
     def test_function_importable(self):
@@ -838,7 +840,7 @@ class TestApplyModeSuccess:
             assert result["h1_token_not_used"] is True
             assert result["no_broker_mutation"] is True
             # Verify file was actually written
-            content = (tmp_bridge / "docs" / "AUTONOMY_CRITERIA.md").read_text()
+            content = (tmp_bridge / "docs" / "AUTONOMY_CRITERIA.md").read_text(encoding="utf-8")
             assert "**1 (current)**" in content
         finally:
             stop_patches(mocks, patches)
@@ -1056,7 +1058,7 @@ class TestNoOrderEndpoints:
 
     def test_no_forbidden_endpoints(self):
         import ast
-        source = (BRIDGE_DIR / "ibkr_operator.py").read_text()
+        source = implementation_source('ibkr_operator.py')
         tree = ast.parse(source)
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name == "_run_level1_apply_gate":
@@ -1157,16 +1159,16 @@ class TestNoMutation:
 
 class TestWriteAutonomyLevel:
     def test_write_updates_marker(self, tmp_autonomy_file):
-        assert "**0 (current)**" in tmp_autonomy_file.read_text()
+        assert "**0 (current)**" in tmp_autonomy_file.read_text(encoding="utf-8")
         result = _write_autonomy_level(tmp_autonomy_file, "1")
         assert result is True
-        content = tmp_autonomy_file.read_text()
+        content = tmp_autonomy_file.read_text(encoding="utf-8")
         assert "**1 (current)**" in content
         assert "**0 (current)**" not in content
 
     def test_write_no_change_returns_false(self):
         import tempfile
         tmp = Path(tempfile.mkdtemp()) / "AUTONOMY_CRITERIA.md"
-        tmp.write_text("no marker here")
+        tmp.write_text("no marker here", encoding="utf-8", newline="\n")
         result = _write_autonomy_level(tmp, "1")
         assert result is False

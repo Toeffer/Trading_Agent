@@ -91,7 +91,7 @@ def _write_candidate(tmp_dir: Path, verdict: str = "READY_DRYRUN",
             "fx_staleness_seconds": 0,
         },
     }
-    cand_path.write_text(json.dumps(cand_data))
+    cand_path.write_text(json.dumps(cand_data), encoding="utf-8", newline="\n")
     return candidate_dir
 
 
@@ -271,7 +271,7 @@ print(json.dumps(result, indent=2, default=str))
         result = subprocess.run(
             [sys.executable, "-c", script, str(tmp_path), str(BRIDGE_DIR)],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
 
         stdout_text = result.stdout.strip()
         assert stdout_text, "stdout is empty"
@@ -325,7 +325,7 @@ print(json.dumps(result, indent=2, default=str))
 
         export_path = Path(result["_export_path"])
         assert export_path.exists(), f"Export file not found: {export_path}"
-        with open(export_path, "r") as f:
+        with open(export_path, "r", encoding="utf-8") as f:
             exported = json.load(f)
         assert exported["review_id"] == result["review_id"]
         assert exported["no_broker_mutation"] is True
@@ -356,7 +356,7 @@ print(json.dumps(result, indent=2, default=str))
         }
 
         autonomy_doc = BRIDGE_DIR / "docs" / "AUTONOMY_CRITERIA.md"
-        original_content = autonomy_doc.read_text() if autonomy_doc.exists() else ""
+        original_content = autonomy_doc.read_text(encoding="utf-8") if autonomy_doc.exists() else ""
 
         with patch("ibkr_operator._CLEAN_CYCLE_LEDGER", ledger_path), \
              patch("ibkr_operator.OPENCLAW_DIR", tmp_path), \
@@ -373,7 +373,7 @@ print(json.dumps(result, indent=2, default=str))
         assert result["current_autonomy_level"] == "0"
 
         if autonomy_doc.exists():
-            assert autonomy_doc.read_text() == original_content, \
+            assert autonomy_doc.read_text(encoding="utf-8") == original_content, \
                 "AUTONOMY_CRITERIA.md was modified — mutation detected"
 
     # --- Test: does not call /order* ---

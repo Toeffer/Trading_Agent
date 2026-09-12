@@ -666,7 +666,7 @@ print("OK")
 """.replace("{repo}", str(REPO))],
                 capture_output=True, text=True, timeout=30,
                 env=env,
-            )
+            encoding="utf-8")
             assert "OK" in cp.stdout, f"stderr: {cp.stderr}"
 
     def test_full_chain_with_empty_home(self):
@@ -706,7 +706,7 @@ print("OK")
 """.replace("{repo}", str(REPO))],
                 capture_output=True, text=True, timeout=30,
                 env=env,
-            )
+            encoding="utf-8")
             assert "OK" in cp.stdout, f"stderr: {cp.stderr}"
 
 
@@ -719,7 +719,7 @@ class TestPhase17FCLI:
             [sys.executable, str(OPERATOR),
              "level1-planning-only-order-plan-draft-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_alias_phase17f_works(self):
@@ -727,7 +727,7 @@ class TestPhase17FCLI:
             [sys.executable, str(OPERATOR),
              "phase17f-planning-only-order-plan-draft-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_alias_planning_only_works(self):
@@ -735,7 +735,7 @@ class TestPhase17FCLI:
             [sys.executable, str(OPERATOR),
              "planning-only-order-plan-draft-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_json_output_valid(self):
@@ -743,7 +743,7 @@ class TestPhase17FCLI:
             [sys.executable, str(OPERATOR),
              "level1-planning-only-order-plan-draft-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -755,7 +755,7 @@ class TestPhase17FCLI:
             [sys.executable, str(OPERATOR),
              "level1-planning-only-order-plan-draft-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required = [
             "checkpoint_id", "timestamp", "diagnosis", "severity",
@@ -791,7 +791,7 @@ class TestPhase17FCLI:
             [sys.executable, str(OPERATOR),
              "level1-planning-only-order-plan-draft-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         if data.get("diagnosis") == _PHASE17F_DIAGNOSIS["ready"]:
             cp = data.get("canonical_order_plan_draft")
@@ -804,7 +804,7 @@ class TestPhase17FCLI:
             [sys.executable, str(OPERATOR),
              "level1-planning-only-order-plan-draft-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         if data.get("diagnosis") == _PHASE17F_DIAGNOSIS["ready"]:
             assert data.get("planning_draft_ready_case_passed") is True, \

@@ -19,7 +19,7 @@ REPO = Path(__file__).resolve().parent.parent
 ADAPTER = REPO / "hermes_advisory.py"
 sys.path.insert(0, str(REPO))
 
-SOURCE = ADAPTER.read_text()
+SOURCE = ADAPTER.read_text(encoding="utf-8")
 TREE = ast.parse(SOURCE)
 
 
@@ -140,7 +140,7 @@ class TestManifestRecordMatchesCode:
     def test_manifest_records_no_learning_channel(self):
         import json
         m = json.loads((REPO / "docs" / "strategy-proposals"
-                        / "strategy_v1_1_proposal_v0_1.manifest.json").read_text())
+                        / "strategy_v1_1_proposal_v0_1.manifest.json").read_text(encoding="utf-8"))
         learning = m["learning_policy"]
         assert learning["autonomous_parameter_adaptation"] is False
         assert learning["pnl_is_decision_input"] is False
@@ -150,5 +150,5 @@ class TestManifestRecordMatchesCode:
     def test_revision_budget_is_recorded(self):
         import json
         m = json.loads((REPO / "docs" / "strategy-proposals"
-                        / "strategy_v1_1_proposal_v0_1.manifest.json").read_text())
+                        / "strategy_v1_1_proposal_v0_1.manifest.json").read_text(encoding="utf-8"))
         assert m["learning_policy"]["max_revisions_per_window"] == 1

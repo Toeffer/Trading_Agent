@@ -11,6 +11,8 @@ Verifies:
 All tests are read-only. No broker mutation, no order endpoints, no H1 token.
 """
 
+from source_helpers import implementation_source
+
 import json
 import sys
 from pathlib import Path
@@ -106,47 +108,32 @@ class TestRolloverDeduplication:
 # ---------------------------------------------------------------------------
 
 class TestSubmitOrderNoDoubleIncrement:
-    """Verify submit_order doesn't increment on retry (already submitted)."""
+    """Daily counts derive from unique broker fills, never submit attempts."""
 
-    def test_submit_order_logic_no_double_count(self):
-        """The mark_approval_submitted + daily_trade_count pattern: verify
-        that the guard code correctly avoids double-counting via the
-        already_marked flag (added in Step 13 fix).
+    def test_submit_order_logic_no_double_count(self, tmp_path):
+        from trading_agent.persistence import ExecutionStore
+        from trading_agent.domain import BrokerResult, ExecutionState, utcnow
+        from test_execution_regressions import plan
+        from decimal import Decimal
+        store = ExecutionStore(tmp_path / "execution.sqlite3")
+        aid = store.create_pending(plan("SELL"))["approval_id"]
+        store.rule(aid, "approved", authorized=True)
+        execution, created = store.reserve(aid, authorized=True)
+        assert created
+        result = BrokerResult(ExecutionState.FILLED, filled_quantity=5,
+            fills=(("unique-fill", 5, Decimal(100), utcnow()),))
+        store.record_result(execution["execution_id"], result)
+        repeated, created = store.reserve(aid, authorized=True)
+        assert not created
+        store.record_result(execution["execution_id"], result)
+        assert store.daily_trade_count("PAPER_TEST", utcnow().date()) == 1
+        assert repeated["execution_id"] == execution["execution_id"]
 
-        We test this by verifying the source code contains the fix.
-        """
-        src = (BRIDGE_DIR / "guard.py").read_text()
-        # Verify the fix is present
-        assert "already_marked" in src, (
-            "submit_order must have already_marked flag for retry protection"
-        )
-        assert 'if not already_marked:' in src, (
-            "submit_order must guard daily_trade_count increment with already_marked check"
-        )
-        # Old buggy pattern should NOT be present
-        # The old code had 'except ValueError: pass' followed by unconditional increment
-        # The new code should NOT have a bare 'pass' in the ValueError handler
-        assert 'mark_approval_submitted' in src, "Must import mark_approval_submitted"
+    def test_mark_submitted_requires_atomic_reservation(self):
+        from guard import mark_approval_submitted
+        with pytest.raises(RuntimeError, match="ONLY_ATOMIC_EXECUTION_RESERVATION"):
+            mark_approval_submitted("unreserved")
 
-    def test_mark_submitted_raises_on_double(self):
-        """Second call to mark_approval_submitted with same ID raises ValueError."""
-        import guard as guard_mod
-
-        # Disable H1 guard to allow file writes
-        original_h1 = guard_mod._h1_startup_complete
-        guard_mod._h1_startup_complete = False
-        try:
-            from guard import mark_approval_submitted
-
-            import uuid
-            aid = f"test-double-{uuid.uuid4().hex[:8]}"
-            # First call succeeds
-            mark_approval_submitted(aid)
-            # Second call raises
-            with pytest.raises(ValueError, match="already submitted"):
-                mark_approval_submitted(aid)
-        finally:
-            guard_mod._h1_startup_complete = original_h1
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +146,7 @@ class TestAutocorrection:
     def test_autocorrect_reduces_inflated_count(self):
         """When guard count > event count, auto-correct downward."""
         from monitor import reconcile_snapshot
-        from guard import load_guard_state, save_guard_state_atomic
+        from guard import load_guard_state_readonly as load_guard_state, save_guard_state_atomic
 
         # Run reconciliation — it should auto-correct if mismatch detected
         snap = reconcile_snapshot()
@@ -185,7 +172,7 @@ class TestAutocorrection:
     def test_autocorrect_only_downward(self):
         """Auto-correction must never increase daily_trade_count."""
         from monitor import reconcile_snapshot
-        from guard import load_guard_state
+        from guard import load_guard_state_readonly as load_guard_state
 
         gs_before = load_guard_state()
         count_before = gs_before.get("daily_trade_count", 0)
@@ -335,7 +322,7 @@ class TestNoMutation:
     def test_no_forbidden_imports(self):
         """Test file must not import forbidden broker mutation functions.
         Note: the test may reference these strings in assertions/comments only."""
-        src = Path(__file__).read_text()
+        src = Path(__file__).read_text(encoding="utf-8")
         forbidden = [
             "placeOrder",
             "cancelOrder",
@@ -352,7 +339,7 @@ class TestNoMutation:
 
     def test_guard_state_not_corrupted_by_test(self):
         """Running tests should not mutate the real guard state."""
-        from guard import load_guard_state
+        from guard import load_guard_state_readonly as load_guard_state
 
         # All test modifications use tmp_path, not real state
         gs = load_guard_state()

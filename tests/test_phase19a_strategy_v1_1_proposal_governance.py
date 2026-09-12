@@ -11,6 +11,8 @@ them, so the document cannot drift away from guard.py.
 Paths resolve relative to this file, never to a deployment path.
 """
 
+from source_helpers import implementation_source
+
 import hashlib
 import json
 import re
@@ -31,7 +33,7 @@ VALID_STATUSES = {"PROPOSED", "BLOCKED", "PENDING_INPUT"}
 
 def _load_manifest() -> dict:
     assert MANIFEST_PATH.exists(), f"manifest missing: {MANIFEST_PATH}"
-    return json.loads(MANIFEST_PATH.read_text())
+    return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
 
 
 def _sha256_file(path: Path) -> str:
@@ -232,7 +234,7 @@ class TestDesignReviewState:
 
     def test_doc_version_matches_manifest(self):
         version = _load_manifest()["proposal_identity"]["proposal_version"]
-        text = PROPOSAL_DOC.read_text()
+        text = PROPOSAL_DOC.read_text(encoding="utf-8")
         assert f"**Proposal Version:** `{version}`" in text, \
             "Proposal document version header disagrees with the manifest"
 
@@ -302,7 +304,7 @@ class TestClaimsVerifiedAgainstCode:
         """§4.7/§9.4 claimed Gate I was free at 19A time; Phase 19B/B4 has since
         implemented it — verify the letter landed on the right function,
         exactly once, not that it's still unclaimed."""
-        source = GUARD_PATH.read_text()
+        source = implementation_source('guard.py')
         # Scoped to the official '"""Gate X — ...' docstring claim format —
         # run_preflight's inline '# Gate X — ...' comments echo the same
         # letter and would double-count if not excluded.
@@ -315,25 +317,25 @@ class TestClaimsVerifiedAgainstCode:
         assert "Gate I" in source[idx:idx + 400]
 
     def test_gate_h_is_proposal_discipline(self):
-        source = GUARD_PATH.read_text()
+        source = implementation_source('guard.py')
         idx = source.find("def gate_proposal_discipline")
         assert idx != -1
         assert "Gate H" in source[idx:idx + 400]
 
     def test_yaml_loader_accepts_unknown_keys(self):
         """Phase 19B adds new YAML keys before guard.py knows about them."""
-        source = GUARD_PATH.read_text()
+        source = implementation_source('guard.py')
         assert "missing = [k for k in required_keys if k not in rules]" in source, \
             "Rules loader no longer validates by required-keys only; 19B may not be backward compatible"
 
     def test_sizing_formula_unchanged(self):
-        source = GUARD_PATH.read_text()
+        source = implementation_source('guard.py')
         assert "def compute_final_max_shares" in source
         assert "min(shares_by_notional, shares_by_risk)" in source, \
             "Sizing formula changed; proposal section 4.8 claims it is unchanged"
 
     def test_calc_stop_still_uses_five_percent_floor(self):
-        source = GUARD_PATH.read_text()
+        source = implementation_source('guard.py')
         idx = source.find("def calc_stop")
         assert idx != -1
         assert "0.95" in source[idx:idx + 1200], \
@@ -352,8 +354,8 @@ class TestClaimsVerifiedAgainstCode:
         must still be duplicated; if recorded as resolved, it must not be.
         """
         vac = _load_manifest()["verified_against_code"]["operator_main_duplicated"]
-        operator = REPO / "ibkr_operator.py"
-        count = len(re.findall(r"^def main\(", operator.read_text(), re.M))
+        operator = REPO / "trading_agent/cli/operator_registry.py"
+        count = len(re.findall(r"^def main\(", operator.read_text(encoding="utf-8"), re.M))
         if vac.get("is_defect"):
             assert count > 1, \
                 "main() is no longer duplicated — update the manifest and unblock the phase19a CLI command"
@@ -366,22 +368,23 @@ class TestClaimsVerifiedAgainstCode:
         """Regression guard for the de-duplication."""
         import ast
         import collections
-        tree = ast.parse((REPO / "ibkr_operator.py").read_text())
-        names = collections.defaultdict(list)
-        for node in tree.body:
-            name = getattr(node, "name", None)
-            if name is None and isinstance(node, ast.Assign):
-                name = getattr(node.targets[0], "id", None)
-            if name:
-                names[name].append(node.lineno)
-        dupes = {k: v for k, v in names.items() if len(v) > 1}
-        assert not dupes, f"duplicated top-level definitions reintroduced: {dupes}"
+        for module in (REPO / "trading_agent/cli").glob("operator_*.py"):
+            tree = ast.parse(module.read_text(encoding="utf-8"))
+            names = collections.defaultdict(list)
+            for node in tree.body:
+                name = getattr(node, "name", None)
+                if name is None and isinstance(node, ast.Assign):
+                    name = getattr(node.targets[0], "id", None)
+                if name:
+                    names[name].append(node.lineno)
+            dupes = {k: v for k, v in names.items() if len(v) > 1}
+            assert not dupes, f"duplicated top-level definitions in {module.name}: {dupes}"
 
     def test_no_script_references_the_raw_token_path(self):
         """Mirrors the T7 invariant — the manifest generator must stay clean."""
         gen = REPO / "scripts" / "gen_strategy_v1_1_manifest.py"
         if gen.exists():
-            assert "/etc/ibkr-bridge/h1_token" not in gen.read_text(), \
+            assert "/etc/ibkr-bridge/h1_token" not in gen.read_text(encoding="utf-8"), \
                 "manifest generator must not embed the raw H1 token path"
 
 
@@ -391,16 +394,16 @@ class TestClaimsVerifiedAgainstCode:
 class TestCanonicalStrategyPreservation:
 
     def test_strategy_v1_still_declares_v1_0_0(self):
-        assert "v1.0.0" in CANONICAL_STRATEGY.read_text()
+        assert "v1.0.0" in CANONICAL_STRATEGY.read_text(encoding="utf-8")
 
     def test_strategy_v1_does_not_reference_this_proposal(self):
-        content = CANONICAL_STRATEGY.read_text().lower()
+        content = CANONICAL_STRATEGY.read_text(encoding="utf-8").lower()
         assert "strategy_v1_1_proposal" not in content, \
             "Phase 19A must not modify the canonical strategy"
 
     def test_strategy_v1_allowlist_unchanged(self):
         """The 22-symbol expansion must not have leaked into the active strategy."""
-        content = CANONICAL_STRATEGY.read_text()
+        content = CANONICAL_STRATEGY.read_text(encoding="utf-8")
         for symbol in ["AAPL", "META", "NVDA", "AMD"]:
             assert symbol in content
         for symbol in ["XOM", "CVX", "DUK", "NEE", "UNP"]:
@@ -410,7 +413,7 @@ class TestCanonicalStrategyPreservation:
     def test_no_yaml_rules_file_in_repo_gained_new_symbols(self):
         """Phase 19A must not touch any YAML rules file."""
         for yp in list(REPO.glob("**/*.yaml")) + list(REPO.glob("**/*.yml")):
-            content = yp.read_text()
+            content = yp.read_text(encoding="utf-8")
             for symbol in ["XOM", "CVX", "DUK", "NEE", "UNP", "MSTR"]:
                 assert symbol not in content, f"{symbol} found in {yp}"
 
@@ -441,7 +444,7 @@ class TestOutputLabels:
 class TestDocumentSafetyBoundary:
 
     def test_doc_does_not_enable_kill_switches(self):
-        content = PROPOSAL_DOC.read_text()
+        content = PROPOSAL_DOC.read_text(encoding="utf-8")
         assert "IBKR_ALLOW_ORDERS=true" not in content
         assert "rules.enforced=true" not in content
 
@@ -489,32 +492,32 @@ class TestPreregistrationInfrastructure:
         assert self.SEAL.exists()
 
     def test_template_covers_all_seven_required_fields(self):
-        text = self.TEMPLATE.read_text()
+        text = self.TEMPLATE.read_text(encoding="utf-8")
         for heading in ["Run identity", "Strategy version under test",
                         "Expected observations", "Falsifiers", "Decision rules",
                         "Explicitly excluded", "Revision budget", "Seal"]:
             assert heading in text, f"template missing section: {heading}"
 
     def test_template_carries_all_fifteen_falsifiers(self):
-        text = self.TEMPLATE.read_text()
+        text = self.TEMPLATE.read_text(encoding="utf-8")
         for n in range(1, 16):
             assert f"| F{n} |" in text, f"falsifier F{n} missing from template"
 
     def test_expected_values_are_left_blank(self):
         """§3 must be the operator's prior, never pre-filled by the assistant."""
-        text = self.TEMPLATE.read_text()
+        text = self.TEMPLATE.read_text(encoding="utf-8")
         section = text[text.index("## 3. Expected observations"):text.index("## 4. Falsifiers")]
         assert section.count("<<FILL IN>>") >= 8, \
             "expected-observation ranges must be blank — a suggested value is an anchor, not a prior"
 
     def test_template_excludes_pnl_from_decisions(self):
-        text = self.TEMPLATE.read_text()
+        text = self.TEMPLATE.read_text(encoding="utf-8")
         section = text[text.index("## 6. Explicitly excluded"):text.index("## 7. Revision budget")]
         for metric in ["Paper P&L", "Win rate", "Paper Sharpe"]:
             assert metric in section
 
     def test_revision_budget_is_one(self):
-        text = self.TEMPLATE.read_text()
+        text = self.TEMPLATE.read_text(encoding="utf-8")
         section = text[text.index("## 7. Revision budget"):]
         assert "**1**" in section
 
@@ -555,6 +558,10 @@ class TestApprovalRecord:
 class TestCiCoversDevelopmentBranches:
 
     def test_ci_push_trigger_includes_claude_branches(self):
-        ci = (REPO / ".github" / "workflows" / "ci.yml").read_text()
-        assert "'claude/*'" in ci, \
-            "CI push trigger does not match claude/* — commits on this branch would run no CI"
+        ci = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        import yaml
+        workflow = yaml.safe_load(ci)
+        triggers = workflow.get("on", workflow.get(True))  # YAML 1.1 boolean key
+        assert "push" in triggers and "pull_request" in triggers
+        if isinstance(triggers, dict) and isinstance(triggers["push"], dict):
+            assert "branches" not in triggers["push"] or "claude/*" in triggers["push"]["branches"]

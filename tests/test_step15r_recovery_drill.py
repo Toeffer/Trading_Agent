@@ -219,7 +219,7 @@ class TestRequiredFields:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-fields")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-fields')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -259,7 +259,7 @@ class TestSafetyFlags:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-safety")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-safety')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         safety_flags = {
@@ -304,7 +304,7 @@ class TestRecoveredPath:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-live")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-live')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -350,7 +350,7 @@ class TestDelayedPath:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-delayed")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-delayed')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -393,7 +393,7 @@ class TestTimeoutRetryPath:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-timeout")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-timeout')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -427,7 +427,7 @@ class TestTimeoutRetryPath:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-recover")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-recover')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         # First call returns timeout, second returns live
@@ -482,7 +482,7 @@ class TestConnectPath:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-connect")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-connect')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         # Health says disconnected, connect succeeds, diagnostics returns live
@@ -536,7 +536,7 @@ class TestConnectPath:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-noconnect")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-noconnect')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -568,7 +568,7 @@ class TestConnectPath:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-noconnect-flag")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-noconnect-flag')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -606,7 +606,7 @@ class TestEdgeCases:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-contract")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-contract')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         diag = _make_diagnostics_no_tick_timeout_result()
@@ -639,7 +639,7 @@ class TestEdgeCases:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-runtime")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-runtime')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         diag = _make_diagnostics_no_tick_timeout_result()
@@ -672,7 +672,7 @@ class TestEdgeCases:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-session")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-session')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         diag = _make_diagnostics_delayed_result()
@@ -746,7 +746,7 @@ class TestClampingBounds:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-clamp")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-clamp')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -777,7 +777,7 @@ class TestClampingBounds:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-clamp-max")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-clamp-max')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -816,7 +816,7 @@ class TestOutputFormat:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-json")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-json')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -877,7 +877,7 @@ class TestEntitlementPath:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-entitlement")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-entitlement')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         diag = _make_diagnostics_no_tick_timeout_result()
@@ -916,7 +916,7 @@ class TestEntitlementPath:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-entitlement2")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-entitlement2')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         diag = _make_diagnostics_no_tick_timeout_result()
@@ -956,7 +956,7 @@ class TestBackpressureNotLeaked:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-bpleak")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-bpleak')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         # Simulate a backpressure counter that persists across calls
@@ -1012,7 +1012,7 @@ class TestBackpressureNotLeaked:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-test-503recover")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-test-503recover')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         # Simulate diagnostics that always times out
@@ -1147,7 +1147,7 @@ class TestGuardStateMutationDetection:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-guard-ok")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-guard-ok')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -1188,7 +1188,7 @@ class TestGuardStateMutationDetection:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-guard-mutated")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-guard-mutated')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -1225,7 +1225,7 @@ class TestGuardStateMutationDetection:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-guard-tc")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-guard-tc')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -1264,7 +1264,7 @@ class TestGuardStateMutationDetection:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-guard-fields")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-guard-fields')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -1301,7 +1301,7 @@ class TestGuardStateMutationDetection:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-guard-repeat")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-guard-repeat')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         call_count = [0]
@@ -1367,7 +1367,7 @@ class TestCaptureSafetyFlagsRaw:
         # Create a temp .env with IBKR_ALLOW_ORDERS=false
         with tempfile.TemporaryDirectory() as td:
             env_path = Path(td) / ".env"
-            env_path.write_text("# test\nIBKR_ALLOW_ORDERS=false\nOTHER=v\n")
+            env_path.write_text("# test\nIBKR_ALLOW_ORDERS=false\nOTHER=v\n", encoding="utf-8", newline="\n")
             with patch("ibkr_operator.BRIDGE_DIR", Path(td)):
                 from ibkr_operator import _capture_safety_flags_raw
                 result = _capture_safety_flags_raw()
@@ -1452,7 +1452,7 @@ class TestRecoveryDrillErrorContract:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/test-drill-json-ok")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'test-drill-json-ok')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -1517,7 +1517,7 @@ class TestBridgeSaturatedClassification:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-saturated")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-saturated')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         diag_result = _make_diagnostics_no_tick_timeout_result()
@@ -1562,7 +1562,7 @@ class TestBridgeSaturatedClassification:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-saturated-actions")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-saturated-actions')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         diag_result = _make_diagnostics_no_tick_timeout_result()
@@ -1606,7 +1606,7 @@ class TestBridgeSaturatedClassification:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-saturated-safety")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-saturated-safety')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         diag_result = _make_diagnostics_no_tick_timeout_result()
@@ -1649,7 +1649,7 @@ class TestBridgeSaturatedClassification:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-saturated-not-unknown")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-saturated-not-unknown')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         diag_result = _make_diagnostics_no_tick_timeout_result()
@@ -1689,7 +1689,7 @@ class TestBridgeSaturatedClassification:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-no-saturated-blocker")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-no-saturated-blocker')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -1786,7 +1786,7 @@ class TestBridgeSaturatedFailFast:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-sat-ff")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-sat-ff')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         call_count = [0]
@@ -1835,7 +1835,7 @@ class TestBridgeSaturatedFailFast:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-503-abort")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-503-abort')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         call_count = [0]
@@ -1886,7 +1886,7 @@ class TestBridgeSaturatedFailFast:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-pre-bp-stop")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-pre-bp-stop')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         called_diagnostics = [False]
@@ -1934,7 +1934,7 @@ class TestBridgeSaturatedFailFast:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-sat-blockers")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-sat-blockers')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -1980,7 +1980,7 @@ class TestBridgeSaturatedFailFast:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-sat-safety")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-sat-safety')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         with patch("ibkr_operator._capture_safety_flags_raw",
@@ -2021,7 +2021,7 @@ class TestBridgeSaturatedFailFast:
         from ibkr_operator import _run_market_data_recovery_drill
         from pathlib import Path
 
-        export_dir = Path("/tmp/md-drill-sat-repeat")
+        export_dir = (Path(__import__("tempfile").gettempdir()) / 'md-drill-sat-repeat')
         export_dir.mkdir(parents=True, exist_ok=True)
 
         for i in range(3):
@@ -2057,3 +2057,9 @@ class TestBridgeSaturatedFailFast:
                 f"Run {i}: expected 1 attempt, got {result['attempts_completed']}"
             assert result["drill_result"] == "hold_bridge_saturated", \
                 f"Run {i}: expected hold_bridge_saturated, got {result['drill_result']}"
+
+
+@pytest.fixture(autouse=True)
+def isolated_guard_evidence(monkeypatch):
+    # Tests of mutation explicitly override this baseline within their scopes.
+    monkeypatch.setattr("ibkr_operator._capture_guard_state_snapshot", lambda: _mock_guard_snapshot())

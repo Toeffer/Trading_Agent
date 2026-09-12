@@ -54,7 +54,7 @@ def main():
     print("\n\U0001f4c4 Policy File Existence")
     check(policy_path.exists(), "Policy file exists")
     if policy_path.exists():
-        content = policy_path.read_text()
+        content = policy_path.read_text(encoding="utf-8")
         check(len(content) > 1000, "Policy file non-empty (%d bytes)" % len(content))
 
         # ---- 2. Mandatory proposal fields ----
@@ -109,7 +109,7 @@ def main():
     # ---- 6. CLAUDE.md reference ----
     print("\n\U0001f4d8 CLAUDE.md Reference")
     if claude_path.exists():
-        claude = claude_path.read_text()
+        claude = claude_path.read_text(encoding="utf-8")
         check("Hermes Advisory Guard" in claude,
               "CLAUDE.md contains Hermes Advisory section")
         check("hermes-advisory-guard-policy.md" in claude,
@@ -120,7 +120,7 @@ def main():
     # ---- 7. RUNBOOK.md reference ----
     print("\n\U0001f4d5 RUNBOOK.md Reference")
     if runbook_path.exists():
-        runbook = runbook_path.read_text()
+        runbook = runbook_path.read_text(encoding="utf-8")
         check("Hermes Advisory Guard" in runbook,
               "RUNBOOK.md contains Hermes Advisory section")
         check("hermes-advisory-guard-policy.md" in runbook,
@@ -131,7 +131,7 @@ def main():
     # ---- 8. Doctor check exists ----
     print("\n\U0001f52c ibkr-operator Doctor Check")
     if operator_path.exists():
-        operator = operator_path.read_text()
+        operator = operator_path.read_text(encoding="utf-8")
         check("hermes_policy_exists" in operator,
               "ibkr_operator.py has hermes_policy_exists doctor check")
         check("hermes-advisory-guard-policy.md" in operator,
@@ -142,7 +142,7 @@ def main():
     # ---- 9. No mutation paths added ----
     print("\n\U0001f512 No Mutation / Bypass Paths")
     if operator_path.exists():
-        operator = operator_path.read_text()
+        operator = operator_path.read_text(encoding="utf-8")
         lines = operator.split("\n")
         # Track whether we are inside a triple-quoted docstring
         in_docstring = False

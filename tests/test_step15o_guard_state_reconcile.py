@@ -94,7 +94,7 @@ class TestCommandExists:
                 [sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
                  alias, "--help"],
                 capture_output=True, text=True, timeout=15,
-            )
+            encoding="utf-8")
             assert r.returncode == 0, f"{alias} --help failed: {r.stderr}"
 
 
@@ -121,7 +121,7 @@ class TestDryRunDetectsMismatch:
              patch("ibkr_operator.urllib.request.urlopen",
                    side_effect=Exception("no bridge")), \
              patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR",
-                   Path("/tmp/guard-state-repairs")):
+                   (Path(__import__("tempfile").gettempdir()) / 'guard-state-repairs')):
             result = _run_guard_state_reconcile(
                 apply_repair=False,
                 confirm_local_state_repair=False,
@@ -150,7 +150,7 @@ class TestDryRunDetectsMismatch:
              patch("ibkr_operator.urllib.request.urlopen",
                    side_effect=Exception("no bridge")), \
              patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR",
-                   Path("/tmp/guard-state-repairs")):
+                   (Path(__import__("tempfile").gettempdir()) / 'guard-state-repairs')):
             result = _run_guard_state_reconcile(
                 apply_repair=False,
                 confirm_local_state_repair=False,
@@ -166,7 +166,7 @@ class TestDryRunDetectsMismatch:
 
         guard_path = tmp_path / "guard-state.json"
         gs = _make_guard_state(daily_trade_count=6)
-        guard_path.write_text(json.dumps(gs))
+        guard_path.write_text(json.dumps(gs), encoding="utf-8", newline="\n")
 
         events = _make_events(count=0)
 
@@ -188,7 +188,7 @@ class TestDryRunDetectsMismatch:
             )
 
         # Guard state file must be unchanged
-        assert guard_path.read_text() == json.dumps(gs), \
+        assert guard_path.read_text(encoding="utf-8") == json.dumps(gs), \
             "Dry-run must not modify guard-state.json"
 
 
@@ -215,7 +215,7 @@ class TestApplyRequiresConfirmation:
              patch("ibkr_operator.urllib.request.urlopen",
                    side_effect=Exception("no bridge")), \
              patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR",
-                   Path("/tmp/guard-state-repairs")):
+                   (Path(__import__("tempfile").gettempdir()) / 'guard-state-repairs')):
             result = _run_guard_state_reconcile(
                 apply_repair=True,
                 confirm_local_state_repair=False,  # missing confirmation!
@@ -248,7 +248,7 @@ class TestApplyRepairsDownward:
 
         repairs_dir = tmp_path / "guard-state-repairs"
         guard_path = tmp_path / "guard-state.json"
-        guard_path.write_text(json.dumps(gs))
+        guard_path.write_text(json.dumps(gs), encoding="utf-8", newline="\n")
 
         # load_guard_state: first call returns original, after repair returns repaired
         call_count = [0]
@@ -301,7 +301,7 @@ class TestApplyRepairsDownward:
 
         repairs_dir = tmp_path / "guard-state-repairs"
         guard_path = tmp_path / "guard-state.json"
-        guard_path.write_text(json.dumps(gs))
+        guard_path.write_text(json.dumps(gs), encoding="utf-8", newline="\n")
 
         call_count = [0]
 
@@ -365,7 +365,7 @@ class TestStaleTradeDateRepair:
              patch("ibkr_operator.urllib.request.urlopen",
                    side_effect=Exception("no bridge")), \
              patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR",
-                   Path("/tmp/guard-state-repairs")):
+                   (Path(__import__("tempfile").gettempdir()) / 'guard-state-repairs')):
             result = _run_guard_state_reconcile(
                 apply_repair=False,
                 confirm_local_state_repair=False,
@@ -397,7 +397,7 @@ class TestStaleTradeDateRepair:
 
         repairs_dir = tmp_path / "guard-state-repairs"
         guard_path = tmp_path / "guard-state.json"
-        guard_path.write_text(json.dumps(gs))
+        guard_path.write_text(json.dumps(gs), encoding="utf-8", newline="\n")
 
         call_count = [0]
 
@@ -456,7 +456,7 @@ class TestStaleTradeDateRepair:
 
         repairs_dir = tmp_path / "guard-state-repairs"
         guard_path = tmp_path / "guard-state.json"
-        guard_path.write_text(json.dumps(gs))
+        guard_path.write_text(json.dumps(gs), encoding="utf-8", newline="\n")
 
         call_count = [0]
 
@@ -512,7 +512,7 @@ class TestNeverRepairUpward:
              patch("ibkr_operator.urllib.request.urlopen",
                    side_effect=Exception("no bridge")), \
              patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR",
-                   Path("/tmp/guard-state-repairs")):
+                   (Path(__import__("tempfile").gettempdir()) / 'guard-state-repairs')):
             result = _run_guard_state_reconcile(
                 apply_repair=True,
                 confirm_local_state_repair=True,
@@ -558,7 +558,7 @@ class TestAmbiguousEvidenceHold:
              patch("ibkr_operator.urllib.request.urlopen",
                    side_effect=Exception("no bridge")), \
              patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR",
-                   Path("/tmp/guard-state-repairs")):
+                   (Path(__import__("tempfile").gettempdir()) / 'guard-state-repairs')):
             result = _run_guard_state_reconcile(
                 apply_repair=True,
                 confirm_local_state_repair=True,
@@ -594,7 +594,7 @@ class TestExportAndJson:
              patch("ibkr_operator.urllib.request.urlopen",
                    side_effect=Exception("no bridge")), \
              patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR",
-                   Path("/tmp/guard-state-repairs")):
+                   (Path(__import__("tempfile").gettempdir()) / 'guard-state-repairs')):
             result = _run_guard_state_reconcile(
                 apply_repair=False,
                 confirm_local_state_repair=False,
@@ -634,7 +634,7 @@ class TestExportAndJson:
         assert export_file.exists()
         assert export_file.suffix == ".json"
 
-        exported = json.loads(export_file.read_text())
+        exported = json.loads(export_file.read_text(encoding="utf-8"))
         assert exported["repair_id"] == result["repair_id"]
 
 
@@ -673,7 +673,7 @@ class TestRequiredFields:
              patch("ibkr_operator.urllib.request.urlopen",
                    side_effect=Exception("no bridge")), \
              patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR",
-                   Path("/tmp/guard-state-repairs")):
+                   (Path(__import__("tempfile").gettempdir()) / 'guard-state-repairs')):
             result = _run_guard_state_reconcile(
                 apply_repair=False,
                 confirm_local_state_repair=False,
@@ -698,7 +698,7 @@ class TestRequiredFields:
              patch("ibkr_operator.urllib.request.urlopen",
                    side_effect=Exception("no bridge")), \
              patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR",
-                   Path("/tmp/guard-state-repairs")):
+                   (Path(__import__("tempfile").gettempdir()) / 'guard-state-repairs')):
             result = _run_guard_state_reconcile(
                 apply_repair=False,
                 confirm_local_state_repair=False,
@@ -795,7 +795,7 @@ class TestEvidenceHash:
                  patch("ibkr_operator.urllib.request.urlopen",
                        side_effect=Exception("no bridge")), \
                  patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR",
-                       Path("/tmp/guard-state-repairs")):
+                       (Path(__import__("tempfile").gettempdir()) / 'guard-state-repairs')):
                 return _run_guard_state_reconcile(
                     apply_repair=False,
                     confirm_local_state_repair=False,

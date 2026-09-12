@@ -179,7 +179,7 @@ class TestCommandExistsAndExports:
         assert export_file.suffix == ".json"
 
         # Verify content round-trips
-        exported = json.loads(export_file.read_text())
+        exported = json.loads(export_file.read_text(encoding="utf-8"))
         assert exported["plan_id"] == result["plan_id"]
         assert exported["plan_status"] == result["plan_status"]
 
@@ -200,14 +200,14 @@ class TestAliases:
             [sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
              "promotion-plan", "--help"],
             capture_output=True, text=True, timeout=15,
-        )
+        encoding="utf-8")
         assert r1.returncode == 0, f"promotion-plan --help failed: {r1.stderr}"
 
         r2 = subprocess.run(
             [sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
              "level1-promotion-plan", "--help"],
             capture_output=True, text=True, timeout=15,
-        )
+        encoding="utf-8")
         assert r2.returncode == 0, f"level1-promotion-plan --help failed: {r2.stderr}"
 
 
@@ -499,7 +499,7 @@ class TestNoBrokerMutation:
         """The promotion plan must not modify any .env file."""
         env_path = tmp_path / ".env"
         original = "IBKR_ALLOW_ORDERS=false\n"
-        env_path.write_text(original)
+        env_path.write_text(original, encoding="utf-8", newline="\n")
 
         with patch("ibkr_operator._run_autonomy_status",
                    return_value=_make_hold_autonomy_status()), \
@@ -510,7 +510,7 @@ class TestNoBrokerMutation:
             _run_autonomy_promotion_plan(target_level="1")
 
         # The .env file must be unchanged
-        assert env_path.read_text() == original, \
+        assert env_path.read_text(encoding="utf-8") == original, \
             ".env file was modified by promotion plan"
 
 

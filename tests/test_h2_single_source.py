@@ -54,9 +54,9 @@ def main():
     claude_path = home / "agents" / "ibkr-bridge" / "CLAUDE.md"
     yaml_path = home / ".openclaw" / "risk-rules" / "paper-trading-rules.yaml"
 
-    guard_content = guard_path.read_text() if guard_path.exists() else ""
-    claude_content = claude_path.read_text() if claude_path.exists() else ""
-    yaml_content = yaml_path.read_text() if yaml_path.exists() else ""
+    guard_content = guard_path.read_text(encoding="utf-8") if guard_path.exists() else ""
+    claude_content = claude_path.read_text(encoding="utf-8") if claude_path.exists() else ""
+    yaml_content = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
 
     # ── H2-C1: No hardcoded allowlist in guard.py ─────────────────────
     print("\n── H2-C1: No Hardcoded Allowlist ──")

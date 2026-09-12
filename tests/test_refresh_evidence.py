@@ -92,7 +92,7 @@ def _write_candidate(tmp_dir: Path, verdict: str = "READY_DRYRUN",
             "fx_staleness_seconds": 0,
         },
     }
-    cand_path.write_text(json.dumps(cand_data))
+    cand_path.write_text(json.dumps(cand_data), encoding="utf-8", newline="\n")
 
     # Set mtime for age testing
     target_mtime = time.time() + mtime_offset_seconds  # negative = in the past
@@ -395,7 +395,7 @@ class TestRefreshEvidence:
                 "fx_staleness_seconds": 0,
             },
         }
-        cand_path.write_text(json.dumps(cand_data))
+        cand_path.write_text(json.dumps(cand_data), encoding="utf-8", newline="\n")
 
         lw = _make_lightweight_clean()
         kpi = {
@@ -583,7 +583,7 @@ print(json.dumps(result, indent=2, default=str))
         result = subprocess.run(
             [sys.executable, "-c", script, str(tmp_path), str(BRIDGE_DIR)],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         stdout_text = result.stdout.strip()
         assert stdout_text, "stdout is empty"
         try:
@@ -762,7 +762,7 @@ class TestMarketSnapshotTimeout:
                 "fx_staleness_seconds": 0,
             },
         }
-        cand_path.write_text(json.dumps(cand_data))
+        cand_path.write_text(json.dumps(cand_data), encoding="utf-8", newline="\n")
         return candidate_dir
 
     # --- Test: timeout snapshot returns valid JSON ---

@@ -733,7 +733,7 @@ print("OK")
 """.replace("{repo}", str(REPO))],
                 capture_output=True, text=True, timeout=30,
                 env=env,
-            )
+            encoding="utf-8")
             assert "OK" in cp.stdout, f"stderr: {cp.stderr}"
 
     def test_full_chain_with_empty_home(self):
@@ -772,7 +772,7 @@ print("OK")
 """.replace("{repo}", str(REPO))],
                 capture_output=True, text=True, timeout=30,
                 env=env,
-            )
+            encoding="utf-8")
             assert "OK" in cp.stdout, f"stderr: {cp.stderr}"
 
 
@@ -785,7 +785,7 @@ class TestPhase17HCLI:
             [sys.executable, str(OPERATOR),
              "level1-human-simulation-review-decision-record-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_alias_phase17h_works(self):
@@ -793,7 +793,7 @@ class TestPhase17HCLI:
             [sys.executable, str(OPERATOR),
              "phase17h-human-simulation-review-decision-record-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_alias_human_simulation_review_works(self):
@@ -801,7 +801,7 @@ class TestPhase17HCLI:
             [sys.executable, str(OPERATOR),
              "human-simulation-review-decision-record-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_json_output_valid(self):
@@ -809,7 +809,7 @@ class TestPhase17HCLI:
             [sys.executable, str(OPERATOR),
              "level1-human-simulation-review-decision-record-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -821,7 +821,7 @@ class TestPhase17HCLI:
             [sys.executable, str(OPERATOR),
              "level1-human-simulation-review-decision-record-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required = [
             "checkpoint_id", "timestamp", "diagnosis", "severity",
@@ -844,7 +844,7 @@ class TestPhase17HCLI:
             [sys.executable, str(OPERATOR),
              "level1-human-simulation-review-decision-record-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         if data.get("diagnosis") == _PHASE17H_DIAGNOSIS["ready"]:
             cr = data.get("canonical_review_record")

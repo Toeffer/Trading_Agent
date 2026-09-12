@@ -33,7 +33,7 @@ def _has_module_level_sys_exit(filepath: Path) -> list[str]:
     """Return list of errors for module-level sys.exit/SystemExit in a file."""
     errors: list[str] = []
     try:
-        source = filepath.read_text()
+        source = filepath.read_text(encoding="utf-8")
     except Exception:
         return errors
 
@@ -137,7 +137,7 @@ class TestCollectionSafety:
         # Same check; the helper covers both patterns.
         # This test is a semantic duplicate for clarity in CI logs.
         for fp in _python_test_files():
-            source = fp.read_text()
+            source = fp.read_text(encoding="utf-8")
             # Quick grep to fail fast
             if "raise SystemExit" not in source and "SystemExit" not in source:
                 continue
@@ -152,7 +152,7 @@ class TestCollectionSafety:
         """All test files parse as valid Python without import errors."""
         for fp in _python_test_files():
             try:
-                ast.parse(fp.read_text(), filename=str(fp))
+                ast.parse(fp.read_text(encoding="utf-8"), filename=str(fp))
             except SyntaxError as e:
                 raise AssertionError(
                     f"{fp.name} has syntax error: {e}"

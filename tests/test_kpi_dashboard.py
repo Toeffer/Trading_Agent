@@ -4,6 +4,8 @@ All tests are read-only. No broker mutation, no order endpoints,
 no H1 token usage.
 """
 
+from source_helpers import implementation_source
+
 import json
 import os
 import sys
@@ -85,7 +87,7 @@ class TestNoBrokerMutation:
     def test_no_forbidden_names_in_kpi_functions(self):
         """AST check: run_kpi, print_kpi, export_kpi contain no forbidden names."""
         import ast
-        src = (BRIDGE_DIR / "ibkr_operator.py").read_text()
+        src = implementation_source('ibkr_operator.py')
         tree = ast.parse(src)
 
         # Find KPI-related functions
@@ -121,7 +123,7 @@ class TestNoBrokerMutation:
 
     def test_no_order_route_calls(self):
         """KPI must not make HTTP calls to /order endpoints."""
-        src = (BRIDGE_DIR / "ibkr_operator.py").read_text()
+        src = implementation_source('ibkr_operator.py')
         # Check the KPI endpoint list
         eps = _get_kpi_endpoints()
         for ep in eps:
@@ -208,7 +210,7 @@ class TestJsonParseable:
             capture_output=True, text=True, timeout=15,
             cwd=str(BRIDGE_DIR),
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-        )
+        encoding="utf-8")
         # Accept exit codes 0 (GO), 2 (HOLD/NO-GO)
         assert proc.returncode in (0, 2), (
             f"Unexpected exit code {proc.returncode}: {proc.stderr[:500]}"
@@ -358,7 +360,7 @@ class TestExportWritesCorrectPath:
                 f"Export written to wrong dir: {path.parent}, expected {export_dir}"
             )
             # Verify content is valid JSON
-            content = path.read_text()
+            content = path.read_text(encoding="utf-8")
             data = json.loads(content)
             assert data["verdict"] == result["verdict"], (
                 f"Export verdict mismatch: {data['verdict']} vs {result['verdict']}"
@@ -400,7 +402,7 @@ class TestNoH1TokenUsage:
     def test_kpi_functions_no_h1_token(self):
         """KPI functions must not contain H1 token references."""
         import ast
-        src = (BRIDGE_DIR / "ibkr_operator.py").read_text()
+        src = implementation_source('ibkr_operator.py')
         tree = ast.parse(src)
 
         # Find KPI functions
@@ -434,7 +436,7 @@ class TestNoH1TokenUsage:
 
     def test_no_token_path_in_source(self):
         """Full source must not use token file path except in safety comments."""
-        src = (BRIDGE_DIR / "ibkr_operator.py").read_text()
+        src = implementation_source('ibkr_operator.py')
         for line in src.splitlines():
             stripped = line.strip()
             if stripped.startswith("#"):
@@ -493,7 +495,7 @@ class TestCIIntegration:
 
     def test_no_h1_token_in_test_file(self):
         """This test file must not reference H1 token path in a real usage."""
-        src = Path(__file__).read_text()
+        src = Path(__file__).read_text(encoding="utf-8")
         # The test file may contain the path as a pattern to check AGAINST
         # (e.g., in H1_PATTERNS list). Count occurrences.
         occurrences = src.count("/etc/ibkr-bridge/h1_token")
@@ -533,15 +535,17 @@ class TestStaleAlertRepair:
         assert "" in ids
         assert "aprv_real_uuid" not in ids
 
-    def test_stale_orphan_repaired(self):
+    def test_stale_orphan_repaired(self, tmp_path):
         """Live repair clears stale orphans, keeps real approvals."""
         from unittest.mock import patch
         from ibkr_operator import _repair_stale_alerts
 
+        (tmp_path / "submitted-approvals.json").write_text("[]", encoding="utf-8")
         submitted = {"test-bracket-1", "test-double-abc", "", "aprv_real"}
         events = [{"approval_id": "aprv_real", "event_type": "order_submitted"}]
 
-        with patch("monitor.load_submitted_approvals", return_value=submitted), \
+        with patch("ibkr_operator.OPENCLAW_DIR", tmp_path), \
+             patch("monitor.load_submitted_approvals", return_value=submitted), \
              patch("monitor.load_events", return_value=events), \
              patch("ibkr_operator._atomic_write_json") as mock_write, \
              patch("shutil.copy2") as mock_backup, \

@@ -51,8 +51,8 @@ def _write_gs_and_events(tmpdir, tc=0, events=""):
     oc_dir.mkdir(parents=True, exist_ok=True)
     gs_path = oc_dir / "guard-state.json"
     ev_path = oc_dir / "guard-events.jsonl"
-    gs_path.write_text(_make_guard_state(tc=tc))
-    ev_path.write_text(events)
+    gs_path.write_text(_make_guard_state(tc=tc), encoding="utf-8", newline="\n")
+    ev_path.write_text(events, encoding="utf-8", newline="\n")
     return gs_path, ev_path
 
 # contextlib.ExitStack compatible base patches
@@ -145,7 +145,7 @@ class TestGuardStateDriftSentinel:
                 "approval_id": "real-1",
                 "order_id": 100,
                 "ibkr_metadata": {"permId": 5000},
-            }) + "\n")
+            }) + "\n", encoding="utf-8", newline="\n")
             with ExitStack() as stack:
                 for p in _base_patches(td):
                     stack.enter_context(p)
@@ -170,7 +170,7 @@ class TestGuardStateDriftSentinel:
 
         with tempfile.TemporaryDirectory() as td:
             # Don't create guard-state.json
-            Path(td, "guard-events.jsonl").write_text("")
+            Path(td, "guard-events.jsonl").write_text("", encoding="utf-8", newline="\n")
             with ExitStack() as stack:
                 for p in _base_patches(td):
                     stack.enter_context(p)
@@ -287,7 +287,7 @@ class TestGuardStateDriftSentinel:
             cp = subprocess.run(
                 [".venv/bin/python", "ibkr_operator.py", alias, "--help"],
                 capture_output=True, text=True, cwd="/home/chris/agents/ibkr-bridge",
-                timeout=10)
+                timeout=10, encoding="utf-8")
             assert cp.returncode == 0
             assert "--observe-seconds" in cp.stdout
 
@@ -388,7 +388,7 @@ class TestCanonicalTradeDateRollover:
                 "daily_trade_count": 3,
                 "day_start_nl_eur": 100000.0,
                 "last_updated_utc": f"{yesterday}T10:00:00Z",
-            }))
+            }), encoding="utf-8", newline="\n")
             with ExitStack() as stack:
                 for p in _base_patches(td):
                     stack.enter_context(p)
@@ -425,8 +425,8 @@ class TestCanonicalTradeDateRollover:
                 "daily_trade_count": 0,
                 "day_start_nl_eur": 100000.0,
                 "last_updated_utc": f"{today}T10:00:00Z",
-            }))
-            evp.write_text("")
+            }), encoding="utf-8", newline="\n")
+            evp.write_text("", encoding="utf-8", newline="\n")
             with ExitStack() as stack:
                 for p in _base_patches(td):
                     stack.enter_context(p)
@@ -464,7 +464,7 @@ class TestCanonicalTradeDateRollover:
              patch("ibkr_operator.urllib.request.urlopen",
                    side_effect=Exception("no bridge")), \
              patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR",
-                   Path("/tmp/guard-state-repairs")):
+                   (Path(__import__("tempfile").gettempdir()) / 'guard-state-repairs')):
             result = _run_guard_state_reconcile(
                 apply_repair=False,
                 confirm_local_state_repair=False,
@@ -501,7 +501,7 @@ class TestCanonicalTradeDateRollover:
              patch("ibkr_operator.urllib.request.urlopen",
                    side_effect=Exception("no bridge")), \
              patch("ibkr_operator._GUARD_STATE_REPAIRS_DIR",
-                   Path("/tmp/guard-state-repairs")):
+                   (Path(__import__("tempfile").gettempdir()) / 'guard-state-repairs')):
             recon = _run_guard_state_reconcile(
                 apply_repair=False,
                 confirm_local_state_repair=False,
@@ -553,7 +553,7 @@ class TestCanonicalTradeDateRollover:
                     "order_id": 102,
                     "ibkr_metadata": {"permId": 6000},
                 }) + "\n"
-            )
+            , encoding="utf-8", newline="\n")
 
             count = _stream_count_confirmed_orders_for_date("2026-06-24", events_path=evp)
             # Only real-1 should be counted (permId 5001 and test-bracket are excluded)
@@ -586,7 +586,7 @@ class TestCanonicalTradeDateRollover:
                     "order_id": 201,
                     "ibkr_metadata": {"permId": 7001},
                 }) + "\n"
-            )
+            , encoding="utf-8", newline="\n")
 
             count = _stream_count_confirmed_orders_for_date("2026-06-24", events_path=evp)
             # bad-one is unconfirmed, only good-one counts
@@ -647,7 +647,7 @@ class TestLoadGuardStateReadonly:
 
         with tempfile.TemporaryDirectory() as td:
             bad_path = Path(td) / "guard-state.json"
-            bad_path.write_text("not valid json {{{{")
+            bad_path.write_text("not valid json {{{{", encoding="utf-8", newline="\n")
 
             result = load_guard_state_readonly(path=bad_path)
 
@@ -656,7 +656,7 @@ class TestLoadGuardStateReadonly:
             assert result["daily_trade_count"] == 0
 
             # File should remain unchanged
-            assert bad_path.read_text() == "not valid json {{{{"
+            assert bad_path.read_text(encoding="utf-8") == "not valid json {{{{"
 
     def test_does_not_write_when_schema_mismatch(self):
         """Schema version mismatch returns defaults without writing."""
@@ -665,7 +665,7 @@ class TestLoadGuardStateReadonly:
 
         with tempfile.TemporaryDirectory() as td:
             f = Path(td) / "guard-state.json"
-            f.write_text(json.dumps({"schema_version": 999, "daily_trade_count": 5}))
+            f.write_text(json.dumps({"schema_version": 999, "daily_trade_count": 5}), encoding="utf-8", newline="\n")
 
             result = load_guard_state_readonly(path=f)
 
@@ -674,7 +674,7 @@ class TestLoadGuardStateReadonly:
             assert result["schema_version"] == 1
 
             # File unchanged
-            assert json.loads(f.read_text())["schema_version"] == 999
+            assert json.loads(f.read_text(encoding="utf-8"))["schema_version"] == 999
 
     def test_returns_valid_data_when_file_ok(self):
         """When guard-state.json is valid, returns its data."""
@@ -687,7 +687,7 @@ class TestLoadGuardStateReadonly:
                 "schema_version": 1,
                 "trade_date": "2026-06-24",
                 "daily_trade_count": 3,
-            }))
+            }), encoding="utf-8", newline="\n")
 
             result = load_guard_state_readonly(path=f)
 
@@ -695,7 +695,7 @@ class TestLoadGuardStateReadonly:
             assert result["daily_trade_count"] == 3
 
             # File unchanged
-            assert "2026-06-24" in f.read_text()
+            assert "2026-06-24" in f.read_text(encoding="utf-8")
 
     def test_fills_missing_fields_in_memory(self):
         """Missing fields are filled from defaults in-memory, not on disk."""
@@ -705,7 +705,7 @@ class TestLoadGuardStateReadonly:
         with tempfile.TemporaryDirectory() as td:
             f = Path(td) / "guard-state.json"
             original = {"schema_version": 1, "daily_trade_count": 7}
-            f.write_text(json.dumps(original))
+            f.write_text(json.dumps(original), encoding="utf-8", newline="\n")
 
             result = load_guard_state_readonly(path=f)
 
@@ -715,7 +715,7 @@ class TestLoadGuardStateReadonly:
             assert result["daily_trade_count"] == 7  # original preserved
 
             # File unchanged (only 2 keys on disk)
-            on_disk = json.loads(f.read_text())
+            on_disk = json.loads(f.read_text(encoding="utf-8"))
             assert len(on_disk) == 2
 
     def test_load_guard_state_still_writes_when_missing(self):
@@ -774,7 +774,7 @@ class TestLoadGuardStateReadonly:
         with tempfile.TemporaryDirectory() as td:
             # No guard-state.json at all
             evp = Path(td) / "guard-events.jsonl"
-            evp.write_text("")
+            evp.write_text("", encoding="utf-8", newline="\n")
 
             with ExitStack() as stack:
                 for p in _base_patches(td):
@@ -808,7 +808,7 @@ class TestLoadGuardStateReadonly:
         }
         events = []  # No events, so confirmed=0, guard=5 → mismatch
 
-        repair_dir = Path("/tmp/test-repairs")
+        repair_dir = (Path(__import__("tempfile").gettempdir()) / 'test-repairs')
 
         with patch("monitor.load_guard_state", return_value=gs), \
              patch("monitor.load_events", return_value=events), \

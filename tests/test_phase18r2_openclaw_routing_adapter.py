@@ -87,7 +87,7 @@ def _sha256_text(text: str) -> str:
 
 
 def _load_json(path: Path) -> dict:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -117,7 +117,7 @@ def _run_cli(command: str):
         [sys.executable, str(OPERATOR), command, "--json"],
         capture_output=True, text=True, timeout=60,
         cwd=str(REPO),
-    )
+    encoding="utf-8")
     assert result.returncode == 0, f"CLI '{command}' failed (exit {result.returncode}): {result.stderr}"
     return json.loads(result.stdout)
 
@@ -129,7 +129,7 @@ def _run_adapter_decision(req_path, dec_path):
          "--routing-decision-file", dec_path, "--json"],
         capture_output=True, text=True, timeout=30,
         cwd=str(REPO),
-    )
+    encoding="utf-8")
     return result.returncode, json.loads(result.stdout)
 
 
@@ -139,7 +139,7 @@ def _run_activation_plan():
         [sys.executable, str(OPERATOR), "model-routing-activation-plan", "--json"],
         capture_output=True, text=True, timeout=30,
         cwd=str(REPO),
-    )
+    encoding="utf-8")
     return json.loads(result.stdout)
 
 
@@ -242,7 +242,7 @@ class TestBindingContract:
             assert af[flag] is False, f"{flag} must be false"
 
     def test_binding_no_secrets(self):
-        raw = BINDINGS.read_text()
+        raw = BINDINGS.read_text(encoding="utf-8")
         for forbidden in ["api_key", "api_url", "access_token", "Bearer ", "eyJ",
                            "account_id", "credential_path", "HOME", "password", "secret"]:
             assert forbidden not in raw
@@ -419,7 +419,7 @@ class TestPhase18r1Integration:
 
     def test_adapter_does_not_reimplement_routing(self):
         """Adapter imports decide_model_route, does not reimplement policy."""
-        source = ADAPTER_PY.read_text()
+        source = ADAPTER_PY.read_text(encoding="utf-8")
         assert "from model_routing import" not in source
         # The adapter validates R1 decisions, doesn't produce them
 
@@ -619,29 +619,29 @@ class TestDeterminism:
         hashes = [r["deterministic_adapter_hash"] for r in results]
         assert len(set(hashes)) == 1
 
-    def test_cwd_does_not_affect_hermes(self):
+    def test_cwd_does_not_affect_hermes(self, tmp_path):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         decision = _decide_logical(req)
         a1 = _resolve_shadow(req, decision)
         import os as _os
         old_cwd = _os.getcwd()
         try:
-            _os.chdir("/tmp")
+            _os.chdir(str(tmp_path))
             a2 = _resolve_shadow(req, decision)
         finally:
             _os.chdir(old_cwd)
         assert a1["deterministic_adapter_hash"] == a2["deterministic_adapter_hash"]
 
-    def test_empty_home_does_not_affect(self):
+    def test_empty_home_does_not_affect(self, tmp_path):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         decision = _decide_logical(req)
         a1 = _resolve_shadow(req, decision)
 
         # Write inputs to temp files, call adapter via subprocess
-        rp = "/tmp/test_det_req.json"
-        dp = "/tmp/test_det_dec.json"
-        with open(rp, "w") as f: json.dump(req, f)
-        with open(dp, "w") as f: json.dump(decision, f)
+        rp = str(tmp_path / 'test_det_req.json')
+        dp = str(tmp_path / 'test_det_dec.json')
+        with open(rp, "w", encoding="utf-8") as f: json.dump(req, f)
+        with open(dp, "w", encoding="utf-8") as f: json.dump(decision, f)
 
         env = dict(os.environ)
         env.pop("HOME", None)
@@ -649,20 +649,20 @@ class TestDeterminism:
             [sys.executable, str(ADAPTER_PY), rp, dp],
             capture_output=True, text=True, timeout=30,
             cwd=str(REPO), env=env,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, result.stderr
         a2 = json.loads(result.stdout)
         assert a1["deterministic_adapter_hash"] == a2["deterministic_adapter_hash"]
 
-    def test_environment_variables_do_not_affect(self):
+    def test_environment_variables_do_not_affect(self, tmp_path):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         decision = _decide_logical(req)
         a1 = _resolve_shadow(req, decision)
 
-        rp = "/tmp/test_det_env_req.json"
-        dp = "/tmp/test_det_env_dec.json"
-        with open(rp, "w") as f: json.dump(req, f)
-        with open(dp, "w") as f: json.dump(decision, f)
+        rp = str(tmp_path / 'test_det_env_req.json')
+        dp = str(tmp_path / 'test_det_env_dec.json')
+        with open(rp, "w", encoding="utf-8") as f: json.dump(req, f)
+        with open(dp, "w", encoding="utf-8") as f: json.dump(decision, f)
 
         env = dict(os.environ)
         env["TZ"] = "Mars/Olympus"
@@ -671,7 +671,7 @@ class TestDeterminism:
             [sys.executable, str(ADAPTER_PY), rp, dp],
             capture_output=True, text=True, timeout=30,
             cwd=str(REPO), env=env,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, result.stderr
         a2 = json.loads(result.stdout)
         assert a1["deterministic_adapter_hash"] == a2["deterministic_adapter_hash"]
@@ -688,7 +688,7 @@ class TestDeterminism:
 class TestPurity:
     def test_adapter_has_no_file_writes(self):
         """Adapter core logic must not write files."""
-        source = ADAPTER_PY.read_text()
+        source = ADAPTER_PY.read_text(encoding="utf-8")
         parts = source.split("# ── CLI entry")
         logic = parts[0] if len(parts) > 1 else source
         assert ".write(" not in logic, "Core logic must not write files"
@@ -697,23 +697,23 @@ class TestPurity:
     def test_no_network(self):
         for forbidden in ["import urllib", "import httpx", "import requests",
                            "import socket", "import http"]:
-            assert forbidden not in ADAPTER_PY.read_text(), forbidden
+            assert forbidden not in ADAPTER_PY.read_text(encoding="utf-8"), forbidden
 
     def test_no_subprocess_shell(self):
-        source = ADAPTER_PY.read_text()
+        source = ADAPTER_PY.read_text(encoding="utf-8")
         assert "import subprocess" not in source
         assert "import os" not in source
         assert "os.system" not in source
         assert "os.popen" not in source
 
     def test_no_provider_sdk(self):
-        source = ADAPTER_PY.read_text()
+        source = ADAPTER_PY.read_text(encoding="utf-8")
         for forbidden in ["import openai", "import anthropic", "import groq",
                            "import ib_insync"]:
             assert forbidden not in source, forbidden
 
     def test_no_direct_codex_client(self):
-        source = ADAPTER_PY.read_text()
+        source = ADAPTER_PY.read_text(encoding="utf-8")
         for forbidden in ["codex", "Codex", "CODEX_CLIENT"]:
             if forbidden in source:
                 # Only allowed in binding strings/docs references
@@ -723,7 +723,7 @@ class TestPurity:
                         f"Codex client reference: {line}"
 
     def test_no_direct_opencode_client(self):
-        source = ADAPTER_PY.read_text()
+        source = ADAPTER_PY.read_text(encoding="utf-8")
         for forbidden in ["opencode", "OpenCode", "OPENCODE_CLIENT"]:
             if forbidden in source:
                 lines = [l for l in source.split("\n") if forbidden in l]
@@ -731,16 +731,16 @@ class TestPurity:
                     assert "import" not in line.lower(), f"OpenCode client: {line}"
 
     def test_no_bridge_import(self):
-        source = ADAPTER_PY.read_text()
+        source = ADAPTER_PY.read_text(encoding="utf-8")
         assert "import bridge" not in source and "from bridge" not in source
 
     def test_no_guard_import(self):
-        source = ADAPTER_PY.read_text()
+        source = ADAPTER_PY.read_text(encoding="utf-8")
         assert "import guard" not in source and "from guard" not in source
 
     def test_no_runtime_mutation(self):
         """Adapter must not mutate OpenClaw/OpenCode/Codex runtime config."""
-        source = ADAPTER_PY.read_text()
+        source = ADAPTER_PY.read_text(encoding="utf-8")
         # The adapter references transport names but must not have runtime mutation code
         for forbidden in ["os.system", "os.popen", "subprocess.run", "subprocess.call",
                            "shutil.copy", "shutil.move", "pathlib.Path.mkdir",
@@ -748,7 +748,7 @@ class TestPurity:
             assert forbidden not in source, f"Runtime mutation: {forbidden}"
 
     def test_no_order_paths(self):
-        source = ADAPTER_PY.read_text()
+        source = ADAPTER_PY.read_text(encoding="utf-8")
         for forbidden in ["order_path", "preflight", "approval_path",
                            "submission_path", "H1_access", "trade_window"]:
             assert forbidden not in source, forbidden
@@ -820,7 +820,7 @@ class TestCliCheckpoint:
         result = subprocess.run(
             [sys.executable, str(OPERATOR), "--help"],
             capture_output=True, text=True, timeout=30,
-        )
+        encoding="utf-8")
         for cmd in CLI_COMMANDS:
             assert cmd in result.stdout
         assert "openclaw-route-decide" in result.stdout
@@ -907,16 +907,16 @@ class TestRuntimeInvocationAuthorized:
     def test_missing_runtime_invocation_authorized_blocks_readiness(self):
         """Proof 3: Missing runtime_invocation_authorized blocks readiness.
         Temporarily remove the field and verify checkpoint fails."""
-        original = BINDINGS.read_text()
+        original = BINDINGS.read_bytes()
         try:
             b = _load_json(BINDINGS)
             del b["authorization_flags"]["runtime_invocation_authorized"]
-            BINDINGS.write_text(json.dumps(b, indent=2, ensure_ascii=False))
+            BINDINGS.write_text(json.dumps(b, indent=2, ensure_ascii=False), encoding="utf-8", newline="\n")
             result = subprocess.run(
                 [sys.executable, str(OPERATOR), "level1-openclaw-routing-adapter-checkpoint", "--json"],
                 capture_output=True, text=True, timeout=60,
                 cwd=str(REPO),
-            )
+            encoding="utf-8")
             r = json.loads(result.stdout)
             # all_authorization_flags_false must be False when runtime_invocation_authorized is missing
             assert r["all_authorization_flags_false"] is False, \
@@ -927,61 +927,61 @@ class TestRuntimeInvocationAuthorized:
                        for m in blocker_msgs), \
                 f"Expected blocker about runtime_invocation_authorized, got: {blocker_msgs}"
         finally:
-            BINDINGS.write_text(original)
+            BINDINGS.write_bytes(original)
 
     def test_null_runtime_invocation_authorized_blocks_readiness(self):
         """Proof 4: null runtime_invocation_authorized blocks readiness."""
-        original = BINDINGS.read_text()
+        original = BINDINGS.read_bytes()
         try:
             b = _load_json(BINDINGS)
             b["authorization_flags"]["runtime_invocation_authorized"] = None
-            BINDINGS.write_text(json.dumps(b, indent=2, ensure_ascii=False))
+            BINDINGS.write_text(json.dumps(b, indent=2, ensure_ascii=False), encoding="utf-8", newline="\n")
             result = subprocess.run(
                 [sys.executable, str(OPERATOR), "level1-openclaw-routing-adapter-checkpoint", "--json"],
                 capture_output=True, text=True, timeout=60,
                 cwd=str(REPO),
-            )
+            encoding="utf-8")
             r = json.loads(result.stdout)
             assert r["all_authorization_flags_false"] is False, \
                 f"null runtime_invocation_authorized should block readiness, got {r['all_authorization_flags_false']}"
         finally:
-            BINDINGS.write_text(original)
+            BINDINGS.write_bytes(original)
 
     def test_string_false_blocks_readiness(self):
         """Proof 5: string 'false' runtime_invocation_authorized blocks readiness."""
-        original = BINDINGS.read_text()
+        original = BINDINGS.read_bytes()
         try:
             b = _load_json(BINDINGS)
             b["authorization_flags"]["runtime_invocation_authorized"] = "false"
-            BINDINGS.write_text(json.dumps(b, indent=2, ensure_ascii=False))
+            BINDINGS.write_text(json.dumps(b, indent=2, ensure_ascii=False), encoding="utf-8", newline="\n")
             result = subprocess.run(
                 [sys.executable, str(OPERATOR), "level1-openclaw-routing-adapter-checkpoint", "--json"],
                 capture_output=True, text=True, timeout=60,
                 cwd=str(REPO),
-            )
+            encoding="utf-8")
             r = json.loads(result.stdout)
             assert r["all_authorization_flags_false"] is False, \
                 f"string 'false' runtime_invocation_authorized should block readiness, got {r['all_authorization_flags_false']}"
         finally:
-            BINDINGS.write_text(original)
+            BINDINGS.write_bytes(original)
 
     def test_true_blocks_readiness(self):
         """Proof 6: true runtime_invocation_authorized blocks readiness."""
-        original = BINDINGS.read_text()
+        original = BINDINGS.read_bytes()
         try:
             b = _load_json(BINDINGS)
             b["authorization_flags"]["runtime_invocation_authorized"] = True
-            BINDINGS.write_text(json.dumps(b, indent=2, ensure_ascii=False))
+            BINDINGS.write_text(json.dumps(b, indent=2, ensure_ascii=False), encoding="utf-8", newline="\n")
             result = subprocess.run(
                 [sys.executable, str(OPERATOR), "level1-openclaw-routing-adapter-checkpoint", "--json"],
                 capture_output=True, text=True, timeout=60,
                 cwd=str(REPO),
-            )
+            encoding="utf-8")
             r = json.loads(result.stdout)
             assert r["all_authorization_flags_false"] is False, \
                 f"True runtime_invocation_authorized should block readiness, got {r['all_authorization_flags_false']}"
         finally:
-            BINDINGS.write_text(original)
+            BINDINGS.write_bytes(original)
 
     def test_adapter_output_remains_shadow_only(self):
         """Adapter output must remain SHADOW_ONLY regardless of flag."""
@@ -995,33 +995,33 @@ class TestRuntimeInvocationAuthorized:
 
 
 class TestCliAdapterDecision:
-    def test_bound_gpt55_resolves(self):
+    def test_bound_gpt55_resolves(self, tmp_path):
         """Only directly observed, bound models resolve."""
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         decision = _decide_logical(req)
-        p1, p2 = "/tmp/test_r2_req.json", "/tmp/test_r2_dec.json"
-        with open(p1, "w") as f: json.dump(req, f)
-        with open(p2, "w") as f: json.dump(decision, f)
+        p1, p2 = str(tmp_path / 'test_r2_req.json'), str(tmp_path / 'test_r2_dec.json')
+        with open(p1, "w", encoding="utf-8") as f: json.dump(req, f)
+        with open(p2, "w", encoding="utf-8") as f: json.dump(decision, f)
         rc, result = _run_adapter_decision(p1, p2)
         assert rc == 0
         assert result["adapter_state"] == "SHADOW_ROUTE_RESOLVED"
         assert result["selected_transport"] == "CODEX"
         assert result["selected_runtime_alias"] == "gpt-5.5"
 
-    def test_bound_deepseekv4pro_resolves_in_cli(self):
+    def test_bound_deepseekv4pro_resolves_in_cli(self, tmp_path):
         """deepseek-v4-pro (BOUND) resolves via opencode-go in CLI."""
         req = _make_request("OC", "ROUTINE_IMPLEMENTATION")
         decision = _decide_logical(req)
-        p1, p2 = "/tmp/test_r2_ds_req.json", "/tmp/test_r2_ds_dec.json"
-        with open(p1, "w") as f: json.dump(req, f)
-        with open(p2, "w") as f: json.dump(decision, f)
+        p1, p2 = str(tmp_path / 'test_r2_ds_req.json'), str(tmp_path / 'test_r2_ds_dec.json')
+        with open(p1, "w", encoding="utf-8") as f: json.dump(req, f)
+        with open(p2, "w", encoding="utf-8") as f: json.dump(decision, f)
         rc, result = _run_adapter_decision(p1, p2)
         assert rc == 0
         assert result["adapter_state"] == "SHADOW_ROUTE_RESOLVED"
         assert result["selected_transport"] == "OPENCODE"
         assert result["selected_runtime_alias"] == "opencode-go/deepseek-v4-pro"
 
-    def test_retired_oc_escalation_holds_in_cli(self):
+    def test_retired_oc_escalation_holds_in_cli(self, tmp_path):
         """OC_ESCALATION (kimi-k3) is retired. Phase 18R1 still logically
         proposes it for REPEATED_CI_RECOVERY — the CLI must HOLD with a
         nonzero exit and a null logical_model_id (fails validation before
@@ -1029,23 +1029,23 @@ class TestCliAdapterDecision:
         req = _make_request("OC", "REPEATED_CI_RECOVERY")
         decision = _decide_logical(req)
         assert decision["selected_model_id"] == "kimi-k3"
-        p1, p2 = "/tmp/test_r2_req_u.json", "/tmp/test_r2_dec_u.json"
-        with open(p1, "w") as f: json.dump(req, f)
-        with open(p2, "w") as f: json.dump(decision, f)
+        p1, p2 = str(tmp_path / 'test_r2_req_u.json'), str(tmp_path / 'test_r2_dec_u.json')
+        with open(p1, "w", encoding="utf-8") as f: json.dump(req, f)
+        with open(p2, "w", encoding="utf-8") as f: json.dump(decision, f)
         rc, result = _run_adapter_decision(p1, p2)
         assert rc != 0
         assert result["adapter_state"] == "HOLD"
         assert result["selected_runtime_alias"] is None
         assert result["logical_model_id"] is None
 
-    def test_hold_structured_json_nonzero(self):
+    def test_hold_structured_json_nonzero(self, tmp_path):
         req = _make_request("HERMES", "ROUTINE_RESEARCH")
         decision = _decide_logical(req)
         decision["advisory_only"] = False
-        p1 = "/tmp/test_r2_hold_req.json"
-        p2 = "/tmp/test_r2_hold_dec.json"
-        with open(p1, "w") as f: json.dump(req, f)
-        with open(p2, "w") as f: json.dump(decision, f)
+        p1 = str(tmp_path / 'test_r2_hold_req.json')
+        p2 = str(tmp_path / 'test_r2_hold_dec.json')
+        with open(p1, "w", encoding="utf-8") as f: json.dump(req, f)
+        with open(p2, "w", encoding="utf-8") as f: json.dump(decision, f)
         rc, result = _run_adapter_decision(p1, p2)
         assert rc != 0
         assert result["adapter_state"] == "HOLD"
@@ -1058,7 +1058,7 @@ class TestCliActivationPlan:
             [sys.executable, str(OPERATOR), "model-routing-activation-plan", "--json"],
             capture_output=True, text=True, timeout=30,
             cwd=str(REPO),
-        )
+        encoding="utf-8")
         d = json.loads(result.stdout)
         assert result.returncode == 0  # READY → exit 0
         assert d["plan_state"] == "READY"
@@ -1070,7 +1070,7 @@ class TestCliActivationPlan:
             [sys.executable, str(OPERATOR), "model-routing-activation-plan", "--json"],
             capture_output=True, text=True, timeout=30,
             cwd=str(REPO),
-        )
+        encoding="utf-8")
         raw = result.stdout
         for forbidden in ["api_key", "token", "secret", "password", "Bearer ", "eyJ"]:
             assert forbidden not in raw, f"Found {forbidden}"
@@ -1084,7 +1084,7 @@ class TestCliActivationPlan:
             [sys.executable, str(OPERATOR), "model-routing-activation-plan", "--json"],
             capture_output=True, text=True, timeout=30,
             cwd=str(REPO),
-        )
+        encoding="utf-8")
         for name, path in ALL_GOVERNED:
             assert path.stat().st_mtime == mtimes[str(path)], f"{name} modified"
 
@@ -1093,12 +1093,12 @@ class TestCliActivationPlan:
             [sys.executable, str(OPERATOR), "model-routing-activation-plan", "--json"],
             capture_output=True, text=True, timeout=30,
             cwd=str(REPO),
-        )
+        encoding="utf-8")
         r2 = subprocess.run(
             [sys.executable, str(OPERATOR), "model-routing-activation-plan", "--json"],
             capture_output=True, text=True, timeout=30,
             cwd=str(REPO),
-        )
+        encoding="utf-8")
         d1 = json.loads(r1.stdout)
         d2 = json.loads(r2.stdout)
         assert d1["deterministic_plan_hash"] == d2["deterministic_plan_hash"]
@@ -1131,7 +1131,7 @@ class TestCliActivationPlan:
             [sys.executable, str(OPERATOR), "model-routing-activation-plan", "--json"],
             capture_output=True, text=True, timeout=30,
             cwd=str(REPO),
-        )
+        encoding="utf-8")
         assert result.returncode == 0
 
     def test_no_credentials_exposed(self):
@@ -1443,7 +1443,7 @@ class TestRepositorySafety:
     def test_model_routing_py_unchanged(self):
         assert MODEL_ROUTING_PY.exists()
         # Verify it still has the Phase 18R1 governance ID
-        content = MODEL_ROUTING_PY.read_text()
+        content = MODEL_ROUTING_PY.read_text(encoding="utf-8")
         assert "model_routing_governance_v0_1" in content
 
     def test_phase18r1_docs_unchanged(self):
@@ -1467,22 +1467,22 @@ class TestRepositorySafety:
         result = subprocess.run(
             ["git", "ls-files", "--error-unmatch", ".env"],
             capture_output=True, text=True, cwd=str(REPO),
-        )
+        encoding="utf-8")
         assert result.returncode != 0
 
     def test_no_allowlist_rules_change(self):
         """Verify no allowlist or rules files modified by Phase 18R2."""
-        adapter_source = ADAPTER_PY.read_text()
+        adapter_source = ADAPTER_PY.read_text(encoding="utf-8")
         for forbidden in ["allowlist", "rules.yaml", "risk_rules"]:
             assert forbidden not in adapter_source
 
     def test_no_workflow_change(self):
-        adapter_source = ADAPTER_PY.read_text()
+        adapter_source = ADAPTER_PY.read_text(encoding="utf-8")
         assert "workflow" not in adapter_source
 
     def test_no_home_runtime_config_change(self):
         """Adapter must not reference HOME or runtime config paths."""
-        adapter_source = ADAPTER_PY.read_text()
+        adapter_source = ADAPTER_PY.read_text(encoding="utf-8")
         assert "HOME" not in adapter_source
         assert "os.environ" not in adapter_source
         assert "getenv" not in adapter_source

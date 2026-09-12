@@ -93,7 +93,7 @@ class TestConnectedEndpointEvidenceDrill:
         from pathlib import Path
         from contextlib import ExitStack
 
-        ed = Path("/tmp/ced-test")
+        ed = (Path(__import__("tempfile").gettempdir()) / 'ced-test')
         ed.mkdir(parents=True, exist_ok=True)
 
         bh = _health(connected=connected)
@@ -318,7 +318,7 @@ class TestConnectedEndpointEvidenceDrill:
                 [".venv/bin/python", "ibkr_operator.py", cmd, "--help"],
                 capture_output=True, text=True,
                 cwd="/home/chris/agents/ibkr-bridge", timeout=10,
-            )
+            encoding="utf-8")
             assert cp.returncode == 0, f"{cmd} --help failed"
             assert "--timeout" in cp.stdout, f"{cmd} missing --timeout flag"
 
@@ -330,5 +330,5 @@ class TestConnectedEndpointEvidenceDrill:
                 [".venv/bin/python", "ibkr_operator.py", cmd, "--help"],
                 capture_output=True, text=True,
                 cwd="/home/chris/agents/ibkr-bridge", timeout=5,
-            )
+            encoding="utf-8")
             assert cp.returncode == 0

@@ -374,7 +374,7 @@ class TestPhase17ECLI:
             [sys.executable, str(OPERATOR),
              "level1-human-review-decision-record-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_json_output_valid(self):
@@ -382,7 +382,7 @@ class TestPhase17ECLI:
             [sys.executable, str(OPERATOR),
              "level1-human-review-decision-record-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -394,7 +394,7 @@ class TestPhase17ECLI:
             [sys.executable, str(OPERATOR),
              "level1-human-review-decision-record-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required = [
             "diagnosis", "severity", "git",
@@ -429,7 +429,7 @@ class TestPhase17ECLI:
             [sys.executable, str(OPERATOR),
              "phase17e-human-review-decision-record-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0
 
     def test_cli_alias_short_works(self):
@@ -437,7 +437,7 @@ class TestPhase17ECLI:
             [sys.executable, str(OPERATOR),
              "human-review-decision-record-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0
 
     def test_deterministic_diagnosis_on_repeat_run(self):
@@ -445,13 +445,13 @@ class TestPhase17ECLI:
             [sys.executable, str(OPERATOR),
              "level1-human-review-decision-record-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data1 = json.loads(result1.stdout)
         result2 = subprocess.run(
             [sys.executable, str(OPERATOR),
              "level1-human-review-decision-record-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data2 = json.loads(result2.stdout)
         assert data1["diagnosis"] == data2["diagnosis"], \
             f"Non-deterministic: {data1['diagnosis']} vs {data2['diagnosis']}"
@@ -461,7 +461,7 @@ class TestPhase17ECLI:
             [sys.executable, str(OPERATOR),
              "level1-human-review-decision-record-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         if data.get("diagnosis") == _PHASE17E_DIAGNOSIS["ready"]:
             cr = data.get("canonical_decision_record")

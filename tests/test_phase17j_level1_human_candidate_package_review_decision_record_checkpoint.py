@@ -691,7 +691,7 @@ print("OK")
 """],
                 capture_output=True, text=True, timeout=30,
                 env=env,
-            )
+            encoding="utf-8")
             assert "OK" in cp.stdout, f"stderr: {cp.stderr}"
 
 
@@ -704,7 +704,7 @@ class TestPhase17JCLI:
             [sys.executable, str(OPERATOR),
              "level1-human-candidate-package-review-decision-record-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_alias_phase17j_works(self):
@@ -712,7 +712,7 @@ class TestPhase17JCLI:
             [sys.executable, str(OPERATOR),
              "phase17j-human-candidate-package-review-decision-record-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_alias_candidate_package_review_works(self):
@@ -720,7 +720,7 @@ class TestPhase17JCLI:
             [sys.executable, str(OPERATOR),
              "candidate-package-review-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
 
     def test_json_output_valid(self):
@@ -728,7 +728,7 @@ class TestPhase17JCLI:
             [sys.executable, str(OPERATOR),
              "level1-human-candidate-package-review-decision-record-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -740,7 +740,7 @@ class TestPhase17JCLI:
             [sys.executable, str(OPERATOR),
              "level1-human-candidate-package-review-decision-record-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required = [
             "checkpoint_id", "timestamp", "diagnosis", "severity",

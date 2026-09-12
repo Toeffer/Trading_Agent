@@ -404,7 +404,7 @@ def _build_mocks(health=None, positions=None, alerts=None, snapshot=None,
     patches.append(patch("subprocess.run", side_effect=_mock_subprocess_output(sub_outputs)))
     tmp_openclaw = Path(tempfile.mkdtemp())
     if guard_state_content is not None:
-        (tmp_openclaw / "guard-state.json").write_text(guard_state_content)
+        (tmp_openclaw / "guard-state.json").write_text(guard_state_content, encoding="utf-8", newline="\n")
     if ledger_exists:
         cc_dir = tmp_openclaw / "autonomy-cycles"
         cc_dir.mkdir(parents=True, exist_ok=True)
@@ -413,7 +413,7 @@ def _build_mocks(health=None, positions=None, alerts=None, snapshot=None,
         for i in range(clean_cycles_count):
             lines.append(json.dumps({"timestamp": f"2026-06-{25-i}T12:00:00Z",
                                      "clean": True, "evidence_hash": f"hash{i}"}))
-        ledger_path.write_text("\n".join(lines) + "\n")
+        ledger_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     patches.append(patch("ibkr_operator.OPENCLAW_DIR", tmp_openclaw))
     tmp_export = Path(tempfile.mkdtemp())
     patches.append(patch("ibkr_operator._PHASE16L_EXPORT_DIR", tmp_export))
@@ -454,28 +454,28 @@ class TestCommandExists:
         import subprocess
         r = subprocess.run([sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
                            "level1-human-approval-packet-drill", "--help"],
-                          capture_output=True, text=True, timeout=10)
+                          capture_output=True, text=True, timeout=10, encoding="utf-8")
         assert r.returncode == 0, f"help failed: {r.stderr}"
 
     def test_alias_phase16l_works(self):
         import subprocess
         r = subprocess.run([sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
                            "phase16l-human-approval-packet-drill", "--help"],
-                          capture_output=True, text=True, timeout=10)
+                          capture_output=True, text=True, timeout=10, encoding="utf-8")
         assert r.returncode == 0
 
     def test_alias_level1_approval_packet_drill_works(self):
         import subprocess
         r = subprocess.run([sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
                            "level1-approval-packet-drill", "--help"],
-                          capture_output=True, text=True, timeout=10)
+                          capture_output=True, text=True, timeout=10, encoding="utf-8")
         assert r.returncode == 0
 
     def test_alias_human_approval_packet_drill_works(self):
         import subprocess
         r = subprocess.run([sys.executable, str(BRIDGE_DIR / "ibkr_operator.py"),
                            "human-approval-packet-drill", "--help"],
-                          capture_output=True, text=True, timeout=10)
+                          capture_output=True, text=True, timeout=10, encoding="utf-8")
         assert r.returncode == 0
 
 
@@ -1209,7 +1209,7 @@ class TestPacketArtifact:
             pa_path = result.get("packet_artifact_path")
             assert pa_path is not None
             assert Path(pa_path).exists()
-            with open(pa_path) as f:
+            with open(pa_path, encoding="utf-8") as f:
                 loaded = json.load(f)
             assert loaded["status"] == "packet_only"
             assert loaded["human_approval_packet"]["human_packet_only"] is True

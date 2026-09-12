@@ -191,7 +191,7 @@ class TestPhase16ZCLI:
             [sys.executable, str(OPERATOR),
              "level1-fresh-clone-ci-workflow-checkpoint", "--help"],
             capture_output=True, text=True, timeout=10,
-        )
+        encoding="utf-8")
         assert result.returncode == 0, f"stderr: {result.stderr[:200]}"
         assert "fresh" in result.stdout.lower() or "ci" in result.stdout.lower()
 
@@ -201,7 +201,7 @@ class TestPhase16ZCLI:
             [sys.executable, str(OPERATOR),
              "level1-fresh-clone-ci-workflow-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -215,7 +215,7 @@ class TestPhase16ZCLI:
             [sys.executable, str(OPERATOR),
              "phase16z-fresh-clone-ci-workflow-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -228,7 +228,7 @@ class TestPhase16ZCLI:
             [sys.executable, str(OPERATOR),
              "fresh-clone-ci-workflow-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -241,7 +241,7 @@ class TestPhase16ZCLI:
             [sys.executable, str(OPERATOR),
              "level1-fresh-clone-ci-workflow-checkpoint", "--json"],
             capture_output=True, text=True, timeout=60,
-        )
+        encoding="utf-8")
         data = json.loads(result.stdout)
         required_fields = [
             "diagnosis", "severity", "git",
@@ -373,59 +373,59 @@ class TestRealWorkflowFile:
     def test_ci_yml_has_runs_on(self):
         """CI workflow specifies runs-on."""
         ci_path = REPO / ".github" / "workflows" / "ci.yml"
-        content = ci_path.read_text()
+        content = ci_path.read_text(encoding="utf-8")
         assert "runs-on" in content, "CI workflow missing runs-on"
 
     def test_ci_yml_has_pytest(self):
         """CI workflow runs pytest."""
         ci_path = REPO / ".github" / "workflows" / "ci.yml"
-        content = ci_path.read_text()
+        content = ci_path.read_text(encoding="utf-8")
         assert "pytest" in content, "CI workflow missing pytest"
 
     def test_ci_yml_has_checkout(self):
         """CI workflow uses actions/checkout."""
         ci_path = REPO / ".github" / "workflows" / "ci.yml"
-        content = ci_path.read_text()
+        content = ci_path.read_text(encoding="utf-8")
         assert "actions/checkout" in content, "CI workflow missing checkout"
 
     def test_ci_yml_has_setup_python(self):
         """CI workflow sets up Python."""
         ci_path = REPO / ".github" / "workflows" / "ci.yml"
-        content = ci_path.read_text()
+        content = ci_path.read_text(encoding="utf-8")
         assert "setup-python" in content or "python" in content.lower(), "CI workflow missing Python setup"
 
     def test_ci_yml_excludes_integration(self):
         """CI workflow excludes integration tests."""
         ci_path = REPO / ".github" / "workflows" / "ci.yml"
-        content = ci_path.read_text()
+        content = ci_path.read_text(encoding="utf-8")
         assert "not integration" in content, "CI workflow does not exclude integration tests"
 
     def test_ci_yml_excludes_live(self):
         """CI workflow excludes live tests."""
         ci_path = REPO / ".github" / "workflows" / "ci.yml"
-        content = ci_path.read_text()
+        content = ci_path.read_text(encoding="utf-8")
         assert "not live" in content, "CI workflow does not exclude live tests"
 
     def test_ci_yml_excludes_acceptance(self):
         """CI workflow excludes acceptance tests."""
         ci_path = REPO / ".github" / "workflows" / "ci.yml"
-        content = ci_path.read_text()
+        content = ci_path.read_text(encoding="utf-8")
         assert "not acceptance" in content, "CI workflow does not exclude acceptance tests"
 
     def test_ci_yml_has_python_version(self):
         """CI workflow specifies Python version."""
         ci_path = REPO / ".github" / "workflows" / "ci.yml"
-        content = ci_path.read_text()
+        content = ci_path.read_text(encoding="utf-8")
         assert "3.12" in content, "CI workflow missing Python 3.12 version"
 
     def test_ci_yml_installs_requirements(self):
         """CI workflow installs from requirements.txt."""
         ci_path = REPO / ".github" / "workflows" / "ci.yml"
-        content = ci_path.read_text()
+        content = ci_path.read_text(encoding="utf-8")
         assert "requirements.txt" in content, "CI workflow missing requirements install"
 
     def test_ci_yml_has_compile_check(self):
         """CI workflow has compile check step."""
         ci_path = REPO / ".github" / "workflows" / "ci.yml"
-        content = ci_path.read_text()
+        content = ci_path.read_text(encoding="utf-8")
         assert "py_compile" in content, "CI workflow missing compile check"

@@ -23,6 +23,8 @@ tmp_path-redirected GUARD_STATE_PATH -- otherwise this test could pass for
 the wrong reason (H1 enforcement silently not actually engaged).
 """
 
+from source_helpers import implementation_source
+
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -34,14 +36,8 @@ BRIDGE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BRIDGE_DIR))
 
 import guard  # noqa: E402
-from guard import (  # noqa: E402
-    _rollover_guard_state,
-    _current_week_monday_utc_str,
-    canonical_trade_date,
-    h1_authorized_scope,
-    _assert_h1_authorized_for_path,
-    run_preflight,
-)
+from guard import _rollover_guard_state, _current_week_monday_utc_str, canonical_trade_date, h1_authorized_scope, _assert_h1_authorized_for_path
+from historical.preflight import run_preflight
 
 
 def _stale_day_str(days_ago: int = 3) -> str:
@@ -185,7 +181,7 @@ class TestRunPreflightNoLongerCrashes:
 
 class TestSourceGuardsAgainstRegression:
     def test_rollover_call_is_wrapped_in_h1_scope(self):
-        src = Path(BRIDGE_DIR / "guard.py").read_text()
+        src = (Path(__file__).parent / 'historical/preflight.py').read_text(encoding='utf-8')
         idx = src.index("def run_preflight(")
         # Look within run_preflight()'s body for the specific call.
         snippet = src[idx: idx + 4000]

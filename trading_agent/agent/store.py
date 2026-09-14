@@ -102,7 +102,10 @@ class AgentStore:
                 content_hash(json.loads(row["config"])) != row["config_hash"]
                 or (
                     hasattr(self, "mandate")
-                    and row["config_hash"] != self.mandate.identity
+                    and (
+                        row["config_hash"] != self.mandate.identity
+                        or content_hash(self.mandate.raw) != self.mandate.identity
+                    )
                 )
             ):
                 raise ValueError("MANDATE_HASH_MISMATCH")

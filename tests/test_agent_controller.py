@@ -409,3 +409,16 @@ def test_missing_database_cli_returns_structured_failure_without_creating_it(
     assert main(["agent", "status", "--database", str(path)]) == 1
     assert json.loads(capsys.readouterr().out)["ok"] is False
     assert not path.exists()
+
+
+def test_in_memory_mandate_changes_cannot_change_execution(tmp_path, inputs):
+    config, events = inputs
+    controller = agent(tmp_path, config)
+    controller.prepare(events[1])
+    controller.store.mandate.raw["costs"]["commission_per_order_quote"] = "0"
+    with pytest.raises(ValueError, match="MANDATE_HASH_MISMATCH"):
+        controller.complete(events[1]["event_id"])
+    # Reopening recovers the original stored mandate; no altered-cost fill exists.
+    fresh = AgentController(AgentStore(tmp_path / "agent.db"))
+    assert fresh.store.report()["fills"] == []
+    assert Decimal(fresh.recover()[0]["fills"][0]["commission_base"]) > 0

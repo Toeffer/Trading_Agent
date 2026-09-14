@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import argparse
+import sqlite3
 from collections.abc import Callable
 from typing import Any
 
@@ -28,7 +29,7 @@ def register(
 
 
 def main(argv: list[str] | None = None) -> int:
-    from trading_agent.cli import evaluation, state, host  # noqa: F401
+    from trading_agent.cli import evaluation, state, host, agent  # noqa: F401
 
     parser = argparse.ArgumentParser(
         description="Durable paper execution operator tools"
@@ -39,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         result = args.handler(args)
-    except (ValueError, OSError, RuntimeError) as exc:
+    except (ValueError, OSError, RuntimeError, sqlite3.Error) as exc:
         print(
             canonical({"ok": False, "error": type(exc).__name__, "message": str(exc)})
         )

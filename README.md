@@ -12,6 +12,12 @@ Development uses Python 3.12.10 and `requirements-dev.txt`. Run
 live-connection and acceptance checks require their corresponding explicit
 `--run-integration`, `--run-host`, `--run-live` or `--run-acceptance` flag.
 
+The first autonomous-agent milestone runs locally with
+`python -m trading_agent agent demo --workspace agent-demo`. It records decisions,
+executes simulated entry/hold/exit cycles, and recovers pending work without
+duplicate fills. See [agent usage and scope](docs/AUTONOMOUS_AGENT.md). This
+simulation is separate from the manual-approval broker service described below.
+
 A FastAPI bridge, deterministic risk guard, and read-only operator CLI for **manual-approval,
 paper-trading-only** stock/ETF order cycles against Interactive Brokers, built for the
 OpenClaw/Werner runtime. Not a general-purpose trading framework — the safety architecture

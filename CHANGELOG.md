@@ -1627,7 +1627,155 @@ curated CI set.
 
 ---
 
+## 2026-09-16 — Deployment verification of the 2026-09-07 safety fixes, plus a live backpressure / market-data incident
+
+Status review plus the live deployment of the three 2026-09-07 repo-review
+fixes. **No code changed in this repository today.** The deployment is
+complete and verified; three findings from the live work are recorded below
+and carried into the Verification Queue.
+
+### Repository status at session start
+
+`master` unchanged at `9d863ba` since 2026-09-07. All new work sits on two
+stacked **draft** PRs, neither merged:
+
+| PR | Branch | Base | Created | Size |
+| --- | --- | --- | --- | --- |
+| #24 Make paper execution durable, approval-bound and account-scoped | `remediation/durable-paper-execution` | `master` | 2026-09-11 | 192 files, +73.9k/−67.9k |
+| #25 Add a persistent autonomous agent with simulated position management | `feature/persistent-agent-controller` | #24's branch | 2026-09-14 | +1.8k on top |
+
+GitHub CI green on both. Independently re-run locally against #25's head:
+**3,871 passed, 0 failed, 391 deselected, 3,150 subtests, 3m09s** (was 2,621
+tests in ~22 min on `master` — the discovery runner replaces the curated
+allowlist and the subprocess-heavy files).
+
+Observations on the restructure (not a review — that is still outstanding):
+
+- The deferred file split happened. `ibkr_operator.py` 56,795 → 8 lines,
+  `guard.py` → 9, `bridge.py` → 5; all now shims re-exporting from a new
+  `trading_agent/` package. Largest file is now 21,346 lines.
+- `trading_agent/settings.py` introduces `IBKR_STATE_DIR`; hardcoded
+  `/home/chris` down to 5 occurrences.
+- CI now runs the whole test tree by discovery, adopting the `host` marker
+  added on 2026-09-07, plus `mypy --strict` and full `ruff check .`.
+- Safety invariants verified intact in the new package: `/order` 403,
+  `IBKR_ALLOW_ORDERS` default false, `X-H1-Token` with `hmac.compare_digest`,
+  300 s expiry.
+- The autonomous agent in #25 is sandboxed: `trading_agent/agent/` has no
+  import of any order, broker, H1 or network path. It cannot reach IBKR.
+- **Gap:** `tests/test_claude_md_consistency.py`'s "every gate function is
+  wired into `run_preflight()`" assertion — the one that caught the Gate G
+  bug — now reads a historical copy of `run_preflight` from
+  `tests/historical/preflight.py` via `implementation_source(..., historical=True)`.
+  The live `legacy_guard.run_preflight()` is a 16-line delegation to the new
+  execution service, so that assertion no longer guards the live path.
+  Close-only itself is reimplemented in `trading_agent/risk.py` as
+  `CLOSE_ONLY_EXCEEDED` and covered by `tests/test_execution_capacity.py`,
+  so nothing is currently unguarded — but the general guarantee does not
+  extend to the new execution service.
+
+### Deployment of the 2026-09-07 fixes — COMPLETE
+
+Host checkout pulled to `9d863ba` and `ibkr-bridge.service` restarted.
+Confirmed live: `startup_safety` 11/11 pass, `IBKR_ALLOW_ORDERS=false`,
+`read_only: true`, `/health` ok. The invariant-#12 restart invalidation is
+demonstrably running — `approval_invalidated_restart` events were written for
+stale June approvals.
+
+`requirements.txt` and `systemd/` were unchanged in the pulled range, so no
+dependency install or `daemon-reload` was needed.
+
+### Gate G live confirmation — NOT COMPLETED
+
+The live `/order/preflight` SELL check was attempted repeatedly and never
+reached the gates. Preflight fetches account/quote/bars before Gate A, so
+every attempt failed at data retrieval. Gate G remains proven by
+`tests/test_gate_g_close_only_wiring.py` (7 tests) in a green suite; only the
+live belt-and-braces confirmation is outstanding.
+
+### Finding 1 — unbounded `ib.qualifyContracts()` holds a backpressure slot forever
+
+`/market/quote` calls `ib.qualifyContracts(contract)` with no deadline and no
+executor, and calls `connect()` before it. Against a Gateway that accepts the
+socket but does not service requests, the handler never returns and its
+tier-1 backpressure slot is held for the life of the process. Reproduced live:
+`curl -m 45` returned 0 bytes after 45 s.
+
+This is the same bug class as Phase 19N (`/order/preflight`) and Step 15Q-BP
+(`/market/bars`), both of which were fixed; `/market/quote` was missed by
+both. `/market/bars` bounds only its historical-data call — its
+`qualifyContracts` is unbounded too.
+
+**Present in `master` and unfixed in PR #24's `trading_agent/http_compat.py`.**
+
+Because uvicorn logs a request only after its handler returns, a hung call
+leaves no access-log line — noted in Phase 19N's own writeup.
+
+### Finding 2 — the slot leak is chronic, and has been silently shedding monitoring
+
+`/monitor/backpressure` showed `active` pinned (2, then 4 of `max_active=4`),
+not draining over 30 s, with `leaked_md_threads: 5` at its warn threshold and
+RSS at 300 MB. A restart cleared it: `active: 0`, RSS 86 MB — a 214 MB drop,
+confirming the blocked market-data threads were real.
+
+`journalctl` shows this is **not** new. `BP_REJECT_AUDIT` lines at 00:46,
+02:16, 03:16 and 03:46 on PID 484163 — an older process, hours before any of
+today's work — all with `active=2`, `rss_kb≈354000`. Every one of those is a
+scheduled `/monitor/reconciliation` or `/monitor/positions/drift` run being
+load-shed, because tier 3 sheds at half capacity.
+
+**Consequence: scheduled reconciliation and position-drift monitoring have
+been silently rejected for an unknown period.** Invariant #13 monitoring is
+read-only and cannot affect orders, so this is not an order-safety issue, but
+it means monitoring evidence has gaps.
+
+### Finding 3 — IB Gateway blocked on dialogs; market data never established
+
+The Gateway was not running at session start (`ConnectionRefusedError` on
+4002 — a TCP refusal, not an entitlement problem). After starting it per
+RUNBOOK §L7 it authenticated successfully at 14:23:32, then stopped at two
+modal windows — `"Ausstehende Aufgaben"` (Pending Tasks) and
+`"Login Messages"` — with no main window present. The API socket accepted and
+reported `DUQ542875` throughout, which is why the bridge could connect while
+contract lookups hung.
+
+Dismissing both via `xdotool windowclose` brought up the main `IBKR Gateway`
+window, but market data still did not arrive within the 8 s bound. No
+`2104`/`2106` farm-connection messages appear in the journal all day.
+Screenshots captured at `/tmp/gw.png` (dialogs visible) and `/tmp/gw2.png`.
+
+Not an entitlement problem in the code path: `_internal_fetch_quote` does
+`ib.sleep(3)` then returns whatever fields exist, so a missing subscription
+yields nulls in ~3 s, never a timeout.
+
+---
+
 ## Verification Queue (resolve against the live system)
+
+**Added 2026-09-16 (this session, all open):**
+
+- **A. `/market/quote` + `qualifyContracts` unbounded.** Bound both the same
+  way `/market/bars` bounds its historical call. Needed in `bridge.py` on
+  `master` and `trading_agent/http_compat.py` on the remediation branch, or
+  it regresses when #24 lands. Tier-1 files — awaiting Chris's go-ahead.
+- **B. Chronic backpressure slot leak / shed monitoring.** Determine how far
+  back `BP_REJECT_AUDIT` goes and what reconciliation evidence is missing.
+  Fixing A should stop new leaks.
+- **C. IB Gateway market data.** Read `/tmp/gw.png`'s "Ausstehende Aufgaben"
+  dialog — an outstanding IB account task can restrict market data. Check
+  Market Data Subscriptions in Client Portal (paper inherits from live), and
+  whether a competing IBKR session (mobile app / Client Portal) is holding
+  the single permitted market-data session.
+- **D. Gate G live confirmation.** One SELL preflight for a symbol with no
+  position, during RTH, once C is resolved. Expect `close_only` `passed:false`
+  with `would_open_short: true`.
+- **E. Gate-wiring guarantee for the new execution service.** The consistency
+  test's wiring assertion pins to a historical fixture after #24's refactor;
+  add an equivalent check against the live execution service before #24 merges.
+- **F. Startup auto-connect storm.** With the Gateway down, startup makes 90
+  attempts over ~7.5 min, each holding a thread on a 25 s timeout, leaving the
+  bridge sluggish and appearing dead. Consider backing off on a clearly
+  refused port.
 
 0. ✅ **RESOLVED (H2): Risk-rails divergence.** Reading (A) confirmed — guard.py enforces
    the v1.3-draft YAML caps (2% risk, 30% exposure) as the hard ceiling; Hermes proposes

@@ -1867,7 +1867,119 @@ third concurrent quote would get 503 `market_data_timeout`.
 
 ---
 
+## 2026-09-28 (later) — Werner/Hermes alignment and an IB Gateway simulator (Tier 1, Chris-approved)
+
+Chris asked for a way to validate the system without paying for IBKR market data
+(USD 500 minimum equity plus fees), whether Werner and Hermes need adapting, and
+then "please do that". Tier-1 edits to `bridge.py` and `guard.py` below.
+
+### Werner — deployed instructions could be stale
+
+The live Werner reads `~/.openclaw/CLAUDE.md`, a separate file from the checkout's
+`CLAUDE.md`. `docs/openclaw/CLAUDE.md` (a pre-2026-06-09 snapshot, never updated since
+the import) still told Werner to size with `fx_rate = ibkr_account.ExchangeRate` and an
+assumed EUR/USD of 1.00, while the guard now uses `1 / ExchangeRate[USD]`.
+
+- Moved to `docs/openclaw/archive/CLAUDE.pre-refactor.md` with a SUPERSEDED banner;
+  new `docs/openclaw/README.md` says which file Werner must load (symlink).
+- `ibkr-operator doctor` check `werner_instructions_current`: fails when the deployed
+  file differs from the checkout, and names known-stale rules. Skipped where Werner is
+  not deployed. RUNBOOK doctor section has the one-time symlink step.
+- `CLAUDE.md` §8: new **Simulation** rule (anything from a bridge whose account is not
+  `DUQ542875` is SIMULATION, never IBKR evidence, never counts toward readiness).
+
+### Hermes — asked for sizing numbers it was never given
+
+`ibkr-operator hermes-proposal` gave Hermes only Net Liq and position symbols, yet the
+template asks for entry, ATR stop, FX and share counts labelled `[IBKR]`, and Gate H
+only checks that fields exist. Now:
+
+- `_sizing_preview()` (read-only: bridge `/account`, `/market/quote`, `/market/bars`,
+  plus guard's own `calc_stop` and `compute_final_max_shares`) goes into Hermes's
+  baseline. Hermes's instructions say to copy it verbatim and never fetch or invent a
+  price, ATR, stop or FX rate.
+- No preview → Hermes is not invoked. A proposal whose stop differs from the guard's
+  stop, or whose quantity exceeds the guard's cap, is shown but not persisted, so Gate H
+  fails closed on it. A smaller quantity is allowed (Hermes's envelope is tighter).
+
+### Simulator and full-cycle rehearsal
+
+- `sim/ib_gateway.py`: speaks the TWS API (server v176) for everything the bridge uses,
+  including placeOrder/cancel, order status, executions, commissions and positions, with
+  order modes fill / partial / no_ack / reject. Account `DUSIM0001`.
+  `tests/fake_ib_gateway.py` now re-exports it (one implementation).
+- `sim/cycle.py` + `scripts/sim-cycle`: runs the real bridge and guard in a throwaway
+  sandbox. Its own HOME, all ten `IBKR_*_PATH` state paths and every bridge env var are
+  set explicitly (bridge.py's `load_dotenv()` reads the checkout's `.env`, which on the
+  host is production). It uses its own bridge port and a random H1 test token, and aborts
+  unless the bridge reports account `DUSIM0001`.
+  - Locked phase: preflight → approve → submit must be `ORDERS_BLOCKED`.
+  - `--submit`: RUNBOOK §L8 inside the sandbox — old approval dead after restart
+    (invariant #12), fresh cycle, broker outcome, positions, reconciliation, drift.
+- `bridge.py`: startup self-connect now uses `IBKR_BRIDGE_URL` (the variable guard and
+  operator already use) instead of a hard-coded 8790, so a sandbox bridge never POSTs
+  `/connect` to the production bridge.
+- The only code outside `tests/` that sets `IBKR_ALLOW_ORDERS` to true for a process is
+  `sim.cycle._sandbox_bridge_env`, which checks the sandbox first. A new test fails if
+  that ever spreads. CI invariants T5/T6 are unchanged.
+
+### Found by the rehearsal and fixed (Tier 1)
+
+- **Every preflight that passed all gates returned HTTP 500.** `create_approval_record()`
+  writes `active-approvals.json` and `approval-records.jsonl`, H1-protected since Phase
+  H1.2, and preflight carries no H1 authorization. This is the same gap as Phase 19L's
+  rollover write, one call later. It was never seen live because no preflight had got
+  that far since: first the rollover 500, then the data-retrieval failure fixed this
+  morning. **It would have hit the first live preflight after deploying that fix.**
+  Fixed with the same narrow `h1_authorized_scope()` pattern around this write only. The
+  record is `pending`; approving still needs the H1 token at `/order/approve`.
+- **Every BUY submit failed with `BRACKET_STOP_REQUIRED`.** `_internal_place_order` read
+  `proposal["stop_price"]`, but approval records keep the stop under `validation` (Phase
+  19O fixed the same mismatch in `_find_active_stop`; `guard.submit_order` already reads
+  `validation` first). The P5 tests hand-build records with the stop under `proposal`,
+  so they never noticed. Fixed with the same lookup order.
+
+Both verified as regressions: undoing either fix makes the rehearsal fail.
+
+### Found by the rehearsal — OPEN, needs Chris's decision (Verification Queue J, K)
+
+- **J. ACK-PENDINGSUBMIT.** ib_insync sets `PendingSubmit` locally the instant an order
+  is placed, and `_poll_for_ack` counts `PendingSubmit` as IBKR acknowledgment. Against
+  a gateway that never answers, submit returned `submitted: true`, counted a daily trade
+  and recorded `permId 0`; reconciliation and drift both stayed green. It can't simply be
+  dropped: the bracket path waits for the parent's ack before placing the stop, and a
+  parent held with `transmit=False` may get no broker status until the stop transmits.
+  Needs a design choice, e.g. place both, then require a broker-assigned `permId` /
+  `PreSubmitted`+ for both, verified once live.
+- **K. FILL-NOT-RECORDED.** The `order_submitted` event records `filled` only at ack
+  time, and a bracket parent is acked while held, so `filled=0`. Later fills are never
+  recorded, so `/monitor/positions/drift` reports every filled BUY as drift until
+  reconciled by hand (Phase 19F tool). This is probably the origin of the earlier
+  "phantom position" drift episodes.
+
+`scripts/sim-cycle` reports both as OPEN steps with the explanation; `--strict` fails on them.
+
+### Tests
+
+New, in curated CI: `test_werner_instructions.py` (9), `test_hermes_sizing_preview.py`
+(20), `test_sim_cycle.py` (19; all five rehearsal scenarios in parallel, about 40 s). Phase
+19M's harness now supplies a sizing preview, because Hermes is no longer invoked without one.
+
+---
+
 ## Verification Queue (resolve against the live system)
+
+**Added 2026-09-28 (later):**
+
+- **I. Werner's instructions on the host.** Run `ibkr-operator doctor`. If
+  `werner_instructions_current` fails, back up `~/.openclaw/CLAUDE.md` and symlink it to
+  `~/agents/ibkr-bridge/CLAUDE.md` (RUNBOOK, doctor section).
+- **J. Order acknowledgment (ACK-PENDINGSUBMIT)** — decide the fix; see the entry above.
+  Reproduce any time: `scripts/sim-cycle --submit --mode no_ack`.
+- **K. Fill recording (FILL-NOT-RECORDED)** — decide whether fills after the ack should
+  be recorded automatically; see above. Reproduce: `scripts/sim-cycle --submit`.
+- Before G, run `scripts/sim-cycle --submit` on the host: it exercises the deployed code
+  end to end with no IBKR involvement.
 
 **Added 2026-09-28:**
 

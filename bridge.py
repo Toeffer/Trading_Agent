@@ -90,6 +90,11 @@ async def _startup_ibkr_autoconnect():
 
 _STARTUP_CONNECT_MAX_ATTEMPTS = 90
 _STARTUP_CONNECT_RETRY_DELAY = 5.0
+# The bridge's own URL -- the same variable guard.py and ibkr_operator.py use.
+# A second bridge on another port (e.g. the sim-cycle sandbox) must connect
+# itself, not POST /connect to the production bridge on 8790 (2026-09-28).
+_STARTUP_SELF_CONNECT_URL = os.environ.get(
+    "IBKR_BRIDGE_URL", "http://127.0.0.1:8790").rstrip("/") + "/connect"
 
 
 def _startup_self_connect_http() -> dict:
@@ -101,8 +106,7 @@ def _startup_self_connect_http() -> dict:
     import json
     import urllib.request
 
-    url = "http://127.0.0.1:8790/connect"
-    req = urllib.request.Request(url, data=b"", method="POST")
+    req = urllib.request.Request(_STARTUP_SELF_CONNECT_URL, data=b"", method="POST")
 
     with urllib.request.urlopen(req, timeout=25) as resp:
         body = resp.read().decode("utf-8")
@@ -126,9 +130,9 @@ async def _startup_auto_connect():
                 return
 
             _l.warning(
-                "startup_auto_connect self_connect attempt=%d/%d url=http://127.0.0.1:8790/connect "
+                "startup_auto_connect self_connect attempt=%d/%d url=%s "
                 "host=%s port=%s client_id=%s read_only=%s allow_orders=%s",
-                attempt, _STARTUP_CONNECT_MAX_ATTEMPTS,
+                attempt, _STARTUP_CONNECT_MAX_ATTEMPTS, _STARTUP_SELF_CONNECT_URL,
                 IBKR_HOST, IBKR_PORT, IBKR_CLIENT_ID, IBKR_READ_ONLY, IBKR_ALLOW_ORDERS,
             )
 
@@ -1030,11 +1034,17 @@ def _internal_place_order(approval_record: dict) -> dict:
         return {"success": False, "error": "ib_insync not available"}
 
     proposal = approval_record.get("proposal", {})
+    # 2026-09-28: create_approval_record() stores the preflight's validated
+    # stop and entry under "validation", never "proposal" (Phase 19O fixed the
+    # same mismatch in _find_active_stop; guard.submit_order already reads it
+    # this way). Reading "proposal" alone found no stop on any real record, so
+    # every BUY failed closed with BRACKET_STOP_REQUIRED. Found by sim/cycle.py.
+    validation = approval_record.get("validation", {})
     symbol = proposal.get("symbol", "")
     qty = proposal.get("totalQuantity", 0)
     action = proposal.get("action", "BUY")
-    stop_price = proposal.get("stop_price")
-    entry_price = proposal.get("entry_price")
+    stop_price = validation.get("stop_price") or proposal.get("stop_price")
+    entry_price = validation.get("entry_price") or proposal.get("entry_price")
 
     if not symbol:
         return {"success": False, "error": "No symbol in proposal"}

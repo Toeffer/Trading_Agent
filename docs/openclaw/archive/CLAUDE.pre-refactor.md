@@ -1,3 +1,10 @@
+> **SUPERSEDED — do not deploy, do not load as Werner's instructions.**
+> This is the monolithic Werner instruction file from before the 2026-06-09
+> refactor, kept for history only. Its sizing section is wrong: it uses the raw
+> `ExchangeRate` tag and an assumed EUR/USD of 1.00 (fixed 2026-09-28 — EUR/USD
+> is `1 / ExchangeRate[USD]`). Werner's instructions are the repository-root
+> `CLAUDE.md`; see `docs/openclaw/README.md`.
+
 # CLAUDE.md — OpenClaw / Werner Runtime
 
 ## Identity

@@ -115,6 +115,20 @@ DATA PROVENANCE POLICY (Phase 5C — source-of-truth hierarchy):
    - But must label key claims as "[web context unavailable]"
    - Include this as a risk/unknown in the proposal
 
+SIZING DATA — baseline "sizing_preview" is the source of every sizing number:
+- It holds IBKR data fetched through the bridge plus the guard's own stop and
+  share-cap results. Copy Net Liq, EUR/USD, entry price (ask), ATR14, the stop
+  candidates, final stop, stop distance and share caps from it, labelled
+  [bridge/preflight].
+- EUR/USD there is USD per 1 EUR (1 / IBKR ExchangeRate[USD]). USD caps are
+  % x Net Liq (EUR) x EUR/USD.
+- position_sizing.stop_price must equal sizing_preview.stop.stop_price.
+  quantity may be smaller than sizing_preview.sizing.final_max_shares (your
+  envelope is tighter) but never larger. Proposals that disagree are not saved.
+- Never fetch, estimate or invent a price, ATR, stop or FX rate. If
+  sizing_preview is missing or its "ok" is false, output only
+  {"error": "sizing_preview unavailable"}.
+
 HUMAN CONFIRMATION LADDER:
 - Every trade > EUR 0 requires Chris approval
 - Any order enablement requires Chris approval
@@ -154,7 +168,7 @@ have a source label: [IBKR], [bridge/preflight], [web/news], [assumption],
 | -> Final stop | ... | (binding: which candidate) |
 
 **Calculations:**
-- Notional cap shares = floor(5% * NL * FX / entry_price) = ...
+- Notional cap shares = floor(5% * NL * FX / entry_price) = ...   (FX = sizing_preview EUR/USD)
 - Risk cap shares     = floor(2% * NL * FX / stop_distance) = ...
 - Final shares        = min(...) = |
 

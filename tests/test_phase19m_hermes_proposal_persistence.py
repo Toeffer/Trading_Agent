@@ -116,8 +116,19 @@ def isolated_proposals_dir(tmp_path):
         guard.PROPOSALS_PATH = original
 
 
+# Since 2026-09-28 Hermes is only invoked with an IBKR sizing preview, and a
+# proposal is only persisted if its stop and quantity agree with it. This
+# preview agrees with _valid_buy_proposal() (stop 190.0, quantity 1).
+_AGREEING_PREVIEW = {
+    "ok": True, "side": "BUY", "symbol": "AAPL", "quantity_requested": 1,
+    "stop": {"stop_price": 190.0, "stop_distance": 10.0},
+    "sizing": {"final_max_shares": 1, "requested_within_cap": True},
+}
+
+
 def _run_with_mocked_baseline_and_hermes(stdout: str):
-    with patch.object(ibkr_operator, "run_checklist", return_value={}), \
+    with patch.object(ibkr_operator, "_sizing_preview", return_value=_AGREEING_PREVIEW), \
+         patch.object(ibkr_operator, "run_checklist", return_value={}), \
          patch.object(ibkr_operator, "run_daily_report", return_value={}), \
          patch.object(ibkr_operator, "run_doctor", return_value={}), \
          patch("subprocess.run", return_value=_fake_completed_process(stdout)):

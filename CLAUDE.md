@@ -236,6 +236,8 @@ Full policy: `~/.openclaw/memory/model-routing-safety-policy.md`.
 | `ibkr-operator` (CLI on PATH) | Read-only operator tool — see RUNBOOK Part 1 |
 | `CHANGELOG.md` | Phase ledger, order history, superseded decisions, verification queue |
 | `RUNBOOK.md` | Operator commands & procedures (Part 1 `ibkr-operator` CLI, Part 2 break-glass) |
+| `~/.openclaw/CLAUDE.md` | Werner's deployed instructions — must be a symlink to this file; `ibkr-operator doctor` flags drift (`docs/openclaw/README.md`) |
+| `sim/`, `scripts/sim-cycle` | IB Gateway simulator and full-cycle rehearsal (account `DUSIM0001`) — test evidence only |
 
 ## 8. Communication Rules
 
@@ -259,6 +261,10 @@ by default.
 - **Data provenance (Phase 5C):** label data sources; IBKR is ground truth. Never claim
   Hermes/Codex performed verifications that were done via local server commands, unless
   that path is separately re-verified.
+- **Simulation:** a bridge whose managed account is not `DUQ542875` (the simulator reports
+  `DUSIM0001`) is a simulation. Label everything from it **SIMULATION**; never cite it as
+  IBKR evidence or count it toward any readiness level; never point the production bridge
+  (port 8790) at the simulator.
 - Chat notifications by default only for: halt events, first failure of the day, approval
   timeouts.
 - **Anti-truncation:** for long answers, split into numbered parts under 2,500 characters

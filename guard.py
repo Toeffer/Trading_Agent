@@ -2715,7 +2715,18 @@ def run_preflight(
     # Log event and create approval record
     if all_pass:
         try:
-            approval = create_approval_record(result)
+            # 2026-09-28, same gap as Phase 19L's rollover write: the pending
+            # approval record is preflight's own documented output (Phase 2C),
+            # but it is written to active-approvals.json and
+            # approval-records.jsonl, H1-protected since Phase H1.2, and
+            # preflight carries no H1 authorization. Every preflight that
+            # passed all gates raised PermissionError (HTTP 500) here -- never
+            # seen live only because no preflight had got this far since.
+            # Found by the simulator's full-cycle rehearsal (sim/cycle.py).
+            # The scope covers this write alone: the record is "pending" and
+            # approving it still requires Chris's H1 token at /order/approve.
+            with h1_authorized_scope():
+                approval = create_approval_record(result)
             result["approval_id"] = approval["approval_id"]
             result["approval_expires_at_utc"] = approval["expires_at_utc"]
         except ValueError as e:

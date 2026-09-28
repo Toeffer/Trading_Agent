@@ -406,7 +406,7 @@ class TestAgainstFakeGateway:
     def test_contract_lookup_endpoint(self, probe):
         r = probe["contract_http"]
         assert r["status"] == 200, r
-        assert r["body"]["matches"][0]["conId"] == 265598
+        assert r["body"]["matches"][0]["conId"] == fake_ib_gateway.con_id("MSFT")
 
     def test_connected_preflight_reaches_the_gates(self, probe):
         r = probe["preflight_http"]

@@ -56,6 +56,9 @@ TESTS=(
   tests/test_gate_g_close_only_wiring.py
   tests/test_approval_lookup_single_source.py
   tests/test_ibkr_owner_thread.py
+  tests/test_werner_instructions.py
+  tests/test_hermes_sizing_preview.py
+  tests/test_sim_cycle.py
 )
 
 echo "==> Portable CI"

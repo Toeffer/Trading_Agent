@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Full-cycle rehearsal against the IB Gateway simulator -- SIMULATION ONLY.
+# Throwaway sandbox (own HOME, rules, state, bridge port, H1 test token,
+# account DUSIM0001); never touches ~/.openclaw, .env, IB Gateway or the
+# production bridge. Details and options: sim/cycle.py.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+PYTHON="python3"
+[ -x ".venv/bin/python" ] && PYTHON=".venv/bin/python"
+exec "$PYTHON" -m sim.cycle "$@"

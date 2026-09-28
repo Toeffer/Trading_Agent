@@ -23,6 +23,7 @@ Direct test:
 """
 
 import json
+import math
 import os
 import sys
 import time
@@ -728,6 +729,33 @@ def _bridge_post(path: str, body: dict) -> dict:
     return data
 
 
+def usd_per_base_from_account_values(rows) -> float | None:
+    """EUR/USD for sizing -- USD per 1 unit of the account base currency --
+    from IBKR's per-currency ExchangeRate account values.
+
+    IBKR reports one ExchangeRate row per currency, giving the value of 1
+    unit of that currency in BASE terms: for a EUR-base account
+    ExchangeRate/USD = 0.87 means 1 USD = 0.87 EUR, and ExchangeRate/BASE
+    is always 1.00. Sizing multiplies EUR NetLiquidation by this rate to get
+    USD, so it needs USD per EUR = 1 / ExchangeRate[USD] (exactly 1.0 for a
+    USD-base account). Keying account values by tag alone kept whichever
+    ExchangeRate row arrived last -- the BASE row's 1.00 or the un-inverted
+    USD rate, both inside the [0.80, 1.40] plausibility band (2026-09-28).
+
+    rows: iterable of (tag, value, currency).
+    Returns None when the USD row is missing or unusable -- never a silent
+    1.0 (H4.2) -- so preflight refuses to size instead of guessing.
+    """
+    for tag, value, currency in rows:
+        if tag == "ExchangeRate" and currency == "USD":
+            try:
+                rate = float(value)
+            except (TypeError, ValueError):
+                return None
+            return 1.0 / rate if rate > 0 else None
+    return None
+
+
 def fetch_account() -> dict:
     """Fetch account data from the bridge /account endpoint.
 
@@ -737,7 +765,8 @@ def fetch_account() -> dict:
         available_funds_eur: float
         buying_power_eur: float
         currency: str (e.g. "EUR")
-        exchange_rate: float (EUR/USD, from tag ExchangeRate)
+        exchange_rate: float | None (EUR/USD: USD per 1 EUR, from the USD
+            ExchangeRate row -- see usd_per_base_from_account_values)
         account_code: str (e.g. "DUQ542875")
 
     Raises:
@@ -793,8 +822,9 @@ def fetch_account() -> dict:
     bp_raw = _get_tag("BuyingPower")
     buying_power_eur = float(bp_raw) if bp_raw else 0.0
 
-    fx_raw = _get_tag("ExchangeRate")
-    exchange_rate = float(fx_raw) if fx_raw else None  # H4.2: no silent 1.0 fallback
+    exchange_rate = usd_per_base_from_account_values(  # H4.2: no silent 1.0 fallback
+        (e.get("tag", ""), e.get("value", ""), e.get("currency", "")) for e in values
+    )
 
     return {
         "net_liquidation_eur": net_liquidation_eur,
@@ -2456,7 +2486,22 @@ def run_preflight(
         stop_distance = 0.0
         atr14 = None
     else:
-        entry_price = quote["ask"]
+        entry_price = quote.get("ask")
+        # A BUY is sized from the ask. ib_insync leaves ticker fields it never
+        # received as NaN (the bridge now maps them to None), e.g. with no
+        # market data farm or subscription. Refuse cleanly: a NaN ask slipped
+        # past calc_stop's "> 0" check and crashed sizing, and a None ask
+        # crashed the stopPrice/stopPercent comparisons (2026-09-28).
+        if (not isinstance(entry_price, (int, float)) or isinstance(entry_price, bool)
+                or not math.isfinite(entry_price) or entry_price <= 0):
+            append_guard_event("preflight_fail", {
+                "symbol": symbol, "passed": False,
+                "reason": f"No usable ask price in quote: {entry_price!r}",
+            })
+            return {
+                "passed": False,
+                "error": f"No usable ask price in quote ({entry_price!r}): market data unavailable.",
+            }
 
     # Compute or validate stop (BUY only)
     if not is_close:

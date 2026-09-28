@@ -160,7 +160,9 @@ YAML at enforcement time. Summary (reflecting current YAML):
   If `stopPrice` is provided, validate it against all rules; if omitted, compute inline.
 - Shares: `min( floor(max_notional / entry), floor(max_risk / stop_distance) )`.
 - FX: fetch EUR/USD from `ibkr_account` `ExchangeRate` on **every** preflight; never cache,
-  never silently assume. State the FX assumption in every sizing output.
+  never silently assume. State the FX assumption in every sizing output. IBKR reports one
+  `ExchangeRate` row per currency (value of 1 unit in base terms; the BASE row is always
+  1.00): EUR/USD = **1 / ExchangeRate[USD]**. No USD row → no sizing.
 - Preflight is strict (unknown fields rejected at the guard; the bridge passes unknown
   fields through so the guard sees them). Fields: `symbol, action, totalQuantity,
   orderType, limitPrice, stopPrice, stopPercent, mode`, plus `proposal_path` (bridge-only:

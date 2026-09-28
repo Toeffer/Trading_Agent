@@ -47,6 +47,7 @@ This file has two tiers:
 """
 
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -111,28 +112,38 @@ class TestBoundedProvidersAreWiredIn:
         assert "quote_provider=_internal_fetch_quote_safe" in snippet
         assert "bars_provider=_internal_fetch_bars_safe" in snippet
 
-    def test_bars_safe_mirrors_quote_safe_timeout_pattern(self):
-        """The new wrapper must actually bound the call (thread executor +
-        future.result(timeout=...)), not just exist as a same-named
-        passthrough."""
-        idx = BRIDGE_SOURCE.index("def _internal_fetch_bars_safe(")
-        snippet = BRIDGE_SOURCE[idx: idx + 2500]
-        assert "ThreadPoolExecutor" in snippet
-        assert "future.result(timeout=timeout)" in snippet
-        assert "concurrent.futures.TimeoutError" in snippet
-        assert "raise RuntimeError" in snippet
-        assert "market_data_timeout" in snippet
-        assert "executor.shutdown(wait=False)" in snippet
+    @staticmethod
+    def _function(name: str) -> str:
+        idx = BRIDGE_SOURCE.index(f"\ndef {name}(")
+        end = BRIDGE_SOURCE.index("\ndef ", idx + 1)
+        return BRIDGE_SOURCE[idx:end]
 
-    def test_bars_fetch_still_decrements_leaked_thread_counter(self):
-        """Symmetric with _internal_fetch_quote: a bars fetch that
-        eventually completes after its caller already timed out must still
-        decrement the shared leaked-thread counter, or it grows unbounded
-        across repeated bars timeouts."""
-        idx = BRIDGE_SOURCE.index("def _internal_fetch_bars(")
-        end_idx = BRIDGE_SOURCE.index("def _internal_fetch_bars_safe(")
-        snippet = BRIDGE_SOURCE[idx:end_idx]
-        assert "_decrement_leaked_md_thread()" in snippet
+    def test_bars_safe_mirrors_quote_safe_timeout_pattern(self):
+        """Both wrappers must actually bound the call, not just exist as
+        same-named passthroughs. Since the 2026-09-28 owner-thread fix the
+        bound is _run_on_ib_owner(..., timeout=timeout): the per-call
+        ThreadPoolExecutor this test used to pin never owned the Gateway
+        socket, so every bounded fetch timed out (tests/test_ibkr_owner_thread.py)."""
+        for name, fetch in (("_internal_fetch_bars_safe", "_internal_fetch_bars"),
+                            ("_internal_fetch_quote_safe", "_internal_fetch_quote")):
+            fn = self._function(name)
+            assert f"_run_on_ib_owner({fetch}, symbol, timeout=timeout)" in fn, name
+            assert "except IBOwnerTimeout" in fn, name
+            assert "raise RuntimeError" in fn, name
+            assert "market_data_timeout" in fn, name
+            assert "ThreadPoolExecutor" not in fn, name
+
+    def test_abandoned_fetch_still_decrements_leaked_thread_counter(self):
+        """A fetch that completes after its caller already timed out must
+        still decrement the shared leaked-thread counter, or it grows
+        unbounded across repeated timeouts. The owner dispatcher tracks a
+        still-running job and decrements it on completion; the fetches no
+        longer decrement themselves (that double-counted)."""
+        dispatcher = self._function("_run_on_ib_owner")
+        assert "_track_leaked_md_thread()" in dispatcher
+        assert "future.add_done_callback(lambda _f: _decrement_leaked_md_thread())" in dispatcher
+        for name in ("_internal_fetch_quote", "_internal_fetch_bars"):
+            assert "_decrement_leaked_md_thread" not in self._function(name), name
 
 
 # ---------------------------------------------------------------------------
@@ -200,15 +211,25 @@ class TestRunPreflightHandlesTimeoutGracefully:
 # Imports bridge.py directly; requires fastapi. Skipped in default CI.
 # ---------------------------------------------------------------------------
 
+@pytest.fixture
+def stall():
+    """A hung-Gateway call that is released at teardown. Fetches run on
+    bridge's single IBKR owner thread (2026-09-28), which later tests need
+    free; in production ib.RequestTimeout bounds every real IBKR call."""
+    release = threading.Event()
+    yield lambda: release.wait(999)
+    release.set()
+
+
 @pytest.mark.integration
 class TestFetchBarsSafeTimeout:
     """Verify the timeout path in _internal_fetch_bars_safe is non-blocking."""
 
-    def test_timeout_raises_promptly(self):
+    def test_timeout_raises_promptly(self, stall):
         import time as _time_module
 
         def _slow_fetch(_symbol):
-            _time_module.sleep(999)
+            stall()
             return []
 
         with patch("bridge._internal_fetch_bars", side_effect=_slow_fetch):
@@ -224,11 +245,11 @@ class TestFetchBarsSafeTimeout:
                 assert elapsed < 3.0, \
                     f"Timeout took {elapsed:.1f}s, should be under 3.0s"
 
-    def test_timeout_does_not_block_caller(self):
+    def test_timeout_does_not_block_caller(self, stall):
         import time as _time_module
 
         def _slow_fetch(_symbol):
-            _time_module.sleep(999)
+            stall()
             return []
 
         with patch("bridge._internal_fetch_bars", side_effect=_slow_fetch):
@@ -245,18 +266,18 @@ class TestFetchBarsSafeTimeout:
             assert elapsed < 5.0, \
                 f"3 sequential timeouts took {elapsed:.1f}s, should be under 5.0s"
 
-    def test_order_preflight_returns_promptly_under_stalled_gateway(self):
+    def test_order_preflight_returns_promptly_under_stalled_gateway(self, stall):
         """End-to-end: with both fetches simulated as hung, the /order/preflight
         handler's own run_preflight() call must return a clean failure well
         under the old ~75s+ hang, not time out the test."""
         import time as _time_module
 
         def _slow_quote(_symbol):
-            _time_module.sleep(999)
+            stall()
             return {}
 
         def _slow_bars(_symbol):
-            _time_module.sleep(999)
+            stall()
             return []
 
         with patch("bridge._internal_fetch_quote", side_effect=_slow_quote), \

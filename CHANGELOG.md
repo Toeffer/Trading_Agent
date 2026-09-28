@@ -1750,18 +1750,150 @@ yields nulls in ~3 s, never a timeout.
 
 ---
 
+## 2026-09-28 — IBKR owner thread: every connected preflight was timing out (Tier 1, Chris-approved)
+
+Repo check requested by Chris, then "please fix your findings". Tier-1 edits to
+`bridge.py` and `guard.py`, approved by Chris in-session. Kill switches, H1,
+`/order` 403 and the preflight → approve → submit path are unchanged.
+
+### Root cause — the bridge could only talk to IBKR from the thread that connected
+
+ib_insync binds the Gateway socket to the event loop of the thread that runs
+`connect()` (`Connection.connectAsync` → `util.getLoop()`), but every synchronous
+call (`qualifyContracts`, `reqHistoricalData`, `ib.sleep`, ...) runs the *calling*
+thread's own loop (`util.run` → `util.getLoop()`). Replies are read only while the
+connecting thread's loop runs. FastAPI serves each sync endpoint on whichever anyio
+worker thread is free, and `ensure_loop()` gives each thread its own loop. So:
+
+- **Every connected `/order/preflight` failed at data retrieval since Phase 19N
+  (2026-08-27).** `_internal_fetch_quote_safe` / `_internal_fetch_bars_safe` ran
+  the fetch on a *fresh* executor thread, which is never the connecting one, so
+  both timed out every time, even against a healthy Gateway. Each timeout left a
+  thread blocked for good (the `leaked_md_threads` climb).
+- **`/market/quote`** worked only when the request landed on the connecting
+  thread; otherwise it hung for good and held its tier-1 backpressure slot.
+- **`/market/bars` and `/contract/stock`** handed `ib` calls to an executor thread
+  with no event loop at all: `RuntimeError: There is no current event loop`, so
+  `/market/bars` returned HTTP 500 for every symbol that qualified.
+- **Order ack polling** (`_poll_for_ack` → `ib.sleep`) ran on the request thread,
+  so order-status messages could go unread: an order live at IBKR could be
+  recorded as `IBKR_ACK_TIMEOUT`.
+- Why Phase 5C worked: anyio reuses the most recently idle worker, so sequential
+  requests usually landed on the connecting thread. It is not deterministic, and
+  anyio retires threads idle for 10 s.
+
+Reproduced in a sandbox against a fake Gateway that answers every request
+instantly (`tests/fake_ib_gateway.py`). The bounded fetchers timed out on 100% of
+calls, even from the connecting thread, with `is_connected()` true throughout. One
+of four concurrent `/market/quote` calls hung and held its slot (`active: 1`) with
+`leaked_md_threads: 0`. This matches the 2026-09-16 incident: connects succeeded
+and reported the account, lookups hung, every preflight failed at data retrieval,
+`active` was pinned at 2 then 4, `leaked_md_threads: 5`, and a restart cleared it.
+
+### Fix — one IBKR owner thread
+
+- `_run_on_ib_owner()` / `@_ib_owner_call`: a single-thread executor with its own
+  event loop. `connect()` runs there, so the socket belongs to that loop, and every
+  other ib_insync call is dispatched there: the fetch helpers, `/market/quote`,
+  `/market/bars`, `/contract/stock`, `/account`, `/account/summary`, `/positions`,
+  open orders, the status dashboard, and order placement and cancel. Cached reads go
+  through `_ib_read()`, which first processes messages already waiting on the socket.
+- `ib.RequestTimeout = 15 s` after connect bounds every IBKR request, so the owner
+  thread can't be blocked indefinitely. A caller that gives up cancels its job if it
+  hasn't started. A job already running is counted on `leaked_md_threads` until it
+  finishes (bounded), so a stall shows up and then clears.
+- The caller's `contextvars` (H1 scope) apply to the job, exactly as before.
+- `_internal_place_order` waits for completion (`timeout=None`): an in-flight
+  placement is never abandoned. If its contract lookup times out (before anything
+  is sent), `submit_order` returns `PROVIDER_ERROR`, not submitted, no trade counted.
+- An AST test now fails CI if any `ib.*` call in `bridge.py` runs off the owner thread.
+
+**Trade-off:** IBKR calls are serialized. A quote holds the owner for `ib.sleep(3)`,
+so concurrent quotes queue (the second returns at ~6 s, inside the 8 s bound); a
+third concurrent quote would get 503 `market_data_timeout`.
+
+### Found once preflight actually received data
+
+- **NaN quote fields crashed preflight (HTTP 500).** ib_insync leaves unreceived
+  ticker fields as NaN. The bridge's `_sf` helpers passed NaN through; a NaN ask
+  slipped past `calc_stop`'s `> 0` check and crashed sizing
+  (`cannot convert float NaN to integer`). A `None` ask crashed the explicit
+  `stopPrice`/`stopPercent` comparisons. Fixed: `_sf` maps non-finite values to
+  `None`, and a BUY without a usable ask is refused cleanly ("No usable ask price",
+  `preflight_fail` event). SELL is unchanged (its entry price is unused).
+
+### EUR/USD — silent 1.0 fallback and wrong row
+
+- `bridge._internal_fetch_account` (the provider preflight uses when connected) still
+  had `float(_get("ExchangeRate") or 1.0)`; H4.2 had removed that fallback only from
+  `guard.fetch_account`. 1.0 passes the [0.80, 1.40] plausibility band.
+- IBKR reports one `ExchangeRate` row per currency: the value of 1 unit of that
+  currency in base terms (BASE row = 1.00; USD ≈ 0.87 in a EUR account). Both
+  parsers keyed by tag only, so the last row won: the BASE 1.00 or the un-inverted
+  USD rate. The only recorded live value, "EUR/USD 1.00 at capture" (Phase 1), is
+  the BASE row. Sizing multiplies EUR NetLiq by this rate to get USD, so it needs
+  **1 / ExchangeRate[USD]**.
+- Fix: shared `guard.usd_per_base_from_account_values()`, used by both parsers.
+  It returns `None` when the USD row is absent, so preflight refuses rather than
+  guessing.
+- **Behavior change:** USD caps now reflect the real rate. With USD = 0.87, the 5%
+  notional cap on €1,000,000 is $57,471 (was $50,000 at 1.00). Positions stay inside
+  the YAML limits; they were just sized ~13% too small before. If the account has no
+  USD `ExchangeRate` row, BUY preflight now refuses with "EUR/USD rate unavailable"
+  (see Verification Queue G).
+
+### Tests
+
+- New `tests/test_ibkr_owner_thread.py` (40 tests, curated CI): runs the real
+  `bridge.py` in a subprocess against `tests/fake_ib_gateway.py`. It covers bounded
+  fetches from other threads, concurrent quotes, bars, contract lookup, a connected
+  `/order/preflight` that reaches the gates (sized from the ask, correct FX caps), a
+  no-ask preflight, a stalled Gateway (503 in time, counter back to 0, bridge still
+  working), queued-job cancellation, contextvars, the AST audit, and FX unit tests.
+  Against the pre-fix code, every audit, FX and NaN test fails, and the probe hangs.
+- Phase 19N source pins updated from the per-call `ThreadPoolExecutor` (the bug) to
+  the owner dispatch; they still assert the fetches are bounded and the leak counter
+  balances.
+- The `integration` hang mocks in the 19N and 15N tests now release at teardown. On
+  the old code, their `sleep(999)` executor threads made the test process hang at
+  interpreter exit (killed by a 900 s timeout); now the tests take 7 s.
+
+### Not done here
+
+- **PR #24** (`trading_agent/http_compat.py`) carries the same per-thread loop
+  pattern, the `or 1.0` FX fallback, and the NaN pass-through. Preflight there
+  still goes through the legacy provider. Port this before #24 merges (queue H).
+- Deploy: restart `ibkr-bridge.service`; no dependency or unit-file change.
+
+---
+
 ## Verification Queue (resolve against the live system)
 
-**Added 2026-09-16 (this session, all open):**
+**Added 2026-09-28:**
 
-- **A. `/market/quote` + `qualifyContracts` unbounded.** Bound both the same
-  way `/market/bars` bounds its historical call. Needed in `bridge.py` on
-  `master` and `trading_agent/http_compat.py` on the remediation branch, or
-  it regresses when #24 lands. Tier-1 files — awaiting Chris's go-ahead.
-- **B. Chronic backpressure slot leak / shed monitoring.** Determine how far
+- **G. Live check after deploying the owner-thread fix.** During RTH: `/market/quote`,
+  `/market/bars`, `/contract/stock` answer; a BUY `/order/preflight` for an
+  allowlisted symbol reaches the gates; `leaked_md_threads` stays 0. In `/account`,
+  confirm an `ExchangeRate` row with currency `USD` exists and that preflight's USD
+  caps equal `pct × NetLiq / ExchangeRate[USD]`. If there is no USD row, BUY
+  preflight refuses (fail-closed); decide on a sourced EUR/USD.
+- **H. Port to PR #24.** Same fix in `trading_agent/http_compat.py`: legacy `ib`
+  calls onto one owner loop (or through `BrokerLoop`), remove `or 1.0`, NaN → None,
+  and the ask check. Reuse `tests/fake_ib_gateway.py`.
+
+**Added 2026-09-16:**
+
+- ✅ **A. `/market/quote` + `qualifyContracts` unbounded.** RESOLVED 2026-09-28
+  (on `master`; not yet on PR #24, see H). Root cause was the cross-thread event
+  loop, not only the missing bound. Every ib call now runs on the owner thread
+  under `ib.RequestTimeout`, and `/market/quote` is bounded at 8 s.
+- **B. Chronic backpressure slot leak / shed monitoring.** Mechanism root-caused and
+  fixed 2026-09-28 (hung handlers off the connecting thread). Still open: how far
   back `BP_REJECT_AUDIT` goes and what reconciliation evidence is missing.
-  Fixing A should stop new leaks.
-- **C. IB Gateway market data.** Read `/tmp/gw.png`'s "Ausstehende Aufgaben"
+- **C. IB Gateway market data.** Very likely the same threading bug: with the
+  socket's loop not running, no replies were read, including ticks and the
+  2104/2106 farm messages. Re-check under G before chasing subscriptions.
+  Original note: Read `/tmp/gw.png`'s "Ausstehende Aufgaben"
   dialog — an outstanding IB account task can restrict market data. Check
   Market Data Subscriptions in Client Portal (paper inherits from live), and
   whether a competing IBKR session (mobile app / Client Portal) is holding

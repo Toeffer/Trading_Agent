@@ -2,6 +2,9 @@ import os
 import socket
 import asyncio
 import concurrent.futures
+import contextvars
+import functools
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -204,6 +207,123 @@ def _verify_h1_token(token: str | None) -> bool:
 ib = IB() if IB else None
 
 # ---------------------------------------------------------------------------
+# IBKR owner thread (2026-09-28) — every ib_insync call runs on ONE thread
+# ---------------------------------------------------------------------------
+# ib_insync binds the Gateway socket to the event loop of the thread that
+# connects (Connection.connectAsync -> util.getLoop()), but every synchronous
+# call (qualifyContracts, reqHistoricalData, ib.sleep, ...) runs the *calling*
+# thread's loop (util.run -> util.getLoop()). Replies are read only while the
+# connecting thread's loop runs. FastAPI runs each sync endpoint on whichever
+# anyio worker thread is free and ensure_loop() gives each its own loop, so
+# an IBKR round trip made off the connecting thread blocked until its caller
+# gave up -- against a perfectly healthy Gateway, with isConnected() still
+# True. The per-call thread executors (Step 15L-B/15N/15Q-BP, Phase 19N) made
+# it deterministic: their fresh thread is never the connecting one, so every
+# bounded quote/bars fetch -- i.e. every connected /order/preflight -- timed
+# out, and each timeout left a thread blocked for good (leaked_md_threads).
+#
+# Fix: one dedicated owner thread with one event loop. connect() runs there,
+# so the socket belongs to that loop, and every other ib_insync call is
+# dispatched there as well. ib.RequestTimeout bounds each IBKR request, so
+# the owner thread is never blocked indefinitely; a caller that gives up
+# first cancels its job if it has not started yet.
+_IB_REQUEST_TIMEOUT = 15.0       # ib.RequestTimeout: max seconds per IBKR request
+_IB_OWNER_WAIT_TIMEOUT = 30.0    # default max wait for a dispatched call (queue + run)
+_IB_CONNECT_WAIT_TIMEOUT = 60.0  # connect(): 20 s IBKR timeout + initial sync + queue
+
+_ib_owner_ident: int | None = None
+
+
+def _init_ib_owner_thread() -> None:
+    global _ib_owner_ident
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    _ib_owner_ident = threading.get_ident()
+
+
+_IB_OWNER = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="ibkr-owner",
+    initializer=_init_ib_owner_thread,
+)
+
+
+class IBOwnerTimeout(RuntimeError):
+    """A dispatched IBKR call did not finish in time.
+
+    A RuntimeError so the existing data-retrieval handlers (e.g. the except
+    clause around the fetches in guard.run_preflight) keep catching it.
+    """
+
+
+def _on_ib_owner_thread() -> bool:
+    return threading.get_ident() == _ib_owner_ident
+
+
+def _run_on_ib_owner(fn, *args, timeout=_IB_OWNER_WAIT_TIMEOUT, **kwargs):
+    """Run fn(*args, **kwargs) on the IBKR owner thread and return its result.
+
+    Runs inline when already on the owner thread. The caller's contextvars
+    (e.g. an H1 authorization scope) apply for the duration of the call,
+    exactly as if it had run on the caller's thread. timeout=None waits for
+    completion -- used for order placement, which must never be abandoned
+    mid-flight. Raises IBOwnerTimeout when the caller's deadline or
+    ib.RequestTimeout expires.
+    """
+    if _on_ib_owner_thread():
+        return fn(*args, **kwargs)
+    ctx = contextvars.copy_context()
+    future = _IB_OWNER.submit(ctx.run, fn, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout)
+    except TimeoutError as exc:  # caller deadline, or ib.RequestTimeout inside fn
+        name = getattr(fn, "__name__", "ibkr call")
+        if future.done():
+            raise IBOwnerTimeout(
+                f"ibkr_timeout: {name}: IBKR request did not complete within "
+                f"{_IB_REQUEST_TIMEOUT:.0f}s"
+            ) from exc
+        if not future.cancel():
+            # Already running on the owner thread. It is bounded by
+            # ib.RequestTimeout and finishes on its own; count it until then
+            # on the Step 15Q-BP counter surfaced by /monitor/backpressure.
+            _track_leaked_md_thread()
+            future.add_done_callback(lambda _f: _decrement_leaked_md_thread())
+        raise IBOwnerTimeout(
+            f"ibkr_timeout: {name} did not complete within {timeout:.0f}s"
+        ) from exc
+
+
+def _ib_owner_call(timeout=_IB_OWNER_WAIT_TIMEOUT):
+    """Decorator: the wrapped function always executes on the IBKR owner thread."""
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            return _run_on_ib_owner(fn, *args, timeout=timeout, **kwargs)
+        return wrapper
+    return decorate
+
+
+def _pump_ib_events() -> None:
+    """Owner thread only: let ib_insync process messages already waiting on
+    the socket, so its cached state (positions, account values, trades) is
+    current before it is read."""
+    if ib is not None and ib.isConnected():
+        ib.sleep(0)
+
+
+def _read_ib_cache(method: str) -> list:
+    _pump_ib_events()
+    return list(getattr(ib, method)())
+
+
+def _ib_read(method: str) -> list:
+    """Snapshot one of ib_insync's cached collections -- positions,
+    accountValues, openTrades, trades, portfolio, managedAccounts -- taken on
+    the owner thread so it never races the loop that updates it."""
+    return _run_on_ib_owner(_read_ib_cache, method)
+
+
+# ---------------------------------------------------------------------------
 # Step 15C v2 — Snapshot Cache (lightweight, bounded, no subprocess storms)
 # ---------------------------------------------------------------------------
 # Caches bridge-level evidence so KPI/rehearsal/candidate can fetch one
@@ -228,31 +348,32 @@ _LIVENESS_CACHE_TTL = 60.0  # seconds — memory/RSS doesn't change sub-second
 # Step 15L-B: Market data snapshot max wait before timeout
 _MARKET_SNAPSHOT_TIMEOUT = 8.0  # seconds — must return bounded JSON, never hang
 
-# Step 15Q-BP: Thread-leak tracker for leaked market-data threads from
-# _internal_fetch_quote_safe. executor.shutdown(wait=False) leaves the
-# background thread running. Track how many are alive so we can detect
-# accumulation from repeated diagnostics.
+# Step 15Q-BP: counter of IBKR calls still running after their caller gave
+# up. Originally it counted threads leaked by per-call executors; since the
+# 2026-09-28 owner-thread fix nothing leaks a thread, and it counts owner-
+# thread jobs that were already running when their caller's deadline passed
+# (_run_on_ib_owner). Each one decrements when it finishes, which
+# ib.RequestTimeout bounds. Surfaced as leaked_md_threads by
+# /monitor/backpressure.
 _MD_LEAKED_THREAD_COUNT = 0
 _MD_LEAKED_THREAD_LOCK = _threading.Lock()
 _MD_LEAKED_THREAD_WARN = 5  # warn when leaked threads exceed this
 
 def _track_leaked_md_thread():
-    """Increment leaked market-data thread counter. Called before
-    executor.shutdown(wait=False) in _internal_fetch_quote_safe."""
+    """Increment the abandoned-in-flight IBKR call counter (_run_on_ib_owner)."""
     global _MD_LEAKED_THREAD_COUNT
     with _MD_LEAKED_THREAD_LOCK:
         _MD_LEAKED_THREAD_COUNT += 1
         if _MD_LEAKED_THREAD_COUNT >= _MD_LEAKED_THREAD_WARN:
             logger.warning(
-                "MD_LEAKED_THREADS count=%s — repeated diagnostics may accumulate "
-                "background threads. Threads auto-cleanup when _internal_fetch_quote "
-                "completes. Consider adding a cooldown between diagnostics runs.",
+                "MD_LEAKED_THREADS count=%s — IBKR calls are still running after "
+                "their callers timed out; the Gateway is slow or stalled. Each "
+                "clears within ib.RequestTimeout.",
                 _MD_LEAKED_THREAD_COUNT,
             )
 
 def _decrement_leaked_md_thread():
-    """Decrement leaked market-data thread counter when a background
-    _internal_fetch_quote thread finally completes."""
+    """Decrement the counter when an abandoned in-flight IBKR call finishes."""
     global _MD_LEAKED_THREAD_COUNT
     with _MD_LEAKED_THREAD_LOCK:
         if _MD_LEAKED_THREAD_COUNT > 0:
@@ -340,7 +461,7 @@ def _build_snapshot_lightweight() -> dict:
     # IBKR-dependent — only if connected, fast-fail otherwise
     if connected:
         try:
-            pos = ib.positions()
+            pos = _ib_read("positions")
             result["positions_ok"] = True
             result["position_count"] = len(pos)
             result["positions"] = [
@@ -354,7 +475,7 @@ def _build_snapshot_lightweight() -> dict:
             result["positions"] = []
 
         try:
-            values = ib.accountValues()
+            values = _ib_read("accountValues")
             result["account_ok"] = True
             net_liq = None
             cash_balance = None
@@ -619,6 +740,9 @@ _startup_safety = _run_startup_safety()
 # They return the same format as guard.fetch_account(), guard.fetch_quote(), guard.fetch_bars().
 
 
+from guard import usd_per_base_from_account_values
+
+
 def _internal_fetch_account() -> dict:
     """Fetch account data via IBKR directly.
 
@@ -629,7 +753,7 @@ def _internal_fetch_account() -> dict:
     if not ib or not ib.isConnected():
         raise RuntimeError("IBKR not connected")
     try:
-        values = ib.accountValues()
+        values = _ib_read("accountValues")
     except Exception as e:
         raise RuntimeError(f"account failed: {type(e).__name__}: {repr(e)}")
 
@@ -663,15 +787,20 @@ def _internal_fetch_account() -> dict:
         "available_funds_eur": float(_get("AvailableFunds") or 0),
         "buying_power_eur": float(_get("BuyingPower") or 0),
         "currency": currency or "EUR",
-        "exchange_rate": float(_get("ExchangeRate") or 1.0),
+        # H4.2: no silent 1.0 fallback -- None when IBKR reports no USD rate.
+        "exchange_rate": usd_per_base_from_account_values(
+            (v.tag, v.value, v.currency) for v in values
+        ),
         "account_code": account_code,
         "source": "internal",
     }
 
 
+@_ib_owner_call(timeout=_MARKET_SNAPSHOT_TIMEOUT)
 def _internal_fetch_quote(symbol: str) -> dict:
     """Fetch a delayed quote for a symbol via IBKR directly.
 
+    Always executes on the IBKR owner thread.
     Returns the same format as guard.fetch_quote().
     Raises RuntimeError if IBKR not connected or symbol not found.
     """
@@ -698,8 +827,9 @@ def _internal_fetch_quote(symbol: str) -> dict:
             fv = float(v)
         except (ValueError, TypeError):
             return None
-        # IBKR returns -1.0 as sentinel for unavailable values in delayed mode
-        if fv <= -1.0:
+        # IBKR returns -1.0 as sentinel for unavailable values in delayed mode;
+        # ib_insync leaves fields it never received as NaN.
+        if not math.isfinite(fv) or fv <= -1.0:
             return None
         return fv
 
@@ -720,55 +850,38 @@ def _internal_fetch_quote(symbol: str) -> dict:
     except Exception:
         pass
 
-    # Step 15Q-BP: If this thread was leaked (outer caller timed out),
-    # decrement the leaked-thread counter now that we're cleaning up.
-    _decrement_leaked_md_thread()
-
     return result
 
 
 def _internal_fetch_quote_safe(symbol: str, timeout: float = _MARKET_SNAPSHOT_TIMEOUT) -> dict:
     """Fetch quote with bounded timeout — never hangs (Step 15L-B + 15N fix).
 
-    Runs _internal_fetch_quote in a thread executor with a hard deadline.
+    Runs _internal_fetch_quote on the IBKR owner thread with a hard deadline.
     On timeout: raises RuntimeError with detail="market_data_timeout".
 
-    Step 15N: cleanup code removed from timeout path — ib.qualifyContracts
-    can block if the global ib object is in a bad state (e.g. a leaked
-    market-data thread is still running). The leaked thread cleans up its
-    own subscription when _internal_fetch_quote eventually completes.
-
-    Uses shutdown(wait=False) so the caller is never blocked by a hung
-    market-data thread after the timeout fires.
+    2026-09-28: this used to run the fetch in a fresh per-call thread
+    executor. That thread never owned the Gateway socket, so the fetch
+    blocked until the deadline every time, even against a healthy Gateway,
+    and each timeout left the thread blocked for good. The owner thread
+    reads its own socket; a job that is still queued when the deadline
+    passes is cancelled, and one that is already running is bounded by
+    ib.RequestTimeout (see _run_on_ib_owner).
 
     Returns the same dict format as _internal_fetch_quote on success.
     """
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        future = executor.submit(_internal_fetch_quote, symbol)
-        try:
-            return future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            # Step 15Q-BP: Track leaked thread before re-raising.
-            # The background _internal_fetch_quote thread will eventually
-            # complete and call _decrement_leaked_md_thread().
-            _track_leaked_md_thread()
-            # Step 15N: Do NOT attempt ib.qualifyContracts / ib.cancelMktData
-            # here — those calls can block indefinitely if the global ib
-            # object is in a bad state due to a leaked market-data thread.
-            # The inner _internal_fetch_quote thread will eventually finish
-            # and call ib.cancelMktData on its own contract.  Simply raise
-            # the timeout error so the endpoint returns promptly.
-            raise RuntimeError(
-                f"market_data_timeout: market data did not arrive within {timeout:.0f}s"
-            )
-    finally:
-        # Never wait for a potentially hung market-data thread
-        executor.shutdown(wait=False)
+        return _run_on_ib_owner(_internal_fetch_quote, symbol, timeout=timeout)
+    except IBOwnerTimeout:
+        raise RuntimeError(
+            f"market_data_timeout: market data did not arrive within {timeout:.0f}s"
+        )
 
 
+@_ib_owner_call(timeout=_BARS_LOOKUP_TIMEOUT)
 def _internal_fetch_bars(symbol: str) -> list:
     """Fetch daily OHLC bars for a symbol via IBKR directly.
+
+    Always executes on the IBKR owner thread.
 
     Returns the same format as guard.fetch_bars().
     Raises RuntimeError if IBKR not connected or no data.
@@ -806,8 +919,9 @@ def _internal_fetch_bars(symbol: str) -> list:
             fv = float(v)
         except (ValueError, TypeError):
             return None
-        # IBKR returns -1.0 as sentinel for unavailable values in delayed mode
-        if fv <= -1.0:
+        # IBKR returns -1.0 as sentinel for unavailable values in delayed mode;
+        # ib_insync leaves fields it never received as NaN.
+        if not math.isfinite(fv) or fv <= -1.0:
             return None
         return fv
 
@@ -821,11 +935,6 @@ def _internal_fetch_bars(symbol: str) -> list:
             "close": _sf(b.close),
             "volume": int(b.volume) if b.volume is not None else None,
         })
-
-    # Symmetric with _internal_fetch_quote: if a caller timed out waiting on
-    # this call via _internal_fetch_bars_safe (tracked as a leaked thread),
-    # decrement the counter now that the work has actually finished.
-    _decrement_leaked_md_thread()
 
     return result
 
@@ -847,34 +956,19 @@ def _internal_fetch_bars_safe(symbol: str, timeout: float = _MARKET_SNAPSHOT_TIM
     deadline, raise RuntimeError (caught by run_preflight's except clause) on
     timeout, never block the caller on a hung background thread.
 
-    Runs _internal_fetch_bars in a thread executor with a hard deadline.
+    2026-09-28: the per-call thread executor above never owned the Gateway
+    socket, so it always timed out; see _internal_fetch_quote_safe. Runs
+    _internal_fetch_bars on the IBKR owner thread with a hard deadline.
     On timeout: raises RuntimeError with detail="market_data_timeout".
-
-    Uses shutdown(wait=False) so the caller is never blocked by a hung
-    historical-data thread after the timeout fires -- same rationale as
-    _internal_fetch_quote_safe (Step 15N): ib.qualifyContracts /
-    ib.reqHistoricalData can still be mid-flight against a bad ib object;
-    the leaked thread cleans up on its own once it eventually completes.
 
     Returns the same list format as _internal_fetch_bars on success.
     """
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        future = executor.submit(_internal_fetch_bars, symbol)
-        try:
-            return future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            # Tracked on the same shared counter as leaked quote threads --
-            # same class of problem (a lingering ib_insync-driven background
-            # thread after executor.shutdown(wait=False)), same warning
-            # threshold applies regardless of which fetch caused it.
-            _track_leaked_md_thread()
-            raise RuntimeError(
-                f"market_data_timeout: bars data did not arrive within {timeout:.0f}s"
-            )
-    finally:
-        # Never wait for a potentially hung historical-data thread
-        executor.shutdown(wait=False)
+        return _run_on_ib_owner(_internal_fetch_bars, symbol, timeout=timeout)
+    except IBOwnerTimeout:
+        raise RuntimeError(
+            f"market_data_timeout: bars data did not arrive within {timeout:.0f}s"
+        )
 
 
 def _internal_fetch_positions() -> list:
@@ -889,7 +983,7 @@ def _internal_fetch_positions() -> list:
     if not ib or not ib.isConnected():
         return []
     try:
-        pos = ib.positions()
+        pos = _ib_read("positions")
         return [
             {
                 "account": p.account,
@@ -906,8 +1000,13 @@ def _internal_fetch_positions() -> list:
         return []
 
 
+@_ib_owner_call(timeout=None)
 def _internal_place_order(approval_record: dict) -> dict:
     """Place an order via IBKR directly and wait for IBKR acknowledgment.
+
+    Always executes on the IBKR owner thread, so the ack poll's ib.sleep()
+    actually processes the Gateway's order-status messages. The caller waits
+    for completion (timeout=None): an in-flight placement is never abandoned.
 
     P5 Bracket Support:
     For BUY entries with a stop_price in the proposal, constructs a
@@ -1197,6 +1296,7 @@ def _internal_place_order(approval_record: dict) -> dict:
     return ack_result
 
 
+@_ib_owner_call(timeout=None)
 def _cancel_parent_safe(order_id: int) -> bool:
     """Attempt to cancel a parent order by order ID. Best-effort; never raises.
 
@@ -1237,7 +1337,7 @@ def _internal_order_status(order_id: int | str) -> str | None:
     if not ib or not ib.isConnected():
         return None
     try:
-        trades = ib.trades()
+        trades = _ib_read("trades")
         for t in trades:
             if t.order and t.order.orderId == int(order_id):
                 return t.orderStatus.status
@@ -1307,6 +1407,13 @@ def socket_test() -> Dict[str, Any]:
 
 @app.post("/disconnect")
 def disconnect() -> Dict[str, Any]:
+    try:
+        return _run_on_ib_owner(_disconnect_on_ib_owner)
+    except IBOwnerTimeout as e:
+        raise HTTPException(status_code=503, detail=f"IBKR disconnect failed: {e}")
+
+
+def _disconnect_on_ib_owner() -> Dict[str, Any]:
     global ib
     try:
         if ib and ib.isConnected():
@@ -1318,6 +1425,18 @@ def disconnect() -> Dict[str, Any]:
 
 @app.post("/connect")
 def connect() -> Dict[str, Any]:
+    """Connect to IB Gateway on the IBKR owner thread (see _run_on_ib_owner).
+
+    The socket belongs to the event loop of the thread that connects, so the
+    connection must be made on the owner thread for any later call to work.
+    """
+    try:
+        return _run_on_ib_owner(_connect_on_ib_owner, timeout=_IB_CONNECT_WAIT_TIMEOUT)
+    except IBOwnerTimeout as e:
+        raise HTTPException(status_code=503, detail=f"IBKR connect failed: {e}")
+
+
+def _connect_on_ib_owner() -> Dict[str, Any]:
     global ib
     ensure_loop()
 
@@ -1343,6 +1462,9 @@ def connect() -> Dict[str, Any]:
             readonly=IBKR_READ_ONLY,
             account=IBKR_ACCOUNT or "",
         )
+        # Set only after connecting: IB.connect() itself runs under
+        # RequestTimeout and has its own 20 s bound.
+        ib.RequestTimeout = _IB_REQUEST_TIMEOUT
 
         return {
             "ok": True,
@@ -1378,8 +1500,8 @@ def account() -> Dict[str, Any]:
         return _snapshot_ibkr_disconnected_response()
 
     try:
-        accounts = ib.managedAccounts()
-        values = ib.accountValues()
+        accounts = _ib_read("managedAccounts")
+        values = _ib_read("accountValues")
         return {
             "ok": True,
             "managed_accounts": accounts,
@@ -1416,7 +1538,7 @@ def account_summary() -> Dict[str, Any]:
     connect()
 
     try:
-        summary_items = ib.accountSummary()
+        summary_items = _run_on_ib_owner(lambda: ib.accountSummary())
         values = {}
 
         for item in summary_items:
@@ -1474,7 +1596,7 @@ def positions() -> Dict[str, Any]:
         return _snapshot_ibkr_disconnected_response()
 
     try:
-        pos = ib.positions()
+        pos = _ib_read("positions")
         return {
             "ok": True,
             "positions": [
@@ -1507,7 +1629,9 @@ class ContractLookup(BaseModel):
 def contract_stock(req: ContractLookup) -> Dict[str, Any]:
     """Step 15Q-BP: Bounded timeout — never holds active slot indefinitely.
 
-    Wraps ib.reqContractDetails() in a thread executor with _CONTRACT_LOOKUP_TIMEOUT.
+    Runs ib.reqContractDetails() on the IBKR owner thread with
+    _CONTRACT_LOOKUP_TIMEOUT (2026-09-28: the old per-call thread executor
+    had no event loop, so the lookup raised instead of running).
     On timeout: returns HTTP 503 with detail 'contract_lookup_timeout'.
     """
     ensure_loop()
@@ -1517,27 +1641,22 @@ def contract_stock(req: ContractLookup) -> Dict[str, Any]:
 
     c = Stock(req.symbol.upper(), req.exchange, req.currency.upper())
 
-    # Step 15Q-BP: Bounded timeout via thread executor — prevents
-    # indefinite active-slot holding when IBKR is slow or hung.
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    # Step 15Q-BP: Bounded timeout — prevents indefinite active-slot
+    # holding when IBKR is slow or hung.
     try:
-        future = executor.submit(ib.reqContractDetails, c)
-        try:
-            details = future.result(timeout=_CONTRACT_LOOKUP_TIMEOUT)
-        except concurrent.futures.TimeoutError:
-            raise HTTPException(
-                status_code=503,
-                detail=f"contract_lookup_timeout: did not complete within {_CONTRACT_LOOKUP_TIMEOUT:.0f}s",
-            )
-    except HTTPException:
-        raise
+        details = _run_on_ib_owner(
+            lambda: ib.reqContractDetails(c), timeout=_CONTRACT_LOOKUP_TIMEOUT,
+        )
+    except IBOwnerTimeout:
+        raise HTTPException(
+            status_code=503,
+            detail=f"contract_lookup_timeout: did not complete within {_CONTRACT_LOOKUP_TIMEOUT:.0f}s",
+        )
     except Exception as e:
         raise HTTPException(
             status_code=503,
             detail=f"contract lookup failed: {type(e).__name__}: {repr(e)}",
         )
-    finally:
-        executor.shutdown(wait=False)
 
     return {
         "ok": True,
@@ -2161,6 +2280,11 @@ def market_quote(req: QuoteRequest):
     """
     Read-only quote endpoint.
     No orders. Uses delayed data by default.
+
+    Runs on the IBKR owner thread, bounded by _MARKET_SNAPSHOT_TIMEOUT
+    (2026-09-28: previously unbounded, and a request served off the
+    connecting thread held its backpressure slot forever).
+    On timeout: returns HTTP 503 with detail 'market_data_timeout'.
     """
     _ensure_worker_event_loop()
 
@@ -2170,6 +2294,16 @@ def market_quote(req: QuoteRequest):
     if not ib.isConnected():
         connect()
 
+    try:
+        return _run_on_ib_owner(_market_quote_on_ib_owner, req, timeout=_MARKET_SNAPSHOT_TIMEOUT)
+    except IBOwnerTimeout:
+        raise HTTPException(
+            status_code=503,
+            detail=f"market_data_timeout: did not complete within {_MARKET_SNAPSHOT_TIMEOUT:.0f}s",
+        )
+
+
+def _market_quote_on_ib_owner(req: QuoteRequest) -> dict:
     contract = Stock(req.symbol.upper(), req.exchange, req.currency)
     qualified = ib.qualifyContracts(contract)
 
@@ -2229,9 +2363,12 @@ class BarsRequest(BaseModel):
 def market_bars(req: BarsRequest):
     """Step 15Q-BP: Bounded timeout — never holds active slot indefinitely.
 
-    Wraps ib.reqHistoricalData() in a thread executor with _BARS_LOOKUP_TIMEOUT.
+    Runs contract qualification and ib.reqHistoricalData() on the IBKR owner
+    thread, bounded by _BARS_LOOKUP_TIMEOUT. 2026-09-28: previously only the
+    historical call was bounded, via a per-call thread executor that had no
+    event loop -- it raised instead of running, so the endpoint returned 500
+    for every symbol that qualified.
     On timeout: returns HTTP 503 with detail 'bars_lookup_timeout'.
-    Contract qualification still happens synchronously (fast, sub-second).
     """
     _ensure_worker_event_loop()
 
@@ -2241,6 +2378,16 @@ def market_bars(req: BarsRequest):
     if not ib.isConnected():
         connect()
 
+    try:
+        return _run_on_ib_owner(_market_bars_on_ib_owner, req, timeout=_BARS_LOOKUP_TIMEOUT)
+    except IBOwnerTimeout:
+        raise HTTPException(
+            status_code=503,
+            detail=f"bars_lookup_timeout: did not complete within {_BARS_LOOKUP_TIMEOUT:.0f}s",
+        )
+
+
+def _market_bars_on_ib_owner(req: BarsRequest) -> dict:
     contract = Stock(req.symbol.upper(), req.exchange, req.currency)
     qualified = ib.qualifyContracts(contract)
 
@@ -2253,32 +2400,16 @@ def market_bars(req: BarsRequest):
 
     contract = qualified[0]
 
-    # Step 15Q-BP: Bounded timeout for historical data — prevents
-    # indefinite active-slot holding when IBKR data feed is slow.
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    try:
-        future = executor.submit(
-            ib.reqHistoricalData,
-            contract,
-            endDateTime="",
-            durationStr=req.duration,
-            barSizeSetting=req.bar_size,
-            whatToShow=req.what_to_show,
-            useRTH=req.use_rth,
-            formatDate=1,
-            keepUpToDate=False,
-        )
-        try:
-            bars = future.result(timeout=_BARS_LOOKUP_TIMEOUT)
-        except concurrent.futures.TimeoutError:
-            raise HTTPException(
-                status_code=503,
-                detail=f"bars_lookup_timeout: did not complete within {_BARS_LOOKUP_TIMEOUT:.0f}s",
-            )
-    except HTTPException:
-        raise
-    finally:
-        executor.shutdown(wait=False)
+    bars = ib.reqHistoricalData(
+        contract,
+        endDateTime="",
+        durationStr=req.duration,
+        barSizeSetting=req.bar_size,
+        whatToShow=req.what_to_show,
+        useRTH=req.use_rth,
+        formatDate=1,
+        keepUpToDate=False,
+    )
 
     out = []
     for b in bars:
@@ -2540,8 +2671,7 @@ def monitor_open_orders() -> Dict[str, Any]:
     ibkr_open: list[dict] = []
     if is_connected():
         try:
-            ensure_loop()
-            open_trades = ib.openTrades()
+            open_trades = _ib_read("openTrades")
             now = datetime.now(timezone.utc)
             for ot in open_trades:
                 if not ot.order or not ot.contract:
@@ -3428,7 +3558,7 @@ def status_dashboard() -> Dict[str, Any]:
 
     try:
         if ib and ib.isConnected():
-            portfolio = ib.portfolio()
+            portfolio = _ib_read("portfolio")
             flat = all(p.position == 0 for p in portfolio)
             pos_sec = {"status": "ok", "positions_flat": flat,
                        "position_count": len(portfolio)}

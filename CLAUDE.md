@@ -117,7 +117,7 @@ These change only by an explicit Chris-approved, git-tagged edit (Tier 1 model r
 | `monitor.py` | Read-only reconciliation layer |
 | `bundle_audit.py` | Audit bundles, verification, release tags |
 | `ibkr_mcp_server.py` | Read-only MCP tools |
-| `ibkr-operator` CLI | Read-only operator interface (checklist, daily-report, export, doctor, freeze, maintenance, hermes-proposal); own AST safety checks. Commands: RUNBOOK Part 1 |
+| `ibkr-operator` CLI | Read-only operator interface (checklist, daily-report, export, doctor, freeze, maintenance, hermes-proposal, hermes-research, hermes-review); own AST safety checks. Commands: RUNBOOK Part 1 |
 | Hermes | **Advisory-only** analyst — proposals only, no execution authority (see §3.16) |
 | IB Gateway @ `127.0.0.1:4002` (VNC/Xvfb) | IBKR session — paper account `DUQ542875`, client ID `777` |
 
@@ -237,6 +237,7 @@ Full policy: `~/.openclaw/memory/model-routing-safety-policy.md`.
 | `CHANGELOG.md` | Phase ledger, order history, superseded decisions, verification queue |
 | `RUNBOOK.md` | Operator commands & procedures (Part 1 `ibkr-operator` CLI, Part 2 break-glass) |
 | `~/.openclaw/CLAUDE.md` | Werner's deployed instructions — must be a symlink to this file; `ibkr-operator doctor` flags drift (`docs/openclaw/README.md`) |
+| `sim/backtest.py`, `hermes_research.py`, `hermes_review.py`, `paper_runs.py` | Hermes research brain, off the trade path: bounded backtests, research drafts (`~/.openclaw/research/`), end-of-window reviews (`~/.openclaw/reviews/`) — `docs/HERMES_RESEARCH.md` |
 | `sim/`, `scripts/sim-cycle` | IB Gateway simulator and full-cycle rehearsal (account `DUSIM0001`) — test evidence only |
 
 ## 8. Communication Rules
@@ -265,6 +266,12 @@ by default.
   `DUSIM0001`) is a simulation. Label everything from it **SIMULATION**; never cite it as
   IBKR evidence or count it toward any readiness level; never point the production bridge
   (port 8790) at the simulator.
+- **Backtest / research:** anything from `sim/backtest.py` or `hermes-research` is
+  **BACKTEST** (hypothetical). Label it so; never cite it as paper-run evidence or toward
+  any readiness level. Research and review outputs are drafts for Chris — they change
+  nothing until he approves a version bump. Paper-run outcomes reach Hermes only through
+  `hermes-review` of a sealed, closed run, with P&L removed (Decision 11.6 as amended
+  2026-09-30).
 - Chat notifications by default only for: halt events, first failure of the day, approval
   timeouts.
 - **Anti-truncation:** for long answers, split into numbered parts under 2,500 characters

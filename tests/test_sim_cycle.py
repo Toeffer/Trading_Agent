@@ -219,6 +219,7 @@ def test_locked_rehearsal_covers_the_whole_approval_path(runs):
         "locked: connect to the simulator (account DUSIM0001 only)",
         "sizing preview from bridge data",
         "proposal agrees with the preview",
+        "preflight request carries the proposal's tighter stop",
         "locked: preflight passes all gates",
         "locked: approve with the sandbox H1 token",
         "locked: submit is ORDERS_BLOCKED (switches off)",
@@ -229,3 +230,6 @@ def test_locked_rehearsal_covers_the_whole_approval_path(runs):
 def test_fill_rehearsal_places_a_real_bracket(runs):
     sub = next(s for s in runs["fill"]["steps"] if s["step"] == "unlocked: submit succeeds (fill)")
     assert sub["detail"]["bracket"] is True and sub["detail"]["stop_order_id"]
+    placed = next(s for s in runs["fill"]["steps"]
+                  if s["step"] == "unlocked: the bracket stop is the proposal's stop")
+    assert placed["status"] == "PASS" and placed["detail"]["placed"] == sub["detail"]["stop_price"]

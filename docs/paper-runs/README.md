@@ -60,3 +60,23 @@ plausible explanation for pure noise. **Fluency of explanation is not evidence.*
 | `<run-id>-preregistration.md` | The pre-registration for one run. |
 | `<run-id>-seal.json` | SHA-256 seal, written by the seal script. |
 | `<run-id>-results.md` | Observations, written after the run. Never edits the pre-registration. |
+| `~/.openclaw/reviews/<run-id>/review.json` | End-of-window review (outside the repo), written once per run. |
+
+## End-of-window review (added 2026-09-30)
+
+After the planned end date, `ibkr-operator hermes-review --run-id <run-id>` has Hermes
+score the run against this pre-registration: every falsifier, every expected range,
+the decision rules that fired, and at most one revision, which must quote a section 5
+rule. It refuses a run that is unsealed, whose seal no longer matches, whose window is
+still open, or that already has a review. P&L-type fields and results lines that
+mention an excluded metric are removed before Hermes sees anything.
+
+This is the one place outcomes reach Hermes — a scoped amendment of §11.6, approved by
+Chris on 2026-09-30 and recorded in `docs/HERMES_RESEARCH.md` §4. The review is a
+draft; a change still goes §15 → §16 version bump → Chris → changelog → a new sealed
+pre-registration.
+
+A sealed run that was abandoned for a newer one can be closed out with
+`--superseded-by <new-run-id>` (no Hermes call). Until a run has one of these records,
+`hermes-research` stops its market data before that run's start date.
+

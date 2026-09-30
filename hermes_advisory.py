@@ -122,9 +122,11 @@ SIZING DATA — baseline "sizing_preview" is the source of every sizing number:
   [bridge/preflight].
 - EUR/USD there is USD per 1 EUR (1 / IBKR ExchangeRate[USD]). USD caps are
   % x Net Liq (EUR) x EUR/USD.
-- position_sizing.stop_price must equal sizing_preview.stop.stop_price.
-  quantity may be smaller than sizing_preview.sizing.final_max_shares (your
-  envelope is tighter) but never larger. Proposals that disagree are not saved.
+- position_sizing.stop_price must be at or above sizing_preview.stop.stop_price
+  (the guard's stop) and below the entry: you may choose a tighter stop, never a
+  looser one. quantity may be smaller than sizing_preview.sizing.final_max_shares
+  (your envelope is tighter) but never larger. Proposals that break either rule
+  are not saved.
 - Never fetch, estimate or invent a price, ATR, stop or FX rate. If
   sizing_preview is missing or its "ok" is false, output only
   {"error": "sizing_preview unavailable"}.

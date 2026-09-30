@@ -95,10 +95,17 @@ class TestSizingCheck:
         proposal = {"quantity": 1, "position_sizing": {"stop_price": self.stop}}
         assert ibkr_operator._check_hermes_sizing(proposal, self.preview)["ok"]
 
+    def test_tighter_stop_is_allowed(self):
+        entry = self.preview["stop"]["entry_price"]
+        tighter = round((self.stop + entry) / 2, 2)
+        proposal = {"quantity": 5, "position_sizing": {"stop_price": tighter}}
+        assert ibkr_operator._check_hermes_sizing(proposal, self.preview)["ok"]
+
     @pytest.mark.parametrize("proposal, needle", [
         (lambda s, c: {"quantity": c + 1, "position_sizing": {"stop_price": s}}, "exceeds guard cap"),
-        (lambda s, c: {"quantity": 5, "position_sizing": {"stop_price": s - 1}}, "!= guard stop"),
-        (lambda s, c: {"quantity": 5, "position_sizing": {}}, "!= guard stop"),
+        (lambda s, c: {"quantity": 5, "position_sizing": {"stop_price": s - 1}}, "looser than the guard stop"),
+        (lambda s, c: {"quantity": 5, "position_sizing": {}}, "looser than the guard stop"),
+        (lambda s, c: {"quantity": 5, "position_sizing": {"stop_price": 10_000.0}}, "not below the entry"),
         (lambda s, c: {"quantity": 0, "position_sizing": {"stop_price": s}}, "not a positive integer"),
         (lambda s, c: {"error": "sizing_preview unavailable"}, "not a positive integer"),
     ])
@@ -145,9 +152,41 @@ class TestHermesProposalFlow:
         assert "not persisted" in result["proposal_persist_error"]
 
 
+class TestPreflightRequest:
+    def setup_method(self):
+        self.preview = _preview()
+        self.stop = self.preview["stop"]["stop_price"]
+
+    def test_guard_stop_leaves_stop_to_the_guard(self):
+        proposal = {"quantity": 5, "position_sizing": {"stop_price": self.stop}}
+        req = ibkr_operator._preflight_request(proposal, self.preview, "/p.json")
+        assert req == {"symbol": "AAPL", "action": "BUY", "totalQuantity": 5,
+                       "proposal_path": "/p.json"}
+
+    def test_tighter_stop_is_passed_as_stop_price(self):
+        tighter = round(self.stop + 1.0, 2)
+        proposal = {"quantity": 5, "position_sizing": {"stop_price": tighter}}
+        req = ibkr_operator._preflight_request(proposal, self.preview, "/p.json")
+        assert req["stopPrice"] == tighter
+
+    def test_request_fields_are_all_accepted_by_the_guard(self):
+        proposal = {"quantity": 5, "position_sizing": {"stop_price": self.stop + 1.0}}
+        req = ibkr_operator._preflight_request(proposal, self.preview, "/p.json")
+        assert set(req) - {"proposal_path"} <= set(guard.ALLOWED_REQUEST_FIELDS)
+
+    def test_flow_returns_the_request_for_a_saved_proposal(self):
+        tighter = round(self.stop + 1.0, 2)
+        proposal = {"quantity": 5, "position_sizing": {"stop_price": tighter}}
+        result, _, save = _run_proposal(self.preview, proposal)
+        save.assert_called_once()
+        assert result["preflight_request"]["stopPrice"] == tighter
+        assert result["preflight_request"]["proposal_path"] == result["proposal_path"]
+
+
 class TestHermesInstructions:
     def test_instructions_require_the_preview_and_forbid_invented_numbers(self):
         text = hermes_advisory.ADVISORY_INSTRUCTION
         assert "sizing_preview" in text
         assert "Never fetch, estimate or invent a price, ATR, stop or FX rate" in text
         assert "1 / IBKR ExchangeRate[USD]" in text
+        assert "you may choose a tighter stop, never a" in text

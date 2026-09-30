@@ -236,20 +236,25 @@ class Report:
 
 
 def _stand_in_proposal(preview: dict, qty: int) -> dict:
-    """What Hermes must produce from the sizing preview -- deterministic here."""
+    """What Hermes must produce from the sizing preview -- deterministic here.
+
+    Uses a stop tighter than the guard's (halfway to the entry), which Hermes
+    may choose since 2026-09-30, so the rehearsal proves such a stop travels
+    through preflight into the bracket order.
+    """
     ask = preview["quote"]["ask"]
-    stop = preview["stop"]
+    stop_price = round((preview["stop"]["stop_price"] + ask) / 2, 2)
     nl = preview["account"]["net_liquidation_eur"]
     fx = preview["account"]["eur_usd"]
     notional_eur = qty * ask / fx
-    loss_eur = qty * stop["stop_distance"] / fx
+    loss_eur = qty * (ask - stop_price) / fx
     return {
         "simulation": True,
         "symbol": preview["symbol"],
         "side": "BUY",
         "quantity": qty,
         "entry_reference": f"MKT near ask {ask} [bridge/preflight] SIMULATION",
-        "stop_loss_invalidation": f"Stop {stop['stop_price']} [bridge/preflight] SIMULATION",
+        "stop_loss_invalidation": f"Stop {stop_price} (tighter than guard) SIMULATION",
         "max_loss_eur": round(loss_eur, 2),
         "max_loss_pct": round(100 * loss_eur / nl, 4),
         "position_notional_eur": round(notional_eur, 2),
@@ -260,8 +265,8 @@ def _stand_in_proposal(preview: dict, qty: int) -> dict:
         "reason_to_trade": "SIMULATION rehearsal -- no market view",
         "reason_not_to_trade": "SIMULATION rehearsal -- no market view",
         "preflight_command": "POST /order/preflight (sim-cycle)",
-        "position_sizing": {"method": "guard sizing preview",
-                            "stop_price": stop["stop_price"], "final_shares": qty},
+        "position_sizing": {"method": "guard sizing preview, tighter stop",
+                            "stop_price": stop_price, "final_shares": qty},
         "awaiting_chris_approval": True,
         "advisory_only": True,
     }
@@ -274,9 +279,8 @@ def _connect(bridge: SandboxBridge, report: Report, label: str) -> bool:
                        res.get("connected") and accounts == [SIM_ACCOUNT], res)
 
 
-def _cycle_to_approval(bridge, report, label, symbol, qty, token, proposal_path) -> str | None:
-    pf = bridge.post("/order/preflight", {"symbol": symbol, "action": "BUY",
-                                          "totalQuantity": qty, "proposal_path": proposal_path})
+def _cycle_to_approval(bridge, report, label, request, token) -> str | None:
+    pf = bridge.post("/order/preflight", request)
     summary = {k: pf[k] for k in ("passed", "error", "approval_id", "entry_price",
                                   "stop_price", "final_max_shares", "gates") if k in pf}
     if not report.step(f"{label}: preflight passes all gates",
@@ -324,8 +328,11 @@ def run(mode: str, submit: bool, symbol: str, qty: int, strict: bool = False) ->
         check = ibkr_operator._check_hermes_sizing(proposal, preview)
         report.step("proposal agrees with the preview", check["ok"], check)
         proposal_path = str(guard.save_proposal_file(proposal))
+        request = ibkr_operator._preflight_request(proposal, preview, proposal_path)
+        report.step("preflight request carries the proposal's tighter stop",
+                    request.get("stopPrice") == proposal["position_sizing"]["stop_price"], request)
 
-        approval = _cycle_to_approval(bridge, report, "locked", symbol, qty, token, proposal_path)
+        approval = _cycle_to_approval(bridge, report, "locked", request, token)
         if approval is None:
             return report
         sub = bridge.post("/order/submit", {"approval_id": approval}, token)
@@ -350,13 +357,18 @@ def run(mode: str, submit: bool, symbol: str, qty: int, strict: bool = False) ->
                     not stale.get("submitted"), stale)
 
         before = _position(bridge, symbol)
-        approval = _cycle_to_approval(bridge, report, "unlocked", symbol, qty, token, proposal_path)
+        approval = _cycle_to_approval(bridge, report, "unlocked", request, token)
         if approval is None:
             return report
         sub = bridge.post("/order/submit", {"approval_id": approval}, token)
         expected_fill = {"fill": qty, "partial": max(1, qty // 2), "reject": 0, "no_ack": 0}[mode]
         if mode in ("fill", "partial"):
             report.step(f"unlocked: submit succeeds ({mode})", sub.get("submitted") is True, sub)
+            placed_stop = next((o["aux_price"] for o in gw.orders.values()
+                                if o["order_type"] == "STP"), None)
+            report.step("unlocked: the bracket stop is the proposal's stop",
+                        placed_stop == request.get("stopPrice"),
+                        {"placed": placed_stop, "proposed": request.get("stopPrice")})
         else:
             report.step(f"unlocked: submit must NOT report success ({mode})",
                         not sub.get("submitted"), {

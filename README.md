@@ -42,6 +42,7 @@ procedures — see the files below, not this one:
 | `strategy_v1_1_core.py` | Pure, deterministic strategy evaluation library (no I/O, no side effects) |
 | `dry_run_scenarios.py`, `approval_ui.py`, `ibkr_status.py`, `model_routing.py`, `openclaw_routing_adapter.py` | Supporting tooling |
 | `sim/`, `scripts/sim-cycle` | IB Gateway simulator and full-cycle rehearsal — test the whole order path with no IBKR account or data subscription (SIMULATION only; see `RUNBOOK.md`) |
+| `sim/backtest.py`, `hermes_research.py`, `hermes_review.py` | Hermes as the research brain: bounded strategy backtests (BACKTEST only), research drafts, end-of-window review of sealed paper runs — off the trade path (see `docs/HERMES_RESEARCH.md`) |
 | `systemd/` | Unit files for the live bridge, approval UI, and heartbeat timer |
 | `docs/`, `scripts/` | Strategy proposals/governance docs; CI and pin-verification scripts |
 | `tests/` | Test suite — see below |

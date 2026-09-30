@@ -79,8 +79,26 @@ Since 2026-09-28 the command first builds a read-only **sizing preview** from th
 (Net Liq, EUR/USD = 1 / ExchangeRate[USD], ask, bars) using the guard's own stop and
 share-cap formulas, and gives it to Hermes as its only source of sizing numbers. No
 preview (bridge down, no ask, no USD rate) → Hermes is not invoked. A proposal whose
-stop differs from the guard's, or whose quantity exceeds the guard's cap, is shown but
-not saved, so Gate H fails closed on it (`sizing_check` in the output says why).
+stop is looser than the guard's (or not below the entry), or whose quantity exceeds the
+guard's cap, is shown but not saved, so Gate H fails closed on it (`sizing_check` in the
+output says why). Since 2026-09-30 Hermes may choose a **tighter** stop; the output's
+`preflight_request` then carries it as `stopPrice`, so the bracket uses that stop. Use
+that request body for `/order/preflight`.
+
+### `ibkr-operator hermes-research` / `hermes-review`
+Hermes as the research brain — off the trade path; full description in
+`docs/HERMES_RESEARCH.md`.
+```bash
+ibkr-operator hermes-research --data DIR --request "..."   # DIR: <SYMBOL>.csv daily bars
+ibkr-operator hermes-research                               # bars from the bridge (5 Y)
+ibkr-operator hermes-review --run-id pr-2026-08-v7          # only after the planned end date
+ibkr-operator hermes-review --run-id OLD --superseded-by NEW
+python -m sim.backtest --data DIR --variants v.json --out STUDY_DIR   # backtests without Hermes
+```
+Research drafts land in `~/.openclaw/research/<id>/draft.md`; reviews in
+`~/.openclaw/reviews/<run-id>/review.json` (one per run). Both are drafts for Chris:
+nothing changes until he approves a version bump. Backtest numbers are BACKTEST —
+hypothetical, never paper-run evidence.
 > Note (2026-06-09): the upstream example used `--symbol SPY`, but SPY was removed from the
 > allowlist (KID/PRIIPs). Use a current allowlist symbol. If the CLI's own `--help` still
 > prints SPY, that help text is stale — fix it where the string lives.
@@ -208,6 +226,8 @@ ibkr-operator maintenance --prune-exports --keep-exports 20
 - `ibkr-operator daily-report`
 - `ibkr-operator doctor`
 - `ibkr-operator hermes-proposal`
+- `ibkr-operator hermes-research` (writes only `~/.openclaw/research/`)
+- `ibkr-operator hermes-review` (writes only `~/.openclaw/reviews/<run-id>/review.json`, once)
 - `ibkr-operator export`
 - `ibkr-operator freeze`
 - `ibkr-operator maintenance` (no flags)

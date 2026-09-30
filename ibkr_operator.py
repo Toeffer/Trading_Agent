@@ -12549,8 +12549,11 @@ def _check_hermes_sizing(proposal: Any, preview: dict) -> dict:
     """Does Hermes's proposal agree with the IBKR sizing preview? (2026-09-28)
 
     Hermes may choose a smaller quantity than the guard's cap (its advisory
-    envelope is tighter), but its stop must be the guard's stop and its
-    quantity must fit inside the guard's cap.
+    envelope is tighter) and a tighter stop than the guard's -- anywhere from
+    the guard's stop up to just below the entry (2026-09-30) -- but never a
+    looser stop. Quantity is checked against the cap computed with the guard's
+    own (wider) stop, which is never above the cap a tighter stop would allow;
+    the guard recomputes with the actual stop at preflight.
     """
     if not isinstance(proposal, dict):
         return {"ok": False, "mismatches": ["no parsable proposal"]}
@@ -12563,11 +12566,36 @@ def _check_hermes_sizing(proposal: Any, preview: dict) -> dict:
         if isinstance(qty, int) and qty > cap:
             mismatches.append(f"quantity {qty} exceeds guard cap {cap}")
         guard_stop = preview["stop"]["stop_price"]
-        ps = proposal.get("position_sizing")
-        hermes_stop = ps.get("stop_price") if isinstance(ps, dict) else None
-        if not isinstance(hermes_stop, (int, float)) or abs(hermes_stop - guard_stop) > 0.01:
-            mismatches.append(f"stop_price {hermes_stop!r} != guard stop {guard_stop}")
+        entry = preview["stop"]["entry_price"]
+        hermes_stop = _hermes_stop(proposal)
+        if hermes_stop is None or hermes_stop < guard_stop - 0.01:
+            mismatches.append(f"stop_price {hermes_stop!r} is looser than the guard stop {guard_stop}")
+        elif hermes_stop >= entry:
+            mismatches.append(f"stop_price {hermes_stop} is not below the entry {entry}")
     return {"ok": not mismatches, "mismatches": mismatches}
+
+
+def _hermes_stop(proposal: dict) -> float | None:
+    ps = proposal.get("position_sizing")
+    stop = ps.get("stop_price") if isinstance(ps, dict) else None
+    ok = isinstance(stop, (int, float)) and not isinstance(stop, bool) and math.isfinite(stop)
+    return float(stop) if ok else None
+
+
+def _preflight_request(proposal: dict, preview: dict, proposal_path: str) -> dict:
+    """The /order/preflight body for a persisted Hermes proposal (2026-09-30).
+
+    Carries Hermes's stop as stopPrice when it is tighter than the guard's
+    own, so preflight validates and sizes with the stop Hermes proposed; with
+    no stopPrice the guard computes its standard stop.
+    """
+    request = {"symbol": preview["symbol"], "action": preview["side"],
+               "totalQuantity": proposal["quantity"], "proposal_path": proposal_path}
+    stop = _hermes_stop(proposal)
+    if preview["side"] == "BUY" and stop is not None \
+            and stop > preview["stop"]["stop_price"] + 0.01:
+        request["stopPrice"] = round(stop, 2)
+    return request
 
 
 def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
@@ -12665,6 +12693,7 @@ def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
         # disk I/O fails.
         proposal_path = None
         proposal_persist_error = None
+        preflight_request = None
         # 2026-09-28: a proposal whose stop or quantity disagrees with the
         # IBKR sizing preview is shown but not persisted, so Gate H fails
         # closed on it.
@@ -12676,6 +12705,7 @@ def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
             from guard import save_proposal_file
             try:
                 proposal_path = str(save_proposal_file(proposal))
+                preflight_request = _preflight_request(proposal, preview, proposal_path)
             except (ValueError, OSError) as e:
                 proposal_persist_error = str(e)[:300]
 
@@ -12703,6 +12733,7 @@ def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
             "proposal_persist_error": proposal_persist_error,
             "sizing_preview": preview,
             "sizing_check": sizing_check,
+            "preflight_request": preflight_request,
             "raw_response": stdout[:2000],
             "evidence": evidence,
             "advisory_only": True,
@@ -12789,6 +12820,56 @@ def _print_hermes_result(result: dict) -> None:
 
     print()
     print(f"{BOLD}Advisory only. No order enabled or submitted. No state mutated.{RESET}")
+
+
+# ---------------------------------------------------------------------------
+# Hermes research and end-of-window review (2026-09-30) — off the trade path.
+# Modules are imported here, never by _run_hermes_proposal or the bridge.
+# ---------------------------------------------------------------------------
+
+def _run_hermes_research(args) -> dict:
+    """Backtest-driven strategy research; writes ~/.openclaw/research/<id>/."""
+    import yaml
+    import guard
+    import hermes_research
+    from sim import backtest
+    try:
+        rules = yaml.safe_load(Path(guard.RULES_PATH).read_text())
+        if args.data:
+            bars, source = backtest.load_csv_dir(args.data), f"csv:{args.data}"
+        else:
+            symbols = backtest.ceilings(rules)["allowlist"] + [backtest.BENCHMARK]
+            bars = backtest.fetch_bridge_bars(symbols, duration=args.duration)
+            source = f"bridge /market/bars {args.duration}"
+        return hermes_research.run_research(bars=bars, rules=rules, request=args.request or "",
+                                            model=args.model,
+                                            holdout_fraction=args.holdout_fraction,
+                                            data_source=source)
+    except (OSError, ValueError, backtest.BacktestError) as e:   # VariantError is a ValueError
+        return {"status": "DATA_ERROR", "error": f"{type(e).__name__}: {e}",
+                "label": hermes_research.LABEL}
+
+
+def _run_hermes_review(args) -> dict:
+    """End-of-window review of one sealed, closed paper run (written once)."""
+    import hermes_review
+    try:
+        if args.superseded_by:
+            return hermes_review.record_superseded(args.run_id, args.superseded_by)
+        return hermes_review.run_review(args.run_id, model=args.model)
+    except hermes_review.ReviewRefused as e:
+        return {"status": "REFUSED", "run_id": args.run_id, "error": str(e)}
+
+
+def _print_research_or_review(result: dict) -> None:
+    print(f"{BOLD}{result.get('label', 'Hermes')}{RESET}")
+    print(f"  Status: {BOLD}{result.get('status')}{RESET}")
+    for key in ("error", "problems", "outcome_cutoff", "periods", "holdout", "path"):
+        if result.get(key):
+            print(f"  {key}: {json.dumps(result[key], default=str)}")
+    if result.get("research_id") and result.get("draft"):
+        print(f"  Draft: {result['path']}/draft.md")
+    print(f"{BOLD}Advisory only. Nothing here is read by the trade path.{RESET}")
 
 
 # ---------------------------------------------------------------------------
@@ -52057,6 +52138,25 @@ def main() -> None:
     hp.add_argument("--output", type=str, default=None,
                     help="Save output to file")
 
+    hrp = sub.add_parser("hermes-research",
+                         help="Hermes strategy research on backtests (draft for Chris)")
+    hrp.add_argument("--data", type=str, default=None,
+                     help="Directory of <SYMBOL>.csv daily bars (default: bridge /market/bars)")
+    hrp.add_argument("--duration", type=str, default="5 Y",
+                     help="Bridge history to fetch when --data is not given")
+    hrp.add_argument("--request", type=str, default="", help="What Chris wants explored")
+    hrp.add_argument("--model", type=str, default="gpt-5.5", help="Hermes model")
+    hrp.add_argument("--holdout-fraction", type=float, default=0.3)
+    hrp.add_argument("--json", action="store_true", help="Output raw JSON only")
+
+    hvp = sub.add_parser("hermes-review",
+                         help="End-of-window Hermes review of a sealed, closed paper run")
+    hvp.add_argument("--run-id", type=str, required=True)
+    hvp.add_argument("--model", type=str, default="gpt-5.5", help="Hermes model")
+    hvp.add_argument("--superseded-by", type=str, default=None,
+                     help="Close out an abandoned run as superseded (no Hermes call)")
+    hvp.add_argument("--json", action="store_true", help="Output raw JSON only")
+
     # Phase 4D — maintenance subcommand
     mp = sub.add_parser("maintenance", help="Audit/release artifact maintenance")
     mp.add_argument("--json", action="store_true",
@@ -53934,6 +54034,16 @@ def main() -> None:
                 json.dump(result, f, indent=2)
             print(f"Output saved to {args.output}")
         return
+
+    if args.command in ("hermes-research", "hermes-review"):
+        run = _run_hermes_research if args.command == "hermes-research" else _run_hermes_review
+        result = run(args)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            _print_research_or_review(result)
+        sys.exit(0 if result.get("status") in
+                 ("DRAFT_READY", "NO_CHANGE_PROPOSED", "REVIEW_READY", "SUPERSEDED") else 1)
 
     if args.command == "doctor":
         result = run_doctor()

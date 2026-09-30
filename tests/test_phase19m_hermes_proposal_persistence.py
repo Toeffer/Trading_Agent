@@ -121,7 +121,7 @@ def isolated_proposals_dir(tmp_path):
 # preview agrees with _valid_buy_proposal() (stop 190.0, quantity 1).
 _AGREEING_PREVIEW = {
     "ok": True, "side": "BUY", "symbol": "AAPL", "quantity_requested": 1,
-    "stop": {"stop_price": 190.0, "stop_distance": 10.0},
+    "stop": {"stop_price": 190.0, "stop_distance": 10.0, "entry_price": 200.0},
     "sizing": {"final_max_shares": 1, "requested_within_cap": True},
 }
 

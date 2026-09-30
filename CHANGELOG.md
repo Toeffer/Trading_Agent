@@ -1967,7 +1967,76 @@ New, in curated CI: `test_werner_instructions.py` (9), `test_hermes_sizing_previ
 
 ---
 
+## 2026-09-30 — Hermes as the research brain: research mode, backtests, end-of-window review
+
+Chris asked whether Hermes can still learn and develop strategies (OpenClaw the muscle,
+Hermes the brain). Decision 11.6 had left it no channel at all. Approved in-session
+("relax the stop check and build options 1 and 2 and 3"). No Tier-1 file changed; kill
+switches, H1, `/order` 403 and the preflight → approve → submit path are untouched.
+Full description: `docs/HERMES_RESEARCH.md`.
+
+### Hermes may choose a tighter stop
+
+`hermes-proposal` rejected any stop that differed from the guard's. Now only a stop
+looser than the guard's, or not below the entry, is rejected. The output carries a
+`preflight_request`; when Hermes's stop is tighter it goes in as `stopPrice`, so the
+bracket order uses it (the rehearsal checks the placed stop). Hermes's instructions say
+so. The guard itself is unchanged — see Verification Queue L for what it does not check.
+
+### Backtests — `sim/backtest.py` (BACKTEST, hypothetical)
+
+Bounded variants (unknown fields rejected; risk/position/exposure/trades capped at the
+rules file; `atr_multiplier ≤ 2.0`), simulated with the guard's own `calc_stop` and
+`compute_final_max_shares` and the v1.1 core regime / vol / RS functions; allowlist,
+sector cap, trades/day and weekly halt applied. Next-open fills. Train/holdout split,
+≤ 5 variants per study, all reported, holdout evaluated once (exclusive-create ledger).
+CSV input, so no IBKR data subscription is needed.
+
+### Research mode — `ibkr-operator hermes-research`
+
+Hermes proposes ≤ 4 variants from the strategy documents and train data, sees every
+train result, picks at most one and drafts the proposal and pre-registration sections;
+the holdout look happens after it commits and goes to Chris only. Market data stop
+before the start of every sealed run without an end-of-window record, no outcome file
+is read, and earlier research is never read back. Output:
+`~/.openclaw/research/<id>/{research.json,draft.md}`.
+
+### End-of-window review — `ibkr-operator hermes-review` (scoped amendment of 11.6)
+
+Only for a sealed run whose seal still matches and whose planned end has passed; once
+per run. P&L-type fields and results lines naming an excluded metric are stripped
+before the prompt. Hermes scores every falsifier and expected range; at most one
+revision, which must quote a section 5 rule and cite no excluded metric — otherwise the
+review is rejected and not recorded. `--superseded-by` closes out an abandoned run.
+The amendment (outcomes may be *read* here, and only here; nothing else in 11.6 changes)
+is recorded in `docs/HERMES_RESEARCH.md` §4 — not in the proposal document, whose hash
+its manifest pins.
+
+### Tests
+
+New, in curated CI: `test_backtest.py` (28: bounds, exact guard stop on prior bars,
+risk/notional caps, trades/day, sector cap, RISK_OFF, prefix-consistency look-ahead check
+at many cut points, holdout independence and single look, CLI) and
+`test_hermes_research_review.py` (31: research flow, holdout never in a prompt, outcome
+cutoff, refusals, P&L stripping, revision rules, prompt-size bound, trade-path
+separation). The look-ahead, stop and stripping tests were checked by mutation.
+
+---
+
 ## Verification Queue (resolve against the live system)
+
+**Added 2026-09-30:**
+
+- **L. User stops skip the −5% floor.** `guard.run_preflight` accepts any `stopPrice`
+  below the entry and any `stopPercent` in (−99, 0); CLAUDE.md §5 says a provided stop
+  is validated against all rules, including `entry × 0.95`. Size still honours the 2 %
+  risk cap, but a single position's planned loss can exceed −5 %. Existing P5 tests use a
+  stop about 5.6 % below entry. `hermes-proposal` only ever sends a stop tighter than the
+  guard's, so it cannot trigger this. Tier-1 decision for Chris: enforce the floor for
+  user stops (and fix those tests) or amend §5.
+- **M. Research model.** `hermes-research` / `hermes-review` default to the Hermes
+  default model (`--model` overrides). Decide whether research should use the
+  escalation model; it is not activated anywhere by this change.
 
 **Added 2026-09-28 (later):**
 

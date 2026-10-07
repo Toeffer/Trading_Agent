@@ -413,6 +413,11 @@ class TestCanonicalStrategyPreservation:
     def test_no_yaml_rules_file_in_repo_gained_new_symbols(self):
         """Phase 19A must not touch any YAML rules file."""
         for yp in list(REPO.glob("**/*.yaml")) + list(REPO.glob("**/*.yml")):
+            # Temporary research fixtures and the retired crypto archive are
+            # not active IBKR rules. Test order must not affect this audit.
+            if any(part.startswith(".") or part in ("tests", "archive")
+                   for part in yp.relative_to(REPO).parts):
+                continue
             content = yp.read_text(encoding="utf-8")
             for symbol in ["XOM", "CVX", "DUK", "NEE", "UNP", "MSTR"]:
                 assert symbol not in content, f"{symbol} found in {yp}"

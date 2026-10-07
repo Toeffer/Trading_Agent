@@ -391,6 +391,16 @@ class TestBackpressureIntrospection:
 # T9: _internal_fetch_quote_safe timeout path is non-blocking
 # ---------------------------------------------------------------------------
 
+@pytest.fixture
+def stall():
+    """A hung-Gateway call that is released at teardown. Fetches run on
+    bridge's single IBKR owner thread (2026-09-28), which later tests need
+    free; in production ib.RequestTimeout bounds every real IBKR call."""
+    release = threading.Event()
+    yield lambda: release.wait(999)
+    release.set()
+
+
 @pytest.mark.integration
 class TestFetchQuoteSafeTimeout:
     """Verify the timeout path in _internal_fetch_quote_safe is non-blocking.
@@ -399,12 +409,12 @@ class TestFetchQuoteSafeTimeout:
     Skipped in default CI; run with -m integration.
     """
 
-    def test_timeout_raises_promptly(self):
+    def test_timeout_raises_promptly(self, stall):
         """When the inner function hangs, the safe wrapper must raise within timeout."""
         import time as _time_module
 
         def _slow_fetch(_symbol):
-            _time_module.sleep(999)
+            stall()
             return {}
 
         with patch("bridge._internal_fetch_quote", side_effect=_slow_fetch):
@@ -420,12 +430,12 @@ class TestFetchQuoteSafeTimeout:
                 assert elapsed < 3.0, \
                     f"Timeout took {elapsed:.1f}s, should be under 3.0s"
 
-    def test_timeout_does_not_block_caller(self):
+    def test_timeout_does_not_block_caller(self, stall):
         """After timeout, the caller must be free to make new requests."""
         import time as _time_module
 
         def _slow_fetch(_symbol):
-            _time_module.sleep(999)
+            stall()
             return {}
 
         with patch("bridge._internal_fetch_quote", side_effect=_slow_fetch):

@@ -576,6 +576,8 @@ def _internal_fetch_account() -> dict:
     Returns the same format as guard.fetch_account().
     Raises RuntimeError if IBKR not connected.
     """
+    from trading_agent.legacy_guard import usd_per_base_from_account_values
+
     ensure_loop()
     if not ib or not ib.isConnected():
         raise RuntimeError("IBKR not connected")
@@ -614,7 +616,9 @@ def _internal_fetch_account() -> dict:
         "available_funds_eur": float(_get("AvailableFunds") or 0),
         "buying_power_eur": float(_get("BuyingPower") or 0),
         "currency": currency or "EUR",
-        "exchange_rate": float(_get("ExchangeRate") or 1.0),
+        "exchange_rate": usd_per_base_from_account_values(
+            (v.tag, v.value, v.currency) for v in values
+        ),
         "account_code": account_code,
         "source": "internal",
     }
@@ -650,7 +654,7 @@ def _internal_fetch_quote(symbol: str) -> dict:
         except (ValueError, TypeError):
             return None
         # IBKR returns -1.0 as sentinel for unavailable values in delayed mode
-        if fv <= -1.0:
+        if not math.isfinite(fv) or fv <= -1.0:
             return None
         return fv
 
@@ -758,7 +762,7 @@ def _internal_fetch_bars(symbol: str) -> list:
         except (ValueError, TypeError):
             return None
         # IBKR returns -1.0 as sentinel for unavailable values in delayed mode
-        if fv <= -1.0:
+        if not math.isfinite(fv) or fv <= -1.0:
             return None
         return fv
 
@@ -1487,7 +1491,7 @@ def _safe_float(x):
         if x is None:
             return None
         y = float(x)
-        if math.isnan(y):
+        if not math.isfinite(y):
             return None
         return y
     except Exception:

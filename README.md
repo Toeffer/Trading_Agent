@@ -1,5 +1,10 @@
 # IBKR OpenClaw Bridge
 
+`main` consolidates the durable execution remediation, persistent simulation
+agent, and Hermes research/backtesting work. The retired crypto scaffold,
+including previously uncommitted local edits, is preserved under
+[`archive/crypto-scaffold/`](archive/crypto-scaffold/). It is inactive.
+
 The durable-execution remediation is a release candidate. See
 [implementation status](IMPLEMENTATION.md) and the
 [migration and paper-release procedure](docs/REMEDIATION_RELEASE.md) for its
@@ -59,6 +64,8 @@ procedures — see the files below, not this one:
 | `hermes_advisory.py` | Advisory-only Hermes (trade research) adapter — never touches order endpoints |
 | `strategy_v1_1_core.py` | Pure, deterministic strategy evaluation library (no I/O, no side effects) |
 | `dry_run_scenarios.py`, `approval_ui.py`, `ibkr_status.py`, `model_routing.py`, `openclaw_routing_adapter.py` | Supporting tooling |
+| `sim/`, `scripts/sim-cycle` | IB Gateway simulator and full-cycle rehearsal — test the whole order path with no IBKR account or data subscription (SIMULATION only; see `RUNBOOK.md`) |
+| `sim/backtest.py`, `hermes_research.py`, `hermes_review.py` | Hermes as the research brain: bounded strategy backtests (BACKTEST only), research drafts, end-of-window review of sealed paper runs — off the trade path (see `docs/HERMES_RESEARCH.md`) |
 | `systemd/` | Unit files for the live bridge, approval UI, and heartbeat timer |
 | `docs/`, `scripts/` | Strategy proposals/governance docs; CI and pin-verification scripts |
 | `tests/` | Test suite — see below |
@@ -70,15 +77,15 @@ git-tagged merge — see `CLAUDE.md §6` and `RUNBOOK.md`.
 ## Running the tests
 
 ```bash
-python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
-bash scripts/run-ci-portable
+python -m pip install -r requirements-dev.txt
+python scripts/run_ci.py
 ```
 
-This runs the curated suite registered in `scripts/run-ci-portable` (excludes tests marked
-`integration`, `live`, or `acceptance`, which need a real host — a live bridge, a
-`hermes` CLI, systemd, or a `~/.openclaw`-style filesystem layout — and aren't portable to
-a bare checkout). Requires Python 3.12+ (this codebase uses PEP 701 f-string syntax that
-doesn't parse on 3.11).
+This discovers the portable suite and isolates home/state files in `.test-tmp`.
+Network access is blocked except for ephemeral loopback listeners created by
+the tests and their simulator subprocesses. Tests marked `integration`, `live`,
+`host`, or `acceptance` require explicit opt-in. Use Python 3.12.10 and the pinned
+development requirements. `scripts/run-ci-portable` is the shell wrapper.
 
 Lint (the correctness-relevant subset — see `pyproject.toml`):
 

@@ -1099,6 +1099,18 @@ def run_doctor(skip_h1_canary: bool = False) -> dict:
         checks.append({"check": "bridge_safety_flags", "ok": False,
                        "detail": f"health check failed: {str(e)[:120]}"})
 
+    # K17: Werner's deployed instructions (~/.openclaw/CLAUDE.md) are this
+    # repo's CLAUDE.md (2026-09-28). The two were separate files, and the
+    # deployed one could keep rules the repo had fixed -- e.g. sizing with
+    # the raw ExchangeRate tag instead of 1 / ExchangeRate[USD]. Skipped
+    # where Werner is not deployed (dev machines, CI).
+    k17_ok, k17_detail = _check_werner_instructions(
+        Path.home() / ".openclaw" / "CLAUDE.md", repo / "CLAUDE.md")
+    if not k17_ok:
+        all_pass = False
+    checks.append({"check": "werner_instructions_current", "ok": k17_ok,
+                   "detail": k17_detail})
+
     return {
         "command": "ibkr-operator doctor",
         "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -10581,8 +10593,18 @@ def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
 
     request_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    # 2026-09-28: no IBKR sizing data, no proposal -- Hermes is not invoked,
+    # rather than asked to produce prices and share counts from nothing.
+    preview = _sizing_preview(symbol, side, qty)
+    if not preview["ok"]:
+        return {"command": "ibkr-operator hermes-proposal", "ok": False,
+                "error": f"Hermes not invoked -- {preview.get('error')}",
+                "sizing_preview": preview, "advisory_only": True,
+                "evidence": {"hermes_invoked": False, "resolved_model": None,
+                             "final_proposal_source": "none"}}
+
     # Gather baseline data
-    baseline = {}
+    baseline = {"sizing_preview": preview}
     try:
         ck = run_checklist()
         baseline["checklist"] = ck
@@ -10607,8 +10629,8 @@ def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
         result = subprocess.run(
             ["hermes", "chat", "-q", prompt, "-m", "gpt-5.5",
              "--provider", "openai-codex", "-Q"],
-            capture_output=True, text=True, timeout=180,
-        encoding="utf-8")
+            capture_output=True, text=True, timeout=180, encoding="utf-8",
+        )
         elapsed = round(time.time() - start, 2)
         response_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -10641,10 +10663,19 @@ def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
         # disk I/O fails.
         proposal_path = None
         proposal_persist_error = None
-        if isinstance(proposal, dict):
+        preflight_request = None
+        # 2026-09-28: a proposal whose stop or quantity disagrees with the
+        # IBKR sizing preview is shown but not persisted, so Gate H fails
+        # closed on it.
+        sizing_check = _check_hermes_sizing(proposal, preview)
+        if isinstance(proposal, dict) and not sizing_check["ok"]:
+            proposal_persist_error = ("not persisted: disagrees with the IBKR sizing "
+                                      f"preview: {sizing_check['mismatches']}")
+        elif isinstance(proposal, dict):
             from guard import save_proposal_file
             try:
                 proposal_path = str(save_proposal_file(proposal))
+                preflight_request = _preflight_request(proposal, preview, proposal_path)
             except (ValueError, OSError) as e:
                 proposal_persist_error = str(e)[:300]
 
@@ -10670,6 +10701,9 @@ def _run_hermes_proposal(symbol: str, side: str, qty: int) -> dict:
             "proposal": proposal,
             "proposal_path": proposal_path,
             "proposal_persist_error": proposal_persist_error,
+            "sizing_preview": preview,
+            "sizing_check": sizing_check,
+            "preflight_request": preflight_request,
             "raw_response": stdout[:2000],
             "evidence": evidence,
             "advisory_only": True,
@@ -14867,3 +14901,198 @@ def _run_level1_apply_gate(
         result["export_path"] = None
 
     return result
+
+
+def _check_werner_instructions(werner_md: Path, repo_md: Path) -> tuple[bool, str]:
+    """Doctor K17: is Werner's deployed instruction file this repo's CLAUDE.md?"""
+    try:
+        if not werner_md.exists():
+            return True, f"{werner_md} not present (skipped)"
+        deployed = werner_md.read_text(encoding="utf-8")
+        if deployed == repo_md.read_text(encoding="utf-8"):
+            return True, f"{werner_md} matches {repo_md}"
+        stale = [rule for rule in _STALE_WERNER_RULES if rule in deployed]
+        return False, (f"{werner_md} differs from {repo_md}"
+                       + (f"; stale rules: {stale}" if stale else "")
+                       + " -- see docs/openclaw/README.md")
+    except OSError as e:
+        return False, f"unreadable: {str(e)[:120]}"
+
+
+def _sizing_preview(symbol: str, side: str, qty: int) -> dict:
+    """IBKR-sourced sizing preview for Hermes (2026-09-28). Read-only.
+
+    Hermes used to be asked for entry price, stop, ATR, FX and share counts
+    while its baseline held none of them (only net liquidation and position
+    symbols), so it had to look them up elsewhere or invent them -- labelled
+    "[IBKR]" -- and Gate H only checks that the fields exist. This fetches the
+    data through the same bridge endpoints preflight falls back to
+    (guard.fetch_account / fetch_quote / fetch_bars) and computes the stop and
+    share caps with guard.py's own calc_stop / compute_final_max_shares, so
+    Hermes explains the guard's numbers instead of producing its own.
+
+    Not a preflight: no gates, no guard state, no approval record, no event.
+    The guard still recomputes everything at preflight and submit time.
+    """
+    import math
+    from trading_agent.cli.operator_common import datetime, timezone, Any
+    from guard import (calc_stop, compute_final_max_shares, fetch_account,
+                       fetch_bars, fetch_quote, load_rules)
+
+    side = side.upper()
+    preview: dict[str, Any] = {
+        "source": ("IBKR via bridge /account, /market/quote, /market/bars; stop and "
+                   "share caps computed with guard.py calc_stop / compute_final_max_shares"),
+        "note": "Preview only. The guard recomputes at preflight and submit time.",
+        "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "symbol": symbol.upper(),
+        "side": side,
+        "quantity_requested": qty,
+        "ok": False,
+    }
+    try:
+        account = fetch_account()
+        quote = fetch_quote(symbol)
+    except (RuntimeError, ValueError, OSError) as e:
+        preview["error"] = f"IBKR data unavailable: {e}"
+        return preview
+
+    eur_usd = account.get("exchange_rate")
+    preview["account"] = {
+        "net_liquidation_eur": account.get("net_liquidation_eur"),
+        "eur_usd": eur_usd,
+        "eur_usd_source": "1 / ExchangeRate[USD] from IBKR account values",
+    }
+    preview["quote"] = {k: quote.get(k) for k in ("ask", "bid", "last", "close")}
+
+    if side == "SELL":
+        preview["ok"] = True
+        preview["sizing"] = {"note": "Close-only SELL (Gate G): no stop or sizing; "
+                                     "quantity must not exceed the confirmed position."}
+        return preview
+
+    if not isinstance(eur_usd, (int, float)) or not 0.8 <= eur_usd <= 1.4:
+        preview["error"] = f"EUR/USD unavailable or implausible: {eur_usd!r}"
+        return preview
+    ask = quote.get("ask")
+    if not isinstance(ask, (int, float)) or not math.isfinite(ask) or ask <= 0:
+        preview["error"] = f"No usable ask price in quote: {ask!r}"
+        return preview
+    try:
+        bars = fetch_bars(symbol)
+        stop = calc_stop(float(ask), bars)
+        sizing = compute_final_max_shares(
+            load_rules(), account["net_liquidation_eur"], eur_usd,
+            float(ask), stop["stop_distance"])
+    except (RuntimeError, ValueError, OSError, KeyError) as e:
+        preview["error"] = f"Stop/sizing computation failed: {e}"
+        return preview
+
+    preview["stop"] = stop
+    preview["sizing"] = {**sizing,
+                         "requested_within_cap": qty <= sizing["final_max_shares"]}
+    preview["ok"] = True
+    return preview
+
+
+def _check_hermes_sizing(proposal: Any, preview: dict) -> dict:
+    """Does Hermes's proposal agree with the IBKR sizing preview? (2026-09-28)
+
+    Hermes may choose a smaller quantity than the guard's cap (its advisory
+    envelope is tighter) and a tighter stop than the guard's -- anywhere from
+    the guard's stop up to just below the entry (2026-09-30) -- but never a
+    looser stop. Quantity is checked against the cap computed with the guard's
+    own (wider) stop, which is never above the cap a tighter stop would allow;
+    the guard recomputes with the actual stop at preflight.
+    """
+    if not isinstance(proposal, dict):
+        return {"ok": False, "mismatches": ["no parsable proposal"]}
+    mismatches = []
+    qty = proposal.get("quantity")
+    if not isinstance(qty, int) or isinstance(qty, bool) or qty <= 0:
+        mismatches.append(f"quantity {qty!r} is not a positive integer")
+    if preview.get("side") == "BUY" and "stop" in preview:
+        cap = preview["sizing"]["final_max_shares"]
+        if isinstance(qty, int) and qty > cap:
+            mismatches.append(f"quantity {qty} exceeds guard cap {cap}")
+        guard_stop = preview["stop"]["stop_price"]
+        entry = preview["stop"]["entry_price"]
+        hermes_stop = _hermes_stop(proposal)
+        if hermes_stop is None or hermes_stop < guard_stop - 0.01:
+            mismatches.append(f"stop_price {hermes_stop!r} is looser than the guard stop {guard_stop}")
+        elif hermes_stop >= entry:
+            mismatches.append(f"stop_price {hermes_stop} is not below the entry {entry}")
+    return {"ok": not mismatches, "mismatches": mismatches}
+
+
+def _hermes_stop(proposal: dict) -> float | None:
+    import math
+    ps = proposal.get("position_sizing")
+    stop = ps.get("stop_price") if isinstance(ps, dict) else None
+    ok = isinstance(stop, (int, float)) and not isinstance(stop, bool) and math.isfinite(stop)
+    return float(stop) if ok else None
+
+
+def _preflight_request(proposal: dict, preview: dict, proposal_path: str) -> dict:
+    """The /order/preflight body for a persisted Hermes proposal (2026-09-30).
+
+    Carries Hermes's stop as stopPrice when it is tighter than the guard's
+    own, so preflight validates and sizes with the stop Hermes proposed; with
+    no stopPrice the guard computes its standard stop.
+    """
+    request = {"symbol": preview["symbol"], "action": preview["side"],
+               "totalQuantity": proposal["quantity"], "proposal_path": proposal_path}
+    stop = _hermes_stop(proposal)
+    if preview["side"] == "BUY" and stop is not None \
+            and stop > preview["stop"]["stop_price"] + 0.01:
+        request["stopPrice"] = round(stop, 2)
+    return request
+
+
+def _run_hermes_research(args) -> dict:
+    """Backtest-driven strategy research; writes ~/.openclaw/research/<id>/."""
+    from pathlib import Path
+    import yaml
+    import guard
+    import hermes_research
+    from sim import backtest
+    try:
+        rules = yaml.safe_load(Path(guard.RULES_PATH).read_text(encoding="utf-8"))
+        if args.data:
+            bars, source = backtest.load_csv_dir(args.data), f"csv:{args.data}"
+        else:
+            symbols = backtest.ceilings(rules)["allowlist"] + [backtest.BENCHMARK]
+            bars = backtest.fetch_bridge_bars(symbols, duration=args.duration)
+            source = f"bridge /market/bars {args.duration}"
+        return hermes_research.run_research(bars=bars, rules=rules, request=args.request or "",
+                                            model=args.model,
+                                            holdout_fraction=args.holdout_fraction,
+                                            data_source=source)
+    except (OSError, ValueError, backtest.BacktestError) as e:   # VariantError is a ValueError
+        return {"status": "DATA_ERROR", "error": f"{type(e).__name__}: {e}",
+                "label": hermes_research.LABEL}
+
+
+def _run_hermes_review(args) -> dict:
+    """End-of-window review of one sealed, closed paper run (written once)."""
+    import hermes_review
+    try:
+        if args.superseded_by:
+            return hermes_review.record_superseded(args.run_id, args.superseded_by)
+        return hermes_review.run_review(args.run_id, model=args.model)
+    except hermes_review.ReviewRefused as e:
+        return {"status": "REFUSED", "run_id": args.run_id, "error": str(e)}
+
+
+def _print_research_or_review(result: dict) -> None:
+    from trading_agent.cli.operator_common import BOLD, RESET, json
+    print(f"{BOLD}{result.get('label', 'Hermes')}{RESET}")
+    print(f"  Status: {BOLD}{result.get('status')}{RESET}")
+    for key in ("error", "problems", "outcome_cutoff", "periods", "holdout", "path"):
+        if result.get(key):
+            print(f"  {key}: {json.dumps(result[key], default=str)}")
+    if result.get("research_id") and result.get("draft"):
+        print(f"  Draft: {result['path']}/draft.md")
+    print(f"{BOLD}Advisory only. Nothing here is read by the trade path.{RESET}")
+
+_STALE_WERNER_RULES = ("fx_rate = ibkr_account.ExchangeRate", "EUR/USD = 1.00")

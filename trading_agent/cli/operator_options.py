@@ -41,6 +41,25 @@ def configure(sub: argparse._SubParsersAction[Any]) -> None:
                     help="Quantity for proposal (default: 1)")
     hp.add_argument("--output", type=str, default=None,
                     help="Save output to file")
+    hrp = sub.add_parser("hermes-research",
+                         help="Hermes strategy research on backtests (draft for Chris)")
+    hrp.add_argument("--data", type=str, default=None,
+                     help="Directory of <SYMBOL>.csv daily bars (default: bridge /market/bars)")
+    hrp.add_argument("--duration", type=str, default="5 Y",
+                     help="Bridge history to fetch when --data is not given")
+    hrp.add_argument("--request", type=str, default="", help="What Chris wants explored")
+    hrp.add_argument("--model", type=str, default="gpt-5.5", help="Hermes model")
+    hrp.add_argument("--holdout-fraction", type=float, default=0.3)
+    hrp.add_argument("--json", action="store_true", help="Output raw JSON only")
+
+    hvp = sub.add_parser("hermes-review",
+                         help="End-of-window Hermes review of a sealed, closed paper run")
+    hvp.add_argument("--run-id", type=str, required=True)
+    hvp.add_argument("--model", type=str, default="gpt-5.5", help="Hermes model")
+    hvp.add_argument("--superseded-by", type=str, default=None,
+                     help="Close out an abandoned run as superseded (no Hermes call)")
+    hvp.add_argument("--json", action="store_true", help="Output raw JSON only")
+
     mp = sub.add_parser("maintenance", help="Audit/release artifact maintenance")
     mp.add_argument("--json", action="store_true",
                     help="Output raw JSON only")

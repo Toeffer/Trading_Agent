@@ -1627,7 +1627,468 @@ curated CI set.
 
 ---
 
+## 2026-09-16 — Deployment verification of the 2026-09-07 safety fixes, plus a live backpressure / market-data incident
+
+Status review plus the live deployment of the three 2026-09-07 repo-review
+fixes. **No code changed in this repository today.** The deployment is
+complete and verified; three findings from the live work are recorded below
+and carried into the Verification Queue.
+
+### Repository status at session start
+
+`master` unchanged at `9d863ba` since 2026-09-07. All new work sits on two
+stacked **draft** PRs, neither merged:
+
+| PR | Branch | Base | Created | Size |
+| --- | --- | --- | --- | --- |
+| #24 Make paper execution durable, approval-bound and account-scoped | `remediation/durable-paper-execution` | `master` | 2026-09-11 | 192 files, +73.9k/−67.9k |
+| #25 Add a persistent autonomous agent with simulated position management | `feature/persistent-agent-controller` | #24's branch | 2026-09-14 | +1.8k on top |
+
+GitHub CI green on both. Independently re-run locally against #25's head:
+**3,871 passed, 0 failed, 391 deselected, 3,150 subtests, 3m09s** (was 2,621
+tests in ~22 min on `master` — the discovery runner replaces the curated
+allowlist and the subprocess-heavy files).
+
+Observations on the restructure (not a review — that is still outstanding):
+
+- The deferred file split happened. `ibkr_operator.py` 56,795 → 8 lines,
+  `guard.py` → 9, `bridge.py` → 5; all now shims re-exporting from a new
+  `trading_agent/` package. Largest file is now 21,346 lines.
+- `trading_agent/settings.py` introduces `IBKR_STATE_DIR`; hardcoded
+  `/home/chris` down to 5 occurrences.
+- CI now runs the whole test tree by discovery, adopting the `host` marker
+  added on 2026-09-07, plus `mypy --strict` and full `ruff check .`.
+- Safety invariants verified intact in the new package: `/order` 403,
+  `IBKR_ALLOW_ORDERS` default false, `X-H1-Token` with `hmac.compare_digest`,
+  300 s expiry.
+- The autonomous agent in #25 is sandboxed: `trading_agent/agent/` has no
+  import of any order, broker, H1 or network path. It cannot reach IBKR.
+- **Gap:** `tests/test_claude_md_consistency.py`'s "every gate function is
+  wired into `run_preflight()`" assertion — the one that caught the Gate G
+  bug — now reads a historical copy of `run_preflight` from
+  `tests/historical/preflight.py` via `implementation_source(..., historical=True)`.
+  The live `legacy_guard.run_preflight()` is a 16-line delegation to the new
+  execution service, so that assertion no longer guards the live path.
+  Close-only itself is reimplemented in `trading_agent/risk.py` as
+  `CLOSE_ONLY_EXCEEDED` and covered by `tests/test_execution_capacity.py`,
+  so nothing is currently unguarded — but the general guarantee does not
+  extend to the new execution service.
+
+### Deployment of the 2026-09-07 fixes — COMPLETE
+
+Host checkout pulled to `9d863ba` and `ibkr-bridge.service` restarted.
+Confirmed live: `startup_safety` 11/11 pass, `IBKR_ALLOW_ORDERS=false`,
+`read_only: true`, `/health` ok. The invariant-#12 restart invalidation is
+demonstrably running — `approval_invalidated_restart` events were written for
+stale June approvals.
+
+`requirements.txt` and `systemd/` were unchanged in the pulled range, so no
+dependency install or `daemon-reload` was needed.
+
+### Gate G live confirmation — NOT COMPLETED
+
+The live `/order/preflight` SELL check was attempted repeatedly and never
+reached the gates. Preflight fetches account/quote/bars before Gate A, so
+every attempt failed at data retrieval. Gate G remains proven by
+`tests/test_gate_g_close_only_wiring.py` (7 tests) in a green suite; only the
+live belt-and-braces confirmation is outstanding.
+
+### Finding 1 — unbounded `ib.qualifyContracts()` holds a backpressure slot forever
+
+`/market/quote` calls `ib.qualifyContracts(contract)` with no deadline and no
+executor, and calls `connect()` before it. Against a Gateway that accepts the
+socket but does not service requests, the handler never returns and its
+tier-1 backpressure slot is held for the life of the process. Reproduced live:
+`curl -m 45` returned 0 bytes after 45 s.
+
+This is the same bug class as Phase 19N (`/order/preflight`) and Step 15Q-BP
+(`/market/bars`), both of which were fixed; `/market/quote` was missed by
+both. `/market/bars` bounds only its historical-data call — its
+`qualifyContracts` is unbounded too.
+
+**Present in `master` and unfixed in PR #24's `trading_agent/http_compat.py`.**
+
+Because uvicorn logs a request only after its handler returns, a hung call
+leaves no access-log line — noted in Phase 19N's own writeup.
+
+### Finding 2 — the slot leak is chronic, and has been silently shedding monitoring
+
+`/monitor/backpressure` showed `active` pinned (2, then 4 of `max_active=4`),
+not draining over 30 s, with `leaked_md_threads: 5` at its warn threshold and
+RSS at 300 MB. A restart cleared it: `active: 0`, RSS 86 MB — a 214 MB drop,
+confirming the blocked market-data threads were real.
+
+`journalctl` shows this is **not** new. `BP_REJECT_AUDIT` lines at 00:46,
+02:16, 03:16 and 03:46 on PID 484163 — an older process, hours before any of
+today's work — all with `active=2`, `rss_kb≈354000`. Every one of those is a
+scheduled `/monitor/reconciliation` or `/monitor/positions/drift` run being
+load-shed, because tier 3 sheds at half capacity.
+
+**Consequence: scheduled reconciliation and position-drift monitoring have
+been silently rejected for an unknown period.** Invariant #13 monitoring is
+read-only and cannot affect orders, so this is not an order-safety issue, but
+it means monitoring evidence has gaps.
+
+### Finding 3 — IB Gateway blocked on dialogs; market data never established
+
+The Gateway was not running at session start (`ConnectionRefusedError` on
+4002 — a TCP refusal, not an entitlement problem). After starting it per
+RUNBOOK §L7 it authenticated successfully at 14:23:32, then stopped at two
+modal windows — `"Ausstehende Aufgaben"` (Pending Tasks) and
+`"Login Messages"` — with no main window present. The API socket accepted and
+reported `DUQ542875` throughout, which is why the bridge could connect while
+contract lookups hung.
+
+Dismissing both via `xdotool windowclose` brought up the main `IBKR Gateway`
+window, but market data still did not arrive within the 8 s bound. No
+`2104`/`2106` farm-connection messages appear in the journal all day.
+Screenshots captured at `/tmp/gw.png` (dialogs visible) and `/tmp/gw2.png`.
+
+Not an entitlement problem in the code path: `_internal_fetch_quote` does
+`ib.sleep(3)` then returns whatever fields exist, so a missing subscription
+yields nulls in ~3 s, never a timeout.
+
+---
+
+## 2026-09-28 — IBKR owner thread: every connected preflight was timing out (Tier 1, Chris-approved)
+
+Repo check requested by Chris, then "please fix your findings". Tier-1 edits to
+`bridge.py` and `guard.py`, approved by Chris in-session. Kill switches, H1,
+`/order` 403 and the preflight → approve → submit path are unchanged.
+
+### Root cause — the bridge could only talk to IBKR from the thread that connected
+
+ib_insync binds the Gateway socket to the event loop of the thread that runs
+`connect()` (`Connection.connectAsync` → `util.getLoop()`), but every synchronous
+call (`qualifyContracts`, `reqHistoricalData`, `ib.sleep`, ...) runs the *calling*
+thread's own loop (`util.run` → `util.getLoop()`). Replies are read only while the
+connecting thread's loop runs. FastAPI serves each sync endpoint on whichever anyio
+worker thread is free, and `ensure_loop()` gives each thread its own loop. So:
+
+- **Every connected `/order/preflight` failed at data retrieval since Phase 19N
+  (2026-08-27).** `_internal_fetch_quote_safe` / `_internal_fetch_bars_safe` ran
+  the fetch on a *fresh* executor thread, which is never the connecting one, so
+  both timed out every time, even against a healthy Gateway. Each timeout left a
+  thread blocked for good (the `leaked_md_threads` climb).
+- **`/market/quote`** worked only when the request landed on the connecting
+  thread; otherwise it hung for good and held its tier-1 backpressure slot.
+- **`/market/bars` and `/contract/stock`** handed `ib` calls to an executor thread
+  with no event loop at all: `RuntimeError: There is no current event loop`, so
+  `/market/bars` returned HTTP 500 for every symbol that qualified.
+- **Order ack polling** (`_poll_for_ack` → `ib.sleep`) ran on the request thread,
+  so order-status messages could go unread: an order live at IBKR could be
+  recorded as `IBKR_ACK_TIMEOUT`.
+- Why Phase 5C worked: anyio reuses the most recently idle worker, so sequential
+  requests usually landed on the connecting thread. It is not deterministic, and
+  anyio retires threads idle for 10 s.
+
+Reproduced in a sandbox against a fake Gateway that answers every request
+instantly (`tests/fake_ib_gateway.py`). The bounded fetchers timed out on 100% of
+calls, even from the connecting thread, with `is_connected()` true throughout. One
+of four concurrent `/market/quote` calls hung and held its slot (`active: 1`) with
+`leaked_md_threads: 0`. This matches the 2026-09-16 incident: connects succeeded
+and reported the account, lookups hung, every preflight failed at data retrieval,
+`active` was pinned at 2 then 4, `leaked_md_threads: 5`, and a restart cleared it.
+
+### Fix — one IBKR owner thread
+
+- `_run_on_ib_owner()` / `@_ib_owner_call`: a single-thread executor with its own
+  event loop. `connect()` runs there, so the socket belongs to that loop, and every
+  other ib_insync call is dispatched there: the fetch helpers, `/market/quote`,
+  `/market/bars`, `/contract/stock`, `/account`, `/account/summary`, `/positions`,
+  open orders, the status dashboard, and order placement and cancel. Cached reads go
+  through `_ib_read()`, which first processes messages already waiting on the socket.
+- `ib.RequestTimeout = 15 s` after connect bounds every IBKR request, so the owner
+  thread can't be blocked indefinitely. A caller that gives up cancels its job if it
+  hasn't started. A job already running is counted on `leaked_md_threads` until it
+  finishes (bounded), so a stall shows up and then clears.
+- The caller's `contextvars` (H1 scope) apply to the job, exactly as before.
+- `_internal_place_order` waits for completion (`timeout=None`): an in-flight
+  placement is never abandoned. If its contract lookup times out (before anything
+  is sent), `submit_order` returns `PROVIDER_ERROR`, not submitted, no trade counted.
+- An AST test now fails CI if any `ib.*` call in `bridge.py` runs off the owner thread.
+
+**Trade-off:** IBKR calls are serialized. A quote holds the owner for `ib.sleep(3)`,
+so concurrent quotes queue (the second returns at ~6 s, inside the 8 s bound); a
+third concurrent quote would get 503 `market_data_timeout`.
+
+### Found once preflight actually received data
+
+- **NaN quote fields crashed preflight (HTTP 500).** ib_insync leaves unreceived
+  ticker fields as NaN. The bridge's `_sf` helpers passed NaN through; a NaN ask
+  slipped past `calc_stop`'s `> 0` check and crashed sizing
+  (`cannot convert float NaN to integer`). A `None` ask crashed the explicit
+  `stopPrice`/`stopPercent` comparisons. Fixed: `_sf` maps non-finite values to
+  `None`, and a BUY without a usable ask is refused cleanly ("No usable ask price",
+  `preflight_fail` event). SELL is unchanged (its entry price is unused).
+
+### EUR/USD — silent 1.0 fallback and wrong row
+
+- `bridge._internal_fetch_account` (the provider preflight uses when connected) still
+  had `float(_get("ExchangeRate") or 1.0)`; H4.2 had removed that fallback only from
+  `guard.fetch_account`. 1.0 passes the [0.80, 1.40] plausibility band.
+- IBKR reports one `ExchangeRate` row per currency: the value of 1 unit of that
+  currency in base terms (BASE row = 1.00; USD ≈ 0.87 in a EUR account). Both
+  parsers keyed by tag only, so the last row won: the BASE 1.00 or the un-inverted
+  USD rate. The only recorded live value, "EUR/USD 1.00 at capture" (Phase 1), is
+  the BASE row. Sizing multiplies EUR NetLiq by this rate to get USD, so it needs
+  **1 / ExchangeRate[USD]**.
+- Fix: shared `guard.usd_per_base_from_account_values()`, used by both parsers.
+  It returns `None` when the USD row is absent, so preflight refuses rather than
+  guessing.
+- **Behavior change:** USD caps now reflect the real rate. With USD = 0.87, the 5%
+  notional cap on €1,000,000 is $57,471 (was $50,000 at 1.00). Positions stay inside
+  the YAML limits; they were just sized ~13% too small before. If the account has no
+  USD `ExchangeRate` row, BUY preflight now refuses with "EUR/USD rate unavailable"
+  (see Verification Queue G).
+
+### Tests
+
+- New `tests/test_ibkr_owner_thread.py` (40 tests, curated CI): runs the real
+  `bridge.py` in a subprocess against `tests/fake_ib_gateway.py`. It covers bounded
+  fetches from other threads, concurrent quotes, bars, contract lookup, a connected
+  `/order/preflight` that reaches the gates (sized from the ask, correct FX caps), a
+  no-ask preflight, a stalled Gateway (503 in time, counter back to 0, bridge still
+  working), queued-job cancellation, contextvars, the AST audit, and FX unit tests.
+  Against the pre-fix code, every audit, FX and NaN test fails, and the probe hangs.
+- Phase 19N source pins updated from the per-call `ThreadPoolExecutor` (the bug) to
+  the owner dispatch; they still assert the fetches are bounded and the leak counter
+  balances.
+- The `integration` hang mocks in the 19N and 15N tests now release at teardown. On
+  the old code, their `sleep(999)` executor threads made the test process hang at
+  interpreter exit (killed by a 900 s timeout); now the tests take 7 s.
+
+### Not done here
+
+- **PR #24** (`trading_agent/http_compat.py`) carries the same per-thread loop
+  pattern, the `or 1.0` FX fallback, and the NaN pass-through. Preflight there
+  still goes through the legacy provider. Port this before #24 merges (queue H).
+- Deploy: restart `ibkr-bridge.service`; no dependency or unit-file change.
+
+---
+
+## 2026-09-28 (later) — Werner/Hermes alignment and an IB Gateway simulator (Tier 1, Chris-approved)
+
+Chris asked for a way to validate the system without paying for IBKR market data
+(USD 500 minimum equity plus fees), whether Werner and Hermes need adapting, and
+then "please do that". Tier-1 edits to `bridge.py` and `guard.py` below.
+
+### Werner — deployed instructions could be stale
+
+The live Werner reads `~/.openclaw/CLAUDE.md`, a separate file from the checkout's
+`CLAUDE.md`. `docs/openclaw/CLAUDE.md` (a pre-2026-06-09 snapshot, never updated since
+the import) still told Werner to size with `fx_rate = ibkr_account.ExchangeRate` and an
+assumed EUR/USD of 1.00, while the guard now uses `1 / ExchangeRate[USD]`.
+
+- Moved to `docs/openclaw/archive/CLAUDE.pre-refactor.md` with a SUPERSEDED banner;
+  new `docs/openclaw/README.md` says which file Werner must load (symlink).
+- `ibkr-operator doctor` check `werner_instructions_current`: fails when the deployed
+  file differs from the checkout, and names known-stale rules. Skipped where Werner is
+  not deployed. RUNBOOK doctor section has the one-time symlink step.
+- `CLAUDE.md` §8: new **Simulation** rule (anything from a bridge whose account is not
+  `DUQ542875` is SIMULATION, never IBKR evidence, never counts toward readiness).
+
+### Hermes — asked for sizing numbers it was never given
+
+`ibkr-operator hermes-proposal` gave Hermes only Net Liq and position symbols, yet the
+template asks for entry, ATR stop, FX and share counts labelled `[IBKR]`, and Gate H
+only checks that fields exist. Now:
+
+- `_sizing_preview()` (read-only: bridge `/account`, `/market/quote`, `/market/bars`,
+  plus guard's own `calc_stop` and `compute_final_max_shares`) goes into Hermes's
+  baseline. Hermes's instructions say to copy it verbatim and never fetch or invent a
+  price, ATR, stop or FX rate.
+- No preview → Hermes is not invoked. A proposal whose stop differs from the guard's
+  stop, or whose quantity exceeds the guard's cap, is shown but not persisted, so Gate H
+  fails closed on it. A smaller quantity is allowed (Hermes's envelope is tighter).
+
+### Simulator and full-cycle rehearsal
+
+- `sim/ib_gateway.py`: speaks the TWS API (server v176) for everything the bridge uses,
+  including placeOrder/cancel, order status, executions, commissions and positions, with
+  order modes fill / partial / no_ack / reject. Account `DUSIM0001`.
+  `tests/fake_ib_gateway.py` now re-exports it (one implementation).
+- `sim/cycle.py` + `scripts/sim-cycle`: runs the real bridge and guard in a throwaway
+  sandbox. Its own HOME, all ten `IBKR_*_PATH` state paths and every bridge env var are
+  set explicitly (bridge.py's `load_dotenv()` reads the checkout's `.env`, which on the
+  host is production). It uses its own bridge port and a random H1 test token, and aborts
+  unless the bridge reports account `DUSIM0001`.
+  - Locked phase: preflight → approve → submit must be `ORDERS_BLOCKED`.
+  - `--submit`: RUNBOOK §L8 inside the sandbox — old approval dead after restart
+    (invariant #12), fresh cycle, broker outcome, positions, reconciliation, drift.
+- `bridge.py`: startup self-connect now uses `IBKR_BRIDGE_URL` (the variable guard and
+  operator already use) instead of a hard-coded 8790, so a sandbox bridge never POSTs
+  `/connect` to the production bridge.
+- The only code outside `tests/` that sets `IBKR_ALLOW_ORDERS` to true for a process is
+  `sim.cycle._sandbox_bridge_env`, which checks the sandbox first. A new test fails if
+  that ever spreads. CI invariants T5/T6 are unchanged.
+
+### Found by the rehearsal and fixed (Tier 1)
+
+- **Every preflight that passed all gates returned HTTP 500.** `create_approval_record()`
+  writes `active-approvals.json` and `approval-records.jsonl`, H1-protected since Phase
+  H1.2, and preflight carries no H1 authorization. This is the same gap as Phase 19L's
+  rollover write, one call later. It was never seen live because no preflight had got
+  that far since: first the rollover 500, then the data-retrieval failure fixed this
+  morning. **It would have hit the first live preflight after deploying that fix.**
+  Fixed with the same narrow `h1_authorized_scope()` pattern around this write only. The
+  record is `pending`; approving still needs the H1 token at `/order/approve`.
+- **Every BUY submit failed with `BRACKET_STOP_REQUIRED`.** `_internal_place_order` read
+  `proposal["stop_price"]`, but approval records keep the stop under `validation` (Phase
+  19O fixed the same mismatch in `_find_active_stop`; `guard.submit_order` already reads
+  `validation` first). The P5 tests hand-build records with the stop under `proposal`,
+  so they never noticed. Fixed with the same lookup order.
+
+Both verified as regressions: undoing either fix makes the rehearsal fail.
+
+### Found by the rehearsal — OPEN, needs Chris's decision (Verification Queue J, K)
+
+- **J. ACK-PENDINGSUBMIT.** ib_insync sets `PendingSubmit` locally the instant an order
+  is placed, and `_poll_for_ack` counts `PendingSubmit` as IBKR acknowledgment. Against
+  a gateway that never answers, submit returned `submitted: true`, counted a daily trade
+  and recorded `permId 0`; reconciliation and drift both stayed green. It can't simply be
+  dropped: the bracket path waits for the parent's ack before placing the stop, and a
+  parent held with `transmit=False` may get no broker status until the stop transmits.
+  Needs a design choice, e.g. place both, then require a broker-assigned `permId` /
+  `PreSubmitted`+ for both, verified once live.
+- **K. FILL-NOT-RECORDED.** The `order_submitted` event records `filled` only at ack
+  time, and a bracket parent is acked while held, so `filled=0`. Later fills are never
+  recorded, so `/monitor/positions/drift` reports every filled BUY as drift until
+  reconciled by hand (Phase 19F tool). This is probably the origin of the earlier
+  "phantom position" drift episodes.
+
+`scripts/sim-cycle` reports both as OPEN steps with the explanation; `--strict` fails on them.
+
+### Tests
+
+New, in curated CI: `test_werner_instructions.py` (9), `test_hermes_sizing_preview.py`
+(20), `test_sim_cycle.py` (19; all five rehearsal scenarios in parallel, about 40 s). Phase
+19M's harness now supplies a sizing preview, because Hermes is no longer invoked without one.
+
+---
+
+## 2026-09-30 — Hermes as the research brain: research mode, backtests, end-of-window review
+
+Chris asked whether Hermes can still learn and develop strategies (OpenClaw the muscle,
+Hermes the brain). Decision 11.6 had left it no channel at all. Approved in-session
+("relax the stop check and build options 1 and 2 and 3"). No Tier-1 file changed; kill
+switches, H1, `/order` 403 and the preflight → approve → submit path are untouched.
+Full description: `docs/HERMES_RESEARCH.md`.
+
+### Hermes may choose a tighter stop
+
+`hermes-proposal` rejected any stop that differed from the guard's. Now only a stop
+looser than the guard's, or not below the entry, is rejected. The output carries a
+`preflight_request`; when Hermes's stop is tighter it goes in as `stopPrice`, so the
+bracket order uses it (the rehearsal checks the placed stop). Hermes's instructions say
+so. The guard itself is unchanged — see Verification Queue L for what it does not check.
+
+### Backtests — `sim/backtest.py` (BACKTEST, hypothetical)
+
+Bounded variants (unknown fields rejected; risk/position/exposure/trades capped at the
+rules file; `atr_multiplier ≤ 2.0`), simulated with the guard's own `calc_stop` and
+`compute_final_max_shares` and the v1.1 core regime / vol / RS functions; allowlist,
+sector cap, trades/day and weekly halt applied. Next-open fills. Train/holdout split,
+≤ 5 variants per study, all reported, holdout evaluated once (exclusive-create ledger).
+CSV input, so no IBKR data subscription is needed.
+
+### Research mode — `ibkr-operator hermes-research`
+
+Hermes proposes ≤ 4 variants from the strategy documents and train data, sees every
+train result, picks at most one and drafts the proposal and pre-registration sections;
+the holdout look happens after it commits and goes to Chris only. Market data stop
+before the start of every sealed run without an end-of-window record, no outcome file
+is read, and earlier research is never read back. Output:
+`~/.openclaw/research/<id>/{research.json,draft.md}`.
+
+### End-of-window review — `ibkr-operator hermes-review` (scoped amendment of 11.6)
+
+Only for a sealed run whose seal still matches and whose planned end has passed; once
+per run. P&L-type fields and results lines naming an excluded metric are stripped
+before the prompt. Hermes scores every falsifier and expected range; at most one
+revision, which must quote a section 5 rule and cite no excluded metric — otherwise the
+review is rejected and not recorded. `--superseded-by` closes out an abandoned run.
+The amendment (outcomes may be *read* here, and only here; nothing else in 11.6 changes)
+is recorded in `docs/HERMES_RESEARCH.md` §4 — not in the proposal document, whose hash
+its manifest pins.
+
+### Tests
+
+New, in curated CI: `test_backtest.py` (28: bounds, exact guard stop on prior bars,
+risk/notional caps, trades/day, sector cap, RISK_OFF, prefix-consistency look-ahead check
+at many cut points, holdout independence and single look, CLI) and
+`test_hermes_research_review.py` (31: research flow, holdout never in a prompt, outcome
+cutoff, refusals, P&L stripping, revision rules, prompt-size bound, trade-path
+separation). The look-ahead, stop and stripping tests were checked by mutation.
+
+---
+
 ## Verification Queue (resolve against the live system)
+
+**Added 2026-09-30:**
+
+- **L. User stops skip the −5% floor.** `guard.run_preflight` accepts any `stopPrice`
+  below the entry and any `stopPercent` in (−99, 0); CLAUDE.md §5 says a provided stop
+  is validated against all rules, including `entry × 0.95`. Size still honours the 2 %
+  risk cap, but a single position's planned loss can exceed −5 %. Existing P5 tests use a
+  stop about 5.6 % below entry. `hermes-proposal` only ever sends a stop tighter than the
+  guard's, so it cannot trigger this. Tier-1 decision for Chris: enforce the floor for
+  user stops (and fix those tests) or amend §5.
+- **M. Research model.** `hermes-research` / `hermes-review` default to the Hermes
+  default model (`--model` overrides). Decide whether research should use the
+  escalation model; it is not activated anywhere by this change.
+
+**Added 2026-09-28 (later):**
+
+- **I. Werner's instructions on the host.** Run `ibkr-operator doctor`. If
+  `werner_instructions_current` fails, back up `~/.openclaw/CLAUDE.md` and symlink it to
+  `~/agents/ibkr-bridge/CLAUDE.md` (RUNBOOK, doctor section).
+- **J. Order acknowledgment (ACK-PENDINGSUBMIT)** — decide the fix; see the entry above.
+  Reproduce any time: `scripts/sim-cycle --submit --mode no_ack`.
+- **K. Fill recording (FILL-NOT-RECORDED)** — decide whether fills after the ack should
+  be recorded automatically; see above. Reproduce: `scripts/sim-cycle --submit`.
+- Before G, run `scripts/sim-cycle --submit` on the host: it exercises the deployed code
+  end to end with no IBKR involvement.
+
+**Added 2026-09-28:**
+
+- **G. Live check after deploying the owner-thread fix.** During RTH: `/market/quote`,
+  `/market/bars`, `/contract/stock` answer; a BUY `/order/preflight` for an
+  allowlisted symbol reaches the gates; `leaked_md_threads` stays 0. In `/account`,
+  confirm an `ExchangeRate` row with currency `USD` exists and that preflight's USD
+  caps equal `pct × NetLiq / ExchangeRate[USD]`. If there is no USD row, BUY
+  preflight refuses (fail-closed); decide on a sourced EUR/USD.
+- **H. Port to PR #24.** Same fix in `trading_agent/http_compat.py`: legacy `ib`
+  calls onto one owner loop (or through `BrokerLoop`), remove `or 1.0`, NaN → None,
+  and the ask check. Reuse `tests/fake_ib_gateway.py`.
+
+**Added 2026-09-16:**
+
+- ✅ **A. `/market/quote` + `qualifyContracts` unbounded.** RESOLVED 2026-09-28
+  (on `master`; not yet on PR #24, see H). Root cause was the cross-thread event
+  loop, not only the missing bound. Every ib call now runs on the owner thread
+  under `ib.RequestTimeout`, and `/market/quote` is bounded at 8 s.
+- **B. Chronic backpressure slot leak / shed monitoring.** Mechanism root-caused and
+  fixed 2026-09-28 (hung handlers off the connecting thread). Still open: how far
+  back `BP_REJECT_AUDIT` goes and what reconciliation evidence is missing.
+- **C. IB Gateway market data.** Very likely the same threading bug: with the
+  socket's loop not running, no replies were read, including ticks and the
+  2104/2106 farm messages. Re-check under G before chasing subscriptions.
+  Original note: Read `/tmp/gw.png`'s "Ausstehende Aufgaben"
+  dialog — an outstanding IB account task can restrict market data. Check
+  Market Data Subscriptions in Client Portal (paper inherits from live), and
+  whether a competing IBKR session (mobile app / Client Portal) is holding
+  the single permitted market-data session.
+- **D. Gate G live confirmation.** One SELL preflight for a symbol with no
+  position, during RTH, once C is resolved. Expect `close_only` `passed:false`
+  with `would_open_short: true`.
+- **E. Gate-wiring guarantee for the new execution service.** The consistency
+  test's wiring assertion pins to a historical fixture after #24's refactor;
+  add an equivalent check against the live execution service before #24 merges.
+- **F. Startup auto-connect storm.** With the Gateway down, startup makes 90
+  attempts over ~7.5 min, each holding a thread on a 25 s timeout, leaving the
+  bridge sluggish and appearing dead. Consider backing off on a clearly
+  refused port.
 
 0. ✅ **RESOLVED (H2): Risk-rails divergence.** Reading (A) confirmed — guard.py enforces
    the v1.3-draft YAML caps (2% risk, 30% exposure) as the hard ceiling; Hermes proposes

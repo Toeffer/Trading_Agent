@@ -23,6 +23,7 @@ Direct test:
 """
 
 import json
+import math
 import os
 import sys
 import time
@@ -743,7 +744,8 @@ def fetch_account() -> dict:
         available_funds_eur: float
         buying_power_eur: float
         currency: str (e.g. "EUR")
-        exchange_rate: float (EUR/USD, from tag ExchangeRate)
+        exchange_rate: float | None (EUR/USD: USD per 1 EUR, from the USD
+            ExchangeRate row -- see usd_per_base_from_account_values)
         account_code: str (e.g. "DUQ542875")
 
     Raises:
@@ -799,8 +801,9 @@ def fetch_account() -> dict:
     bp_raw = _get_tag("BuyingPower")
     buying_power_eur = float(bp_raw) if bp_raw else 0.0
 
-    fx_raw = _get_tag("ExchangeRate")
-    exchange_rate = float(fx_raw) if fx_raw else None  # H4.2: no silent 1.0 fallback
+    exchange_rate = usd_per_base_from_account_values(  # H4.2: no silent 1.0 fallback
+        (e.get("tag", ""), e.get("value", ""), e.get("currency", "")) for e in values
+    )
 
     return {
         "net_liquidation_eur": net_liquidation_eur,
@@ -4043,3 +4046,30 @@ def _run_h4_watchdog_check(max_minutes: int = 10, rules=None) -> list[dict]:
         return check_kill_switch_watchdog(max_minutes=max_minutes, rules=rules)
     except Exception:
         return []
+
+
+def usd_per_base_from_account_values(rows) -> float | None:
+    """EUR/USD for sizing -- USD per 1 unit of the account base currency --
+    from IBKR's per-currency ExchangeRate account values.
+
+    IBKR reports one ExchangeRate row per currency, giving the value of 1
+    unit of that currency in BASE terms: for a EUR-base account
+    ExchangeRate/USD = 0.87 means 1 USD = 0.87 EUR, and ExchangeRate/BASE
+    is always 1.00. Sizing multiplies EUR NetLiquidation by this rate to get
+    USD, so it needs USD per EUR = 1 / ExchangeRate[USD] (exactly 1.0 for a
+    USD-base account). Keying account values by tag alone kept whichever
+    ExchangeRate row arrived last -- the BASE row's 1.00 or the un-inverted
+    USD rate, both inside the [0.80, 1.40] plausibility band (2026-09-28).
+
+    rows: iterable of (tag, value, currency).
+    Returns None when the USD row is missing or unusable -- never a silent
+    1.0 (H4.2) -- so preflight refuses to size instead of guessing.
+    """
+    for tag, value, currency in rows:
+        if tag == "ExchangeRate" and currency == "USD":
+            try:
+                rate = float(value)
+            except (TypeError, ValueError):
+                return None
+            return 1.0 / rate if math.isfinite(rate) and rate > 0 else None
+    return None

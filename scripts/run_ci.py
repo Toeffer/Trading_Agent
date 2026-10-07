@@ -13,7 +13,8 @@ results = root / ".test-results"
 results.mkdir(exist_ok=True)
 env = dict(os.environ)
 env.update(PYTHONUTF8="1", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", IBKR_TEST_ISOLATION="1",
-           IBKR_TEST_ROOT=str(temporary), IBKR_ALLOW_ORDERS="false", H1_APPROVAL_TOKEN_HASH="",
+           IBKR_TEST_ROOT=str(temporary), IBKR_TEST_LOOPBACK_PORTS="",
+           IBKR_ALLOW_ORDERS="false", H1_APPROVAL_TOKEN_HASH="",
            IBKR_STATE_DIR=str(temporary / "home" / "state"),
            TEMP=str(temporary / "temp"), TMP=str(temporary / "temp"), TMPDIR=str(temporary / "temp"),
            PYTHONPATH=str(root / "tests" / "isolation") + os.pathsep + str(root))

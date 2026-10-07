@@ -28,3 +28,5 @@ bridge.py.broken.*
 .test-tmp/
 .test-results/
 .mypy_cache/
+.pytest_cache/
+pytest-cache-files-*/

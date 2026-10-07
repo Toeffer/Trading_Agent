@@ -744,3 +744,17 @@ def checklist(args, parser):
     is_error = result["verdict"] in ("STOP", "ERROR")
     if has_block or is_error:
         sys.exit(2)
+
+
+def hermes_research_or_review(args, parser):
+    from trading_agent.cli.operator_workflow_helpers import (
+        _run_hermes_research, _run_hermes_review, _print_research_or_review,
+    )
+    run = _run_hermes_research if args.command == "hermes-research" else _run_hermes_review
+    result = run(args)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        _print_research_or_review(result)
+    sys.exit(0 if result.get("status") in
+             ("DRAFT_READY", "NO_CHANGE_PROPOSED", "REVIEW_READY", "SUPERSEDED") else 1)

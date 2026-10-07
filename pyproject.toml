@@ -11,7 +11,7 @@ readme = "README.md"
 
 [tool.ruff]
 target-version = "py312"
-exclude = [".venv", ".test-tmp", ".test-results"]
+exclude = [".venv", ".test-tmp", ".test-results", ".pytest_cache", "pytest-cache-files-*", "archive"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

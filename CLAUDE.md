@@ -2,7 +2,7 @@
 
 > This file is the authoritative instruction set for the AI agent running this project.
 > Read it fully at the start of every session. Do not skip sections.
-> Last updated: 2026-05-25 (v5 — position sizing rules added, Section 5.7)
+> Last updated: 2026-05-29 (v8 — autonomy ladder, Hermes learning loop, low-touch operation added)
 
 ---
 
@@ -91,34 +91,23 @@ List every installed skill here. Do not use a skill not on this list without ope
 
 ## 4. Exchange Configuration
 
-**Primary exchange:** Binance (spot + USD-M perpetuals)
-**Secondary exchange:** KuCoin (spot only, for arbitrage opportunities)
-**Paper trading:** Binance Testnet (always use for new strategies)
+**Primary exchange:** Kraken Pro (spot, MiCA-compliant, Germany-friendly)
+**Base currency:** EUR (live trading). USD used for paper trading only.
+**Trading pairs:** XBTEUR, ETHEUR, SOLEUR (live) / XBTUSD, ETHUSD (paper only)
+**Paper trading:** `kraken paper` commands — always use before going live
 
 ```yaml
-# ~/.openclaw/exchanges.yaml (template — fill in real keys)
-binance:
-  apiKey: "BINANCE_API_KEY"
-  secret: "BINANCE_SECRET"
-  permissions:
-    - trade      # ENABLED
-    - read       # ENABLED
-    - withdraw   # STRICTLY DISABLED — never enable
-  rateLimit: true
-  testnet: false   # switch to true for backtesting sessions
-
-kucoin:
-  apiKey: "KUCOIN_API_KEY"
-  secret: "KUCOIN_SECRET"
-  passphrase: "KUCOIN_PASSPHRASE"
-  permissions:
-    - trade
-    - read
-  withdraw: false
+# kraken-cli config (~/.kraken/config.toml — managed by kraken setup)
+api_key: "KRAKEN_API_KEY"       # Query Funds + Query Orders + Create Orders
+api_secret: "KRAKEN_SECRET"     # Withdraw: STRICTLY DISABLED — never enable
+default_pair: "XBTEUR"
+paper_mode: false               # switch to true for paper trading sessions
 ```
 
 **API key rule:** If a key has withdraw permissions, rotate it immediately and notify operator.
 **Key storage:** Environment variables only. Never hardcode in skill files or commit to git.
+**Pair naming:** Kraken uses XBTEUR (not BTC/EUR), ETHEUR, SOLEUR — always use Kraken format.
+**Minimum lot sizes:** XBT: 0.0001, ETH: 0.002, SOL: 0.5
 
 ---
 
@@ -158,7 +147,7 @@ If ADX is between 20–25 (ambiguous), default to RANGING and use conservative s
 default state. Does not require predicting direction. Profits from natural price
 oscillation within a defined range.
 
-**Markets:** BTC/USDT, ETH/USDT (spot — highest liquidity, tightest spreads)
+**Markets:** XBTEUR, ETHEUR (spot — highest liquidity on Kraken, tightest spreads)
 **Timeframe:** Range defined on daily chart, orders execute on 15M
 **Capital allocation:** 40% of total trading capital
 **Autopilot:** ENABLED after 14 days paper-trade verification
@@ -179,7 +168,7 @@ oscillation within a defined range.
 - Do NOT use a trailing stop on grids — the grid mechanism IS the exit logic
 - If regime switches to TRENDING before range break → pause grid immediately (see above)
 - Re-activate only after regime returns to RANGING for 2+ consecutive 4H periods
-- Collect profits in USDT — do not reinvest automatically without operator approval
+- Collect profits in EUR — do not reinvest automatically without operator approval
 
 **Expected behaviour:** Many small wins, occasional range breakout loss.
 Win rate typically 60–70%, small average gain per trade. Income is in frequency.
@@ -191,7 +180,7 @@ Win rate typically 60–70%, small average gain per trade. Income is in frequenc
 **Purpose:** Capture large directional moves in crypto — the primary mechanism
 for outperforming buy-and-hold. Rides the momentum, exits before the reversal.
 
-**Markets:** BTC/USDT, ETH/USDT, SOL/USDT (spot)
+**Markets:** XBTEUR, ETHEUR, SOLEUR (spot)
 **Timeframe:** 4H entries, daily trend confirmation
 **Capital allocation:** 35% of total trading capital (longs only in uptrend)
 **Autopilot:** DISABLED initially — operator confirms first 10 trades
@@ -234,7 +223,7 @@ freeze it. Spike-and-revert moves would otherwise stop out a valid position.
 **Position sizing:** 2% portfolio risk per trade. Size = (Risk amount) / (Entry − Stop)
 **Max concurrent positions:** 2 (BTC + one altcoin maximum)
 
-**Important:** This strategy sits flat (cash/USDT) during ranging regimes.
+**Important:** This strategy sits flat (cash/EUR) during ranging regimes.
 That is correct behaviour — do not force trades.
 
 ---
@@ -245,9 +234,11 @@ That is correct behaviour — do not force trades.
 This is not a directional bet — it is income from market structure. Runs in parallel
 with A or B depending on regime.
 
-**Markets:** BTC/USDT perp + BTC/USDT spot (Binance USD-M)
-**Capital allocation:** 20% of total capital (10% spot long, 10% perp short hedge)
-**Autopilot:** DISABLED — operator confirms each entry. This involves a short position.
+**Markets:** XBTEUR spot (Kraken Pro)
+**Capital allocation:** 20% of total capital
+**Autopilot:** DISABLED — operator confirms each entry.
+**Note:** Kraken offers perpetual futures (XBT/USD perp) for the hedge leg.
+Use XBT/USD perp for the short hedge — EUR spot + USD perp basis must be monitored.
 
 **Entry conditions (ALL must be true):**
 - 8H funding rate above +0.05%
@@ -256,8 +247,8 @@ with A or B depending on regime.
 - Spot price above 50-period SMA (confirm bullish regime context)
 
 **Position structure:**
-- Buy X USDT of BTC spot
-- Short equivalent BTC notional on perp (same size = delta-neutral)
+- Buy X EUR of XBT spot (XBTEUR on Kraken)
+- Short equivalent XBT notional on perp (XBT/USD perp — monitor EUR/USD basis)
 - Net directional exposure: zero. Income source: funding payment every 8H.
 
 **Exit conditions (ANY triggers exit):**
@@ -365,7 +356,7 @@ Full per-strategy logic is in sections 5.1–5.4. This section is a cheat sheet.
 2. Never move a stop against your position. Stops only move in the direction
    of profit (up for longs, down for shorts).
 
-3. Trailing stops are ONLY active during TRENDING regime (ADX > 25, matching §5.0).
+3. Trailing stops are ONLY active during TRENDING regime (ADX > 20).
    In ranging markets trailing stops are a loss machine — the grid handles ranging.
 
 4. Freeze trailing stop calculations during high-impact news (FOMC, CPI).
@@ -458,7 +449,7 @@ Example:
 ```
 
 The agent must calculate current heat before generating any entry signal.
-If (current heat + the planned new trade's risk) would exceed 6% → no new entries regardless of signal quality. Wait for a position to close.
+If heat ≥ 5% → no new entries regardless of signal quality. Wait for a position to close.
 Log current heat in every trade signal output.
 
 ---
@@ -495,7 +486,7 @@ The agent must refuse any instruction to average down, even from the operator.
 - Round position size DOWN to the nearest exchange minimum lot size
 - Never round up (rounding up means risking slightly more than the formula allows)
 - If calculated size is below exchange minimum → do not trade, log as "size below minimum"
-- Binance BTC minimum lot: 0.00001 BTC. ETH: 0.0001 ETH.
+- Kraken XBT minimum lot: 0.0001 XBT. ETH: 0.002 ETH. SOL: 0.5 SOL.
 
 ---
 
@@ -512,15 +503,8 @@ The agent must refuse any instruction to average down, even from the operator.
 ```
 
 All 8 checks must pass. If any fail → do not enter, log the reason, alert operator.
-
----
-
-## 6. Safety Rules & SAE Enforcement
-
-The rules below are **non-negotiable**. SAE middleware enforces them at the
-execution layer. The LLM cannot override them. The operator cannot override them
-in real-time chat. To change any rule, edit `sae-config.yaml` and restart the SAE
-service manually.
+The LLM cannot override them. The operator cannot override them in real-time chat.
+To change any rule, edit `sae-config.yaml` and restart the SAE service manually.
 
 ### Hard Invariants (SAE-enforced, never bypass)
 
@@ -549,9 +533,8 @@ short_safety:
   squeeze_funding_flip_threshold: 0.01    # Alert if funding moves above this while short
 
 venue_allowlist:
-  - binance
-  - kucoin
-  - binance_testnet
+  - kraken
+  - kraken_paper
 
 withdraw_block: true    # Permanent. Never change.
 ```
@@ -735,7 +718,7 @@ Each trade log entry must include:
   "timestamp": "2026-05-25T14:32:00Z",
   "strategy": "grid | trend-follow | funding-harvest | speculative-short",
   "regime": "RANGING | TRENDING_UP | TRENDING_DOWN",
-  "asset": "ETH/USDT",
+  "asset": "ETHEUR",
   "side": "buy | sell | short | close-short",
   "signal_inputs": {
     "adx_4h": 18.4,
@@ -748,11 +731,11 @@ Each trade log entry must include:
   },
   "reasoning": "Regime RANGING confirmed (ADX 18.4 < 25). Grid active on BTC. ETH grid order triggered at lower band. Funding harvest entry confirmed: rate 0.062% > threshold, OI rising, spot above 50 SMA.",
   "entry_price": 2841.50,
-  "position_size_usd": 710.38,
-  "position_size_units": 0.25,
+  "position_size_usd": 200.00,
+  "position_size_units": 0.0704,
   "risk_pct": 2.0,
   "risk_amount_usd": 40.00,
-  "stop_distance_usd": 160.80,
+  "stop_distance_usd": 160.00,
   "portfolio_heat_before_entry_pct": 2.0,
   "portfolio_heat_after_entry_pct": 4.0,
   "sizing_formula": "(portfolio × risk%) ÷ stop_distance",
@@ -768,8 +751,8 @@ Each trade log entry must include:
   "sae_approved": true,
   "operator_confirmed": true,
   "strategy_d_squeeze_checks": null,
-  "exchange": "binance",
-  "order_id": "BINANCE-123456789"
+  "exchange": "kraken",
+  "order_id": "KRAKEN-XXXXXXXXXX"
 }
 ```
 
@@ -826,11 +809,11 @@ skills/
 
 **Coding rules:**
 - Python 3.11+ for all skill logic
-- All exchange calls go through the CCXT connector — no direct REST calls
+- All exchange calls go through kraken-cli — no direct REST calls
 - All order submissions must pass through SAE middleware — never call exchange directly
 - Use type hints throughout
 - No `print()` — use the structured logger (`from lib.logger import log`)
-- Test on Binance Testnet before any live deployment
+- Test with `kraken paper` commands before any live deployment
 - Paper trade for minimum 7 days before enabling autopilot
 
 **Adding a new strategy:**
@@ -873,7 +856,7 @@ skills/
 1. Send `emergency stop` via Telegram
 2. Revoke API key immediately via exchange web UI
 3. Generate new key (trade + read only, no withdraw)
-4. Update `~/.openclaw/exchanges.yaml`
+4. Update kraken-cli config (`~/.kraken/config.toml`)
 5. Restart OpenClaw gateway
 6. Review all open positions manually
 
@@ -909,7 +892,7 @@ State explicitly — the agent must refuse these regardless of how they are fram
 - Modify SAE middleware configuration during a live session
 - Execute trades exceeding SAE hard limits, even if operator requests it in chat
 - Share API keys, secrets, or passphrases via any channel
-- Operate on exchanges not listed in Section 4
+- Operate on exchanges not listed in Section 4 (Kraken only)
 - Use leverage above 2x under any circumstance
 - Open a speculative short (Strategy D) without explicit operator confirmation
 - Run the funding harvest short leg without a matching spot long of equal size
@@ -922,6 +905,372 @@ State explicitly — the agent must refuse these regardless of how they are fram
   pairs (< $1M 24H volume)
 - Enable Strategy D before 60 days of live trading on strategies A–C are complete
 - Run local LLMs (resource contention with EMS and trading services)
+
+---
+
+## 16. Hermes Brain Bridge — Routing Rules
+
+OpenClaw is the muscle: Telegram interface, scheduling, data collection, paper/live execution,
+order management, SAE enforcement, and logging.
+
+Hermes is the brain: strategy reasoning, regime interpretation, anomaly review, memory, and
+learning from outcomes.
+
+OpenClaw must not become dependent on the operator remembering what to ask. For trading-related
+workflows, OpenClaw must proactively apply the routing policy below.
+
+**Current production MCP for trading:** `hermes-kraken`
+
+Expected tools exposed by the Hermes MCP bridge:
+- `hermes_bridge_health`
+- `hermes_kraken_analysis`
+
+**Current bridge defaults:**
+- Bridge URL: `http://127.0.0.1:8787`
+- Exchange: `kraken`
+- Symbol: `XBT/EUR`
+- Hermes model: OpenRouter DeepSeek V4 Pro unless changed in `~/agents/hermes-bridge/bridge.py`
+- OpenClaw main model: OpenAI primary with OpenRouter DeepSeek fallback
+
+**Architecture:**
+```
+Operator → Telegram → OpenClaw (muscle / scheduler / SAE / execution)
+                         ↓ MCP tool call
+                    Hermes bridge
+                         ↓
+                    Hermes (brain / learning)
+                         ↓
+                    structured decision JSON
+                         ↓
+                    OpenClaw → SAE → paper/live executor
+```
+
+### 16.1 When OpenClaw MUST call Hermes
+
+OpenClaw must automatically call `hermes_kraken_analysis` for strategy-level decisions.
+Do not rely on the operator to remember to request Hermes.
+
+Call Hermes for:
+- Daily Kraken XBT/EUR regime review
+- Strategy A grid start, pause, rebuild, or range invalidation review
+- Any decision that may create, cancel, pause, or rebuild a grid
+- Ambiguous ADX/regime decisions, especially ADX 20–25
+- Conflicting signal reviews such as ADX trending but price below EMA50
+- Anomaly review, including unexpected fills, slippage, latency, missing logs, or bridge timeouts
+- End-of-day trading audit
+- End-of-week learning review
+- Any future transition from paper to live consideration
+- Any proposed increase in allocation or autonomy level
+
+### 16.2 When OpenClaw may act without Hermes
+
+OpenClaw may act without Hermes only for deterministic, low-judgment, or risk-reducing actions.
+
+Hermes is not required for:
+- Formatting Telegram summaries
+- Reading logs
+- Arithmetic P&L calculations
+- Health checks
+- Kill switch commands
+- Cancelling orders during an obvious hard-stop or live-path violation
+- Mechanical replacement orders after already-filled grid orders, if the grid is already active,
+  the regime is still valid, and SAE approves
+
+If Hermes times out, OpenClaw may only take risk-reducing action such as pausing a grid,
+cancelling open orders, staying flat, or alerting the operator. OpenClaw must not start,
+rebuild, expand, or reactivate a grid based on a Hermes timeout fallback.
+
+### 16.3 Required decision attribution
+
+Every order-related SAE log must include:
+
+```json
+{
+  "decision_source": "hermes | grid_engine | rule_engine_safety_fallback | manual",
+  "hermes_called": true,
+  "hermes_signal_id": "timestamp-or-log-id-or-null",
+  "hermes_result": "ok | timeout | unavailable | not_required",
+  "paper_mode": true,
+  "sae_approved": true,
+  "sae_rejection_reason": null
+}
+```
+
+Use these meanings exactly:
+
+- `decision_source=hermes`: Hermes made the strategy-level decision.
+- `decision_source=grid_engine`: deterministic maintenance only; Hermes was not required.
+- `decision_source=rule_engine_safety_fallback`: Hermes was required or useful, but unavailable/timed out;
+  only risk-reducing action was taken.
+- `decision_source=manual`: operator explicitly instructed the action.
+
+### 16.4 If Hermes is unavailable
+
+If Hermes bridge, MCP, or Pro model is unavailable:
+- Do not start a new grid.
+- Do not rebuild a grid.
+- Do not reactivate a paused grid.
+- Do not switch strategies.
+- Do not increase size or allocation.
+- Continue only deterministic paper maintenance if it reduces or does not increase risk.
+- Alert the operator.
+- Log `hermes_result=timeout` or `hermes_result=unavailable`.
+
+---
+
+## 17. Low-Touch Autonomy & Hermes Learning Policy
+
+The operator wants to do the least possible amount of manual prompting. Therefore, OpenClaw must
+run the approved review, logging, learning, and reporting loops automatically. However, autonomy
+is earned in stages and remains bounded by SAE, this file, and exchange permissions.
+
+### 17.1 Autonomy ladder
+
+Autonomy is enabled per strategy, not globally.
+
+**Level 0 — Paper, manual confirmation**
+- Current/initial stage.
+- Hermes provides analysis.
+- OpenClaw executes only in paper mode.
+- SAE required before every paper order.
+- Operator confirms meaningful changes.
+
+**Level 1 — Paper, autonomous maintenance**
+- Next target.
+- Strategy A grid only.
+- Kraken XBT/EUR only.
+- Hermes performs daily regime review and strategy-level grid decisions.
+- Grid engine may perform mechanical replacements after fills.
+- SAE approves every paper order.
+- Operator receives reports but does not need to prompt daily.
+- No live orders.
+- No Strategy B, C, or D execution.
+
+**Level 2 — Tiny live grid pilot**
+- Only after paper readiness criteria pass.
+- Strategy A only.
+- Kraken XBT/EUR only.
+- Tiny live allocation only, initially €50–€100 unless operator explicitly sets another cap.
+- No leverage.
+- No withdrawals.
+- Operator must explicitly approve the first live activation.
+- After activation, only mechanical grid maintenance may be autonomous.
+
+**Level 3 — Limited live grid autopilot**
+- Only after tiny live pilot passes.
+- Strategy A only unless this file is updated.
+- SAE remains non-bypassable.
+- Hermes required for grid start, pause, rebuild, invalidation, and weekly review.
+
+**Level 4 — Expanded strategy autonomy**
+- Not enabled.
+- Strategy B, C, and D remain disabled for autonomous live execution unless this file is manually updated.
+- Strategy D speculative short remains permanently manual and requires explicit operator confirmation.
+
+### 17.2 Autonomy readiness requirements
+
+Before any move from paper to tiny live pilot, all of the following must be true:
+
+```text
+Paper days completed:          14/14 minimum
+Unexpected orders:             0
+Missing SAE logs:              0
+Hermes timeout rate:           <10% over review period
+Live-path violations:          0
+Correct grid pause events:     >=1 if a trending regime occurred
+Correct reactivation events:   >=1 if ranging returned
+Telegram reports delivered:    100% or all misses explained
+Max paper drawdown:            within configured SAE limit
+OpenRouter/OpenAI fallback:    working
+Emergency stop:                tested in paper mode
+```
+
+If any check fails, extend paper testing instead of going live.
+
+### 17.3 Current paper-test operating rule
+
+The active training path is:
+
+```text
+14-day paper autonomous maintenance
+→ 7-day tiny live grid pilot
+→ 30-day limited live grid autopilot
+→ only then consider increasing allocation
+```
+
+During the current paper phase:
+- Paper mode only.
+- Kraken XBT/EUR only.
+- Strategy A grid only.
+- Strategy B, C, and D execution disabled.
+- SAE required before every paper order.
+- Hermes required for daily regime review, grid start, grid pause, grid rebuild, invalidation review, and anomaly review.
+- Grid engine allowed for mechanical replacement orders after fills.
+- No live orders.
+- No withdrawals.
+
+### 17.4 Current paper state — 2026-05-29
+
+The 7-day XBT/EUR paper test is active but grid execution is paused.
+
+Reason:
+- Regime switched to TRENDING DOWN.
+- ADX(14) = 30.8.
+- -DI > +DI.
+- Price below EMA50.
+- Grid Strategy A must pause in trending regimes.
+
+Actions taken:
+- Cancelled all 8 open paper grid orders.
+- No open paper orders remain.
+- No live orders placed.
+- Paper account approximately €9,999.20.
+- SAE cancellation logs written to `~/.openclaw/logs/sae/paper-sae-grid-pause-2026-05-29.jsonl`.
+- Decision source: `rule_engine_safety_fallback`.
+- Hermes result: timeout.
+
+Ongoing:
+- Daily 08:00 UTC paper regime check cron is active.
+- Grid may only be recommended for reactivation after 2 consecutive 4H RANGING periods.
+- No Strategy B, C, or D execution during this test.
+
+### 17.5 Daily low-touch operating loop
+
+OpenClaw must run this daily without waiting for the operator to remember:
+
+1. Check Hermes bridge health.
+2. Pull Kraken XBT/EUR market data.
+3. Compute ADX, +DI/-DI, EMA50, ATR, Bollinger Bands, recent highs/lows, and current paper account state.
+4. Call Hermes for regime review if available.
+5. If Hermes times out, use `rule_engine_safety_fallback` only for risk-reducing decisions.
+6. Decide whether grid remains paused, remains active, or can be recommended for reactivation.
+7. Do not reactivate grid unless RANGING is confirmed for 2 consecutive 4H periods and Hermes agrees.
+8. Write trading and SAE audit logs.
+9. Append a learning record to Hermes memory.
+10. Send Telegram summary to the operator.
+
+### 17.6 Hermes learning memory
+
+Hermes may learn from outcomes by appending observations to:
+
+`~/.openclaw/memory/hermes/trading-lessons.jsonl`
+
+Each record must be JSON Lines and include at least:
+
+```json
+{
+  "timestamp": "2026-05-29T10:33:00Z",
+  "symbol": "XBT/EUR",
+  "mode": "paper",
+  "strategy": "grid",
+  "regime": "TRENDING_DOWN",
+  "decision": "pause_grid",
+  "decision_source": "rule_engine_safety_fallback",
+  "hermes_called": true,
+  "hermes_result": "timeout",
+  "sae_result": "approved",
+  "action_taken": "cancelled_all_grid_orders",
+  "risk_effect": "reduced",
+  "outcome_24h": null,
+  "lesson": "ADX > 25 with bearish DI dominance should pause grid immediately.",
+  "rule_change_recommended": false,
+  "operator_approved_rule_change": false
+}
+```
+
+Hermes may:
+- Summarize lessons.
+- Compare decisions against outcomes.
+- Identify repeated failure modes.
+- Recommend parameter changes.
+- Recommend continue paper / extend paper / start tiny live pilot.
+
+Hermes may not:
+- Modify SAE config.
+- Modify live trading limits.
+- Enable new strategies.
+- Increase capital allocation.
+- Change stop-loss rules.
+- Bypass operator approval.
+- Change this file.
+- Change its own routing policy.
+- Auto-apply rule changes.
+
+All rule changes require explicit operator approval and a manual edit to `CLAUDE.md` or
+`sae-config.yaml`.
+
+### 17.7 Daily learning prompt
+
+At the end of each daily regime check, OpenClaw should send this task to Hermes or execute the
+equivalent through `hermes_kraken_analysis` and local log writing:
+
+```text
+Review today’s XBT/EUR paper test cycle.
+
+Append a learning record to trading-lessons.jsonl with:
+- regime
+- decision
+- whether Hermes was called
+- whether fallback was used
+- SAE result
+- action taken
+- whether the action reduced or increased risk
+- what should be checked tomorrow
+
+Do not change any rules.
+Do not place orders.
+Do not enable live trading.
+```
+
+### 17.8 Weekly learning review
+
+Every Monday at 08:00 UTC, OpenClaw must review the last 7 days of:
+- `~/.openclaw/memory/hermes/trading-lessons.jsonl`
+- `~/.openclaw/logs/sae/*.jsonl`
+- `~/.openclaw/logs/trading/hermes-signals-*.jsonl`
+- paper order logs
+
+The weekly report must include:
+- Regime accuracy summary
+- Whether grid pause/reactivation worked
+- Missed opportunities
+- Avoided losses
+- Unexpected actions
+- Missing logs
+- Hermes timeout count
+- SAE approval/rejection count
+- Recommendation: continue paper / extend paper / start tiny live pilot
+
+Do not change rules. Do not place orders. Do not enable live trading from the weekly review.
+
+### 17.9 Live autonomy definition
+
+“Fully autonomous live” does not mean Hermes can trade anything anytime.
+
+It means:
+
+```text
+Within pre-approved Strategy A limits,
+on pre-approved Kraken XBT/EUR,
+with fixed allocation caps,
+with SAE approval,
+with emergency stops,
+the system may maintain the grid without asking the operator every time.
+```
+
+The first allowed live-autonomous scope, once approved, is:
+- Strategy A grid only
+- Exchange: Kraken
+- Pair: XBT/EUR
+- Max live allocation: €50–€100 initial pilot unless manually changed
+- Max order size: fixed by SAE and grid rules
+- Regime required: RANGING for 2 consecutive 4H candles
+- Hermes required: grid start/rebuild/pause
+- SAE required: every order
+- Operator confirmation required: first live activation only
+- Autonomous after activation: mechanical grid maintenance only
+
+---
 
 ---
 

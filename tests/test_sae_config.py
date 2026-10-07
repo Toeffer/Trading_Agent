@@ -80,8 +80,8 @@ def test_squeeze_oi_threshold_is_3pct(cfg: dict) -> None:
 
 # ─── Venues & withdraw block ──────────────────────────────────────────────────
 def test_venue_allowlist_is_exhaustive(cfg: dict) -> None:
-    """Per §4: only binance + kucoin (+ testnet) allowed. Per §15: no other exchanges."""
-    assert set(cfg["venue_allowlist"]) == {"binance", "kucoin", "binance_testnet"}
+    """Per §4: only kraken (+ kraken_paper) allowed. Per §15: no other exchanges."""
+    assert set(cfg["venue_allowlist"]) == {"kraken", "kraken_paper"}
 
 
 def test_withdraw_block_is_true(cfg: dict) -> None:

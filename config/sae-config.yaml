@@ -33,9 +33,8 @@ short_safety:
   squeeze_funding_flip_threshold: 0.01     # Alert if funding moves above this while short
 
 venue_allowlist:
-  - binance
-  - kucoin
-  - binance_testnet
+  - kraken
+  - kraken_paper
 
 withdraw_block: true    # Permanent. Never change.
 
@@ -56,8 +55,8 @@ asset_filters:
   min_age_days: 90                         # No tokens launched < 90 days ago
   min_24h_volume_usd: 1000000              # No pairs below $1M 24H volume
   allowed_spot_pairs:
-    - BTC/USDT
-    - ETH/USDT
-    - SOL/USDT
+    - XBTEUR
+    - ETHEUR
+    - SOLEUR
   allowed_perp_pairs:
-    - BTC/USDT
+    - XBT/USD

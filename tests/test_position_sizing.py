@@ -43,7 +43,7 @@ def test_section_10_log_example_is_internally_consistent() -> None:
     # Position from formula
     size = 40.0 / 160.80
     assert size == pytest.approx(0.2488, abs=0.001)
-    # The log rounds to 0.25 — small rounding, within Binance ETH minimum lot (0.0001)
+    # The log rounds to 0.25 — small rounding, above the Kraken ETH minimum lot (0.002)
     assert math.floor(size * 10000) / 10000 == pytest.approx(0.2488, abs=0.001)
 
 

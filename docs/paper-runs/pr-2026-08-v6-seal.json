@@ -1,0 +1,13 @@
+{
+  "document": "docs/paper-runs/pr-2026-08-v6-preregistration.md",
+  "sha256": "b56dfe6f53e782c7686d79cdba21d72e0c14b7d1691704344072fb4576b36b17",
+  "sealed_utc": "2026-08-17T12:04:56Z",
+  "algorithm": "sha256",
+  "governing_sections": [
+    "10.4",
+    "10.1",
+    "11.6"
+  ],
+  "immutable": true,
+  "note": "Amending the sealed document voids the run as evidence. Observations belong in the corresponding results document."
+}

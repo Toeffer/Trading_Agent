@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Model Routing Decision Schema",
+  "description": "Phase 18R1 deterministic model-routing decision output schema. Advisory only. No model invocation.",
+  "version": "0.1",
+  "governance_identity": {
+    "governance_id": "model_routing_governance_v0_1",
+    "governance_version": "0.1",
+    "governance_state": "ROUTING_CONTRACT_READY",
+    "governance_phase": "PHASE18R1",
+    "routing_activation_scope": "DRY_RUN_ONLY",
+    "autonomy_level": 1,
+    "advisory_only": true,
+    "human_final_authority": true,
+    "execution_scope": "NONE",
+    "provider_integration_scope": "NONE",
+    "credential_scope": "NONE",
+    "network_scope": "NONE",
+    "model_invocation_scope": "NONE",
+    "trading_execution_scope": "NONE"
+  },
+  "type": "object",
+  "required": [
+    "decision_schema_version",
+    "governance_id",
+    "governance_version",
+    "routing_state",
+    "role",
+    "task_class",
+    "selected_model_id",
+    "selected_route_tier",
+    "rationale_codes",
+    "default_failure_count",
+    "escalation_failure_count",
+    "retry_budget",
+    "manual_review_required",
+    "advisory_only",
+    "human_final_authority",
+    "runtime_invocation_authorized",
+    "provider_integration_authorized",
+    "credentials_authorized",
+    "network_authorized",
+    "broker_mutation_authorized",
+    "trading_execution_authorized",
+    "trading_autonomy_unchanged",
+    "deterministic_request_hash",
+    "deterministic_decision_hash"
+  ],
+  "properties": {
+    "decision_schema_version": { "type": "string", "const": "0.1" },
+    "governance_id": { "type": "string", "const": "model_routing_governance_v0_1" },
+    "governance_version": { "type": "string", "const": "0.1" },
+    "routing_state": { "type": "string", "enum": ["DEFAULT_ROUTE", "ESCALATED_ROUTE", "HOLD"] },
+    "role": { "type": "string", "enum": ["HERMES", "OC"] },
+    "task_class": { "type": "string" },
+    "selected_model_id": {
+      "anyOf": [
+        { "type": "string", "enum": ["gpt-5.5", "gpt-5.6-sol", "deepseek-v4-pro", "kimi-k3"] },
+        { "type": "null" }
+      ]
+    },
+    "selected_route_tier": {
+      "anyOf": [
+        { "type": "string", "enum": ["DEFAULT", "ESCALATION"] },
+        { "type": "null" }
+      ]
+    },
+    "rationale_codes": { "type": "array", "items": { "type": "string" } },
+    "default_failure_count": { "type": "integer", "minimum": 0 },
+    "escalation_failure_count": { "type": "integer", "minimum": 0 },
+    "retry_budget": { "type": "integer", "minimum": 0 },
+    "manual_review_required": { "type": "boolean" },
+    "advisory_only": { "type": "boolean", "const": true },
+    "human_final_authority": { "type": "boolean", "const": true },
+    "runtime_invocation_authorized": { "type": "boolean", "const": false },
+    "provider_integration_authorized": { "type": "boolean", "const": false },
+    "credentials_authorized": { "type": "boolean", "const": false },
+    "network_authorized": { "type": "boolean", "const": false },
+    "broker_mutation_authorized": { "type": "boolean", "const": false },
+    "trading_execution_authorized": { "type": "boolean", "const": false },
+    "trading_autonomy_unchanged": { "type": "boolean", "const": true },
+    "deterministic_request_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "deterministic_decision_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  },
+  "additionalProperties": false,
+  "if": {
+    "properties": { "routing_state": { "const": "HOLD" } }
+  },
+  "then": {
+    "properties": {
+      "selected_model_id": { "type": "null" },
+      "selected_route_tier": { "type": "null" },
+      "manual_review_required": { "const": true }
+    }
+  },
+  "request_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "Model Routing Request",
+    "description": "Phase 18R1 routing request input. Must not contain prompts, source code, credentials, provider payloads, account IDs, broker data, order data, or H1 data.",
+    "type": "object",
+    "required": [
+      "request_schema_version",
+      "role",
+      "task_class",
+      "default_failure_count",
+      "escalation_failure_count",
+      "manual_escalation_requested",
+      "model_availability",
+      "hard_stop_flags"
+    ],
+    "properties": {
+      "request_schema_version": { "type": "string", "const": "0.1" },
+      "role": { "type": "string", "enum": ["HERMES", "OC"] },
+      "task_class": { "type": "string" },
+      "default_failure_count": { "type": "integer", "minimum": 0 },
+      "escalation_failure_count": { "type": "integer", "minimum": 0 },
+      "manual_escalation_requested": { "type": "boolean" },
+      "model_availability": {
+        "type": "object",
+        "required": ["gpt-5.5", "gpt-5.6-sol", "deepseek-v4-pro", "kimi-k3"],
+        "properties": {
+          "gpt-5.5": { "type": "boolean" },
+          "gpt-5.6-sol": { "type": "boolean" },
+          "deepseek-v4-pro": { "type": "boolean" },
+          "kimi-k3": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      },
+      "hard_stop_flags": {
+        "type": "object",
+        "required": [
+          "safety_boundary_violation_detected",
+          "protected_file_change_detected",
+          "test_weakening_detected",
+          "unauthorized_runtime_mutation_detected",
+          "credential_exposure_detected",
+          "unapproved_network_access_detected",
+          "unapproved_model_requested",
+          "broker_mutation_requested",
+          "h1_access_requested",
+          "trading_execution_requested",
+          "order_path_requested",
+          "approval_path_requested",
+          "preflight_path_requested",
+          "submission_path_requested",
+          "strategy_or_allowlist_change_requested"
+        ],
+        "properties": {
+          "safety_boundary_violation_detected": { "type": "boolean" },
+          "protected_file_change_detected": { "type": "boolean" },
+          "test_weakening_detected": { "type": "boolean" },
+          "unauthorized_runtime_mutation_detected": { "type": "boolean" },
+          "credential_exposure_detected": { "type": "boolean" },
+          "unapproved_network_access_detected": { "type": "boolean" },
+          "unapproved_model_requested": { "type": "boolean" },
+          "broker_mutation_requested": { "type": "boolean" },
+          "h1_access_requested": { "type": "boolean" },
+          "trading_execution_requested": { "type": "boolean" },
+          "order_path_requested": { "type": "boolean" },
+          "approval_path_requested": { "type": "boolean" },
+          "preflight_path_requested": { "type": "boolean" },
+          "submission_path_requested": { "type": "boolean" },
+          "strategy_or_allowlist_change_requested": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false,
+    "forbidden_fields_explanation": "prompt_text, source_code, credentials, provider_payloads, account_ids, broker_data, order_data, h1_data, and arbitrary model_ids are not permitted in routing requests."
+  }
+}

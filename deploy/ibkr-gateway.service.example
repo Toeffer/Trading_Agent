@@ -1,0 +1,24 @@
+[Unit]
+Description=Dedicated paper IB Gateway
+After=network-online.target nftables.service
+Requires=nftables.service
+
+[Service]
+User=ibkr-gateway
+Group=ibkr-gateway
+WorkingDirectory=/var/lib/ibkr-gateway
+# Install a root-owned launcher here for the existing pinned Gateway/IBC.
+ExecStart=/opt/ibkr-gateway/start-paper-gateway
+StateDirectory=ibkr-gateway
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/ibkr-gateway
+InaccessiblePaths=/var/lib/ibkr-bridge /etc/ibkr-bridge
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

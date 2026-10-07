@@ -1,0 +1,36 @@
+[Unit]
+Description=Paper execution authority
+After=network.target ibkr-gateway.service nftables.service
+Requires=nftables.service
+
+[Service]
+Type=simple
+User=ibkr-exec
+Group=ibkr-exec
+SupplementaryGroups=ibkr-proposals
+WorkingDirectory=/opt/trading-agent/current
+EnvironmentFile=/etc/ibkr-bridge/bridge.env
+Environment=PYTHONUTF8=1
+ExecStart=/opt/trading-agent/current/.venv/bin/python -m uvicorn bridge:app --host 127.0.0.1 --port 8790 --workers 1 --limit-concurrency 48 --no-access-log
+StateDirectory=ibkr-bridge
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/ibkr-bridge
+Restart=no
+TimeoutStopSec=45
+MemoryMax=768M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

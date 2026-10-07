@@ -1,0 +1,29 @@
+[Unit]
+Description=IBKR Bridge Read-Only Heartbeat
+Documentation=https://github.com/openclaw/ibkr-bridge
+After=network-online.target ibkr-bridge.service
+Wants=network-online.target ibkr-bridge.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/chris/agents/ibkr-bridge
+ExecStart=/home/chris/agents/ibkr-bridge/.venv/bin/python3 /home/chris/agents/ibkr-bridge/ibkr_operator.py heartbeat --json --quiet
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/chris/.openclaw/heartbeat
+ReadOnlyPaths=/home/chris/agents/ibkr-bridge
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ibkr-heartbeat
+
+# Safety invariants — read-only only
+# IBKR_ALLOW_ORDERS=false
+# rules.enforced=false
+# No bridge restart
+# No auto-remediation
+# No H1 token access
+
+[Install]
+WantedBy=default.target

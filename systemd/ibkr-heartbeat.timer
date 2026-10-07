@@ -1,0 +1,12 @@
+[Unit]
+Description=IBKR Bridge Read-Only Heartbeat Timer (every 15 min)
+Documentation=https://github.com/openclaw/ibkr-bridge
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+RandomizedDelaySec=30
+Unit=ibkr-heartbeat.service
+
+[Install]
+WantedBy=timers.target

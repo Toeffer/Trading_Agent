@@ -1,0 +1,370 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mstr-btc-research:option-chain-snapshot-schema:v0.1",
+  "title": "Option Chain Snapshot Schema",
+  "description": "Canonical record schema for point-in-time option chain snapshots. Each record represents one option contract at one snapshot moment. SIMULATION-ONLY. No option is executable. No option may enter the equity proposal path. No 0DTE, naked, short-premium, multi-leg, exercise, or assignment workflows. Historical option research requires actual point-in-time snapshots — current chains must not substitute for historical snapshots. Theoretical values must not be represented as executable fills.",
+  "version": "0.1",
+  "governance_identity": {
+    "governance_id": "mstr_btc_data_governance_v0_1",
+    "governance_version": "0.1",
+    "governance_state": "SCHEMA_CONTRACT_READY",
+    "strategy_readiness": "S0",
+    "data_readiness": "D0",
+    "autonomy_level": 1,
+    "research_only": true,
+    "execution_scope": "NONE",
+    "collection_scope": "NONE",
+    "provider_integration_scope": "NONE",
+    "storage_runtime_scope": "NONE",
+    "permitted_activity": "SCHEMA_AND_PROVIDER_CONTRACT_VALIDATION_ONLY",
+    "provider_binding_state": "UNBOUND",
+    "network_access_authorized": false,
+    "credentials_authorized": false,
+    "collection_authorized": false,
+    "ingestion_authorized": false,
+    "storage_runtime_authorized": false,
+    "backtest_authorized": false,
+    "execution_authorized": false,
+    "allowlist_change": false,
+    "rules_change": false,
+    "broker_change": false,
+    "guard_change": false,
+    "canonical_strategy_unchanged": true,
+    "phase18a_artifacts_unchanged": true,
+    "next_phase_boundary": "PHASE18C_SYNTHETIC_SCHEMA_CONFORMANCE"
+  },
+  "options_governance": {
+    "simulation_only": true,
+    "execution_eligible": false,
+    "order_routing_supported": false,
+    "assignment_workflow_supported": false,
+    "exercise_workflow_supported": false,
+    "research_underlyings": ["MSTR", "SPY", "QQQ"],
+    "research_underlyings_not_executable": true,
+    "historical_option_research_requires_point_in_time_snapshots": true,
+    "current_chains_must_not_substitute_for_historical_snapshots": true,
+    "theoretical_values_must_not_be_represented_as_executable_fills": true,
+    "missing_bid_or_ask_prevents_executable_fill_simulation": true,
+    "crossed_or_invalid_markets_must_be_rejected_or_quarantined": true,
+    "zero_bid_handling_must_be_explicit": true,
+    "stale_quotes_must_be_rejected_under_future_frozen_threshold_profile": true,
+    "0dte_outside_scope": true,
+    "naked_or_short_premium_outside_scope": true,
+    "multi_leg_execution_outside_scope": true,
+    "exercise_and_assignment_workflows_outside_scope": true,
+    "only_later_long_call_and_long_put_simulation_may_be_considered": true
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_id",
+    "raw_record_hash",
+    "provider_role_id",
+    "provider_record_id",
+    "instrument_id",
+    "asset_class",
+    "research_track",
+    "execution_eligible",
+    "event_timestamp_utc",
+    "source_timestamp_utc",
+    "ingestion_timestamp_utc",
+    "available_at_utc",
+    "revision_number",
+    "is_final",
+    "data_quality_state",
+    "snapshot_id",
+    "snapshot_timestamp_utc",
+    "underlying_symbol",
+    "underlying_price",
+    "expiration_date",
+    "strike",
+    "option_right",
+    "contract_multiplier",
+    "currency",
+    "exchange_or_composite_source",
+    "bid",
+    "ask",
+    "quote_condition",
+    "market_state",
+    "point_in_time_snapshot",
+    "simulation_only"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "0.1" },
+    "record_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "raw_record_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "provider_role_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "provider_record_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "instrument_id": {
+      "type": "string",
+      "description": "Format: {underlying_symbol}@{exchange}.equity_option.{expiration_date}.{strike}.{option_right}.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "asset_class": { "type": "string", "const": "equity_option" },
+    "research_track": {
+      "type": "string",
+      "enum": ["TRACK_A_MSTR_BTC", "TRACK_B_SPY_QQQ"]
+    },
+    "execution_eligible": { "type": "boolean", "const": false },
+    "event_timestamp_utc": {
+      "type": "string", "format": "date-time",
+      "description": "Point-in-time snapshot timestamp in RFC 3339 UTC, ending in 'Z'."
+    },
+    "source_timestamp_utc": {
+      "type": "string", "format": "date-time",
+      "description": "Provider-asserted timestamp."
+    },
+    "ingestion_timestamp_utc": {
+      "type": "string", "format": "date-time",
+      "description": "Ingestion timestamp."
+    },
+    "available_at_utc": {
+      "type": "string", "format": "date-time",
+      "description": "Timestamp at which this record became available for model consumption."
+    },
+    "revision_number": { "type": "integer", "minimum": 1 },
+    "is_final": { "type": "boolean" },
+    "data_quality_state": { "type": "string", "enum": ["PASSED", "FLAGGED", "DEGRADED", "REJECTED"] },
+    "snapshot_id": {
+      "type": "string",
+      "description": "Unique snapshot identifier shared by all option records from the same chain capture. Format: {underlying}-{snapshot_timestamp_utc}-{provider_role_id}.",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "snapshot_timestamp_utc": {
+      "type": "string", "format": "date-time",
+      "description": "Point-in-time timestamp of the full chain snapshot in RFC 3339 UTC, ending in 'Z'. Must not be a current/live chain substituted for a historical point."
+    },
+    "underlying_symbol": {
+      "type": "string",
+      "description": "Underlying equity symbol. Must be one of: MSTR, SPY, QQQ.",
+      "pattern": "^[A-Z0-9.]+$",
+      "minLength": 1,
+      "maxLength": 20
+    },
+    "underlying_price": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Underlying equity price at the time of the snapshot."
+    },
+    "expiration_date": {
+      "type": "string", "format": "date",
+      "description": "Option expiration date in YYYY-MM-DD format (UTC calendar date)."
+    },
+    "strike": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Strike price in USD."
+    },
+    "option_right": {
+      "type": "string",
+      "enum": ["CALL", "PUT"],
+      "description": "Option right. Only CALL and PUT are defined. No exotic options."
+    },
+    "contract_multiplier": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Contract multiplier (typically 100 for standard equity options)."
+    },
+    "currency": {
+      "type": "string",
+      "const": "USD"
+    },
+    "exchange_or_composite_source": {
+      "type": "string",
+      "description": "Exchange or composite source for this quote. e.g. OPRA, CBOE, PHLX.",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "bid": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Best bid price. May be zero (no bid). Zero-bid handling must be explicit — zero bid is not the same as missing bid."
+    },
+    "ask": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Best ask price. Missing bid or ask prevents executable-fill simulation."
+    },
+    "bid_size": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Best bid size in contracts. Required when the provider supplies it."
+    },
+    "ask_size": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Best ask size in contracts. Required when the provider supplies it."
+    },
+    "last": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Last traded price. Required when the provider supplies it."
+    },
+    "volume": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Daily traded volume in contracts. Required when the provider supplies it."
+    },
+    "open_interest": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Open interest in contracts. Required when the provider supplies it."
+    },
+    "implied_volatility": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Implied volatility as annualized decimal (e.g. 0.35). Required when the provider supplies it."
+    },
+    "delta": {
+      "type": "number",
+      "minimum": -1,
+      "maximum": 1,
+      "description": "Option delta."
+    },
+    "gamma": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Option gamma."
+    },
+    "theta": {
+      "type": "number",
+      "description": "Option theta."
+    },
+    "vega": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Option vega."
+    },
+    "quote_condition": {
+      "type": "string",
+      "enum": ["NORMAL", "CROSSED", "LOCKED", "ZERO_BID", "ZERO_ASK", "MISSING_BID", "MISSING_ASK", "STALE", "FAST_MARKET", "HALTED", "UNKNOWN"],
+      "description": "Market quote condition. CROSSED = bid > ask (invalid — must be rejected or quarantined). LOCKED = bid == ask. ZERO_BID/ASK = explicitly zero. MISSING_BID/ASK = not available."
+    },
+    "market_state": {
+      "type": "string",
+      "enum": ["REGULAR", "EXTENDED", "CLOSED", "HALTED", "UNKNOWN"],
+      "description": "Market state during this quote."
+    },
+    "theoretical_value": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Theoretical/model price. Required when supplied by a pricing model. Marked as THEORETICAL — must never be treated as an executable fill."
+    },
+    "theoretical_value_method": {
+      "type": "string",
+      "enum": ["BLACK_SCHOLES", "BINOMIAL", "MONTE_CARLO", "PROVIDER_DEFAULT", "OTHER"],
+      "description": "Method used to compute theoretical_value. Required when theoretical_value is supplied."
+    },
+    "point_in_time_snapshot": {
+      "type": "boolean",
+      "const": true,
+      "description": "Must be true. This record is a point-in-time snapshot. Current/live chains must not substitute for historical snapshots."
+    },
+    "simulation_only": {
+      "type": "boolean",
+      "const": true,
+      "description": "Must be true. No option is executable. This record may only be used for simulation research."
+    }
+  },
+  "validation_rules": {
+    "simulation_only_true": {
+      "rule": "simulation_only == true",
+      "severity": "HARD_FAIL"
+    },
+    "execution_eligible_false": {
+      "rule": "execution_eligible == false",
+      "severity": "HARD_FAIL"
+    },
+    "point_in_time_snapshot_true": {
+      "rule": "point_in_time_snapshot == true",
+      "severity": "HARD_FAIL",
+      "description": "Historical option research requires actual point-in-time snapshots. Current chains must not substitute."
+    },
+    "no_0dte": {
+      "rule": "expiration_date > snapshot_timestamp_utc date (at least 1 calendar day)",
+      "severity": "HARD_FAIL",
+      "description": "0DTE remains outside scope."
+    },
+    "bid_le_ask_when_valid": {
+      "rule": "IF bid > 0 AND ask > 0 AND quote_condition NOT IN ('CROSSED', 'ZERO_BID', 'ZERO_ASK', 'MISSING_BID', 'MISSING_ASK') THEN bid <= ask",
+      "severity": "HARD_FAIL"
+    },
+    "crossed_market_reject_or_quarantine": {
+      "rule": "IF quote_condition == 'CROSSED' OR (bid > 0 AND ask > 0 AND bid > ask) THEN data_quality_state must be 'REJECTED' or record must be quarantined",
+      "severity": "HARD_FAIL",
+      "description": "Crossed or invalid markets must be rejected or explicitly quarantined."
+    },
+    "zero_bid_handling_explicit": {
+      "rule": "IF bid == 0 THEN quote_condition must reflect the reason (ZERO_BID vs MISSING_BID). Zero-bid handling must be explicit.",
+      "severity": "HARD_FAIL"
+    },
+    "stale_quotes_rejected": {
+      "rule": "IF quote_condition == 'STALE' THEN data_quality_state must be 'REJECTED'",
+      "severity": "HARD_FAIL",
+      "description": "Stale quotes must be rejected under a future frozen threshold profile."
+    },
+    "theoretical_not_fill": {
+      "rule": "theoretical_value must never be treated as an executable fill. Simulation outputs must carry the THEORETICAL label.",
+      "severity": "HARD_FAIL"
+    },
+    "source_le_ingestion": {
+      "rule": "source_timestamp_utc <= ingestion_timestamp_utc",
+      "severity": "HARD_FAIL"
+    },
+    "timestamps_rfc3339_utc_z": {
+      "rule": "All timestamp fields must end with 'Z'.",
+      "severity": "HARD_FAIL"
+    },
+    "no_timestamp_substitution": {
+      "rule": "All timestamp fields must remain distinct with documented meanings.",
+      "severity": "HARD_FAIL"
+    },
+    "strike_positive": {
+      "rule": "strike > 0",
+      "severity": "HARD_FAIL"
+    },
+    "option_right_valid": {
+      "rule": "option_right IN ('CALL', 'PUT')",
+      "severity": "HARD_FAIL"
+    },
+    "underlying_in_research_set": {
+      "rule": "underlying_symbol IN ('MSTR', 'SPY', 'QQQ')",
+      "severity": "HARD_FAIL"
+    },
+    "no_naked_short_premium": {
+      "rule": "Naked and short-premium strategies are outside scope. Only long CALL and long PUT simulation may be considered in future phases.",
+      "severity": "HARD_FAIL"
+    },
+    "no_multi_leg": {
+      "rule": "Multi-leg execution remains outside scope.",
+      "severity": "HARD_FAIL"
+    },
+    "no_exercise_assignment": {
+      "rule": "Exercise and assignment workflows remain outside scope.",
+      "severity": "HARD_FAIL"
+    },
+    "no_broker_fields": {
+      "rule": "No broker IDs, order IDs, account IDs, execution IDs, approval IDs, H1 fields, credentials, tokens, or endpoint URLs.",
+      "severity": "HARD_FAIL"
+    }
+  },
+  "track_applicability": {
+    "track_a_mstr": {
+      "applicable": true,
+      "underlyings": ["MSTR"],
+      "role": "simulation_research_only",
+      "status": "NOT_APPROVED_FOR_COLLECTION",
+      "research_track_value": "TRACK_A_MSTR_BTC"
+    },
+    "track_b_spy_qqq": {
+      "applicable": true,
+      "underlyings": ["SPY", "QQQ"],
+      "role": "simulation_research_only",
+      "status": "NOT_APPROVED_FOR_COLLECTION",
+      "research_track_value": "TRACK_B_SPY_QQQ"
+    }
+  }
+}

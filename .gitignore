@@ -1,0 +1,30 @@
+# Secrets
+.env
+
+# Virtual environment
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Backup files
+*.bak
+*.bak.*
+
+# Runtime state files (outside repo by design, but safe to ignore)
+# State lives in ~/.openclaw/ — not in this repo
+
+# Unrelated bridge files
+ibkr_mcp.py
+ibkr_mcp_server.py
+
+# Backup junk
+*.bak
+*.bak.*
+bridge.py.broken.*
+# local backups
+*.backup
+.test-tmp/
+.test-results/
+.mypy_cache/

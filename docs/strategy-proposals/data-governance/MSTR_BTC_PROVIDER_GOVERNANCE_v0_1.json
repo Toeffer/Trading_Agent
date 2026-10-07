@@ -1,0 +1,509 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:mstr-btc-research:provider-governance:v0.1",
+  "title": "MSTR/BTC Provider Governance",
+  "description": "Vendor-neutral provider-governance framework. Defines logical roles, binding rules, fallback governance, and safety constraints. No commercial provider is selected or named as approved. No API URLs, credentials, keys, account identifiers, environment-variable names containing secrets, authentication schemes, or rate-limit bypass instructions are stored. This document governs the framework only — provider binding requires a future separate phase.",
+  "version": "0.1",
+  "governance_identity": {
+    "governance_id": "mstr_btc_data_governance_v0_1",
+    "governance_version": "0.1",
+    "governance_state": "SCHEMA_CONTRACT_READY",
+    "strategy_readiness": "S0",
+    "data_readiness": "D0",
+    "autonomy_level": 1,
+    "research_only": true,
+    "execution_scope": "NONE",
+    "collection_scope": "NONE",
+    "provider_integration_scope": "NONE",
+    "storage_runtime_scope": "NONE",
+    "permitted_activity": "SCHEMA_AND_PROVIDER_CONTRACT_VALIDATION_ONLY",
+    "provider_binding_state": "UNBOUND",
+    "network_access_authorized": false,
+    "credentials_authorized": false,
+    "collection_authorized": false,
+    "ingestion_authorized": false,
+    "storage_runtime_authorized": false,
+    "scheduler_authorized": false,
+    "backtest_authorized": false,
+    "modeling_authorized": false,
+    "forecasting_authorized": false,
+    "candidate_generation_authorized": false,
+    "execution_authorized": false,
+    "allowlist_change": false,
+    "rules_change": false,
+    "broker_change": false,
+    "guard_change": false,
+    "canonical_strategy_unchanged": true,
+    "phase18a_artifacts_unchanged": true,
+    "next_phase_boundary": "PHASE18C_SYNTHETIC_SCHEMA_CONFORMANCE"
+  },
+  "provider_binding_summary": {
+    "global_binding_state": "UNBOUND",
+    "description": "No provider is bound, connected, evaluated, or authorized for data access. All roles are UNBOUND. Binding requires explicit human approval and governance-state transition beyond SCHEMA_CONTRACT_READY."
+  },
+  "provider_roles": {
+    "EQUITY_BARS_PRIMARY": {
+      "role_id": "EQUITY_BARS_PRIMARY",
+      "data_domain": "equity_bars",
+      "description": "Primary source for equity OHLCV bars (MSTR, SPY, QQQ). Must be IBKR-derived given the existing broker relationship, but IBKR bar access for MSTR/SPY/QQQ requires separate Phase 18+ authorization.",
+      "priority": "PRIMARY",
+      "required_or_optional": "required",
+      "provider_binding_state": "UNBOUND",
+      "integration_state": "NOT_IMPLEMENTED",
+      "credentials_authorized": false,
+      "network_access_authorized": false,
+      "collection_authorized": false,
+      "execution_capability_present": false,
+      "fallback_conditions": [
+        "primary unavailable (timeout, connection refused, rate-limited)",
+        "primary returns corrupted or incomplete bar data",
+        "primary returns data with quality_state REJECTED"
+      ],
+      "disagreement_handling": "Retain both primary and fallback records with distinct provider_role_id values. Provider disagreement must be observable. Material disagreement lowers confidence or produces NO_TRADE.",
+      "evidence_requirements": [
+        "provider_role_id on every record",
+        "source_timestamp_utc distinct from ingestion_timestamp_utc",
+        "raw_record_hash for content-addressability"
+      ],
+      "licensing_review_required": true,
+      "human_binding_approval_required": true,
+      "track_applicability": ["TRACK_A_MSTR_BTC", "TRACK_B_SPY_QQQ"],
+      "symbols": ["MSTR", "SPY", "QQQ"]
+    },
+    "EQUITY_BARS_SECONDARY": {
+      "role_id": "EQUITY_BARS_SECONDARY",
+      "data_domain": "equity_bars",
+      "description": "Secondary/fallback source for equity OHLCV bars. Fallback data must retain separate provider identity and must not be silently merged with primary data.",
+      "priority": "SECONDARY",
+      "required_or_optional": "optional",
+      "provider_binding_state": "UNBOUND",
+      "integration_state": "NOT_IMPLEMENTED",
+      "credentials_authorized": false,
+      "network_access_authorized": false,
+      "collection_authorized": false,
+      "execution_capability_present": false,
+      "fallback_conditions": [
+        "automatically considered when EQUITY_BARS_PRIMARY is unavailable"
+      ],
+      "disagreement_handling": "When primary and secondary diverge beyond 0.5% on close: lower confidence. Beyond 2%: NO_TRADE. Disagreement retained as evidence.",
+      "evidence_requirements": [
+        "provider_role_id on every record distinct from primary",
+        "fallback records tagged with fallback flag",
+        "disagreement comparison retained"
+      ],
+      "licensing_review_required": true,
+      "human_binding_approval_required": true,
+      "track_applicability": ["TRACK_A_MSTR_BTC", "TRACK_B_SPY_QQQ"],
+      "symbols": ["MSTR", "SPY", "QQQ"]
+    },
+    "BTC_SPOT_PRIMARY": {
+      "role_id": "BTC_SPOT_PRIMARY",
+      "data_domain": "btc_spot_bars",
+      "description": "Primary source for BTC/USD spot OHLCV data. Must be a data-only provider with no execution capability. BTC is data-only — no broker connectivity, no crypto trading.",
+      "priority": "PRIMARY",
+      "required_or_optional": "required",
+      "provider_binding_state": "UNBOUND",
+      "integration_state": "NOT_IMPLEMENTED",
+      "credentials_authorized": false,
+      "network_access_authorized": false,
+      "collection_authorized": false,
+      "execution_capability_present": false,
+      "fallback_conditions": [
+        "primary unavailable (timeout, connection refused, rate-limited)",
+        "primary returns corrupted or incomplete bar data",
+        "primary returns data with quality_state REJECTED"
+      ],
+      "disagreement_handling": "BTC spot providers may disagree due to exchange/methodology variance. Retain both. Disagreement beyond 1% lowers confidence; beyond 3% produces NO_TRADE.",
+      "evidence_requirements": [
+        "provider_role_id on every record",
+        "venue_or_index explicitly recorded",
+        "aggregation_method documented",
+        "source_timestamp_utc distinct from ingestion_timestamp_utc"
+      ],
+      "licensing_review_required": true,
+      "human_binding_approval_required": true,
+      "track_applicability": ["TRACK_A_MSTR_BTC"],
+      "symbols": ["BTC"]
+    },
+    "BTC_SPOT_SECONDARY": {
+      "role_id": "BTC_SPOT_SECONDARY",
+      "data_domain": "btc_spot_bars",
+      "description": "Secondary/fallback source for BTC/USD spot OHLCV data. Must be data-only with no execution capability.",
+      "priority": "SECONDARY",
+      "required_or_optional": "optional",
+      "provider_binding_state": "UNBOUND",
+      "integration_state": "NOT_IMPLEMENTED",
+      "credentials_authorized": false,
+      "network_access_authorized": false,
+      "collection_authorized": false,
+      "execution_capability_present": false,
+      "fallback_conditions": [
+        "automatically considered when BTC_SPOT_PRIMARY is unavailable"
+      ],
+      "disagreement_handling": "Fallback data must carry distinct provider_role_id. Disagreement between primary and fallback beyond 1% lowers confidence; beyond 3% produces NO_TRADE.",
+      "evidence_requirements": [
+        "provider_role_id on every record distinct from primary",
+        "fallback records tagged"
+      ],
+      "licensing_review_required": true,
+      "human_binding_approval_required": true,
+      "track_applicability": ["TRACK_A_MSTR_BTC"],
+      "symbols": ["BTC"]
+    },
+    "CORPORATE_EVENTS_PRIMARY": {
+      "role_id": "CORPORATE_EVENTS_PRIMARY",
+      "data_domain": "corporate_events",
+      "description": "Primary source for MSTR corporate events (earnings, SEC filings, capital raises, convertible debt, ATM offerings, Bitcoin purchases/dispositions, management changes, guidance). May be the same entity as EQUITY_BARS_PRIMARY or a separate service.",
+      "priority": "PRIMARY",
+      "required_or_optional": "optional",
+      "provider_binding_state": "UNBOUND",
+      "integration_state": "NOT_IMPLEMENTED",
+      "credentials_authorized": false,
+      "network_access_authorized": false,
+      "collection_authorized": false,
+      "execution_capability_present": false,
+      "fallback_conditions": [
+        "primary unavailable",
+        "primary missing events known to have occurred (completeness failure)",
+        "primary event timestamps inconsistent with public filings"
+      ],
+      "disagreement_handling": "Corporate events are point-in-time by nature. Multiple sources may report the same event at different times. Retain both with distinct available_at_utc. Do not deduplicate without explicit audit trail.",
+      "evidence_requirements": [
+        "source_reference to the filing/document (public URL or EDGAR accession number)",
+        "source_document_hash when available",
+        "announced_at_utc clearly distinct from available_at_utc"
+      ],
+      "licensing_review_required": true,
+      "human_binding_approval_required": true,
+      "track_applicability": ["TRACK_A_MSTR_BTC"],
+      "symbols": ["MSTR"]
+    },
+    "CORPORATE_EVENTS_SECONDARY": {
+      "role_id": "CORPORATE_EVENTS_SECONDARY",
+      "data_domain": "corporate_events",
+      "description": "Secondary source for MSTR corporate events. Provides detection of events missed by the primary provider and cross-validation.",
+      "priority": "SECONDARY",
+      "required_or_optional": "optional",
+      "provider_binding_state": "UNBOUND",
+      "integration_state": "NOT_IMPLEMENTED",
+      "credentials_authorized": false,
+      "network_access_authorized": false,
+      "collection_authorized": false,
+      "execution_capability_present": false,
+      "fallback_conditions": [
+        "automatically considered when CORPORATE_EVENTS_PRIMARY is unavailable"
+      ],
+      "disagreement_handling": "If secondary detects a corporate event that primary missed, flag the gap and record in both providers. If primary and secondary disagree on event classification (e.g., material vs immaterial), retain both assessments. Flag for human review. Do not trade on contested events.",
+      "evidence_requirements": [
+        "provider_role_id on every record distinct from primary",
+        "cross-provider event mapping when the same event is reported by both"
+      ],
+      "licensing_review_required": true,
+      "human_binding_approval_required": true,
+      "track_applicability": ["TRACK_A_MSTR_BTC"],
+      "symbols": ["MSTR"]
+    },
+    "OPTION_SNAPSHOTS_PRIMARY": {
+      "role_id": "OPTION_SNAPSHOTS_PRIMARY",
+      "data_domain": "option_chain_snapshots",
+      "description": "Primary source for point-in-time option chain snapshots. SIMULATION ONLY. No option is executable. Historical option research requires actual point-in-time snapshots — current chains must not substitute.",
+      "priority": "PRIMARY",
+      "required_or_optional": "optional",
+      "provider_binding_state": "UNBOUND",
+      "integration_state": "NOT_IMPLEMENTED",
+      "credentials_authorized": false,
+      "network_access_authorized": false,
+      "collection_authorized": false,
+      "execution_capability_present": false,
+      "fallback_conditions": [
+        "primary unavailable",
+        "primary returns crossed or clearly invalid option markets",
+        "primary returns stale quotes (quote_condition STALE)"
+      ],
+      "disagreement_handling": "Option quotes across providers may differ due to exchange routing, quote timing, and market fragmentation. Retain both with distinct provider_role_id. If quote_condition is CROSSED or STALE on primary, reject primary record. Do not substitute current chains for historical snapshots.",
+      "evidence_requirements": [
+        "point_in_time_snapshot must be true",
+        "simulation_only must be true",
+        "snapshot_timestamp_utc must be a historical timestamp, not current"
+      ],
+      "licensing_review_required": true,
+      "human_binding_approval_required": true,
+      "track_applicability": ["TRACK_A_MSTR_BTC", "TRACK_B_SPY_QQQ"],
+      "symbols": ["MSTR", "SPY", "QQQ"]
+    },
+    "OPTION_SNAPSHOTS_SECONDARY": {
+      "role_id": "OPTION_SNAPSHOTS_SECONDARY",
+      "data_domain": "option_chain_snapshots",
+      "description": "Secondary source for point-in-time option chain snapshots. Provides cross-validation of primary option data and fill-gap coverage.",
+      "priority": "SECONDARY",
+      "required_or_optional": "optional",
+      "provider_binding_state": "UNBOUND",
+      "integration_state": "NOT_IMPLEMENTED",
+      "credentials_authorized": false,
+      "network_access_authorized": false,
+      "collection_authorized": false,
+      "execution_capability_present": false,
+      "fallback_conditions": [
+        "automatically considered when OPTION_SNAPSHOTS_PRIMARY is unavailable"
+      ],
+      "disagreement_handling": "Cross-provider option quote disagreements must be logged. Do not silently merge or average. If bid/ask spreads diverge beyond 2x between providers, lower confidence.",
+      "evidence_requirements": [
+        "provider_role_id on every record distinct from primary",
+        "disagreement comparison retained"
+      ],
+      "licensing_review_required": true,
+      "human_binding_approval_required": true,
+      "track_applicability": ["TRACK_A_MSTR_BTC", "TRACK_B_SPY_QQQ"],
+      "symbols": ["MSTR", "SPY", "QQQ"]
+    },
+    "MARKET_CALENDAR_REFERENCE": {
+      "role_id": "MARKET_CALENDAR_REFERENCE",
+      "data_domain": "market_calendar",
+      "description": "Reference source for market calendars (trading holidays, early closes, settlement dates). Used to validate bar completeness and temporal integrity. Market calendars are reference data, not price data.",
+      "priority": "REFERENCE",
+      "required_or_optional": "required",
+      "provider_binding_state": "UNBOUND",
+      "integration_state": "NOT_IMPLEMENTED",
+      "credentials_authorized": false,
+      "network_access_authorized": false,
+      "collection_authorized": false,
+      "execution_capability_present": false,
+      "fallback_conditions": [
+        "primary calendar does not cover the required date range",
+        "primary calendar missing a known market holiday or early close"
+      ],
+      "disagreement_handling": "If primary and secondary calendars disagree on a market holiday, flag the date for verification. Do not classify a disputed day as a regular trading day. Default to closed if in doubt.",
+      "evidence_requirements": [
+        "calendar date range covered",
+        "version or publication date of the calendar",
+        "source reference for non-standard closures"
+      ],
+      "licensing_review_required": true,
+      "human_binding_approval_required": true,
+      "track_applicability": ["TRACK_A_MSTR_BTC", "TRACK_B_SPY_QQQ"],
+      "symbols": ["ALL"]
+    },
+    "CORPORATE_ACTION_REFERENCE": {
+      "role_id": "CORPORATE_ACTION_REFERENCE",
+      "data_domain": "corporate_actions",
+      "description": "Reference source for corporate actions (splits, dividends, spin-offs, symbol changes) that affect price adjustment calculations. Distinct from CORPORATE_EVENTS, which covers event-driven research data.",
+      "priority": "REFERENCE",
+      "required_or_optional": "required",
+      "provider_binding_state": "UNBOUND",
+      "integration_state": "NOT_IMPLEMENTED",
+      "credentials_authorized": false,
+      "network_access_authorized": false,
+      "collection_authorized": false,
+      "execution_capability_present": false,
+      "fallback_conditions": [
+        "primary reference data incomplete or conflicting",
+        "adjustment factors inconsistent with known corporate actions"
+      ],
+      "disagreement_handling": "If primary and secondary corporate action data disagree on adjustment factors, flag and quarantine affected bars. Adjusted prices without traceable adjustment versions must be rejected.",
+      "evidence_requirements": [
+        "adjustment factor and adjustment version on every adjusted bar",
+        "adjustment type explicitly recorded",
+        "ex-date and effective-date recorded"
+      ],
+      "licensing_review_required": true,
+      "human_binding_approval_required": true,
+      "track_applicability": ["TRACK_A_MSTR_BTC", "TRACK_B_SPY_QQQ"],
+      "symbols": ["MSTR", "SPY", "QQQ"]
+    }
+  },
+  "provider_role_rules": {
+    "description": "Rules governing all provider roles regardless of binding state.",
+    "rules": [
+      {
+        "rule_id": "PRR-001",
+        "rule": "Logical roles are not provider selections. No role definition names, endorses, or binds to a commercial provider.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "PRR-002",
+        "rule": "Primary failure does not silently activate fallback data. Fallback activation must be logged with the reason and timestamp.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "PRR-003",
+        "rule": "Fallback use must be recorded. Every record sourced from a fallback carries the fallback provider_role_id — not the primary provider_role_id.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "PRR-004",
+        "rule": "Primary and fallback records retain separate provider-role identities. They must not be merged or averaged without explicit audit trail.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "PRR-005",
+        "rule": "Provider disagreement must be retained as evidence. When two providers disagree, both records must be preserved with their respective provider_role_ids.",
+        "severity": "REQUIRED"
+      },
+      {
+        "rule_id": "PRR-006",
+        "rule": "Material disagreement lowers confidence or produces NO_TRADE. Unresolved material provider disagreement must not produce a trade signal.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "PRR-007",
+        "rule": "No provider is authoritative merely because it responded first. Timeliness is not authority. A faster-but-wrong provider is not preferred over a slower-but-correct provider.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "PRR-008",
+        "rule": "Provider timestamps and ingestion timestamps remain distinct. Every record carries both source_timestamp_utc (provider) and ingestion_timestamp_utc (system). They must not be substituted for each other.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "PRR-009",
+        "rule": "Revisions remain immutable. Provider-side corrections create new records with incremented revision_number. Original records are never overwritten.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "PRR-010",
+        "rule": "Licensing and retention terms require separate human review. No automated provider binding is permitted. All provider terms must be reviewed and approved by a human before binding.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "PRR-011",
+        "rule": "Provider binding requires a future separate phase. No provider client may be implemented in Phase 18B.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "PRR-012",
+        "rule": "No provider client may be implemented in Phase 18B. Schema contracts only.",
+        "severity": "HARD_FAIL"
+      }
+    ]
+  },
+  "binding_rules": {
+    "description": "Rules governing how providers are bound to specific roles. All bindings require explicit human approval.",
+    "rules": [
+      {
+        "rule_id": "BR-001",
+        "rule": "No provider may be bound to any role without explicit human approval (Chris).",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "BR-002",
+        "rule": "Provider binding must be recorded with a binding timestamp and approving human identity.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "BR-003",
+        "rule": "No provider with execution capability may be bound to any role unless that execution capability is explicitly disabled at the bridge/API-key level.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "BR-004",
+        "rule": "At most one provider per role. Secondary/fallback roles are bound separately.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "BR-005",
+        "rule": "BTC spot providers must not have any equity or derivatives execution capability. Data-only providers only.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "BR-006",
+        "rule": "All provider credentials must be stored with H1-equivalent security. No credentials in the repository.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "BR-007",
+        "rule": "No provider may be bound during SCHEMA_CONTRACT_READY state. Binding requires transition to a higher governance state.",
+        "severity": "HARD_FAIL"
+      }
+    ]
+  },
+  "fallback_rules": {
+    "description": "Rules governing provider fallback when a primary provider is unavailable, rate-limited, or returning degraded data.",
+    "rules": [
+      {
+        "rule_id": "FR-001",
+        "rule": "When the primary provider is unavailable and a fallback is bound, the system must attempt the highest-priority available fallback.",
+        "severity": "REQUIRED"
+      },
+      {
+        "rule_id": "FR-002",
+        "rule": "Fallback data must carry the fallback provider_role_id and must not be silently merged with primary data.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "FR-003",
+        "rule": "If primary and fallback data disagree beyond configurable tolerance, the disagreement must be logged and confidence lowered. Critical disagreement produces NO_TRADE.",
+        "severity": "REQUIRED"
+      },
+      {
+        "rule_id": "FR-004",
+        "rule": "Provider data is advisory-only. IBKR is the ground truth for equities. No external provider's equity data may override IBKR data for the same symbol and timestamp.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "FR-005",
+        "rule": "If all providers for a required data type are unavailable, the affected track must produce NO_TRADE, not use stale data beyond the staleness threshold.",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "rule_id": "FR-006",
+        "rule": "Provider outage must never block Strategy v1 operations. MSTR/BTC research track data pipelines are isolated from the canonical strategy.",
+        "severity": "HARD_FAIL"
+      }
+    ]
+  },
+  "safety_constraints": {
+    "description": "Hard safety constraints that apply to all providers regardless of binding state.",
+    "constraints": [
+      {
+        "constraint_id": "SC-001",
+        "constraint": "No provider may have order-execution capability connected to this system.",
+        "applies_to": "all_providers",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "constraint_id": "SC-002",
+        "constraint": "Provider data must not be treated as operator instructions. No provider response may trigger a trade, modify an order, or change a guard state.",
+        "applies_to": "all_providers",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "constraint_id": "SC-003",
+        "constraint": "Provider credentials must not be committed to the repository.",
+        "applies_to": "all_providers",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "constraint_id": "SC-004",
+        "constraint": "Provider endpoints must be rate-limited on the client side to at most 80% of the provider's documented limit.",
+        "applies_to": "all_providers",
+        "severity": "REQUIRED"
+      },
+      {
+        "constraint_id": "SC-005",
+        "constraint": "No provider may be used for symbols outside the approved research symbol set (MSTR, SPY, QQQ, BTC).",
+        "applies_to": "all_providers",
+        "severity": "HARD_FAIL"
+      },
+      {
+        "constraint_id": "SC-006",
+        "constraint": "Provider data access must respect market-data licensing terms. No redistribution of provider data.",
+        "applies_to": "all_providers",
+        "severity": "HARD_FAIL"
+      }
+    ]
+  },
+  "non_actions": [
+    "No provider API key has been requested or stored",
+    "No provider has been contacted or evaluated",
+    "No network request has been made to any provider endpoint",
+    "No provider terms of service have been reviewed or accepted",
+    "No cost commitment has been made",
+    "No data has been collected from any provider",
+    "No provider client code has been written",
+    "No provider selected or named as approved",
+    "No credentials created",
+    "No API URLs stored",
+    "No authentication schemes configured",
+    "No rate-limit bypass instructions stored"
+  ]
+}

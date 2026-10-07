@@ -1,0 +1,10 @@
+# Substitute numeric UIDs and configured API port after creating users.
+# Add this table to the host's administrator-owned nftables configuration.
+# It blocks IPv4 and IPv6, including local loopback access by the advisory UI.
+table inet ibkr_boundary {
+  chain output {
+    type filter hook output priority -10; policy accept;
+    tcp dport 4002 meta skuid { EXECUTION_UID, GATEWAY_UID } accept
+    tcp dport 4002 reject
+  }
+}

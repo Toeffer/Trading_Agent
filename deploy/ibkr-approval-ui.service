@@ -1,0 +1,24 @@
+[Unit]
+Description=Human paper order approval UI
+After=ibkr-bridge.service
+
+[Service]
+User=ibkr-ui
+Group=ibkr-ui
+WorkingDirectory=/opt/trading-agent/current
+Environment=IBKR_BRIDGE_URL=http://127.0.0.1:8790 PYTHONUTF8=1
+ExecStart=/opt/trading-agent/current/.venv/bin/python -m uvicorn approval_ui:app --host 127.0.0.1 --port 8791 --workers 1 --limit-concurrency 16 --no-access-log
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+InaccessiblePaths=/var/lib/ibkr-bridge /etc/ibkr-bridge
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+Restart=no
+MemoryMax=256M
+TasksMax=24
+
+[Install]
+WantedBy=multi-user.target
